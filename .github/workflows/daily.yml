@@ -1,0 +1,57 @@
+name: Daily Aggregate
+
+on:
+  schedule:
+    - cron: "0 1 * * *"  # 09:00 Asia/Taipei
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "YYYY-MM-DD (Asia/Taipei) for output filename"
+        required: false
+        default: ""
+      source:
+        description: "comma-separated source ids (default: all enabled)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - name: Run aggregator
+        env:
+          TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_REFRESH_TOKEN: ${{ secrets.THREADS_REFRESH_TOKEN }}
+          THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          PRODUCT_HUNT_TOKEN: ${{ secrets.PRODUCT_HUNT_TOKEN }}
+          RSSHUB_INSTANCE_URL: ${{ secrets.RSSHUB_INSTANCE_URL || 'https://rsshub.app' }}
+          WEWE_RSS_URL: ${{ secrets.WEWE_RSS_URL }}
+          WEWE_RSS_KEY: ${{ secrets.WEWE_RSS_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.date }}" ]; then ARGS="$ARGS --date ${{ inputs.date }}"; fi
+          if [ -n "${{ inputs.source }}" ]; then ARGS="$ARGS --source ${{ inputs.source }}"; fi
+          uv run python -m social_info $ARGS
+      - name: Commit & push
+        run: |
+          git config user.name "social-info-bot"
+          git config user.email "social-info@users.noreply.github.com"
+          git add state.db reports/
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "chore: daily aggregate $(date -u +%Y-%m-%d)"
+            git push
+          fi
