@@ -92,6 +92,14 @@ class Database:
         )
         self.conn.commit()
 
+    def items_for_date(self, date: str) -> list[dict[str, Any]]:
+        """Return all items whose fetched_at falls on the given YYYY-MM-DD (UTC)."""
+        cur = self.conn.execute(
+            "SELECT * FROM items WHERE date(fetched_at) = ? ORDER BY posted_at DESC",
+            (date,),
+        )
+        return [dict(r) for r in cur]
+
     def recent_fetch_runs(self, days: int = 7) -> list[dict[str, Any]]:
         since = (datetime.utcnow() - timedelta(days=days)).isoformat()
         cur = self.conn.execute(

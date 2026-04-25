@@ -1,15 +1,35 @@
 """CLI entrypoint: `uv run python -m social_info [--flags]`."""
 import argparse
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from social_info.config import load_config
 from social_info.db import Database
+from social_info.fetchers.base import Item
 from social_info.markdown import render_item
 from social_info.pipeline import run_pipeline, write_report
 
 TAIPEI = timezone(timedelta(hours=8))
+
+
+def _row_to_item(row: dict) -> Item:
+    return Item(
+        title=row["title"],
+        url=row["url"],
+        canonical_url=row["canonical_url"],
+        source=row["source"],
+        source_handle=row["source_handle"] or "",
+        source_tier=row["source_tier"] or 2,
+        posted_at=datetime.fromisoformat(row["posted_at"]),
+        fetched_at=datetime.fromisoformat(row["fetched_at"]),
+        author=row.get("author") or "",
+        excerpt=row.get("excerpt") or "",
+        language=row.get("language") or "en",
+        engagement=json.loads(row.get("engagement_json") or "{}"),
+        also_appeared_in=json.loads(row.get("also_appeared_in") or "[]"),
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -77,8 +97,17 @@ async def _main() -> int:
 
     now_tw = datetime.now(TAIPEI)
     date = args.date or now_tw.strftime("%Y-%m-%d")
-    out = write_report(new_items, failures, args.reports, date, now_tw)
-    print(f"Wrote {out} ({len(new_items)} items, {len(failures)} failures)")
+    # Render the report from ALL items fetched today (UTC), not just the new
+    # ones from this run. Keeps re-runs idempotent: same-day re-run regenerates
+    # the same .md instead of overwriting it with an empty digest.
+    today_utc = datetime.utcnow().strftime("%Y-%m-%d")
+    rows = db.items_for_date(today_utc)
+    all_items_today = [_row_to_item(r) for r in rows]
+    out = write_report(all_items_today, failures, args.reports, date, now_tw)
+    print(
+        f"Wrote {out} ({len(all_items_today)} items rendered, "
+        f"{len(new_items)} new this run, {len(failures)} failures)"
+    )
     db.close()
     return 0
 
