@@ -38,3 +38,26 @@
 - 等實際多日跑下來看 stage-2 工作流哪裡需要調，再順便重構
 
 **何時動**：跑滿 4 週、確認 AI topic 工作流順、且第二個 topic（例如 Shopify 商家動態 / 個人興趣某領域）有具體想法時，做一次 refactor。
+
+---
+
+## X / Twitter source 的 fallback：Chrome extension pattern
+
+**現況**：X source 走 Apify Tweet Scraper Actor，月 $5 free credits 自動更新、$0/月。
+
+**備案觸發**：當 Apify 出現以下任一情況時，啟用備案：
+- Apify 政策變、$5 monthly credits 取消或縮水
+- Apify 上 Tweet Scraper Actor 全部失效 / 不再維護
+- Apify 平台被 X 持續 block（會看後續穩定度）
+- 使用者想完全 own 整條 pipeline 不依賴第三方
+
+**備案內容**：fork [`~/Desktop/projects/cc-quota-fetcher`](file:///Users/linhancheng/Desktop/projects/cc-quota-fetcher) 改成 `x-feed-fetcher`：
+- Chrome extension 在使用者 X 帳號 session 內 fetch X 內部 GraphQL endpoint
+- Native messaging host 寫 `~/.cache/x-feed/<handle>.json`
+- `social_info/fetchers/twitter.py` 改成讀本機 cache file（不再打外部 API）
+- daily.yml cron 改成本機 macOS launchd（雲端 runner 讀不到本機 cache）
+- 工程量約 4-7 hr
+
+**為什麼不現在做**：Apify 月 $0、零工程、雲端跑——比 extension 路徑便宜且簡單。等 Apify 真的出問題再切換。
+
+**詳細 pattern reference**：見 `cc-quota-fetcher` repo README，含「為什麼 cookie extract 路線走不通」「extension 內 fetch 為什麼通」的完整論述。
