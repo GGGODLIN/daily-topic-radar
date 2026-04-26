@@ -11,7 +11,7 @@ from social_info.fetchers.twitter import fetch
 
 @pytest.mark.asyncio
 async def test_fetch_twitter_via_apify(httpx_mock, monkeypatch):
-    monkeypatch.setenv("APIFY_TOKEN", "fake-token")
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
     fixture = json.loads(Path("tests/fixtures/apify_tweet_scraper_response.json").read_text())
     httpx_mock.add_response(
         url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
@@ -43,7 +43,7 @@ async def test_fetch_twitter_via_apify(httpx_mock, monkeypatch):
 async def test_fetch_twitter_skips_mock_tweet(httpx_mock, monkeypatch):
     """Apify actor returns mock_tweet entries when the underlying search has no
     real results; the fetcher must filter them out."""
-    monkeypatch.setenv("APIFY_TOKEN", "fake-token")
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
     httpx_mock.add_response(
         url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
         json=[
@@ -66,7 +66,7 @@ async def test_fetch_twitter_skips_mock_tweet(httpx_mock, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_twitter_no_token_raises(monkeypatch):
-    monkeypatch.delenv("APIFY_TOKEN", raising=False)
+    monkeypatch.delenv("APIFY_TOKEN_TWITTER", raising=False)
     cfg = SourceConfig(
         id="twitter_tier1",
         type="twitter",
@@ -75,5 +75,5 @@ async def test_fetch_twitter_no_token_raises(monkeypatch):
         params={"handles": ["karpathy"]},
     )
     async with httpx.AsyncClient() as client:
-        with pytest.raises(RuntimeError, match="APIFY_TOKEN"):
+        with pytest.raises(RuntimeError, match="APIFY_TOKEN_TWITTER"):
             await fetch(cfg, client)
