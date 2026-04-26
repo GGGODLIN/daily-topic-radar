@@ -157,8 +157,8 @@ uv run ruff check src tests
 - [ ] 改 cron schedule（如果 09:00 不合）
 - [ ] 改 sources.yml 想加 / 砍的 source
 
-## 已知小 issue（可忽略也可修）
+## 已知小 issue
 
-- `datetime.utcnow()` 在 Python 3.12 有 deprecation warning。每個 fetcher 都會打一個。修法：全部換 `datetime.now(UTC)`、再把 ISO string 改 timezone-aware 比對。對 PoC 不影響功能，醒來想清乾淨可一次掃。
-- L2 dedup 沒抓到任何跨來源 cluster（grep `also seen at` reports/ → 0）。可能是 spec 預期的「fixture 內容沒重疊」，也可能 normalize_title 太嚴格。可以等實際多日資料累積後再評估。
-- 沒寫 `load_dotenv()`，所以本機要手動 `export` env var。修起來簡單（加 python-dotenv dep + 在 `__main__.py` import）。
+- ✅ ~~`datetime.utcnow()` deprecation~~ — 已清，全部走 `social_info._time` helpers
+- ✅ ~~沒寫 `load_dotenv()`~~ — 已加，CLI 啟動會自動載 `.env`
+- L2 dedup 沒抓到任何跨來源 cluster（grep `also seen at` reports/ → 0）。可能是 spec 預期的「fixture 內容沒重疊」，也可能 normalize_title 太嚴格。等實際多日資料累積後再評估。
