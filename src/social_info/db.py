@@ -102,6 +102,20 @@ class Database:
         )
         return [dict(r) for r in cur]
 
+    def last_failed_sources(self) -> list[str]:
+        """Return source IDs whose most recent fetch_run was a failure.
+
+        For each source, looks at its latest fetch_run row; if status != 'ok'
+        the source ID is included. Sources that succeeded last (even if
+        previously failed) are excluded.
+        """
+        cur = self.conn.execute(
+            "SELECT source, status FROM fetch_runs "
+            "WHERE id IN (SELECT MAX(id) FROM fetch_runs GROUP BY source) "
+            "AND status != 'ok'"
+        )
+        return [r["source"] for r in cur]
+
     def recent_fetch_runs(self, days: int = 7) -> list[dict[str, Any]]:
         since = (utcnow() - timedelta(days=days)).isoformat()
         cur = self.conn.execute(

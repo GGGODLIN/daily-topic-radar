@@ -86,6 +86,34 @@ def test_log_fetch_run(db):
     assert rows == [("hn", "ok", 10)]
 
 
+def test_last_failed_sources_returns_only_currently_failing(db):
+    # source A: failed then succeeded — should NOT be returned
+    db.log_fetch_run(
+        "source_a", datetime(2026, 4, 25, 9, 0), datetime(2026, 4, 25, 9, 0, 5),
+        "failed", 0, "boom",
+    )
+    db.log_fetch_run(
+        "source_a", datetime(2026, 4, 26, 9, 0), datetime(2026, 4, 26, 9, 0, 5),
+        "ok", 10, "",
+    )
+    # source B: succeeded then failed — SHOULD be returned (latest is failed)
+    db.log_fetch_run(
+        "source_b", datetime(2026, 4, 25, 9, 0), datetime(2026, 4, 25, 9, 0, 5),
+        "ok", 5, "",
+    )
+    db.log_fetch_run(
+        "source_b", datetime(2026, 4, 26, 9, 0), datetime(2026, 4, 26, 9, 0, 5),
+        "failed", 0, "503",
+    )
+    # source C: only ever ok — should NOT be returned
+    db.log_fetch_run(
+        "source_c", datetime(2026, 4, 26, 9, 0), datetime(2026, 4, 26, 9, 0, 5),
+        "ok", 3, "",
+    )
+    failed = db.last_failed_sources()
+    assert failed == ["source_b"]
+
+
 def test_recent_fetch_runs(db):
     db.log_fetch_run(
         "hn",

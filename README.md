@@ -44,6 +44,7 @@ uv run python -m social_info                    # full pipeline, write today's r
 uv run python -m social_info --dry-run          # don't write db / md
 uv run python -m social_info --source hn        # subset
 uv run python -m social_info --date 2026-04-25  # backfill / specific date
+uv run python -m social_info --retry-failures   # re-run only sources whose last run failed
 uv run python -m social_info --smoke            # real API, limit=3, print stdout
 uv run python -m social_info.health             # 7-day source success rate
 uv run pytest                                   # tests

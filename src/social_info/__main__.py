@@ -61,6 +61,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="real API + limit=3 per source + print to stdout, no write",
     )
+    p.add_argument(
+        "--retry-failures",
+        action="store_true",
+        help="re-run only sources whose most recent fetch_run was a failure",
+    )
     return p.parse_args()
 
 
@@ -71,6 +76,14 @@ async def _main() -> int:
     db.init_schema()
 
     only_sources = [s.strip() for s in args.source.split(",")] if args.source else None
+    if args.retry_failures:
+        retry_targets = db.last_failed_sources()
+        if not retry_targets:
+            print("No sources to retry — every source's last run was successful.")
+            db.close()
+            return 0
+        only_sources = retry_targets
+        print(f"Retrying {len(retry_targets)} failed source(s): {', '.join(retry_targets)}")
     limit_per_source = 3 if args.smoke else None
     dry_run = args.dry_run or args.smoke
 
