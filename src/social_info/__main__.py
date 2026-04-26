@@ -7,6 +7,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from social_info._time import utcnow
+
 load_dotenv()
 
 from social_info.config import load_config  # noqa: E402
@@ -104,7 +106,7 @@ async def _main() -> int:
     # Render the report from ALL items fetched today (UTC), not just the new
     # ones from this run. Keeps re-runs idempotent: same-day re-run regenerates
     # the same .md instead of overwriting it with an empty digest.
-    today_utc = datetime.utcnow().strftime("%Y-%m-%d")
+    today_utc = utcnow().strftime("%Y-%m-%d")
     rows = db.items_for_date(today_utc)
     all_items_today = [_row_to_item(r) for r in rows]
     out = write_report(all_items_today, failures, args.reports, date, now_tw)

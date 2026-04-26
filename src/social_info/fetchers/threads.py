@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -53,7 +54,7 @@ def _post_to_item(
             post["timestamp"], "%Y-%m-%dT%H:%M:%S%z"
         ).replace(tzinfo=None)
     except (KeyError, ValueError):
-        posted_at = datetime.utcnow()
+        posted_at = utcnow()
     username = post.get("username") or ""
     return Item(
         title=text[:120] + ("…" if len(text) > 120 else ""),
@@ -63,7 +64,7 @@ def _post_to_item(
         source_handle=source_handle or (f"@{username}" if username else ""),
         source_tier=source_tier,
         posted_at=posted_at,
-        fetched_at=datetime.utcnow(),
+        fetched_at=utcnow(),
         author=username,
         excerpt=text[:200],
         language=language,
@@ -85,7 +86,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     per_query_limit = source.params.get("per_query_limit", 5)
     window_hours = source.params.get("time_window_hours", 24)
     language = source.language or "en"
-    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).strftime(
+    since_iso = (utcnow() - timedelta(hours=window_hours)).strftime(
         "%Y-%m-%dT%H:%M:%S+0000"
     )
 

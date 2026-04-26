@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from social_info._time import utcnow
+
 
 @dataclass
 class Item:
@@ -51,7 +53,7 @@ class FetchResult:
     items: list[Item] = field(default_factory=list)
     ok: bool = True
     error: str = ""
-    started_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime = field(default_factory=utcnow)
     ended_at: datetime | None = None
 
     def items_count(self) -> int:

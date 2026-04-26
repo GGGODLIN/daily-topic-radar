@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 
+from social_info._time import utcnow
 from social_info.config import Config, SourceConfig
 from social_info.db import Database
 from social_info.dedup import Deduper, compute_item_id, compute_title_hash
@@ -38,7 +39,7 @@ FETCHER_REGISTRY = {
 
 
 async def _run_one_fetcher(source: SourceConfig, http: httpx.AsyncClient) -> FetchResult:
-    started = datetime.utcnow()
+    started = utcnow()
     fetcher = FETCHER_REGISTRY.get(source.type)
     if not fetcher:
         return FetchResult(
@@ -46,7 +47,7 @@ async def _run_one_fetcher(source: SourceConfig, http: httpx.AsyncClient) -> Fet
             ok=False,
             error=f"unknown source type: {source.type}",
             started_at=started,
-            ended_at=datetime.utcnow(),
+            ended_at=utcnow(),
         )
     try:
         items = await fetcher(source, http)
@@ -55,7 +56,7 @@ async def _run_one_fetcher(source: SourceConfig, http: httpx.AsyncClient) -> Fet
             items=items,
             ok=True,
             started_at=started,
-            ended_at=datetime.utcnow(),
+            ended_at=utcnow(),
         )
     except Exception as e:
         return FetchResult(
@@ -64,7 +65,7 @@ async def _run_one_fetcher(source: SourceConfig, http: httpx.AsyncClient) -> Fet
             ok=False,
             error=f"{type(e).__name__}: {e}",
             started_at=started,
-            ended_at=datetime.utcnow(),
+            ended_at=utcnow(),
         )
 
 

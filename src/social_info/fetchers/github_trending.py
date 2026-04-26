@@ -1,9 +1,8 @@
 """GitHub Trending HTML scraper."""
-from datetime import datetime
-
 import httpx
 from bs4 import BeautifulSoup
 
+from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -38,7 +37,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     keywords = source.params.get("ai_keywords", [])
 
     items: list[Item] = []
-    now = datetime.utcnow()
+    now = utcnow()
     for lang in languages:
         url = f"https://github.com/trending/{lang}".rstrip("/") + f"?since={since}"
         resp = await http.get(url, timeout=30.0)

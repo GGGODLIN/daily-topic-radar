@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -20,7 +21,7 @@ def _matches_any_keyword(title: str, keywords: list[str]) -> bool:
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     keywords = source.params.get("keywords", [])
     limit = source.params.get("limit", 30)
-    since_ts = int((datetime.utcnow() - timedelta(hours=24)).timestamp())
+    since_ts = int((utcnow() - timedelta(hours=24)).timestamp())
 
     resp = await http.get(
         API_URL,
@@ -35,7 +36,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     data = resp.json()
 
     items: list[Item] = []
-    now = datetime.utcnow()
+    now = utcnow()
     for hit in data.get("hits", []):
         title = hit.get("title") or ""
         url = hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}"

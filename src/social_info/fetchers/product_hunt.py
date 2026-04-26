@@ -8,6 +8,7 @@ from datetime import datetime
 
 import httpx
 
+from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -52,7 +53,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     edges = data.get("data", {}).get("posts", {}).get("edges", [])
 
     items: list[Item] = []
-    now = datetime.utcnow()
+    now = utcnow()
     for edge in edges:
         n = edge.get("node", {})
         if not n:

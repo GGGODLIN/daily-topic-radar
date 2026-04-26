@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from social_info._time import utcnow
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
     id TEXT PRIMARY KEY,
@@ -101,7 +103,7 @@ class Database:
         return [dict(r) for r in cur]
 
     def recent_fetch_runs(self, days: int = 7) -> list[dict[str, Any]]:
-        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        since = (utcnow() - timedelta(days=days)).isoformat()
         cur = self.conn.execute(
             "SELECT * FROM fetch_runs WHERE started_at >= ? ORDER BY started_at DESC",
             (since,),

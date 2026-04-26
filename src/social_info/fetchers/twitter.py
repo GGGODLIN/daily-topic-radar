@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -19,10 +20,10 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     handles = source.params.get("handles", [])
     per_handle_limit = source.params.get("per_handle_limit", 10)
     window_hours = source.params.get("time_window_hours", 24)
-    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).isoformat() + "Z"
+    since_iso = (utcnow() - timedelta(hours=window_hours)).isoformat() + "Z"
 
     items: list[Item] = []
-    now = datetime.utcnow()
+    now = utcnow()
     headers = {"X-API-Key": api_key}
 
     for handle in handles:

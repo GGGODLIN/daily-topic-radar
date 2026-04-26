@@ -6,6 +6,7 @@ from time import mktime
 import feedparser
 import httpx
 
+from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -27,7 +28,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     parsed = feedparser.parse(resp.text)
 
     items: list[Item] = []
-    now = datetime.utcnow()
+    now = utcnow()
     for entry in parsed.entries[:limit]:
         title = entry.get("title", "").strip()
         link = entry.get("link", "").strip()

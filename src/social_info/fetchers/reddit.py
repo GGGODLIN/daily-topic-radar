@@ -1,8 +1,7 @@
 """Reddit fetcher via public top.json endpoint."""
-from datetime import datetime
-
 import httpx
 
+from social_info._time import utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -26,7 +25,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     data = resp.json()
 
     items: list[Item] = []
-    now = datetime.utcnow()
+    now = utcnow()
     for child in data.get("data", {}).get("children", []):
         post = child.get("data", {})
         title = post.get("title") or ""
@@ -37,7 +36,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             link = f"https://www.reddit.com{post.get('permalink', '')}"
         excerpt = (post.get("selftext") or "").strip()[:200]
         try:
-            posted_at = datetime.utcfromtimestamp(post.get("created_utc", 0))
+            posted_at = utcfromtimestamp(post.get("created_utc", 0))
         except (TypeError, ValueError):
             posted_at = now
         items.append(Item(

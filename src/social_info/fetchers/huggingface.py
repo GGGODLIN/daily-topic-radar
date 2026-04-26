@@ -3,6 +3,7 @@ from datetime import datetime
 
 import httpx
 
+from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -21,7 +22,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     data = resp.json()
 
     items: list[Item] = []
-    now = datetime.utcnow()
+    now = utcnow()
     for entry in data:
         repo_id = entry.get("id") or entry.get("modelId") or ""
         if not repo_id:
