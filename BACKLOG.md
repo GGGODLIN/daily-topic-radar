@@ -64,35 +64,10 @@
 
 ---
 
-## Threads keyword search dead-end (2026-04-26)
+## ✅ Threads keyword search dead-end — RESOLVED (2026-04-26)
 
-**現況**：Threads `keyword_search` / topic tag search 在 Meta App 處於 **Development mode** 時，**只能搜到 test user (gggodlin) 自己的 posts**。對 daily aggregator 零價值。
+原本 BACKLOG 三條 path（chrome extension / Meta App Review / 接受不可用）都嫌貴。當天稍晚發現第四條：**Apify watcher.data/search-threads-by-keywords actor**（同 X 的 Apify pattern、multi-keyword single-invocation、$8/1000 results、繞過 Meta Dev mode 限制）。
 
-**根本原因**：[Meta 文件](https://developers.facebook.com/docs/threads/keyword-search/) 明確規定：
-> 未獲得權限時：只會針對已驗證用戶所擁有的貼文進行搜尋。
-> 獲得權限後：即可搜尋公開貼文。
+已實作並 ship：[`fetchers/threads_apify.py`](src/social_info/fetchers/threads_apify.py)、`threads_keyword` source 已 enabled。詳細狀態見 [STATUS.md](STATUS.md#✅-threads-接通2026-04-26-1650-update)。
 
-「獲得權限」不等於 console 內 toggle on `threads_keyword_search`——那只是 app **request 這個 scope**。實際生效要：
-1. 提交 Meta App Review
-2. 提供 use case justification、privacy policy URL、ToS URL、app icon、production app domain
-3. Review pass、進 Live mode
-
-這條對個人 PoC 不友善——個人專案沒 production deployment 證明，App Review 大概不會 pass。
-
-**已採取的處置**：
-- `threads_keyword` 與 `threads_topic_tag` source 在 sources.yml 改為 `enabled: false`
-- 完整 OAuth flow / app secret / long-lived access token 仍保留（GitHub Secrets 還在），未來如改走別條路可立即復用
-
-**未來三條 path**（按推薦排）：
-
-1. **走 Chrome extension fallback**（同 X source 走過的路）：fork `cc-quota-fetcher` 改成 `threads-feed-fetcher`，extension 在你 Threads 帳號 session 內 fetch 內部 GraphQL endpoint、寫到 `~/.cache/threads-feed/<query>.json`，pipeline 改成讀本機 file。同 X 的 architecture trade-off：要 Mac 24/7 開 + 工程量 4-7 hr。
-2. **submit Meta App Review**：填一堆表格、寫 use case justification、設 privacy policy 與 ToS URL（個人 GitHub Pages 可用）。Review 結果不確定。如果通過，Threads keyword_search 就能正常用、不需 chrome extension。工程量 2-4 hr 加等待 review。
-3. **接受 Threads 不可用**：35 個 source 已很完整、Threads 訊號靠中文 / 台灣其他 source（iThome、BlockTempo AI）部分覆蓋。不做就不做。
-
-**為什麼不現在做**：35 個 source 的 daily digest 對 stage-2 工作流足夠驗證（跑兩週看訊號量是否合用）。Threads 問題是「nice-to-have signal source 缺一個」，不是「pipeline 壞了」。等 PoC 跑滿一個月、確認 Threads 真的需要時再花心力解。
-
-**關鍵紀錄**：
-- App ID: `1492688529247308` (ak-threads-booster-gggodlin)
-- App Secret: 已存在 `THREADS_APP_SECRET` GitHub Secret
-- Long-lived Access Token: 已存在 `THREADS_ACCESS_TOKEN` GitHub Secret，2026-06-25 過期
-- OAuth redirect URI: `https://example.com/oauth/callback`（dummy、未來換 self-host server 時改）
+Meta Threads API 路徑保留為 dormant（`fetchers/threads.py` 給未來 user_handles use case），但日常 pipeline 不再依賴 Meta token / 60 天 refresh。

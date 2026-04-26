@@ -18,6 +18,7 @@ from social_info.fetchers import (
     rss,
     rsshub,
     threads,
+    threads_apify,
     twitter,
     wewe_rss,
 )
@@ -34,6 +35,7 @@ FETCHER_REGISTRY = {
     "rsshub": rsshub.fetch,
     "twitter": twitter.fetch,
     "threads": threads.fetch,
+    "threads_apify": threads_apify.fetch,
     "wewe_rss": wewe_rss.fetch,
 }
 

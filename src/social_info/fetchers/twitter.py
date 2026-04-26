@@ -37,9 +37,9 @@ def _parse_tweet_time(s: str) -> datetime | None:
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
-    token = os.environ.get("APIFY_TOKEN")
+    token = os.environ.get("APIFY_TOKEN_TWITTER") or os.environ.get("APIFY_TOKEN")
     if not token:
-        raise RuntimeError("APIFY_TOKEN env var not set")
+        raise RuntimeError("APIFY_TOKEN_TWITTER env var not set")
 
     handles = source.params.get("handles", [])
     per_handle_limit = source.params.get("per_handle_limit", 10)

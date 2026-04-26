@@ -163,27 +163,15 @@ uv run ruff check src tests
 - ✅ ~~沒寫 `load_dotenv()`~~ — 已加，CLI 啟動會自動載 `.env`
 - L2 dedup 沒抓到任何跨來源 cluster（grep `also seen at` reports/ → 0）。可能是 spec 預期的「fixture 內容沒重疊」，也可能 normalize_title 太嚴格。等實際多日資料累積後再評估。
 
-## ⚠️ Threads keyword/tag search 已 disable（2026-04-26 stuck）
+## ✅ Threads 接通（2026-04-26 16:50 update）
 
-Meta App 在 Development mode 下，Threads keyword_search / topic_tag search **只回 test user 自己的 posts**——對 daily aggregator 零價值。要搜全公開內容需 Meta App Review pass + Live mode（個人 PoC 不友善）。
+Meta API dead-end 已解：走 **Apify watcher.data/search-threads-by-keywords** actor（path 4，不在原 BACKLOG 三條 path 內）。同 X 的 Apify pattern：multi-keyword single-invocation、$8/1000 results pay-per-result、actor 內建 dedup。
 
-兩個 source 已 disable：`threads_keyword`、`threads_topic_tag`。OAuth flow、app secret、long-lived token 仍保留可復用。
+**新狀態**：
+- `threads_keyword` ✅ enabled、type 改 `threads_apify`、跑 17 keyword × max 2 results = ~$8/月（小超 $5 free credit、可接受）
+- `threads_topic_tag` ❌ keep disabled — smoke 試 `#AI`/`#GenerativeAI`/`#AITools` 抓回大量 cornstarch / viral reels / 學生作弊垃圾，hashtag search 在 Threads 上對 AI digest 沒價值
+- `threads_user_handles` ❌ keep disabled — watcher.data 不直接支援 username 過濾，BACKLOG tier 2 + handles=[] 空，先不解
+- 用獨立 Apify personal 帳號 `boisterous_xystos` 隔離 X 跟 Threads billing/risk（[memory](file:///Users/linhancheng/.claude/projects/-Users-linhancheng-Desktop-projects-social-info/memory/reference_threads_apify_scrapers.md)）
+- env var：`APIFY_TOKEN_TWITTER`（X、留 `APIFY_TOKEN` fallback）+ `APIFY_TOKEN_THREADS`（Threads）
 
-未來三條 path（推薦序）：Chrome extension fallback / Meta App Review / 接受不可用。詳細路徑與工程量：[BACKLOG.md "Threads keyword search dead-end"](BACKLOG.md#threads-keyword-search-dead-end-2026-04-26)。
-
-## ⏰ 60 天提醒：Threads access token refresh
-
-`THREADS_ACCESS_TOKEN` 過期日約 **2026-06-25**（取得日 2026-04-26 + 60 天）。過期前要：
-
-```bash
-# 用當前 token 自我 refresh
-TOKEN=$(grep '^THREADS_ACCESS_TOKEN=' .env | cut -d= -f2)
-NEW=$(curl -s "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=${TOKEN}" \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])")
-gh secret set THREADS_ACCESS_TOKEN --body "$NEW" --repo GGGODLIN/daily-topic-radar
-sed -i '' "s|THREADS_ACCESS_TOKEN=.*|THREADS_ACCESS_TOKEN=$NEW|" .env
-```
-
-或者 stage-2 Claude 看到 fetch_runs 內 threads source 連續 fail 時，跑這段指令補。
-
-**未來可優化**：把 self-refresh 邏輯寫進 `fetchers/threads.py`，每次 fetch 前檢查 token age、< 7 天就 refresh + persist 回 GitHub Secret via gh CLI。但這要 daily.yml runner 有 PAT 可寫 secret——增加複雜度。對 PoC 60 天手動 refresh 一次 OK。
+**Meta API 路徑保留為 dormant**：`THREADS_APP_ID/APP_SECRET/ACCESS_TOKEN` 仍在 .env、`fetchers/threads.py` 仍存（給 user_handles future use case）。但 60 天 token refresh **不再 critical**——所有 enabled threads source 已走 Apify path、不依賴 Meta token。如未來啟用 user_handles 才需要 refresh。
