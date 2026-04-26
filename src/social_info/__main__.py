@@ -5,11 +5,15 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from social_info.config import load_config
-from social_info.db import Database
-from social_info.fetchers.base import Item
-from social_info.markdown import render_item
-from social_info.pipeline import run_pipeline, write_report
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from social_info.config import load_config  # noqa: E402
+from social_info.db import Database  # noqa: E402
+from social_info.fetchers.base import Item  # noqa: E402
+from social_info.markdown import render_item  # noqa: E402
+from social_info.pipeline import run_pipeline, write_report  # noqa: E402
 
 TAIPEI = timezone(timedelta(hours=8))
 
