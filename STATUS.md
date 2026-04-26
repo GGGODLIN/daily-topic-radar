@@ -162,3 +162,20 @@ uv run ruff check src tests
 - ✅ ~~`datetime.utcnow()` deprecation~~ — 已清，全部走 `social_info._time` helpers
 - ✅ ~~沒寫 `load_dotenv()`~~ — 已加，CLI 啟動會自動載 `.env`
 - L2 dedup 沒抓到任何跨來源 cluster（grep `also seen at` reports/ → 0）。可能是 spec 預期的「fixture 內容沒重疊」，也可能 normalize_title 太嚴格。等實際多日資料累積後再評估。
+
+## ⏰ 60 天提醒：Threads access token refresh
+
+`THREADS_ACCESS_TOKEN` 過期日約 **2026-06-25**（取得日 2026-04-26 + 60 天）。過期前要：
+
+```bash
+# 用當前 token 自我 refresh
+TOKEN=$(grep '^THREADS_ACCESS_TOKEN=' .env | cut -d= -f2)
+NEW=$(curl -s "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=${TOKEN}" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['access_token'])")
+gh secret set THREADS_ACCESS_TOKEN --body "$NEW" --repo GGGODLIN/daily-topic-radar
+sed -i '' "s|THREADS_ACCESS_TOKEN=.*|THREADS_ACCESS_TOKEN=$NEW|" .env
+```
+
+或者 stage-2 Claude 看到 fetch_runs 內 threads source 連續 fail 時，跑這段指令補。
+
+**未來可優化**：把 self-refresh 邏輯寫進 `fetchers/threads.py`，每次 fetch 前檢查 token age、< 7 天就 refresh + persist 回 GitHub Secret via gh CLI。但這要 daily.yml runner 有 PAT 可寫 secret——增加複雜度。對 PoC 60 天手動 refresh 一次 OK。
