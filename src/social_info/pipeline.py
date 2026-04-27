@@ -1,5 +1,6 @@
 """End-to-end orchestration: load config -> fetch all -> dedup -> render."""
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,15 @@ from social_info.fetchers import (
 )
 from social_info.fetchers.base import FetchResult, Item
 from social_info.markdown import render_file
+
+_SECRET_QS_RE = re.compile(
+    r"([?&](?:token|apikey|api_key|access_token|auth|key)=)[^&\s'\"]+",
+    re.IGNORECASE,
+)
+
+
+def _redact_secrets(s: str) -> str:
+    return _SECRET_QS_RE.sub(r"\1***", s)
 
 FETCHER_REGISTRY = {
     "hn_algolia": hn.fetch,
@@ -65,7 +75,7 @@ async def _run_one_fetcher(source: SourceConfig, http: httpx.AsyncClient) -> Fet
             source_id=source.id,
             items=[],
             ok=False,
-            error=f"{type(e).__name__}: {e}",
+            error=_redact_secrets(f"{type(e).__name__}: {e}"),
             started_at=started,
             ended_at=utcnow(),
         )
