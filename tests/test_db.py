@@ -72,6 +72,37 @@ def test_has_title_hash(db):
     assert found["id"] == "abc"
 
 
+def test_items_for_date_uses_taipei_range(db):
+    def _row(item_id: str, fetched_at: str) -> dict:
+        return {
+            "id": item_id,
+            "url": f"https://example.com/{item_id}",
+            "canonical_url": f"https://example.com/{item_id}",
+            "title": item_id,
+            "title_hash": item_id,
+            "source": "hn",
+            "source_handle": "fp",
+            "source_tier": 1,
+            "posted_at": fetched_at,
+            "fetched_at": fetched_at,
+            "author": "",
+            "excerpt": "",
+            "language": "en",
+            "engagement_json": "{}",
+            "also_appeared_in": "[]",
+        }
+
+    db.insert_item(_row("before", "2026-04-29T15:59:59"))
+    db.insert_item(_row("start_boundary", "2026-04-29T16:00:00"))
+    db.insert_item(_row("launchd_morning", "2026-04-29T22:05:00"))
+    db.insert_item(_row("end_boundary_in", "2026-04-30T15:59:59"))
+    db.insert_item(_row("end_boundary_out", "2026-04-30T16:00:00"))
+
+    rows = db.items_for_date("2026-04-30")
+    ids = {r["id"] for r in rows}
+    assert ids == {"start_boundary", "launchd_morning", "end_boundary_in"}
+
+
 def test_log_fetch_run(db):
     db.log_fetch_run(
         source="hn",

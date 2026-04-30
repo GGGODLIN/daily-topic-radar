@@ -1,10 +1,12 @@
 """SQLite layer for items + fetch_runs."""
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from social_info._time import utcnow
+
+TAIPEI = timezone(timedelta(hours=8))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -95,10 +97,26 @@ class Database:
         self.conn.commit()
 
     def items_for_date(self, date: str) -> list[dict[str, Any]]:
-        """Return all items whose fetched_at falls on the given YYYY-MM-DD (UTC)."""
+        """Return items fetched during the given Asia/Taipei date (YYYY-MM-DD).
+
+        fetched_at is stored as naive UTC, so we translate the Taipei date to
+        a UTC half-open range. Without this, same-day re-runs at different wall
+        clock times yield different batches: launchd at 06:05 CST writes rows
+        with UTC date = previous day; a manual re-run after 08:00 CST queries
+        UTC = today and gets nothing.
+        """
+        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=TAIPEI)
+        start_utc = day_start.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+        end_utc = (
+            (day_start + timedelta(days=1))
+            .astimezone(timezone.utc)
+            .replace(tzinfo=None)
+            .isoformat()
+        )
         cur = self.conn.execute(
-            "SELECT * FROM items WHERE date(fetched_at) = ? ORDER BY posted_at DESC",
-            (date,),
+            "SELECT * FROM items WHERE fetched_at >= ? AND fetched_at < ? "
+            "ORDER BY posted_at DESC",
+            (start_utc, end_utc),
         )
         return [dict(r) for r in cur]
 
