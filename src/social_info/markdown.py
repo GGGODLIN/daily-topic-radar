@@ -10,6 +10,7 @@ PLATFORM_GROUP_ORDER = [
     ("reddit", "Reddit"),
     ("hn", "Hacker News"),
     ("github_trending", "GitHub Trending"),
+    ("trendshift", "GitHub Rising (Trendshift)"),
     ("product_hunt", "Product Hunt"),
     ("huggingface", "HuggingFace"),
     ("rss_lab", "Lab Blogs & Releases"),
