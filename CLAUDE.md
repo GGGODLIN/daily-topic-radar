@@ -46,15 +46,61 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 ## GitHub Actions
 
-`.github/workflows/daily.yml` 只剩 `workflow_dispatch:`（手動 trigger backup），原本的 cron `schedule:` 已拿掉。Cloud IP 跑 Reddit 5 個 sub 會 403，本地 IP 也常被間歇性 ban，要徹底解 Reddit 還是要走 OAuth API 或 RSSHub fallback——目前還沒做。
+`.github/workflows/daily.yml` 只剩 `workflow_dispatch:`（手動 trigger backup），原本的 cron `schedule:` 已拿掉。Cloud IP 跑 Reddit 5 個 sub 會 403，**本地住宅 IP（無 VPN）跑 OK**——但消費級 VPN exit IP 早被 Reddit ban、所以 launchd 跑時 VPN 反而會害 Reddit 5 個 sub 全 403。
+
+**操作注意**：06:00 launchd 觸發前 VPN 應該關著，或者設 split-tunnel 把 reddit.com 排除走真實出口。
 
 ## Stage-2 digest 不自動
 
 `reports/{date}.md` 是 raw aggregator 輸出（自動產生）。`reports/digest-{date}.html` 是 Claude 個人化整理（**手動 trigger**，使用者叫我產才做）。
 
+## Stage-2 digest URL 抓取
+
+digest 階段要展開原文（解讀 / 摘要 / 引用）時，**按來源分流**抓——觀察期累積兩天 11 條網址後，已鎖定路由，**不再並行對比**。一般研究 / 對話用 WebFetch（見 [`~/.claude/skills/research-before-answer/SKILL.md`](file:///Users/linhancheng/.claude/skills/research-before-answer/SKILL.md)）。
+
+**不觸發**：搜尋結果列表（用 WebSearch）／ GitHub 元資料（用 `gh`）／ SDK 文件（用 Context7）。
+
+### 路由（經驗法則）
+
+| 來源 | 主要工具 | 備援 | 備註 |
+|---|---|---|---|
+| `reddit.com` 全域 | `mcp__pullmd__read_url` | 沒有有效備援 | body + 留言 + 票數 inline 在 `content[0].text`；WebFetch 對 reddit 整域寫死拒絕、`mcp__fetch__fetch` 也 403 |
+| X / Twitter | claude-in-chrome MCP（本機已登入 Chrome） | — | WebFetch 回 402、匿名出站普遍被擋；見記憶 `reference_x_tweet_fetch_fallback.md` |
+| ithome.com.tw / thehackernews.com / 其他 Cloudflare 系列 | `mcp__fetch__fetch` | — | WebFetch 一律 403；2026-04-30 觀察期實測 5/5 全勝 |
+| HN / 一般 RSS / 部落格 / 新聞 | WebFetch（簡單站直接通） | 403/402 → `mcp__fetch__fetch` | 結構簡單站不需要 PullMD |
+
+### 為什麼 PullMD 只在 reddit 留下
+
+兩天 11 條網址裡，PullMD 真正吐出 body 的只有 1 條（reddit）。對其他來源：
+- 上游 MCP wrapper bug：body 寫進 `structuredContent` 但 Claude Code 只看得到 `content[0].text` 的 4 欄 metadata
+- sqlite 撈法（`~/Desktop/projects/pullmd/data/cache.db`）依賴 WAL checkpoint 時機、container 內無 `sqlite3` CLI 無法手動觸發；2026-04-30 觀察期 6 條 share_id 全 `sqlite_miss`
+- 等 [`aeternalabshq/pullmd` PR #3](https://github.com/aeternalabshq/pullmd) merge 把 body inline 後可重評，但對非 reddit 來源**預期沒有不可取代的加分**——`mcp__fetch__fetch` 已經夠用
+
+reddit 場景下 PullMD 仍是唯一選項：reddit 對匿名出站留了一條口子讓它走，其他工具都被擋。
+
+### 失敗處理
+
+- WebFetch 403 + `mcp__fetch__fetch` 也失敗 → 報告使用者，不硬生內容
+- PullMD docker 沒起 / MCP 無回應 → reddit 該條沒救，照實標 `pullmd ok=false reason=mcp_down`
+- 第一次踩到陌生來源類型時：跑一次 `WebFetch` + 對應路由工具的對比，結果 append log 到 `~/.claude/fetch-experiment-log.md`，格式：
+
+  ```
+  [ISO-ts] url=<URL> source=<reddit|hn|x|blog|news|other>
+    webfetch ok=<bool> reason=<...>
+    <route_tool> ok=<bool> reason=<...>
+    verdict: <which_better|tie|all_failed>
+    note: <一句觀察>
+  ```
+
+### Docker / MCP 前置（reddit 路由用得到）
+
+- `~/Desktop/projects/pullmd/` docker stack 要 up（`docker compose ps` 確認 3 個 container running）
+- `~/.claude.json` user-scope `mcpServers.pullmd` 註冊在 `http://localhost:3000/mcp`
+- VPN 開著時 PullMD 出站走 VPN 出口 IP，reddit 會把 IP 擋掉 → 跑 digest 前關 VPN 或排除 reddit.com
+
 ## 已知 fetcher gap
 
-- Reddit 5 個 sub 持續 403（cloud + 本地 IP 都會被間歇性擋）
+- Reddit 5 個 sub：cloud IP 必擋；本地住宅 IP OK；VPN 開著時擋（消費級 VPN exit IP 在 ban list）
 - Threads `D15iJFBNZ9wgeWAhw` Apify actor 持續 400（payload schema 不合）
 - HN 只抓 front_page link 不抓 comments
 - X 只抓 KOL handle、不抓 reply / quote tweet / search query
