@@ -54,6 +54,26 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `reports/{date}.md` 是 raw aggregator 輸出（自動產生）。`reports/digest-{date}.html` 是 Claude 個人化整理（**手動 trigger**，使用者叫我產才做）。
 
+## Digest 前 KNOWN_ISSUES.md 攔截 protocol
+
+`KNOWN_ISSUES.md` 是 pipeline 跑完自動寫的（`src/social_info/known_issues.py`），repo 根目錄。分四區：
+
+- 🚨 **User action required**：401/403、VPN-blocked、API key 失效等需要使用者介入才能補的
+- 🛠 **Persistent error**：4xx 持續錯（fetcher 需要更新 schema / actor / parser）
+- 🪦 **Stable failures**：≥7 連續失敗、視為 dead source（候選 disable）
+- ⏳ **Transient**：retry 用完仍失敗、下次 run 自動再試（通常不需動）
+
+**Protocol（使用者叫我產 digest 時）**：
+
+1. 我先 `cat KNOWN_ISSUES.md`，把 🚨 + 🛠 + 🪦 三區條目列給使用者看
+2. **如果有 🚨 條目**：問使用者「要先處理還是直接產 digest 接受 gap」，等回答
+   - 處理（例：關 VPN）→ 跑 `uv run python -m social_info --retry-failures` 補資料 → 產 digest
+   - 接受 gap → 直接產 digest，但要在 digest 開頭明寫缺哪些社群層 / fetcher gap
+3. **如果只有 🛠 / 🪦**：告知使用者哪些 fetcher 需要修、但不阻塞 digest（這層 retry 也救不回，需要 code 改）
+4. **如果什麼都沒有**：直接產 digest
+
+不要在沒檢查 KNOWN_ISSUES.md 的情況下直接產 digest — 那等於假設今天資料完整、可能會像 5/8 v1 那樣事後才發現社群層全死。
+
 ## Stage-2 digest URL 抓取
 
 digest 階段要展開原文（解讀 / 摘要 / 引用）時，**按來源分流**抓——觀察期累積兩天 11 條網址後，已鎖定路由，**不再並行對比**。一般研究 / 對話用 WebFetch（見 [`~/.claude/skills/research-before-answer/SKILL.md`](file:///Users/linhancheng/.claude/skills/research-before-answer/SKILL.md)）。

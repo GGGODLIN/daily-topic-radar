@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS fetch_runs (
     ended_at TEXT,
     status TEXT,
     items_fetched INTEGER,
-    error TEXT
+    error TEXT,
+    error_class TEXT,
+    attempts INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_fetch_runs_source ON fetch_runs(source);
 CREATE INDEX IF NOT EXISTS idx_fetch_runs_started ON fetch_runs(started_at);
@@ -51,6 +53,14 @@ class Database:
 
     def init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
+        existing_cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(fetch_runs)")
+        }
+        if "error_class" not in existing_cols:
+            self.conn.execute("ALTER TABLE fetch_runs ADD COLUMN error_class TEXT")
+        if "attempts" not in existing_cols:
+            self.conn.execute("ALTER TABLE fetch_runs ADD COLUMN attempts INTEGER")
         self.conn.commit()
 
     def has_item_id(self, item_id: str) -> bool:
@@ -88,11 +98,23 @@ class Database:
         status: str,
         items_fetched: int,
         error: str,
+        error_class: str = "",
+        attempts: int = 1,
     ) -> None:
         self.conn.execute(
-            "INSERT INTO fetch_runs (source, started_at, ended_at, status, items_fetched, error) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (source, started_at.isoformat(), ended_at.isoformat(), status, items_fetched, error),
+            "INSERT INTO fetch_runs "
+            "(source, started_at, ended_at, status, items_fetched, error, error_class, attempts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                source,
+                started_at.isoformat(),
+                ended_at.isoformat(),
+                status,
+                items_fetched,
+                error,
+                error_class,
+                attempts,
+            ),
         )
         self.conn.commit()
 
@@ -133,6 +155,55 @@ class Database:
             "AND status != 'ok'"
         )
         return [r["source"] for r in cur]
+
+    def current_known_issues(self) -> list[dict[str, Any]]:
+        """For each source, return aggregated state if its last run was a failure.
+
+        Returns a list of dicts: {source, last_error, last_error_class,
+        last_attempts, last_failed_at, last_ok_at, consecutive_fail_runs}.
+        Sources whose latest run succeeded are excluded.
+        """
+        cur = self.conn.execute(
+            """
+            SELECT source, status, error, error_class, attempts, started_at
+            FROM fetch_runs
+            WHERE id IN (SELECT MAX(id) FROM fetch_runs GROUP BY source)
+            AND status != 'ok'
+            """
+        )
+        issues: list[dict[str, Any]] = []
+        for row in cur.fetchall():
+            source = row["source"]
+            last_ok = self.conn.execute(
+                "SELECT MAX(started_at) AS ts FROM fetch_runs "
+                "WHERE source = ? AND status = 'ok'",
+                (source,),
+            ).fetchone()
+            last_ok_at = last_ok["ts"] if last_ok else None
+            if last_ok_at:
+                consecutive = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM fetch_runs "
+                    "WHERE source = ? AND started_at > ? AND status != 'ok'",
+                    (source, last_ok_at),
+                ).fetchone()["n"]
+            else:
+                consecutive = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM fetch_runs "
+                    "WHERE source = ? AND status != 'ok'",
+                    (source,),
+                ).fetchone()["n"]
+            issues.append(
+                {
+                    "source": source,
+                    "last_error": row["error"] or "",
+                    "last_error_class": row["error_class"] or "",
+                    "last_attempts": row["attempts"] or 1,
+                    "last_failed_at": row["started_at"],
+                    "last_ok_at": last_ok_at,
+                    "consecutive_fail_runs": consecutive,
+                }
+            )
+        return issues
 
     def recent_fetch_runs(self, days: int = 7) -> list[dict[str, Any]]:
         since = (utcnow() - timedelta(days=days)).isoformat()

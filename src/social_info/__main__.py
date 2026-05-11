@@ -12,6 +12,7 @@ load_dotenv()
 from social_info.config import load_config  # noqa: E402
 from social_info.db import Database  # noqa: E402
 from social_info.fetchers.base import Item  # noqa: E402
+from social_info import known_issues  # noqa: E402
 from social_info.markdown import render_item  # noqa: E402
 from social_info.pipeline import run_pipeline, write_report  # noqa: E402
 
@@ -75,9 +76,10 @@ async def _main() -> int:
 
     only_sources = [s.strip() for s in args.source.split(",")] if args.source else None
     if args.retry_failures:
-        retry_targets = db.last_failed_sources()
+        enabled_ids = {s.id for s in config.enabled_sources()}
+        retry_targets = [s for s in db.last_failed_sources() if s in enabled_ids]
         if not retry_targets:
-            print("No sources to retry — every source's last run was successful.")
+            print("No sources to retry — every enabled source's last run was successful.")
             db.close()
             return 0
         only_sources = retry_targets
@@ -117,10 +119,16 @@ async def _main() -> int:
     rows = db.items_for_date(date)
     all_items_today = [_row_to_item(r) for r in rows]
     out = write_report(all_items_today, failures, args.reports, date, now_tw)
+
+    enabled_ids = {s.id for s in config.enabled_sources()}
+    issues = [i for i in db.current_known_issues() if i["source"] in enabled_ids]
+    issues_path = known_issues.write(issues, Path("."), now_tw)
+
     print(
         f"Wrote {out} ({len(all_items_today)} items rendered, "
         f"{len(new_items)} new this run, {len(failures)} failures)"
     )
+    print(f"Wrote {issues_path} ({len(issues)} known issue(s))")
     db.close()
     return 0
 
