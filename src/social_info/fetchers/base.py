@@ -24,6 +24,7 @@ class Item:
     language: str = "en"
     engagement: dict[str, int] = field(default_factory=dict)
     also_appeared_in: list[dict[str, str]] = field(default_factory=list)
+    comments: list[dict[str, str]] = field(default_factory=list)
 
     def to_db_row(self, item_id: str, title_hash: str) -> dict[str, Any]:
         return {
@@ -42,6 +43,7 @@ class Item:
             "language": self.language,
             "engagement_json": json.dumps(self.engagement),
             "also_appeared_in": json.dumps(self.also_appeared_in),
+            "comments_json": json.dumps(self.comments),
         }
 
 
@@ -53,6 +55,8 @@ class FetchResult:
     items: list[Item] = field(default_factory=list)
     ok: bool = True
     error: str = ""
+    error_class: str = ""
+    attempts: int = 1
     started_at: datetime = field(default_factory=utcnow)
     ended_at: datetime | None = None
 
