@@ -43,14 +43,14 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
 
     handles = source.params.get("handles", [])
     per_handle_limit = source.params.get("per_handle_limit", 10)
-    window_hours = source.params.get("time_window_hours", 24)
+    window_hours = source.params.get("time_window_hours", 36)
 
     since, until = _format_window(window_hours)
     search_terms = [f"from:{h} since:{since} until:{until}" for h in handles]
 
     payload = {
         "searchTerms": search_terms,
-        "maxItems": max(20, per_handle_limit),
+        "maxItems": max(20, per_handle_limit * len(handles)),
         "queryType": "Latest",
     }
 
