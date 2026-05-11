@@ -4,6 +4,8 @@ from datetime import datetime
 
 from social_info.fetchers.base import FetchResult, Item
 
+COMMENT_TRUNCATE_CHARS = 300
+
 PLATFORM_GROUP_ORDER = [
     ("x", "X / Twitter"),
     ("threads", "Threads"),
@@ -61,6 +63,16 @@ def render_item(item: Item) -> str:
     if item.excerpt:
         excerpt = item.excerpt.replace("\n", " ").strip()
         lines.append(f"> {excerpt}")
+        lines.append("")
+
+    if item.comments:
+        lines.append("> 💬 Top comments:")
+        for c in item.comments:
+            text = c.get("text", "").replace("\n", " ").strip()
+            if len(text) > COMMENT_TRUNCATE_CHARS:
+                text = text[:COMMENT_TRUNCATE_CHARS] + "…"
+            author = c.get("author", "?")
+            lines.append(f"> - **@{author}**: {text}")
         lines.append("")
 
     if item.also_appeared_in:

@@ -7,6 +7,7 @@ from pathlib import Path
 from social_info.__main__ import _row_to_item
 from social_info.db import Database
 from social_info.fetchers.base import Item
+from social_info.markdown import COMMENT_TRUNCATE_CHARS, render_item
 
 
 def _sample_item(**overrides) -> Item:
@@ -145,3 +146,41 @@ def test_row_to_item_missing_comments_json_key_becomes_empty_list():
     del row["comments_json"]
     item = _row_to_item(row)
     assert item.comments == []
+
+
+def test_render_item_with_comments_emits_block():
+    item = _sample_item(
+        comments=[
+            {"author": "alice", "text": "this is the top comment", "posted_at": "2026-05-11T11:00:00"},
+            {"author": "bob", "text": "second take", "posted_at": "2026-05-11T11:05:00"},
+        ]
+    )
+    out = render_item(item)
+    assert "💬 Top comments" in out
+    assert "**@alice**" in out
+    assert "this is the top comment" in out
+    assert "**@bob**" in out
+
+
+def test_render_item_without_comments_omits_block():
+    item = _sample_item()
+    out = render_item(item)
+    assert "💬 Top comments" not in out
+
+
+def test_render_item_truncates_comment_text_over_300_chars():
+    long_text = "x" * (COMMENT_TRUNCATE_CHARS + 200)
+    item = _sample_item(
+        comments=[{"author": "a", "text": long_text, "posted_at": "2026-05-11T11:00:00"}]
+    )
+    out = render_item(item)
+    assert ("x" * COMMENT_TRUNCATE_CHARS + "…") in out
+    assert ("x" * (COMMENT_TRUNCATE_CHARS + 1)) not in out
+
+
+def test_render_item_comments_strips_newlines_inline():
+    item = _sample_item(
+        comments=[{"author": "a", "text": "line1\nline2\nline3", "posted_at": "2026-05-11T11:00:00"}]
+    )
+    out = render_item(item)
+    assert "line1 line2 line3" in out
