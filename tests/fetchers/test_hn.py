@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -11,10 +12,14 @@ from social_info.fetchers.hn import fetch
 @pytest.mark.asyncio
 async def test_fetch_hn_parses_response(httpx_mock):
     fixture = json.loads(Path("tests/fixtures/hn_response.json").read_text())
-    import re
     httpx_mock.add_response(
         url=re.compile(r"https://hn\.algolia\.com/api/v1/search_by_date.*"),
         json=fixture,
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"https://hacker-news\.firebaseio\.com/v0/item/.*"),
+        json={"id": 0, "type": "story", "time": 1747000000},
         is_reusable=True,
     )
 
@@ -63,10 +68,14 @@ async def test_fetch_hn_filters_by_keyword(httpx_mock):
             },
         ]
     }
-    import re
     httpx_mock.add_response(
         url=re.compile(r"https://hn\.algolia\.com/api/v1/search_by_date.*"),
         json=fixture,
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"https://hacker-news\.firebaseio\.com/v0/item/.*"),
+        json={"id": 0, "type": "story", "time": 1747000000},
         is_reusable=True,
     )
 
