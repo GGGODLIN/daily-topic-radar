@@ -34,6 +34,7 @@ def _row_to_item(row: dict) -> Item:
         language=row.get("language") or "en",
         engagement=json.loads(row.get("engagement_json") or "{}"),
         also_appeared_in=json.loads(row.get("also_appeared_in") or "[]"),
+        comments=json.loads(row.get("comments_json") or "[]"),
     )
 
 

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from social_info.__main__ import _row_to_item
 from social_info.db import Database
 from social_info.fetchers.base import Item
 
@@ -105,3 +106,42 @@ def test_init_schema_is_idempotent_with_comments_json(tmp_path: Path):
     cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(items)")}
     assert "comments_json" in cols
     db.close()
+
+
+def _sample_row(comments_json: str | None = None) -> dict:
+    return {
+        "title": "t",
+        "url": "https://example.com/x",
+        "canonical_url": "https://example.com/x",
+        "source": "hn",
+        "source_handle": "front_page",
+        "source_tier": 1,
+        "posted_at": "2026-05-11T12:00:00",
+        "fetched_at": "2026-05-11T12:00:00",
+        "author": "",
+        "excerpt": "",
+        "language": "en",
+        "engagement_json": "{}",
+        "also_appeared_in": "[]",
+        "comments_json": comments_json,
+    }
+
+
+def test_row_to_item_parses_comments_json():
+    comments = [{"author": "alice", "text": "hi", "posted_at": "2026-05-11T11:00:00"}]
+    row = _sample_row(comments_json=json.dumps(comments))
+    item = _row_to_item(row)
+    assert item.comments == comments
+
+
+def test_row_to_item_null_comments_json_becomes_empty_list():
+    row = _sample_row(comments_json=None)
+    item = _row_to_item(row)
+    assert item.comments == []
+
+
+def test_row_to_item_missing_comments_json_key_becomes_empty_list():
+    row = _sample_row()
+    del row["comments_json"]
+    item = _row_to_item(row)
+    assert item.comments == []
