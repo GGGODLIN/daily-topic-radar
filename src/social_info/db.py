@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS items (
     excerpt TEXT,
     language TEXT,
     engagement_json TEXT,
-    also_appeared_in TEXT
+    also_appeared_in TEXT,
+    comments_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_items_title_hash ON items(title_hash);
 CREATE INDEX IF NOT EXISTS idx_items_posted_at ON items(posted_at);
@@ -61,6 +62,14 @@ class Database:
             self.conn.execute("ALTER TABLE fetch_runs ADD COLUMN error_class TEXT")
         if "attempts" not in existing_cols:
             self.conn.execute("ALTER TABLE fetch_runs ADD COLUMN attempts INTEGER")
+
+        existing_item_cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(items)")
+        }
+        if "comments_json" not in existing_item_cols:
+            self.conn.execute("ALTER TABLE items ADD COLUMN comments_json TEXT")
+
         self.conn.commit()
 
     def has_item_id(self, item_id: str) -> bool:
