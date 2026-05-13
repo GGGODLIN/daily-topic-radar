@@ -40,13 +40,21 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 ## 本機分析 routine（不 commit）
 
-`reports/local-analysis/` 是本機 launchd 每日跑的 proposal markdown（output dir 跟 ecosystem digest 分開、但都屬「今日分析」範疇 — 詳「『今日分析』入口語意」），三個 channel 整理 memory / wiki / codemap drift，user review 完手動 apply。`.gitignore` 已排除（個人 path + 分析結果不 commit）。
+`reports/local-analysis/` 是本機 launchd 跑的 proposal markdown（output dir 跟 ecosystem digest 分開、但都屬「今日分析」範疇 — 詳「『今日分析』入口語意」），四個 channel 整理 memory / wiki / codemap drift + daily recap，user review 完手動 apply。`.gitignore` 已排除（個人 path + 分析結果不 commit）。
 
-| 任務 | 時間 | Wrapper | Plist label |
-|---|---|---|---|
-| memory audit | 06:05 | `scripts/local-analysis/memory-audit-daily.sh` | `com.gggodlin.local-analysis-memory` |
-| wiki 升級候選 | 06:15 | `scripts/local-analysis/wiki-candidates-daily.sh` | `com.gggodlin.local-analysis-wiki` |
-| codemap drift | 06:25 | `scripts/local-analysis/codemap-drift-daily.sh` | `com.gggodlin.local-analysis-codemap` |
+| 任務 | 頻率 | 時間 | Wrapper | Plist label |
+|---|---|---|---|---|
+| memory audit | 每日 | 06:05 | `scripts/local-analysis/memory-audit-daily.sh` | `com.gggodlin.local-analysis-memory` |
+| wiki 升級候選 | 每日 | 06:15 | `scripts/local-analysis/wiki-candidates-daily.sh` | `com.gggodlin.local-analysis-wiki` |
+| codemap drift | **每週二** | 06:25 | `scripts/local-analysis/codemap-drift-weekly.sh` | `com.gggodlin.local-analysis-codemap` |
+| daily recap | 每日 | 06:35 | `scripts/local-analysis/recap-daily.sh` | `com.gggodlin.local-analysis-recap` |
+| probes (主動拉) | 每日 | 06:45 | `scripts/local-analysis/probes-daily.sh` | `com.gggodlin.local-analysis-probes` |
+
+**codemap 改週的理由**：codemap drift 是「過去 N 天 codemap vs commit 變動」對比，每日掃變動小、雜訊高（5/12→5/13 同樣兩個 repo drift）。週二跑能累積一週變動 + 上週末週一新一波 commit、proposal 更有意義。下次跑 = 2026-05-19 (Tue) 06:25。
+
+**probes 是第 5 channel（2026-05-13 加入）**：性質跟前 4 channel 不同 — 前 4 是「對內整理」（memory / wiki / codemap / 過去 24h activity recap），probes 是「對外探詢」（主動拉 GitHub releases / RSS / API / web）。Agent 讀 `PROBES.md` 對每個 active probe 跑工具 fetch，比對 hit signal。觸發：(1) 自動每日 06:45 launchd；(2) 手動 — 使用者說「跑 probes」/「probes 一下」→ agent 讀 PROBES.md 跑。空 PROBES.md 時 wrapper 寫極簡「無 active probe」report 跳出。
+
+daily recap 跨 4 線整理使用者過去 24 小時活動：CC session jsonl 第一個非 noise user prompt、各 repo git log、`~/.claude/` git log、新增 / 修改的 memory entry。設計遺產濃縮在 memory `reference_cc_recap_design_2026_05_12.md`（前身 cc-recap TS v0.1 廢棄後保留的 prompt engineering）。
 
 設計原則借鑑 Anthropic Dreams API：input 不改、output separate、嚴格 read-only。
 
@@ -86,9 +94,9 @@ tail -f /Users/linhancheng/code/social-info/logs/local-analysis-*-$(date +%Y-%m-
 使用者口頭講「今日分析」/「daily 分析」/「跑日報」時，**這個專案的兩條 daily routine 都納入考量**：
 
 1. **Stage-2 daily digest（主軸）**：`reports/digest-{date}.html`，手動 trigger 產出 ecosystem 個人化整理。詳「Stage-2 digest」。
-2. **本機分析三 channel（補充）**：`reports/local-analysis/{date}-{channel}.md`，launchd 06:05/06:15/06:25 自動跑 read-only proposal。詳「本機分析 routine」。
+2. **本機分析 5 channel（補充）**：`reports/local-analysis/{date}-{channel}.md`，launchd 自動跑 read-only proposal（memory/wiki/recap/probes 每日早晨、codemap 每週二）。詳「本機分析 routine」。
 
-預設主軸是 stage-2 digest（先檢查 KNOWN_ISSUES.md、跑 retry、產 digest），補充時掃 local-analysis 當天 proposal、有 surface 出 drift 議題可一併處理或寫進 digest「系統當天動態」段。
+預設主軸是 stage-2 digest（先檢查 KNOWN_ISSUES.md + WATCH.md + 當天 probes report、跑 retry、產 digest），補充時掃 local-analysis 當天 proposal、有 surface 出 drift 議題可一併處理或寫進 digest「系統當天動態」段。
 
 **未來新增的 daily 分析 routine 預設都放這個 repo**（無論 ecosystem digest、setup audit、跨專案掃描、wiki 整理），不要散到 ako-marketing-admin / cc-i18n-proxy / personal-site 等其他專案。對應 memory `project_daily_analysis_scope.md`。
 
@@ -117,6 +125,35 @@ tail -f /Users/linhancheng/code/social-info/logs/local-analysis-*-$(date +%Y-%m-
 4. **如果什麼都沒有**：直接產 digest
 
 不要在沒檢查 KNOWN_ISSUES.md 的情況下直接產 digest — 那等於假設今天資料完整、可能會像 5/8 v1 那樣事後才發現社群層全死。
+
+### WATCH.md 攔截 protocol
+
+`WATCH.md`（repo root）是手動 maintain 的「等修的 upstream bug 清單」，限與本 repo daily routine 或 Claude Code 體驗直接相關。
+
+**Two-stage check（每次跑 stage-2 digest）**：
+
+1. `cat WATCH.md` 列 ## Active entries
+2. **Stage 1（低成本 filter）**：對每個 entry 的 keyword grep `reports/{date}.md` — daily raw md 既有 CC release / Anthropic 動態訊號（reddit r/ClaudeAI PSA 帖、anthropic_blog RSS、HN）會帶出 release info。grep 中或 raw md 提到「Claude Code v2.X 升級」「修了 X」這類訊號 → 進 Stage 2
+3. **Stage 2（gh confirm）**：對 Stage 1 有訊號的 entry 跑 `gh issue view <num> --repo <owner>/<repo> --json state,closed,closedAt,updatedAt`
+   - `state=CLOSED` → surface 進 digest「系統當天動態」段；使用者確認後把 entry 從 ## Active 移到 ## Resolved（補 `Closed: YYYY-MM-DD`）
+   - `state=OPEN` 但 `updatedAt` 變動 → 看 thread 有沒有新訊號 (label / milestone / Anthropic 回應)，有就 surface
+4. **Stage 1 全無訊號** → 跳過 gh query，digest 不寫 watch 段。週度 fallback：每週二 codemap 跑那天順手對所有 Active 跑 `gh issue view` 同步，避免漏靜默 close
+
+WATCH.md 自己有完整 schema + 維護規則段，新增 entry 直接 append（限「上游修了會直接改變我 daily routine / response style」的 bug，不放泛泛 feature request）。
+
+### PROBES.md 攔截 protocol
+
+`PROBES.md`（repo root）是手動 maintain 的「主動拉外部訊號」清單。Agent 不是讀 PROBES.md 自己跑 fetch — 自動排程在 06:45 已經跑過、結果在 `reports/local-analysis/{date}-probes.md`。digest 跑時：
+
+1. `cat reports/local-analysis/$(date +%Y-%m-%d)-probes.md`，看「新訊號」段
+2. 有新訊號 → surface 進 digest「外部訊號」段（按 PROBES.md 對應 entry 的 `Action on hit`）
+3. 沒新訊號 / probes report 寫「無 active probe」 → digest 不寫外部訊號段
+4. **手動觸發**：使用者說「跑 probes」/「probes 一下」→ 立刻跑 wrapper `bash scripts/local-analysis/probes-daily.sh`（會 overwrite 當天 probes report）後再讀
+
+PROBES.md 跟 WATCH.md 差別：
+
+- WATCH 是**被動 match**：grep 既有 raw md 看訊號有沒有浮上來（不額外拉 source）
+- PROBES 是**主動拉**：直接 fetch 外部 source（GitHub / RSS / API / web），不依賴社群討論
 
 ### URL 抓取路由
 
