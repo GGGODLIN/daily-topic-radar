@@ -48,7 +48,7 @@ PROMPT=$(cat <<'EOF'
 
 每個 entry 帶 `Hit signal` 描述 baseline（version / 時間戳 / keyword）。比對 fetch 結果：
 
-- **達標（有新東西）**：寫 entry 到 report，含「what's new」+ source link
+- **達標（有新東西）**：寫 entry 到 report，含「新訊號內容」+ source link
 - **未達標（沒新東西）**：report 寫一行「<title> — no change since <last seen>」
 - **fetch fail**：report 寫一行「<title> — fetch failed: <reason>」，不要硬編內容
 
@@ -68,7 +68,7 @@ PROMPT=$(cat <<'EOF'
 ### <probe title> — <短 highlight>
 
 - **Source**: <URL>
-- **What's new**: <一兩句 — 如 version X.Y.Z released YYYY-MM-DD, breaking change in module Z>
+- **新訊號**: <一兩句 — 如 version X.Y.Z released YYYY-MM-DD, breaking change in module Z>
 - **Action**: <對應 entry 的 Action on hit>
 
 ## 無變化 (N)

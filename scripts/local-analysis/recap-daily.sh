@@ -64,6 +64,18 @@ PROMPT=$(cat <<'EOF'
 範例壞標題（不要）：
 - 「新機環境」（含糊、要展開長 bullet）
 
+## Memory retrieval miss surface（2026-05-14 起加入）
+
+E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 user prompt）內是否出現「retrieval miss」訊號 — 使用者抱怨 Claude 沒找到/沒用到既有 memory 內容：
+
+- 「我之前不是有寫過 X」「找不到 Y」「你怎麼沒用到 reference X」
+- 「(memory file name)在哪」「memory 有提到 X 嗎」這類困惑
+- 使用者糾正 Claude 重做 research 但其實 memory 已有的場景
+
+若有命中 → 報告末尾單獨加一行 `⚠ retrieval miss: N 次 — 範例：<簡短引用>`；沒有 → 完全不列（保持報告精簡）。
+
+對應觀察 entry：`~/Desktop/projects/.claude/trials/active.md` 內「MEMORY.md E 規範」trial（review 日 2026-06-14）。
+
 嚴格 read-only：不寫任何檔案、不 commit、不修改 memory。
 
 stdout 只輸出 markdown 報告本身，不要 preamble（「整理完...」「以下是...」）、不要結語、不要 code fence wrap。第一個 byte 直接是 `# Daily Recap` 或數字總覽行。

@@ -15,8 +15,8 @@
 - **URL**: <https://github.com/anthropics/claude-code/issues/44696>
 - **Match keywords**: `table|markdown.*table|key-value|wide.*table|stacked.*card`（grep 配對 CC scope 內）
 - **Impact on me**: CC TUI 80-cols terminal 寬時 markdown table 強制降級成「每 entry 一個 section + ──── 分隔線」key-value card 列表。實證環境 CC v2.1.140 / cmux / 80 cols / Opus 4.7 1M context（2026-05-13）
-- **Workaround**: Response 時主動寫短 cell 表 + 長動作換段落（memory `feedback_prefer_tables_over_bullets.md` 2026-05-13 update 已記）
-- **When closed**: 恢復「cell 寬度不嚴格壓縮」response style；表格可寫得豐富一點
+- **Workaround**: Response 時主動寫短 cell 表 + 長動作換段落。**實測 hard rule**（T1-T13 binary search 13 tests, 2026-05-13）：row display width ≤ 120 chars (中文字符算 2) → keep；≥ 142 chars 必降級。Rule 已寫進 `~/.claude/CLAUDE.md` 「Markdown 表格」段
+- **When closed**: 移除 `~/.claude/CLAUDE.md` 「Markdown 表格」整段 + memory `feedback_prefer_tables_over_bullets.md` 2026-05-13 update 段；恢復「視覺體感」原則為主、不嚴格壓縮 cell
 
 ### anthropics/claude-code#55938 — Wide-table fallback leaves stale bordered paint in scroll buffer alongside the key-value re-render
 
