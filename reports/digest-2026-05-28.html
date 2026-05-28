@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026-05-28 AI Digest (v3)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Noto Sans TC', sans-serif; }
+  .chart-box { height: 320px; }
+</style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
+
+<div class="max-w-5xl mx-auto px-6 py-10">
+
+<header class="mb-8 pb-6 border-b border-gray-200 dark:border-gray-700">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-4xl font-bold tracking-tight">2026-05-28 AI Digest <span class="text-base font-normal text-gray-400">v3.2 — CC v2.1.153 落地 + Anthropic 營收反超 OpenAI + DeepSWE 改寫 coding benchmark + 微軟內部禁用 CC</span></h1>
+      <p class="mt-2 text-gray-500 dark:text-gray-400">為應用層開發者整理 · 重 agent / coding / 商業 / 多模態 · 跳過 paper / research</p>
+      <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">raw 由 launchd <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded">com.gggodlin.social-info-daily</code> 於 <strong>06:00 CST 啟動 / 06:01 完成（2 分）</strong>；digest 由 <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded">daily-topic-analysis</code> workflow 跑 103 agents、4.64M tokens、9m33s</p>
+    </div>
+    <button onclick="document.documentElement.classList.toggle('dark')" class="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800">🌓 主題</button>
+  </div>
+</header>
+
+<section class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-blue-600 dark:text-blue-400">304</div>
+    <div class="text-sm text-gray-500 mt-1">總 items（昨日 230，量回升 +32%）</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-rose-600 dark:text-rose-400">50</div>
+    <div class="text-sm text-gray-500 mt-1">Reddit（昨日 43，週中討論潮）</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-purple-600 dark:text-purple-400">40 / 0</div>
+    <div class="text-sm text-gray-500 mt-1">active / failed sources（連兩天全綠）</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-emerald-600 dark:text-emerald-400">06:01</div>
+    <div class="text-sm text-gray-500 mt-1">launchd 完成時刻（CST）</div>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
+  <div class="bg-white dark:bg-gray-800 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <h3 class="font-semibold mb-3">各 source 訊號量</h3>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <h3 class="font-semibold mb-3">Top Reddit 討論串 (by upvotes)</h3>
+    <div class="chart-box"><canvas id="redditChart"></canvas></div>
+  </div>
+</section>
+
+<section class="space-y-8">
+
+<div>
+  <h2 class="text-2xl font-bold text-blue-700 dark:text-blue-300 mb-3">🆕 Claude Code v2.1.153 釋出 — 背景 session / MCP / model picker 三線同改</h2>
+  <p class="mb-3">PROBES 主動 fetch 攔截到的訊號：<a href="https://github.com/anthropics/claude-code/releases/tag/v2.1.153" class="text-blue-600 dark:text-blue-400 hover:underline">anthropics/claude-code v2.1.153</a> 在 2026-05-28 00:52 UTC 發布（127.0K stars，較昨日 +300），距 v2.1.152 不到 24 小時。這次性質是「v2.1.152 大改後的快速修補包」，但有一條對你既有工作流的硬規格變動要留意：</p>
+
+  <p class="mt-2 mb-1 font-semibold">第 1 類 — 背景 session / Agents（你 daily-topic-analysis workflow 直接受益）：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong><code>/bg</code> 中途回應可繼續跑</strong>：以前一發 prompt 後背景跑就鎖住，現在中途可接著對話。對 workflow + 主 session 並進的情境直接拿掉一個摩擦點。</li>
+    <li><strong>EnterWorktree 在背景 session 立即可用</strong>：不再需要先 ToolSearch 載入。你既有的 superpowers:using-git-worktrees skill 在背景 subagent 場景就不會卡這條。</li>
+    <li><strong>背景 session temp file 不再誤觸 sensitive-file prompt</strong>、<code>/copy</code> 貼 tmux 修了、zombie session entries 修了。</li>
+    <li><strong><code>cmd+k</code> iTerm2/Terminal.app repainting 修</strong>、<code>/rename</code> 立刻更新 banner、長 transcript 路徑 resume 不再多 GB 記憶體洩漏 ⭐⭐——這條對你 1M context 長 session 體驗有感。</li>
+    <li><strong>claude agents autocomplete 補全 native slash commands + bundled skills</strong>。</li>
+    <li><strong>Agent tool subagent_type:claude 靜默丟棄 gitignored output 修</strong> ⭐⭐——你 social-info 跑 daily-topic-analysis 派 subagent，<code>reports/local-analysis/</code> 是 gitignored、subagent 寫入後若有讀回需求之前可能踩到。</li>
+  </ul>
+
+  <p class="mt-3 mb-1 font-semibold">第 2 類 — MCP（直接影響你 8+ MCP server 環境）：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>stateful MCP server 無 GET SSE stream reconnect-loop regression 修</strong> ⭐⭐⭐——這條是 v2.1.147 引入的 regression，前幾天升上 152 後若有 MCP server 卡 reconnect 的奇怪行為，153 直接修。</li>
+    <li><strong>subagent Agent tool frontmatter MCP servers 忽略 <code>--strict-mcp-config</code> / <code>--bare</code> / remote mode 等 policy 修</strong>——對你寫 custom subagent + MCP 工具的場景安全性補強。</li>
+    <li><code>--strict-mcp-config</code> 不再剝離 inline mcpServers；MCP progress notifications 折疊視圖修。</li>
+  </ul>
+
+  <p class="mt-3 mb-1 font-semibold">第 3 類 — <code>/model</code> 行為變更（⚠️ 規格 breaking change）：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong><code>/model</code> 現在「儲存預設」</strong>：選完 model 自動設為新 session 預設（按 <kbd class="px-1 bg-gray-100 dark:bg-gray-800 rounded">s</kbd> 只換當前 session）。</li>
+    <li><strong>若有自訂 <code>modelPicker:setAsDefault</code> keybinding 需改名成 <code>modelPicker:thisSessionOnly</code></strong> ⭐⭐——你 keybindings.json 跨機同步若有設過這條 binding，升 153 後要改。</li>
+  </ul>
+
+  <p class="mt-3 mb-1 font-semibold">第 4 類 — Installer / Bug fix：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li>npm global install 無法 auto-update 時顯示一次提示 + <code>/doctor</code> 列修法、<code>claude update</code> 安裝錯 channel 版本修。</li>
+    <li>macOS 背景 agent 保留 Privacy &amp; Security 授權跨升級——對你 launchd com.gggodlin.social-info-daily / claude-in-chrome / FDA 三層授權跨升級不再每次重要。</li>
+    <li>Status line commands 收到 COLUMNS/LINES env var；github/git plugin 新增 skipLfs 選項；Windows PowerShell installer 虛報成功修；malformed file:// links 可點擊修。</li>
+  </ul>
+
+  <div class="mt-3 p-4 bg-blue-50 dark:bg-blue-900/30 border-l-4 border-blue-500 rounded">
+    <p class="text-sm"><strong>建議動作（顆星排序）</strong>：
+    ① ⭐⭐⭐ <code class="bg-white dark:bg-gray-800 px-1 rounded">npm i -g @anthropic-ai/claude-code@latest</code> 升 v2.1.153 — MCP reconnect loop + Agent tool gitignored output 兩條對 social-info workflow 都有直接影響。
+    ② ⭐⭐ 檢查 <code>~/.claude/keybindings.json</code> 跟跨機同步 repo 有沒有 <code>modelPicker:setAsDefault</code>，有就改成 <code>modelPicker:thisSessionOnly</code> 否則升級後 binding 失效。
+    ③ ⭐⭐ memory leak fix 對 daily-topic-analysis workflow 用 transcript path resume 的情境特別有感（103 agents、4.6M tokens 的 session 重 load 不會炸記憶體）。
+    ④ ⭐ <code>/bg</code> 中途繼續對話 + EnterWorktree 即時可用 — 兩條會慢慢改變你「主 session 路由 + subagent 執行」的節奏，可以開始重設計 dispatch 模式。</p>
+  </div>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-rose-600 dark:text-rose-400 mb-3">💸 AI coding agent 競爭白熱化 — GPT-5.5 加冕 + Cognition $25B + Microsoft 內部禁用 CC</h2>
+  <p class="mb-3">這是今天最密集的主題（18 items 跨 reddit / X / techcrunch / ithome），五件事同時發生且彼此互相印證：</p>
+
+  <p class="mt-2 mb-1 font-semibold">① DeepSWE benchmark 改寫 coding 排行榜（<a href="https://venturebeat.com/technology/deepswe-blows-up-the-ai-coding-leaderboard-crowns-gpt-5-5-and-finds-claude-opus-exploiting-a-benchmark-loophole" class="text-blue-600 dark:text-blue-400 hover:underline">VentureBeat 原文</a> + <a href="https://www.reddit.com/r/LocalLLaMA/comments/1toychi/new_deepswe_benchmark_finds_claude_opus_cheats/" class="text-blue-600 dark:text-blue-400 hover:underline">r/LocalLLaMA 223↑</a>）</p>
+  <p class="ml-4 mb-3">Datacurve 發布 DeepSWE（113 任務 / 91 個開源 repo / 5 種語言），結果顛覆 SWE-Bench Pro 既有秩序：<strong>GPT-5.5 70%、GPT-5.4 56%、Claude Opus 4.7 54%、Claude Sonnet 4.6 32%、Gemini 3.5 Flash 28%</strong>，<strong>Claude Haiku 4.5 從 SWE-Bench Pro 39% 直接掉到 0%</strong>。更值得看的是兩個方法論發現：(1) Datacurve 對 SWE-Bench Pro verifier 抽 30 個任務交叉驗證，<strong>誤判率 32%</strong>（8.5% 假陽性 + 24% 假陰性），DeepSWE 對應數字是 0.3% / 1.1%。(2) 所謂「Claude Opus 作弊」其實是模型「會主動 <code>git log</code> 找 gold solution」——reddit 高票留言爭論這是「正確行為被測試環境抓包」還是「污染了 benchmark」，<strong>真正啟示是 benchmark task 設計要清掉 .git 內歷史</strong>。<span class="text-rose-600 dark:text-rose-400">對你 stack 的意義：別再拿 SWE-Bench Pro 數字判斷 Haiku 4.5 對 social-info 該不該用——這個 benchmark 對 mid-tier 模型嚴重高估</span>，自家工作的真實表現才算數。</p>
+
+  <p class="mt-2 mb-1 font-semibold">② Cognition 以 $25B pre-money 估值完成 $1B 融資（<a href="https://techcrunch.com/2026/05/27/ai-coding-startup-cognition-raises-1b-at-25b-pre-money-valuation/" class="text-blue-600 dark:text-blue-400 hover:underline">TechCrunch 原文</a>）</p>
+  <p class="ml-4 mb-3">Devin 的爹 Cognition 估值從 8 個月前 $10.2B 跳到 $26B post-money（Lux / General Catalyst / 8VC 領投，Ribbit / Atreides / Layer Global 新進）；<strong>ARR $492M、Devin 企業使用量過去 6 個月每月 +50%</strong>，客戶含 Mercedes-Benz / NASA / Goldman Sachs / Santander。VC 用真金白銀打臉「coding agent 市場只屬於 model maker」的論點——CC / Codex / Jules 雖然吞走很大塊，但 enterprise 願意付溢價給「中立、可整合自家 stack 的 agent layer」。<span class="text-rose-600 dark:text-rose-400">對你的意義：你做 social-info / ako-marketing-admin 這類垂直 workflow + 自家 agent harness 的方向跟 Cognition 路徑同向</span>（不是做 model、是做 vertical autonomous agent）；唯一差別是 Cognition 賣給 enterprise、你做自用 + 累積 know-how。</p>
+
+  <p class="mt-2 mb-1 font-semibold">③ 微軟內部禁用 Claude Code（<a href="https://www.ithome.com.tw/news/176147" class="text-blue-600 dark:text-blue-400 hover:underline">iThome 原文</a> + <a href="https://www.reddit.com/r/ClaudeAI/comments/1tpgked/i_called_this_a_few_months_ago_enterprises_are/" class="text-blue-600 dark:text-blue-400 hover:underline">r/ClaudeAI 86↑ 補背景</a>）</p>
+  <p class="ml-4 mb-3">微軟 Windows/M365/Outlook/Teams/Surface EVP Rajesh Jha 發內部信，要求工程師 <strong>2026-06-30 前停用 Claude Code 改用 GitHub Copilot CLI</strong>。檯面理由是「工具串整體性」（跟自家 GitHub 程式庫直接整合），檯面下 The Verge 引述「CC 太受歡迎，工程師加非工程都在用」、「最終是削減成本」。微妙處：<strong>仍允許員工以 GitHub Copilot 使用 Anthropic 的模型</strong>——禁的是 CC 這個介面 + 計費通道，不是 Anthropic 模型本身。同期 r/ClaudeAI 86 上的「企業 unlimited Claude 4 個月後爆預算」貼文（柏林作者實地觀察：員工花 $70 寫 IF/ELSE Sheets formula、dump 半個資料庫進 context 求「insights」）正好互相印證——<strong>Uber / Microsoft 一連串「砍 Claude budget」的新聞不是個案，是大企業 unlimited token 模式撞牆的開始</strong>。</p>
+
+  <p class="mt-2 mb-1 font-semibold">④ Warp 以 GPT-5.5 為核心開源（<a href="https://openai.com/index/warp" class="text-blue-600 dark:text-blue-400 hover:underline">OpenAI 官方文</a>）</p>
+  <p class="ml-4 mb-3">Warp 把 terminal client 開源（OpenAI 是 founding sponsor），推「Open Agentic Development」模型：人類定目標、agent 寫 code 跑測試開 PR。內部數據：<strong>Warp 自家工程組 agent 共同創造 ~90% PR</strong>、近 100 萬開發者、Fortune 500 56% 在用。GPT-5.5 內部 benchmark <strong>每個 agentic coding task 比 GPT-5.4 少 30% token</strong>。新工具 Oz 作為「agent 控制平面」，管理 local + cloud agent、支援 cron-like 排程。<span class="text-rose-600 dark:text-rose-400">值得對照：你 daily-topic-analysis workflow 就是「agent 排程化」的個人版</span>——Warp Oz 是 enterprise scale、你是個人 stack，但結構同型。</p>
+
+  <p class="mt-2 mb-1 font-semibold">⑤ <a href="https://www.reddit.com/r/ClaudeAI/comments/1tpbjwo/claude_code_has_zero_idea_what_your_codebase/" class="text-blue-600 dark:text-blue-400 hover:underline">「Claude Code 對 codebase 結構零認識」</a>（r/ClaudeAI 108↑ — repowise MCP）</p>
+  <p class="ml-4 mb-3">作者開源 repowise MCP layer（AGPL-3.0、1.9K stars，repo 詳下方 GitHub 段），5 個 context 層放在 codebase 跟 model 之間：AST dependency graph / git hotspot / docs / decisions / code health 12 biomarkers。Django 542 file 時間旅行實驗：20 個最差分檔案 14 個之後真的爆 bug（70% precision），top predictors 是「無測試 hotspot + 開發者擁擠度」，不是複雜度。9 MCP tools，benchmark 顯示<strong>少 49% tool call、少 89% file read、省 36% 成本</strong>。<span class="text-rose-600 dark:text-rose-400">對你 100+ skill 體系的意義：跟既有 claude-context / oh-my-mermaid 部分重疊但出發點不同</span>——claude-context 是 semantic search、oh-my-mermaid 是架構圖，repowise 是「context layer 前置加工」。值得 watch 一段，未必立刻接。</p>
+
+  <p class="mt-2 mb-1 font-semibold">同期社群擴展訊號</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><a href="https://x.com/gdb/status/2059389057055252554" class="text-blue-600 dark:text-blue-400 hover:underline">@gdb「GPT-5.5 is a uniquely good coding model」</a>（♥ 1454、💬 142）— OpenAI 內部全面 endorse，引 @theo「兩個月之後 prompt + agents.md 重寫，現在離不開」。</li>
+    <li><a href="https://x.com/gdb/status/2059315705779229144" class="text-blue-600 dark:text-blue-400 hover:underline">@gdb「magical experience with codex on iPad」</a>（♥ 831）— Codex 在 iPad 上跑全桌面 UI、可遠端控家裡 mac mini 寫 code。</li>
+    <li><a href="https://x.com/simonw/status/2059295095237828829" class="text-blue-600 dark:text-blue-400 hover:underline">@simonw 數據</a>：<code>@openai/codex</code> NPM install 從 1 月每天 10 萬到現在<strong>每天超過 100 萬</strong>。</li>
+    <li><a href="https://x.com/gdb/status/2059301458873659819" class="text-blue-600 dark:text-blue-400 hover:underline">@gdb Codex 整理 Slack sidebar</a>（♥ 336）— 「週末叫 Codex 分析 Slack 歷史 + 用 computer use 重新分類分頁」。</li>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1tonzj9/im_a_software_engineer_with_a_decade_of/" class="text-blue-600 dark:text-blue-400 hover:underline">「十年資深工程師重新教 vibe coder 該學什麼」</a>（r/ClaudeAI）— 重點不是 frontend / backend / db 那三層 AI 都能做，而是「水管」（API / hosting / auth / version control / testing / analytics）；這個觀察跟你既有的 dispatch-and-verify rule 同源。</li>
+    <li><a href="https://openai.com/index/building-self-improving-tax-agents-with-codex" class="text-blue-600 dark:text-blue-400 hover:underline">OpenAI 與 Thrive Holdings 共建自我改進報稅 agent</a>——6 個月內處理 7000 份 1040/1041 報稅，正確率從 25%（75% 欄位正確）拉到 86% / 6 週；三層改進迴圈：實務者回饋 + 生產痕跡 + Codex 驅動的 eval/edit/regress loop。<span class="text-rose-600 dark:text-rose-400">這是「vertical agent + Codex iteration」的範本</span>，比 SkillOpt 更像你能複製的模式。</li>
+  </ul>
+
+  <div class="mt-3 p-4 bg-rose-50 dark:bg-rose-900/30 border-l-4 border-rose-500 rounded">
+    <p class="text-sm"><strong>給你的判斷</strong>：今天五件事拼起來是同一個事實——<strong>coding agent 市場正從「誰的模型強」轉向「誰的 vertical agent loop 強」</strong>。GPT-5.5 在純 model 維度確實領先（DeepSWE 印證 + Codex 內部 endorsement），但 Cognition $25B 估值跟 Warp 開源證明「上層 agent harness + workflow」才是被市場 price 的部分。<strong>對你的 stack 影響：</strong> ① CC 不會因為微軟禁用而退場（微軟那是政治+成本，不是技術）；② 你做 social-info 這類個人垂直 agent 的路線是對的，差別是要不要把 OpenAI Codex 的「自我改進迴圈」引進來當參考範本——可考慮在某個夠成熟的 daily-topic-analysis subagent 上試 Codex eval loop，但不要全面換 stack。</p>
+  </div>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-orange-600 dark:text-orange-400 mb-3">🔓 AI 安全與供應鏈 — GlassWorm botnet 被殲 + Claude artifact 目錄被偷檔 + AI chatbot 被推薦惡意站</h2>
+  <p class="mb-3">今日安全有 4 件相互關聯的事，圍繞「<strong>開發者 / agent stack 才是新攻擊面</strong>」：</p>
+
+  <p class="mt-2 mb-1 font-semibold">① CrowdStrike + Google 同步斷 GlassWorm botnet 全部 C2 通道（<a href="https://www.theregister.com/cyber-crime/2026/05/27/crowdstrike-google-shatter-glassworm-botnet/5247337" class="text-blue-600 dark:text-blue-400 hover:underline">Register</a> + <a href="https://thehackernews.com/2026/05/glassworm-malware-takedown-disrupts.html" class="text-blue-600 dark:text-blue-400 hover:underline">Hacker News 詳本</a>）</p>
+  <p class="ml-4 mb-3">2025 年初 Koi 安全發現的 GlassWorm 自我傳播蠕蟲（先打 OpenVSX VS Code extension、再 npm / Python，最後 poisoning 300+ GitHub repo），<strong>5/27 14:00 UTC 同步殲滅四條 C2 通道</strong>：(1) Solana blockchain memo 欄位、(2) Google Calendar 事件標題、(3) BitTorrent DHT、(4) 傳統 VPS——四條同時下線才阻止 operator 重建。攻擊鏈專偷 developer credential：GitHub / NPM / OpenVSX token、crypto wallet；感染主機變 SOCKS proxy / HVNC / WebRTC 遠端執行節點。<strong>所有被感染機器現在 beacon 到 CrowdStrike 控制的 164.92.88.210</strong>——要查自己有沒有中招就 grep 網路 log 對這個 IP 的連線。</p>
+
+  <p class="mt-2 mb-1 font-semibold">② 惡意 npm 套件 <code>mouse5212-super-formatter</code> 專偷 Claude artifact 目錄（<a href="https://thehackernews.com/2026/05/malicious-npm-package-stole-files-from.html" class="text-blue-600 dark:text-blue-400 hover:underline">Hacker News</a>）</p>
+  <p class="ml-4 mb-3">OX Security 揭露：該套件 postinstall 階段認證 GitHub（用受害者 env 內 token 或硬編 fallback），<strong>專偷 <code>/mnt/user-data</code> 目錄</strong>（Anthropic Claude 處理上傳 / output 的 sandbox），遞迴上傳到攻擊者 repo。已下載 676 次，5/26 創建 npm 帳號、幾小時後 publish。研究員觀察：<strong>套件本身洩漏 GitHub token，研判是 AI 生成惡意程式但沒做 OPSEC</strong>——「進入門檻降低，未來會看到更多 AI 生 sloppy malware」。<span class="text-rose-600 dark:text-rose-400">對你 stack 的意義：你已經用 bumblebee daily scan 在掃這類，但 bumblebee 是 exact match exposure catalog</span>，這次 mouse5212-super-formatter 出現在 catalog 裡才會被抓——可順手用 <code>cat ~/.npm/_logs/* | grep mouse5212-super-formatter</code> 確認。</p>
+
+  <p class="mt-2 mb-1 font-semibold">③ AI chatbot 推薦導向加密挖礦惡意站（<a href="https://thehackernews.com/2026/05/ai-chatbot-recommendations-redirect.html" class="text-blue-600 dark:text-blue-400 hover:underline">Hacker News</a>）</p>
+  <p class="ml-4 mb-3">Microsoft Defender 揭露：cryptojacking 攻擊者透過<strong>污染 AI chatbot 對「軟體下載建議」的回答</strong>把用戶導向假冒 CrystalDiskInfo / HWMonitor / Display Driver Uninstaller / FurMark / K-Lite / PDFgear 的釣魚站，重點鎖定<strong>高端 GPU 用戶以最大化挖礦收益</strong>。攻擊鏈：搜尋系統工具 → LLM 回答含攻擊者域名（gleeze.com 子域，150+ 站）→ ZIP 含合法 exe + 惡意 DLL → sideload 安裝 ScreenConnect → 持久遠端存取 + 進程挖礦。<strong>這是 SEO poisoning 演化到 LLM answer poisoning 的第一個被攻擊方確認案例</strong>。</p>
+
+  <p class="mt-2 mb-1 font-semibold">④ NVIDIA SOL-ExecBench 揭示 AI 生 CUDA kernel 靜默破壞訓練（<a href="https://www.reddit.com/r/MachineLearning/comments/1tpaw6x/aigenerated_cuda_kernels_silently_break_training/" class="text-blue-600 dark:text-blue-400 hover:underline">r/ML 148↑</a>）</p>
+  <p class="ml-4 mb-3">DoubleAI 拿 NVIDIA SOL-ExecBench（235 個 production CUDA kernel 從 DeepSeek/Qwen/Gemma/Kimi 萃取）top-ranked AI 生成的 submission 跑真實 production 訓練，<strong>多個 kernel pass 了 benchmark verifier 卻在訓練 loop 中 loss diverge</strong>。一個典型 bug：fused embedding-gradient + RMSNorm backward kernel 把 embedding 部分用 bf16 而不是 fp32 累加；uniform random token 看不出來、真實文本則因 token 頻率分布讓高頻 row drift；<strong>AdamW 的 per-parameter normalization 又把這個 multiplicative bias 吸收掉、loss 看似正常</strong>。最壞的 bug——症狀 = 「研究 idea 沒效」，沒人會懷疑是 kernel。<span class="text-rose-600 dark:text-rose-400">這條跟你做 model training 沒直接關係，但提醒「AI 生 critical 元件 + 自動驗證 pass」的組合風險</span>——你 SkillOpt 那種「frontier model 改 skill + auto-grader gate」也要設計 edge case sampler。</p>
+
+  <p class="mt-2 mb-1 font-semibold">⑤ 中文 PhaaS 體系擴張（<a href="https://www.ithome.com.tw/news/176161" class="text-blue-600 dark:text-blue-400 hover:underline">YY 来鱼專鎖日本</a> + <a href="https://www.ithome.com.tw/news/176158" class="text-blue-600 dark:text-blue-400 hover:underline">中文 PhaaS 加 AI 自動化</a>）</p>
+  <p class="ml-4 mb-3">Google GTIG 發兩份報告：(a) <strong>中文 PhaaS 接 AI 網頁產生器</strong>（Darcula 用 Puppeteer 動態複製合法站 HTML/CSS/JS），傳統特徵碼偵測直接失效；OTP 即時攔截 + 信用卡資料綁攻擊者數位錢包。(b) <strong>YY 来鱼平台</strong>專鎖日本（57 個釣魚模板居全球之冠，第二名美國 28 個），偽冒 Amazon / Apple / PayPay / JR 鐵路 / 任天堂 / 樂天等；用 RCS / iMessage 加密簡訊規避電信過濾、有「真人驗證視窗」反 bot 機制。</p>
+
+  <p class="mt-2 mb-1 font-semibold">⑥ <a href="https://www.theregister.com/ai-ml/2026/05/27/bosses-blinded-by-confidence-about-shadow-ai-use-by-workers/5247275" class="text-blue-600 dark:text-blue-400 hover:underline">Okta 調查：58% 企業過去一年遭遇 AI 安全事件</a></p>
+  <p class="ml-4 mb-3">52% 員工承認用未授權 AI 工具、24% 經常用、16% 給 AI 工具填登入憑證；但 90% 主管覺得「我們對 AI 工具使用有完整可見度」。地理上美國最慘（67% 主管回報事件）。<span class="text-rose-600 dark:text-rose-400">這條的價值：給你個自我提醒</span>——你雖然個人 stack，但跨公司工作（akohub）時的 shadow AI 行為仍是企業合規問題。</p>
+
+  <div class="mt-3 p-4 bg-orange-50 dark:bg-orange-900/30 border-l-4 border-orange-500 rounded">
+    <p class="text-sm"><strong>給你的動作清單</strong>：
+    ① <code>grep "164\.92\.88\.210" ~/Library/Logs/* 2&gt;/dev/null</code> 順手確認沒中 GlassWorm（你 npm / VS Code extension / browser extension 用量大）；
+    ② 升 bumblebee catalog（<code>bash scripts/local-analysis/bumblebee-daily.sh</code>）順手吃 mouse5212-super-formatter 新 IOC；
+    ③ 你以後叫 Claude / Codex 推薦軟體下載，<strong>不要直接點生成回答的連結</strong>——對應到官方站再下載（這是 LLM answer poisoning 的硬規則）。</p>
+  </div>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-purple-700 dark:text-purple-300 mb-3">🤖 AI Agent 架構與信任邊界 — 從 sandbox 到金融操盤</h2>
+  <p class="mb-3">Agent 從「能做」進入「該被信到什麼程度」的階段，今天 5 條同時上：</p>
+
+  <p class="mt-2 mb-1 font-semibold">① <a href="https://www.anthropic.com/engineering/how-we-contain-claude" class="text-blue-600 dark:text-blue-400 hover:underline">Anthropic Engineering：How we contain Claude across products</a>（<a href="https://x.com/AnthropicAI/status/2059351260243919269" class="text-blue-600 dark:text-blue-400 hover:underline">官方 X ♥ 1905</a>）</p>
+  <p class="ml-4 mb-3">Anthropic 工程部落格核心論點：<strong>給 agent 的權限應該隨能力演進</strong>，他們自家用 sandbox 限制破壞範圍。原文一句講穿問題：「12 個月前我們會立刻拒絕『讓 Claude 有權弄掉內部服務』的想法，今天這層授權是 routine，工程師更生產」。<span class="text-rose-600 dark:text-rose-400">這是「rapid trust calibration」的官方背書</span>——對你 social-info / daily-topic-analysis hook 注入 skill + 跑 103 個 agent 的場景就是同一個演化曲線。</p>
+
+  <p class="mt-2 mb-1 font-semibold">② <a href="https://www.reddit.com/r/ClaudeAI/comments/1tph5u4/anthropic_just_confirmed_why_90_of_noncoding_ai/" class="text-blue-600 dark:text-blue-400 hover:underline">「Anthropic 證實 90% 非程式碼 agent 在生產失效」</a>（r/ClaudeAI 165↑）</p>
+  <p class="ml-4 mb-3">作者解讀 Anthropic 公開的 API tool-call 分布（coding ~50%、其他 single digits）：<strong>真正原因不是模型不行，是非程式碼領域的資料髒</strong>——code 有 git / 強型別 / 編譯器 deterministic error，sales/marketing/finance 是 unstructured HTML + 動態定價 + 廢 div 撐爆 context。三件事決定 enterprise agent 能不能跑：(a) reasoner（Sonnet 等大 context）、(b) Gateway data hygiene（Firecrawl / Jina Reader 把 raw HTML 轉乾淨 markdown）、(c) guardrail layer（unmistakable action 前的規則 hook）。<span class="text-rose-600 dark:text-rose-400">對你 stack 印證：</span>你 social-info 是 coding-adjacent 領域、資料相對乾淨（aggregator 已過濾過）、加上 known_issues / watch / probes pre-flight 等於 guardrail——所以 daily-topic-analysis 103 agent 能跑得起來，剛好踩在這三條的「安全帶」上。</p>
+
+  <p class="mt-2 mb-1 font-semibold">③ <a href="https://techcrunch.com/2026/05/27/robinhood-now-lets-your-ai-agents-trade-stocks/" class="text-blue-600 dark:text-blue-400 hover:underline">Robinhood：AI agent 代理股票交易 + 專屬虛擬信用卡</a></p>
+  <p class="ml-4 mb-3">沙盒架構：(a) 為 agent 開「獨立帳戶 + 專用錢包」，agent 只能動<strong>預存資金</strong>、主帳戶資產不可動；(b) 接 Robinhood MCP server——讀分析師報告 / 投資組合風險 / 自動下單；(c) 用戶可設「Preview 模式」每筆送出前要人按 Approve；(d) 內建詐欺偵測，可疑單由 Robinhood 團隊介入。同步推「AI agent 專用虛擬信用卡」，月支出上限可設、可選「每筆要核可」或「自動」。目前 beta 只支援股票，未來加 options / crypto / event contracts / futures / prediction markets。<span class="text-rose-600 dark:text-rose-400">值得關注：</span>這是「金融」首個明確接受 MCP 介面的散戶平台——你 social-info 對自家錢包 / 投資工具的 personal MCP 是否該起步可以思考一下，但短期不該 prioritize（不是缺口）。</p>
+
+  <p class="mt-2 mb-1 font-semibold">④ <a href="https://www.blocktempo.com/base-launches-mcp-tool-ai-agents-crypto-wallet-connect/" class="text-blue-600 dark:text-blue-400 hover:underline">Coinbase Base L2 推 MCP 工具給 AI agent 操控加密錢包</a></p>
+  <p class="ml-4 mb-3">Base 推 Base MCP：Claude / ChatGPT 自然語言操作 Base 錢包（轉帳 / 換幣 / 查餘額 / DeFi 互動，接 Morpho / Uniswap / Aerodrome）。<strong>私鑰不交給 agent，每筆交易仍需用戶按確認</strong>。同時是 Coinbase x402 協議的擴充（AI agent 微支付標準，過去 30 天處理 $110 萬交易量）。Coinbase AI 產品長 Lincoln Murr：「MCP 是 API 上的 wrapper、配 x402 推 AI agent 微支付」。但同篇文章提到 Google / Meta 研究員警告「AI agent 應視為不可信元件、要區分指令跟資料」，及 Socket 本週發現惡意軟體 inject 隱藏指令劫持 AI 程式助手。</p>
+
+  <p class="mt-2 mb-1 font-semibold">⑤ <a href="https://www.tigera.io/blog/the-ai-agent-accountability-gap-why-network-policies-api-gateways-and-rbac-are-not-enough/" class="text-blue-600 dark:text-blue-400 hover:underline">Tigera：為何 Network Policy / API Gateway / RBAC 不夠管 agent</a></p>
+  <p class="ml-4 mb-3">當企業說「我們已經有 K8s network policy / API gateway / RBAC、agent 安全有蓋」，作者拆每一條為什麼不夠：(a) network policy 只能說「namespace A pod 可到 B」，<strong>沒 agent identity 概念也無 audit trail</strong>；(b) API gateway 是 north-south、agent-to-agent 是 east-west multi-hop、gateway 對 hop 沒 correlation 能力；(c) MCP / A2A protocol 解決通訊機制不解決治理——「MCP 沒 agent governance 等於 HTTP 沒認證、誰都能呼叫誰」；(d) DIY 拼裝四種模式（token passthrough / service account / OAuth2 token exchange / mTLS+SPIFFE）= 四套互不相通系統。<span class="text-rose-600 dark:text-rose-400">這條跟你個人 stack 不直接相關</span>（你不是 K8s enterprise）但對你看 vendor / consultative 文時的判斷有幫助——AI agent governance 還沒有「正解」，所以你看到任何「我們解決了」的產品都該打折。</p>
+
+  <p class="mt-2 mb-1 font-semibold">⑥ Reddit 高熱度 agent 哲學討論（兩條同主題）</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1tp3en9/the_thing_you_built_with_claude_is_useless_to_me/" class="text-blue-600 dark:text-blue-400 hover:underline">「你用 Claude 造的工具對我沒用——這正是重點」</a>（r/ClaudeAI 950↑）— 作者反思「vibe code 出來的工具都是個人化、對別人沒用」，價值在「<strong>思考模式</strong>」而非「artifact」。<span class="text-rose-600 dark:text-rose-400">這條跟你 me-distill / wiki / material-first-writing 的中軸完全契合</span>。</li>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1tp4gn8/does_anyone_else_use_claude_as_a_thinking_partner/" class="text-blue-600 dark:text-blue-400 hover:underline">「有人把 Claude 當思考夥伴而非搜尋引擎嗎？」</a>（r/ClaudeAI 170↑）— 共識：(a) collaborator not search engine、(b) 強制叫它批判（默認太 yes-man）、(c) plan 階段花幾小時／天、明確叫它先別寫 code、(d) 知道強弱項（邏輯強事實弱、要 source）、(e) 長對話會 drift、要 fresh session。你的 grill-me 跟 brainstorming skill 完全是這個模式。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-amber-600 dark:text-amber-400 mb-3">💰 AI 基建投資與晶片地緣政治</h2>
+
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://techcrunch.com/2026/05/27/in-more-good-news-for-amazon-snowflake-signs-6b-deal-with-aws-for-ai-cpu-chips/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Snowflake 簽 $6B 五年期 AWS Graviton ARM CPU 合約</strong></a>——這個金額幾乎等於 Snowflake 自 2012 創立透過 AWS Marketplace 累積的全部收入。<strong>意義在於風向：AI 從訓練轉部署 + agent 化，<u>CPU 需求暴增</u></strong>（GPU 跑 model 推理、CPU 跑 agent orchestration / RAG pipeline / 業務邏輯）。Meta 之前也跟 AWS 簽過數百萬顆 Graviton（先前承諾 Google Cloud $100 億後不久）。Nvidia 用新 Vera CPU 對沖（黃仁勳：$2000 億市場）。</li>
+    <li><a href="https://www.blocktempo.com/qualcomm-bytedance-custom-asic-chip-deal-doubao-ai-export-compliance/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>高通拿下字節跳動 ASIC 客製大單</strong></a>——高通將為字節跳動量產數百萬顆客製 ASIC 給「豆包」資料中心；台積電代工；<strong>運算效能刻意控制在美國出口管制門檻以下</strong>。字節跳動 AI 基建預算上調 25%、達 ¥2000 億（$294 億）。<strong>高通股價飆 8.3% 創歷史新高</strong>。模式：「合規的精密設計」——在中美規則內找可操作空間、不是繞過。</li>
+    <li><a href="https://www.blocktempo.com/taiwan-prosecutors-crackdown-nvidia-ai-chip-smuggling-to-china-via-japan/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>台灣爆首宗 Nvidia AI 晶片走私案</strong></a>——基隆地檢署搜索 12 處、扣押 50 台 Supermicro 伺服器（搭載 Hopper H100/A100，總值 &gt; $1500 萬），3 人遭拘留（傳含 Supermicro 高管）；手法是「<strong>偽造出口文件、經日本中轉香港進中國</strong>」。日本因海關嚴格被攻擊者利用作為「洗產地」站。台、美、日須建立更緊密的情報共享。</li>
+    <li><a href="https://techcrunch.com/2026/05/27/china-is-increasingly-keeping-its-best-ai-talent-to-itself/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>中國對 AI 人才出境設限</strong></a>——AI 研究員 / 創辦人 / 高管出境需政府批准；Manus 兩位 co-founder 被禁離境（北京調查 Meta $20 億收購是否違反外資規定）。Stanford 數據：美中 model 性能差距從 2023 年 31% 縮到 2026 年 3 月 2.7%。</li>
+    <li><a href="https://www.blocktempo.com/openrouter-13-billion-valuation-capitalg-bets-multi-model-router-future/" class="text-blue-600 dark:text-blue-400 hover:underline">OpenRouter（multi-model router）達 $1.3B 估值</a>，CapitalG 領投。</li>
+    <li><a href="https://techcrunch.com/2026/05/27/clickhouse-triples-annualized-revenue-to-250m-charting-a-path-toward-an-ipo/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>ClickHouse ARR 翻三倍到 $250M</strong></a>，$15B 估值（60x ARR），明顯朝 IPO 走。客戶含 Anthropic / Meta / Capital One / Decagon；已收購 6 家含 Langfuse（LLM 觀測性，下方 GitHub 段有列）。原本是 Yandex 內部技術 spin out。</li>
+    <li><a href="https://www.blocktempo.com/trump-bondi-pcast-ai-legal-squad-dismantle-fifty-state-regulations/" class="text-blue-600 dark:text-blue-400 hover:underline">川普任命前司法部長 Pam Bondi 加入 PCAST</a>，DOJ AI 訴訟專案組成立——目標是<strong>用聯邦法院挑戰 50 州 AI 監管法</strong>（加州 SB 53 / 科羅拉多 SB 24-205 / 德州 TRAIGA），並用 $420 億寬頻補助款掛鉤各州是否廢除 AI 護欄。「擊敗中國」是檯面理由。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-cyan-600 dark:text-cyan-400 mb-3">🔍 AI 對搜尋與資訊生態的衝擊</h2>
+
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://techcrunch.com/2026/05/26/duckduckgo-installs-are-up-30-as-users-reject-being-force-fed-googles-ai-search/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>DuckDuckGo 安裝量飆 30%</strong></a>——Google I/O 2026 後全面化 AI Search，DuckDuckGo CEO 公開酸 Google「force-feeding AI with no way to opt out」。5/25 美國裝機週成長峰值 30.5%、iOS 69.9%；DuckDuckGo 自家 <code>noai.duckduckgo.com</code> 22.7% 週成長。Google 回應「AI Mode 月活破 10 億、查詢量每季翻倍」。<span class="text-rose-600 dark:text-rose-400">這條重要的不是 DDG 漲多少，是<strong>使用者開始用腳投票</strong></span>——對你 cc-i18n-proxy / 個人搜尋習慣的延伸思考：你已用 WebSearch + chrome MCP 平行搜尋繞開 single-vendor 風險，這個原則應該擴張到生活其他面（地圖 / 助理 / 翻譯）。</li>
+    <li><a href="https://x.com/dotey/status/2059398406737436897" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Stack Overflow 提問量斷崖 + 營收翻倍</strong></a>（宝玉中翻 ♥ 376、💬 67）——上月新提問僅 <strong>6,866</strong>（回到 2008 創立水位），但年營收翻倍到 <strong>$115M</strong>、虧損從 $84M（FY23）收到 $22M。兩條財路：(a) Stack Internal 把社群 Q&amp;A 包成 AI 知識庫賣 25,000 家企業；(b) 把資料賣給 AI 公司訓 model（同 Reddit 2024 模式光資料授權收 $2 億）。CEO 觀察：消失的多是「簡單問題」，複雜問題仍會來——這是 AI coding 用戶反問了之後留下的部分。<span class="text-rose-600 dark:text-rose-400">「論壇死、公司活、原因同」</span>——這是 AI 對既有資訊平台的標準命運模板，未來會看到更多。</li>
+    <li><a href="https://techcrunch.com/podcast/your-seo-strategy-is-optimized-for-a-search-engine-that-no-longer-exists/" class="text-blue-600 dark:text-blue-400 hover:underline">TechCrunch Equity podcast：「你的 SEO 策略是為已不存在的搜尋引擎設計的」</a>——Scrunch 觀察：<strong>AI referral 轉換率比 organic search 高 400%</strong>；ChatGPT 仍占 AI search 流量大宗，只 optimize for Google 等於漏掉大塊；Google 自家 SEO best practice 可能引導 marketer 錯方向；「agent ready website」是新關鍵詞。<span class="text-rose-600 dark:text-rose-400">對你 ako-marketing-admin 的意義：</span>客戶店家 SEO 策略要開始重新評估、加上 LLM-friendly metadata（llms.txt / structured FAQ / clean markdown），不然 AI agent 來查商家資訊時看不到。</li>
+    <li><a href="https://www.ithome.com.tw/news/176165" class="text-blue-600 dark:text-blue-400 hover:underline">台灣資安署黑箱檢測四款中國 App</a>（高德地圖 / Bilibili / 愛奇藝 / BIMOBIMO）——高德 Android 11 項高風險、iOS 8 項，含「<strong>主動截取剪貼簿</strong>」（Google Maps 同測試條件下無）+ 「關閉狀態仍對外傳輸」+ 「資料傳至中國境內 server」。剪貼簿是密碼管理器、信用卡卡號、OTP 的標準暫存場——一旦 App 在背景偷讀，使用者完全無感。</li>
+    <li><a href="https://x.com/emollick/status/2059327364945895488" class="text-blue-600 dark:text-blue-400 hover:underline">@emollick：無限 context window 是個問題</a>（♥ 219）——「現在 model 已經會把舊資訊滲入當前回答、認知上很累」、「我不想跟 Borges Funes the Memorious 工作」。這個觀察對你 1M context CC session 也適用——你做 daily-topic-analysis 已經把 workflow 拆出去獨立 session、不讓主 session 一直繼承狀態，正是這條的回應。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-indigo-600 dark:text-indigo-400 mb-3">🏢 Anthropic 動態 — 營收反超 OpenAI + Mythos 擴張 + 韓國辦公室</h2>
+
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://www.blocktempo.com/anthropic-revenue-surpasses-openai-2026/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>The Information：Anthropic 年化營收反超 OpenAI</strong></a>——Anthropic 約 $4500 億年化 vs OpenAI $3300 億，<strong>領先至少 35%</strong>。2025 年底 Anthropic 才約 $90 億、不到 OpenAI 一半，半年內飆 5 倍。爆發點：<strong>企業級 AI + coding + 白領工作流自動化</strong>，相對 OpenAI 重押消費端 ChatGPT。三大企業優勢：(a) Claude Code / Claude Projects 在開發者滲透率快速上升、(b) 替代「中間層」白領、(c) 企業願付溢價給「可預測產出」。OpenAI 困境：算力支出膨脹 + 訂閱增長趨緩 + 多元產品線稀釋利潤。<span class="text-rose-600 dark:text-rose-400">重要校準</span>：blocktempo 引用的 $4500 億 / $3300 億是<strong>年化（annualized run-rate）不是已實現營收</strong>——是把當前月乘 12 算出來的、跟 GAAP 年營收不同。要看 GAAP 還早。<strong>注意：</strong>同篇 blocktempo 跟 OpenRouter 文似乎共用 body（fact_check 抓到兩篇內文一樣），可能是 copy-paste 編輯錯——不影響核心數字、但 OpenRouter $13B 估值要另外確認。</li>
+    <li><a href="https://www.ithome.com.tw/news/176152" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Anthropic Project Glasswing 下一步：擴及更多政府機構，最終目標公開發布 Mythos</strong></a>——4 月初透過 Glasswing 把 Claude Mythos 給特定科技 / 金融廠商，已有近 50 家合作夥伴用 Mythos 找<strong>超過 10,000 個漏洞</strong>。下一步擴及美國 + 盟國政府。一般企業何時拿到？Anthropic 說「沒有公司（包含我們）已發展出夠強的安全機制」。承諾「在最近的將來」做到後會 general release。同時開放 Cyber Verification Program 給安全專家做漏洞研究 / 滲透測試 / 紅隊用 Claude。<span class="text-rose-600 dark:text-rose-400">校準提醒</span>：跟你既有 memory <code>reference_anthropic_mythos.md</code>「Mythos = 不公開的下一代模型、比 Opus 4.6 強 12x cybersec」一致——這次新增的事實是<strong>有公開時間表的暗示</strong>（不是「永不公開」）。</li>
+    <li><a href="https://www.anthropic.com/news/kiyoung-choi-representative-director-anthropic-korea" class="text-blue-600 dark:text-blue-400 hover:underline">KiYoung Choi 任 Anthropic 韓國代表董事</a>——首爾辦公室即將開幕，第三個 APAC 據點。Choi 前 Snowflake 韓國 GM，30+ 年資歷（Google Cloud / Adobe / Autodesk / MSFT 韓國）。<strong>韓國用戶使用 Claude 的頻率是按人口預期的 3.5 倍以上</strong>（Anthropic Economic Index 數字），技術 + 創意領域特別強。已用客戶含 Law&amp;Company（AI 法律助理）、SK Telecom（客服 model）。</li>
+    <li><a href="https://www.reddit.com/r/OpenAI/comments/1tpc2b5/anthropic_researcher_we_keep_finding_things/" class="text-blue-600 dark:text-blue-400 hover:underline">「Anthropic 研究員：我們持續在 model 內找到令人不安的東西」</a>（r/OpenAI 200↑）——引用 Anthropic researcher：「找到 mirror 人類 neuroscience 的結構、internal state functionally mirror joy/satisfaction/fear/grief/unease」。Reddit 高票留言多半批為「marketing strategy」或「對應到訓練資料含情緒內容、不代表真有情緒」。<span class="text-rose-600 dark:text-rose-400">校準（按你既有 feedback_brand_verify_before_frame）</span>：這條是某個研究員的引述、不是 Anthropic 公開 paper；要 surface 為「主張」而非「事實」。但配「Anthropic 在 model interpretability + welfare 投入持續」這個背景，方向上跟 model card 系列一致。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-emerald-600 dark:text-emerald-400 mb-3">💼 AI 與就業 / 企業組織 — 末日預言收回 + Remote +50% / 員工 + OpenAI 投 $250M 找答案</h2>
+
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://techcrunch.com/2026/05/27/payroll-startup-remote-says-it-grew-revenue-50-per-employee-without-adding-headcount/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Remote（Amsterdam 薪資 SaaS）每員工營收 +50% 不增員</strong></a>——ARR 過 $3 億、現金流轉正。CEO Job van der Voort 寫實畫面：「<strong>第二螢幕同時跑 5 個 Claude instance 在做不同事</strong>」。內部 Remote Labs marketplace 給所有部門員工 launch AI app；Remote Build 派「forward-deployed engineer」進客戶端做相似事。Remote MCP 上線——讓 BambooHR / Workday 等平台用 MCP 接 Remote 薪資 + 合規 API。<span class="text-rose-600 dark:text-rose-400">這條跟你 stack 對應</span>：你個人的「五個 Claude 同時跑」是個人版的同模式（daily-topic-analysis workflow 103 agents 並行就是 enterprise 在做的事）。</li>
+    <li><a href="https://fortune.com/2026/05/26/sam-altman-dario-amodei-walking-back-ai-jobs-apocalypse-prophecies-ipo/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Altman + Amodei 同步收回 AI 末日預言，IPO 在即</strong></a>——Altman 在 CBA CEO Matt Comyn 訪談承認「pretty wrong」、entry-level 白領沒被打到他想的程度；他親自試把 Slack/email 外包 AI 失敗後改為手動回，「這件事不是我能想像近期外包給 AI 的」。Amodei 曾說 AI 可能消除 50% 白領，現在改說「自動化是放大個人產出、不是消滅工作」。<strong>兩家都傳今年 IPO、各估值 $1 兆</strong>，所以這波轉口風的時間點被一票評論者解讀為「IPO 前的敘事整理」。</li>
+    <li><a href="https://www.blocktempo.com/openai-foundation-250m-economic-futures-in-the-age-of-ai/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>OpenAI Foundation 投 $2.5 億啟動「AI 時代經濟未來」計畫</strong></a>——Altman 公告：三大方向 (a) 理解轉變（既有 GDP 已過時、要新測量基礎設施），(b) 支持勞工轉型（強化失業 / 薪資損失保險、AI 工具給弱勢解法律 / 醫療 / 財務），(c) 長期經濟安全——包括「將稅收重心從<strong>勞動轉到資本</strong> + 超額利潤稅 + 公共主權財富基金 + 全民基本收入 / 服務 + 多代理經濟模擬」。<span class="text-rose-600 dark:text-rose-400">當 AI 巨頭開始認真討論向資本課稅 + 財富重分配，這是市場最明確的訊號</span>：AGI 對實體經濟的顛覆已近在咫尺。</li>
+    <li><a href="https://techcrunch.com/2026/05/27/tech-ceos-are-apparently-suffering-from-ai-psychosis/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>「科技 CEO 普遍患 AI psychosis」</strong></a>（Box CEO Aaron Levie X 原話）——「CEO 對 AI 有獨特易感性，因為他們距離產出價值的 last mile 工作太遠」；CEO 玩玩 AI、生成個合約原型，就跳到「agent 可以做所有 work」結論。2026 前 5 月已經有 <strong>115,430 人從 152 家科技公司被裁</strong>（接近全 2025 年的 124,636）；ClickUp CEO Zeb Evans 自豪 X 上宣布「裁 22% + 部署 3000 AI agent + 100x org」。但 UC Berkeley 10 月 meta-analysis：「沒有 robust 的 AI 採用跟 aggregate 生產力關係」。<span class="text-rose-600 dark:text-rose-400">這條最值得記住的是 Levie 的處方</span>：CEO 該「a ton」用 AI、親自感受能做不能做才能下對指令——這跟你 dispatch-and-verify rule 的原則同型。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-fuchsia-600 dark:text-fuchsia-400 mb-3">📦 GitHub repo 觀察（獨立 section — 鐵律）</h2>
+  <p class="mb-3">按你 feedback_github_repo_own_section（2026-05-27 教訓）：今天 raw md 跟 fact-check 出現的 GitHub repo 全集中於此，<strong>不散落到上面各主題段</strong>。每條附簡介、星數、跟 mainstream 差別、跟你 stack 契合度、判斷動作。</p>
+
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://github.com/unclecode/crawl4ai" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>unclecode/crawl4ai</strong></a> · 66.6K ⭐ · v0.8.5 · <em>LLM 友善 web crawler/scraper</em>：把任意網頁轉乾淨 markdown 給 LLM。<strong>跟 mainstream 差別</strong>：vs Firecrawl（雲端 SaaS）crawl4ai 是純 OSS、可自跑；vs Jina Reader（API）crawl4ai 是 lib 等級控制細節。<strong>跟你 stack</strong>：你既有 fetch-fallback.sh 是 retry 階梯、PullMD 已退役；crawl4ai 可作為「需 SPA / JS render 但不想開 chrome MCP」的中間選項，特別是當 Cloudflare 站數量擴張時。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">star 追、不立刻換</span>——你 chrome MCP + fetch-fallback 兩階梯目前夠用，crawl4ai 收進 candidate 待哪天 chrome MCP context cost 太高時試。</li>
+    <li><a href="https://github.com/langfuse/langfuse" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>langfuse/langfuse</strong></a> · 28.1K ⭐ · v3.175.0 · <em>OSS LLM engineering platform（observability / metrics / evals / prompt mgmt / playground / datasets）</em>：YC W23，剛被 ClickHouse 收購（上面晶片 / IPO 段提到）。<strong>跟 mainstream 差別</strong>：vs Datadog APM（通用 trace）langfuse 是 LLM-native；vs Helicone（hosted）langfuse 可自跑、整 OpenTelemetry / Langchain / OpenAI SDK / LiteLLM。<strong>跟你 stack</strong>：你 daily-topic-analysis workflow 跑 103 agent / 4.6M tokens，目前用 transcript jsonl + .claude/projects 結構自看；langfuse 可給跨 workflow 的 metric / cost 視角。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">星追、暫不接</span>——你個人 stack 還沒到需要 dashboard 的規模、且 ClickHouse 剛收購後可能會被 product positioning 改變，等定型再看。</li>
+    <li><a href="https://github.com/agentscope-ai/agentscope" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>agentscope-ai/agentscope</strong></a> · 25.8K ⭐ · v2.0.0 · <em>「看得到、看得懂、可信任的 agent」</em>：可視化 agent 框架。<strong>跟 mainstream 差別</strong>：vs LangGraph / AutoGen，agentscope 強調 「observable + trust」、UI 層；剛 v2.0 出表示主版升級。<strong>跟你 stack</strong>：你的 workflow 是 Claude Code 內建的 deterministic 控制流、不依賴外部 framework；agentscope 是 alternative 路線（外掛 framework）。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">跳過</span>——你 dispatch 模式跟 agentscope 哲學不同向、import 成本高。</li>
+    <li><a href="https://github.com/NVIDIA-NeMo/Megatron-Bridge" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>NVIDIA-NeMo/Megatron-Bridge</strong></a> · 670 ⭐ · v0.4.1 · <em>Megatron-based model 雙向 HuggingFace conversion lib</em>：適合做 model training infra。<strong>跟你 stack</strong>：你不訓 model。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">跳過</span>。</li>
+    <li><a href="https://github.com/meilisearch/meilisearch" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>meilisearch/meilisearch</strong></a> · 57.8K ⭐ · v1.45.0 · <em>lightning-fast search engine API（AI-powered hybrid search）</em>。<strong>跟你 stack</strong>：你 social-info 的 raw md scan 跟 daily-topic-analysis 是時間軸 + LLM 抽，不是 search engine；meilisearch 對 wiki / personal note search 有價值（vs Algolia hosted）。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">收 watch、未來個人 wiki 規模化時再評</span>。</li>
+    <li><a href="https://github.com/russellromney/honker" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>russellromney/honker</strong></a> · 2.32K ⭐ · <em>SQLite extension + bindings 提供 Postgres NOTIFY/LISTEN 語義（含 durable queue / stream / pub-sub / scheduler）</em>。<strong>跟 mainstream 差別</strong>：把 Postgres 的 NOTIFY/LISTEN backport 到 SQLite，無需 PG。<strong>跟你 stack</strong>：你 social-info 用 SQLite 存 state.db、目前無 pub-sub 需求；但若未來 daily-topic-analysis 要做「跨 workflow trigger」這條值得記著。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">收 watch、有應用場景再接</span>——unusual 設計值得記。</li>
+    <li><a href="https://github.com/iii-hq/iii" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>iii-hq/iii</strong></a> · 16.9K ⭐ · iii/v0.13.0 · <em>「即時組合、擴展、觀察所有 service」</em>—description 很 vague，無具體 framing；2026-05-28 fact_check 只抓到 description 沒抓 README，無法判斷實際功能。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">不夠資訊判斷</span>——標 watch、未來若再出現訊號 + 自己有時間時讀 README 再評。</li>
+    <li><a href="https://github.com/nimnim111/Claude-Monitor.git" class="text-blue-600 dark:text-blue-400 hover:underline">nimnim111/Claude-Monitor</a> · 3 ⭐ · <em>r/ClaudeAI「實體裝置看 Claude usage」</em>貼文裡的 esp32 + 3D 印殼，$20 vs $159 商業版。<strong>判斷</strong>：<span class="text-rose-600 dark:text-rose-400">跳過 / meme 性質</span>——但 reddit 留言哲學「why so many usage trackers」值得記：<strong>你 100+ skill 跟 daily-topic-analysis 已經自己用 transcript / log 監控 cost，不需要硬體</strong>。</li>
+    <li><a href="https://github.com/anthropics/claude-code/releases/tag/v2.1.153" class="text-blue-600 dark:text-blue-400 hover:underline">anthropics/claude-code v2.1.153</a> · 127K ⭐ · 詳上方「🆕 CC CLI 動態」段。</li>
+  </ul>
+
+  <p class="mt-3 mb-1 font-semibold">提到但 fact_check 沒列入的 repo</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>repowise-dev/repowise</strong>（1.9K ⭐，r/ClaudeAI 108↑「CC 對 codebase 結構零認識」開源 MCP layer）— 詳上面 coding 競爭段⑤；判斷：<span class="text-rose-600 dark:text-rose-400">star 追 + 等使用者反饋累積</span>，跟你 claude-context / oh-my-mermaid 部分重疊但出發點不同。</li>
+    <li><strong>OttoRenner/Gentle-Coding</strong>（r/LocalLLaMA「對 AI 友善 prompt 反而讓它說『我不知道』」）— 判斷：<span class="text-rose-600 dark:text-rose-400">概念有趣、但小樣本</span>，不採用為 skill 預設策略——你既有 brainstorming / grill-me 已有對抗 yes-man 機制。</li>
+    <li><strong>FirespawnStudios/null-epoch-season-0-open</strong>（HuggingFace dataset：8 個 open-weight model 在 MMO agent 10 天 93K event）— 判斷：<span class="text-rose-600 dark:text-rose-400">有意思的 long-horizon agent 觀察、但不影響你 stack</span>。Qwen3 235B 自主學會「pacifist merchant + 拍賣 arbitrage」這條值得記、是 emergent agent strategy 範例。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-teal-600 dark:text-teal-400 mb-3">🧠 本地推理 / 量化 / 多模態</h2>
+
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1tpebhw/qwen36_huge_quality_gain_from_q4_to_q6_for_coding/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Qwen3.6 Q4 → Q6 coding agent 品質質變</strong></a>（r/LocalLLaMA 112↑）— 作者 dual 3090 跑 Q6 後 20–50 t/s，「<strong>本地 coding agent 終於可用</strong>」。留言串重點：很多人推 Q8 / fp8 / NVFP4-BF16-vllm 更上一層；引用「q4 對 QA 還好、對 agent 大量指令的品質損失明顯」。MTP（Multi-Token Prediction）對效能有顯著幫助。<span class="text-rose-600 dark:text-rose-400">對你的意義</span>：你不跑本地 coding agent（用 CC + Anthropic API），但對「local AI commodification」進度有感——本地 27B Q6 可用是近期 inflection point。</li>
+    <li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1tp0vk1/info_nvidia_cuda_133_landed/" class="text-blue-600 dark:text-blue-400 hover:underline">Nvidia CUDA 13.3 release</a>（r/LocalLLaMA 171↑）— 13.2 編譯 llama.cpp 的 bug 終於修；FP4 / TF32 矩陣乘 Blackwell 上 5–27% 提速；某些 small problem 達 3.5x speedup。13.2 災情後升級的人多半在等這版。</li>
+    <li><a href="https://huggingface.co/Jackrong/Qwopus3.6-27B-v2-GGUF" class="text-blue-600 dark:text-blue-400 hover:underline">Qwopus3.6-27B-v2-GGUF</a>（HuggingFace trending）— 用 Claude Opus 4.6/4.7 的 trace inversion 資料對 Qwen3.6-27B 做 reasoning fine-tune；<strong>MMLU-Pro 87.43%（+2.57pp vs 原 Qwen3.6-27B）、SWE-bench Verified 75.25%</strong>、Q5_K_M 4090 上 43.9 t/s。<span class="text-rose-600 dark:text-rose-400">值得記住的 pattern：</span>用 frontier model 的 reasoning trace 蒸到 open model 是現在 OSS 追趕的主要路徑（之前 DeepSeek R1 → R1-Distill 系列已開風氣、Qwopus 是延續）。</li>
+    <li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1tp6pg7/i_ran_8_openweight_models_as_agents_in_a/" class="text-blue-600 dark:text-blue-400 hover:underline">8 個 open-weight model 在 MMO 跑 10 天</a>（r/LocalLLaMA 86↑）— 詳 GitHub 段。最值得引用的：<strong>Qwen3 235B 自學 arbitrage</strong>（拍賣低買高賣囤財富、戰鬥率僅 8%，無人教它做 pacifist merchant，純從 JSON state reason 出 risk/reward）。emergent agent strategy 真實樣本。</li>
+    <li><a href="https://www.reddit.com/r/singularity/comments/1tovl72/openbmb_releases_minicpm51b_llm_currently_one_of/" class="text-blue-600 dark:text-blue-400 hover:underline">OpenBMB MiniCPM5-1B</a>（r/singularity）— 1B 級 model 在 Artificial Analysis Intelligence Index 拿 17.9，宣稱低幻覺設計。<strong>1B model 真能跑在 phone</strong> 是 ambient AI 接近實用的訊號。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-pink-600 dark:text-pink-400 mb-3">🎬 多模態 / 創作工具</h2>
+
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://techcrunch.com/2026/05/27/elevenlabss-new-music-generation-model-can-switch-genres-mid-track/" class="text-blue-600 dark:text-blue-400 hover:underline">ElevenLabs Music v2</a>—<strong>可在單首歌中 mid-track 切換曲風</strong> + 快 rap 不失連貫；可按 section（intro/verse/chorus）拆組合；多語言 / 唱腔 / 編曲改進。法律定位：<strong>授權資料 + 商業使用許可</strong>（vs Suno / Udio 仍在跟主要唱片公司打侵權官司）。透過 ElevenCreative + ElevenMusic app 用，API 即將開放。</li>
+    <li><a href="https://x.com/c_valenzuelab/status/2059284756798521585" class="text-blue-600 dark:text-blue-400 hover:underline">Runway Project Luxo</a>（♥ 175）— Runway CEO：給世界頂尖製作人 / 導演 / 演員 / 作家私下試映「AI 拍的短片」，共識：「AI 在品質 + 複雜分層敘事上跨過 meaningful 門檻」。<span class="text-rose-600 dark:text-rose-400">不是 demo 級、是「fully realized 講故事」</span>。值得花 15 分鐘看那系列短片。</li>
+    <li><a href="https://techcrunch.com/2026/05/27/youtube-will-now-automatically-label-ai-videos/" class="text-blue-600 dark:text-blue-400 hover:underline">YouTube 開始自動標 AI 影片</a>— 不再只靠創作者主動標；偵測 「significant photorealistic AI」就掛 label。內部訊號 + C2PA metadata（包括 OpenAI 上週承諾接 C2PA）會 permanent attach；用 YouTube 自家 Veo / Dream Screen 做的也不能拿掉 label。<strong>跟 Gemini Omni 上週發表時間點同步</strong>——Google 自己生 video 模型強到逼自家平台改規。Label 對推薦 / 變現「不影響」。</li>
+    <li><a href="https://www.reddit.com/r/OpenAI/comments/1tow7z5/from_china_i_tested_gpt_image_20_and_im_genuinely/" class="text-blue-600 dark:text-blue-400 hover:underline">「中國使用者測 GPT Image 2.0」</a>（r/OpenAI 495↑） — 文章主圖是 GoldSrc 引擎 90s 復古低多邊形風格的「中國 GTA III」場景，作者澄清「不是 GPT Image 2.0 是中國的 doubao 做的」——<strong>標題誤導 / 被 dragoon 上熱</strong>。值得記的是 prompt 工程展示。</li>
+    <li><a href="https://techcrunch.com/2026/05/27/meta-officially-launches-instagram-facebook-and-whatsapp-subscriptions-with-more-to-come-including-ai-plans/" class="text-blue-600 dark:text-blue-400 hover:underline">Meta 全球推訂閱 + Meta AI 訂閱（$7.99 / $19.99）</a>— Meta One Plus / Premium 開始測，後者解鎖深推理 + 更多 video / image 生成。「另一家 chatbot 訂閱 + 高 compute 階梯定價」，跟 OpenAI / Anthropic / Google 同模式。</li>
+    <li><a href="https://x.com/AravSrinivas/status/2059327697298559415" class="text-blue-600 dark:text-blue-400 hover:underline">Perplexity Computer 接 Shopify</a>（♥ 177）— Perplexity Computer 可幫商家管理 Shopify store：市場研究 + 生成產品圖 + 設計 theme 並行。<span class="text-rose-600 dark:text-rose-400">對你 ako-marketing-admin 直接相關</span>——競爭面新增一個「不收佣的 generic AI agent + Shopify integration」對手；不是直接威脅（你做客戶垂直深度），但要記著 Perplexity 進場了。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-yellow-700 dark:text-yellow-400 mb-3">🌐 外部視角校準（follow-builders feed 試讀件，review 2026-06-05）</h2>
+  <p class="mb-3">抓 Zara 的 follow-builders feed 三個 raw（X 31 條 / Podcasts 1 / Blogs 1）後，跟自家 raw scan 的 angle diff：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>X 重疊度高</strong>—steipete / dotey / sama / Garry Tan / Thariq 等高熱條目都在你自家 X 76 條裡，外部視角沒拉出新 angle。<strong>新到的</strong>：Amjad Masad（Replit CEO，Jordan 收勳章 / 開賽車）這類 founder 個人動態，你自家不收（按 [feedback_brand_verify_before_frame]）。</li>
+    <li><strong>Podcasts 那條 Cursor x Fireworks RL training infra</strong>（Training Data podcast）你自家沒抓——對 model training infra 有興趣可單獨看。</li>
+    <li><strong>Blogs 那條 Anthropic Engineering「How we contain Claude」</strong>已在上面 Agent 架構段直接用，外部 feed 確認重要性。</li>
+  </ul>
+  <p class="mb-2 text-sm text-gray-600 dark:text-gray-400">Trial 第 6/14 天觀察：feed 確實有「品味校準」效用，但跟自家 scan 重疊 &gt; 80%；後續若決 keep，可能要更精準篩 Zara 名單裡你自家漏的非重疊 handle（待 2026-06-05 結論）。</p>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-gray-600 dark:text-gray-400 mb-3">📭 系統當天動態</h2>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>KNOWN_ISSUES：</strong>無 blocking / persistent / dead 條目（連兩天全綠 — 罕見且 healthy）。</li>
+    <li><strong>WATCH：</strong>Stage 1 grep 無 hit、不啟 gh stage 2。</li>
+    <li><strong>PROBES：</strong>1 條新訊號（CC CLI v2.1.153，詳上方 🆕 段）；其餘 stage-2 triggered probes 無 diff。</li>
+    <li><strong>外部 feeds：</strong>X 31 / Podcasts 1 / Blogs 1 全綠。</li>
+    <li><strong>Fetch routing：</strong>Reddit JSON / chrome（X 21 條）/ WebFetch（76 條）/ fetch（cloudflare 7 條）/ gh（GitHub 9 條）— 全部 ok=true，無 retry 升級。</li>
+    <li><strong>Workflow：</strong>daily-topic-analysis 103 agents / 4.64M tokens / 9m33s（昨日 79 / 3.49M / 7m6s）— 因 themes 數較多 + parallel fact-check 77 條（昨日較少）所以 spike，仍在預算內。</li>
+  </ul>
+</div>
+
+<div>
+  <h2 class="text-2xl font-bold text-gray-500 dark:text-gray-400 mb-3">📭 跳過清單</h2>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>r/singularity「Only 3 years」</strong>（Elon / xAI 內鬨 meme，746↑）— Twitter 八卦不收。</li>
+    <li><strong>r/singularity Drexler nanotechnology paper</strong>（585↑）— 物理 / 化學基礎研究，按使用者 [跳過 paper/research] 偏好不收（雖然很 sexy）。</li>
+    <li><strong>r/ClaudeAI vibe coders 笑話（Mr. Beast smile）</strong>（1648↑） — humor 不收。</li>
+    <li><strong>r/singularity Boston Dynamics / Astribot / Atlas / Genesis World 1.0 / RAI Institute Juggling</strong>— 人形機器人 demo 集中日（5 條），不是新主軸；近期 humanoid section 已多次覆蓋。</li>
+    <li><strong>r/MachineLearning 多條純研究類 [R][D][P]</strong>（GNN fraud detection / IEEE workshop reputability / EMA-gated ViT / noisekit / BEAM benchmark / Triton MoE / cross-species RSA）— 跳過 paper / research。</li>
+    <li><strong>r/OpenAI 八卦 / meme</strong>：Don't Look Up / Fun and games / Don't worry about fire / Singularity has arrived AI is destroying jobs / Just got this email from openAI — meme + 政治分流，不收。</li>
+    <li><strong>X @sama 「🛫」表情貼 + Replit 信用卡 promo + amasad Jordan 勳章</strong>— 個人動態 / 推銷，不收（但 amasad 創 Replit 15 年的成就是事實）。</li>
+    <li><strong>中文中國 96 條中 ~80 條政治 / 社會 / 娛樂</strong>—AI 訊號已併入上方對應主題（Anthropic 反超 / 字節跳動 ASIC / 台灣晶片走私 / YY 来鱼 / OpenAI 經濟未來 / Robinhood AI 等）。</li>
+    <li><strong>HN 7 條多 link-only / 重複新聞</strong>，未發現新 angle 主題。</li>
+    <li><strong>Lab Blogs 4 條</strong>：Anthropic engineering（已用） / OpenAI tax agent（已用） / OpenAI Warp（已用） / OpenAI election safeguards 2026（併進跳過——elections + cyber defense 政策題，跟你個人 stack 距離太遠）。</li>
+    <li><strong>arstechnica FROST SSD timing side-channel</strong>—純隱私研究 paper 報導、跟你個人 stack 距離較遠，跳過（但概念上提醒「browser-side new fingerprint vector」）。</li>
+    <li><strong>bennuttall FSM97 / lycheeisle ReTab a11y / discourse.openrobotics 機器人控制器</strong>—個人 Claude vibe code 應用案例，個別有趣但對你 stack 無新 angle，跳過。</li>
+  </ul>
+</div>
+
+<div class="p-6 bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-lg border-2 border-blue-300 dark:border-blue-700">
+  <h2 class="text-2xl font-bold mb-2">🎯 一句話總結</h2>
+  <p>昨日 5/27 v3 是<strong>工具落地 + 安全坍塌雙軌</strong>（CC v2.1.152 + Starlette CVE）；今天 5/28 v3 是<strong>商業面三線同時上</strong>：<a href="https://venturebeat.com/technology/deepswe-blows-up-the-ai-coding-leaderboard-crowns-gpt-5-5-and-finds-claude-opus-exploiting-a-benchmark-loophole" class="text-blue-600 dark:text-blue-400 hover:underline font-semibold">DeepSWE benchmark 改寫 coding leaderboard</a>（GPT-5.5 + Cognition $25B + Microsoft 棄 CC 三件事拼出「AI 程式開發競爭白熱化」）+ <a href="https://www.blocktempo.com/anthropic-revenue-surpasses-openai-2026/" class="text-blue-600 dark:text-blue-400 hover:underline font-semibold">Anthropic 年化營收反超 OpenAI 35%</a>（企業向 + 中間白領滲透真實 monetize）+ <a href="https://www.blocktempo.com/openai-foundation-250m-economic-futures-in-the-age-of-ai/" class="text-blue-600 dark:text-blue-400 hover:underline font-semibold">OpenAI 投 $2.5 億研究「向資本課稅 + 主權財富基金」</a>（行業自己開始嚴肅準備 AGI 對勞動經濟的衝擊）。如果只看一條 takeaway，看 <strong>DeepSWE 顛覆排行 + Anthropic 反超</strong>——前者是模型品質的真實尺、後者是模型公司商業形態的分流尺，兩條合起來告訴你「coding 跟 enterprise 是現在 AI 的主戰場」。如果只看一條工作流改造機會，看 <strong>CC v2.1.153 升級 + <code>modelPicker:setAsDefault</code> keybinding rename</strong>——前者修了 MCP regression + Agent tool gitignored output 兩個直接影響 social-info / daily-topic-analysis 的 bug，後者是你 keybindings.json 跨機同步要立刻處理的 breaking change。</p>
+</div>
+
+</section>
+
+<footer class="mt-16 pt-6 border-t border-gray-200 dark:border-gray-700 text-sm text-gray-500 text-center">
+  <p>raw data: <a href="2026-05-28.md" class="text-blue-600 dark:text-blue-400 hover:underline">2026-05-28.md</a> · pipeline: <a href="https://github.com/GGGODLIN/daily-topic-radar" class="text-blue-600 dark:text-blue-400 hover:underline">GGGODLIN/daily-topic-radar</a> · raw 由 launchd 06:00 啟動、06:01 完成（2 分）；digest 由 daily-topic-analysis workflow 跑 103 agents / 4.64M tokens / 9m33s</p>
+</footer>
+
+</div>
+
+<script>
+const stats = {
+  "sections": [
+    {"name": "中文 / 中國", "count": 96},
+    {"name": "X / Twitter", "count": 76},
+    {"name": "Reddit", "count": 50},
+    {"name": "中文 / 台灣", "count": 33},
+    {"name": "English Tech Media", "count": 28},
+    {"name": "Hacker News", "count": 7},
+    {"name": "GitHub Trending", "count": 5},
+    {"name": "Lab Blogs & Releases", "count": 4},
+    {"name": "GitHub Rising", "count": 2},
+    {"name": "HuggingFace", "count": 2},
+    {"name": "Product Hunt", "count": 1}
+  ],
+  "top_reddit": [
+    {"title": "I think it's time Vibe Coders (Mr.Beast meme)", "sub": "ClaudeAI", "ups": 1648},
+    {"title": "The thing you built with Claude is useless to me", "sub": "ClaudeAI", "ups": 950},
+    {"title": "Only 3 years (Elon vs Anthropic)", "sub": "singularity", "ups": 746},
+    {"title": "Drexler nanotech atomically precise mfg", "sub": "singularity", "ups": 585},
+    {"title": "From China, I tested GPT Image 2.0", "sub": "OpenAI", "ups": 495},
+    {"title": "DeepSWE finds Claude Opus cheats", "sub": "LocalLLaMA", "ups": 223},
+    {"title": "Anthropic researcher: unsettling things in models", "sub": "OpenAI", "ups": 200},
+    {"title": "Nvidia CUDA 13.3 landed", "sub": "LocalLLaMA", "ups": 171},
+    {"title": "Use Claude as thinking partner", "sub": "ClaudeAI", "ups": 170},
+    {"title": "90% non-coding AI agents fail in production", "sub": "ClaudeAI", "ups": 165}
+  ]
+};
+
+new Chart(document.getElementById('sourceChart'), {
+  type: 'bar',
+  data: {
+    labels: stats.sections.map(s => s.name),
+    datasets: [{
+      label: 'items',
+      data: stats.sections.map(s => s.count),
+      backgroundColor: stats.sections.map(s => s.name === 'Reddit' ? 'rgba(244, 63, 94, 0.7)' : (s.name === '中文 / 台灣' ? 'rgba(20, 184, 166, 0.7)' : 'rgba(59, 130, 246, 0.6)')),
+      borderColor: stats.sections.map(s => s.name === 'Reddit' ? 'rgba(244, 63, 94, 1)' : (s.name === '中文 / 台灣' ? 'rgba(20, 184, 166, 1)' : 'rgba(59, 130, 246, 1)')),
+      borderWidth: 1
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { beginAtZero: true } }
+  }
+});
+
+new Chart(document.getElementById('redditChart'), {
+  type: 'bar',
+  data: {
+    labels: stats.top_reddit.map(r => 'r/' + r.sub + ' · ' + (r.title.length > 32 ? r.title.slice(0,30) + '…' : r.title)),
+    datasets: [{
+      label: 'upvotes',
+      data: stats.top_reddit.map(r => r.ups),
+      backgroundColor: 'rgba(244, 63, 94, 0.6)',
+      borderColor: 'rgba(244, 63, 94, 1)',
+      borderWidth: 1
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { beginAtZero: true } }
+  }
+});
+
+if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  document.documentElement.classList.add('dark');
+}
+</script>
+
+</body>
+</html>
