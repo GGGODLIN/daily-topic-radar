@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026-05-30 AI Digest</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  html { scroll-behavior: smooth; }
+  .chart-box { height: 340px; }
+</style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
+
+<div class="max-w-5xl mx-auto px-6 py-10">
+
+<header class="mb-8 pb-6 border-b border-gray-200 dark:border-gray-700">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-4xl font-bold tracking-tight">2026-05-30 AI Digest <span class="text-base font-normal text-gray-400">v3.4 — Opus 4.8 上線次日：社群實測潮 + CC v2.1.157（.claude/skills 自動載入）+ Anthropic $965B 反超 OpenAI 餘波 + AI 安全事件叢發</span></h1>
+      <p class="mt-2 text-gray-500 dark:text-gray-400">為應用層開發者整理 · 重 agent / coding / 商業 / 多模態 · 跳過 paper / research</p>
+      <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">raw 由 <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded">daily-topic-analysis</code> workflow 跑 137 agents、6.36M tokens、11m44s 抽出 8 主軸 + 132 條 fact-check（chrome 30 / parallel 102）</p>
+      <p class="mt-2 text-xs text-amber-600 dark:text-amber-400">⚠️ <strong>今天 06:00 launchd 沒跑</strong>（<code>runs = 0 / last exit = (never exited)</code>，標 <code>needs LWCR update</code> —— 疑似排程被 bootout/bootstrap 後沒重啟成功）。早上 10:00 發現今天無 raw md，<strong>關 VPN 後手動 <code>uv run python -m social_info</code> 補跑</strong> → 480 items、51 sources、<strong>0 failures</strong>（Reddit 47 條全回來、社群層完整）。launchd 排程本身待修，見「系統當天動態」。</p>
+    </div>
+    <button onclick="document.documentElement.classList.toggle('dark')" class="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800">🌓 主題</button>
+  </div>
+</header>
+
+<section class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-blue-600 dark:text-blue-400">480</div>
+    <div class="text-sm text-gray-500 mt-1">總 items（昨日 287）</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-emerald-300 dark:border-emerald-700">
+    <div class="text-3xl font-bold text-emerald-600 dark:text-emerald-400">47</div>
+    <div class="text-sm text-gray-500 mt-1">Reddit（關 VPN 後 old.reddit HTML 全回來；昨日 0→30 補抓）</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-purple-600 dark:text-purple-400">51 / 0</div>
+    <div class="text-sm text-gray-500 mt-1">active / failed sources</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-amber-300 dark:border-amber-700">
+    <div class="text-3xl font-bold text-amber-600 dark:text-amber-400">10:02</div>
+    <div class="text-sm text-gray-500 mt-1">完成時刻（CST，手動補跑、非 launchd）</div>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
+  <div class="bg-white dark:bg-gray-800 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <h3 class="font-semibold mb-3">各 source 訊號量</h3>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <h3 class="font-semibold mb-3">Top X / Twitter 貼文 (by ♥)</h3>
+    <div class="chart-box"><canvas id="xChart"></canvas></div>
+  </div>
+</section>
+
+<section class="space-y-8">
+
+<!-- ===== CC CLI 動態 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-blue-700 dark:text-blue-300 mb-3">🆕 Claude Code v2.1.157 — plugins 從 <code>.claude/skills</code> 自動載入（這條直接改你的 skill 管理）</h2>
+  <p class="mb-3">PROBES 主動 fetch 攔截：<a href="https://github.com/anthropics/claude-code/releases" class="text-blue-600 dark:text-blue-400 hover:underline">anthropics/claude-code</a> 從你上次 baseline <strong>v2.1.156</strong> 跳到 <strong>v2.1.157（05-29 20:20 UTC）</strong>。這是 Opus 4.8 上線那波（v2.1.154/156）之後的<strong>第一個功能版</strong>，重點全在 plugins / agents / worktree —— 剛好都打到你的日常工作面。</p>
+
+  <p class="mt-2 mb-1 font-semibold">★★★ 直接改變你工作流的兩條：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong><code>.claude/skills</code> 目錄的 plugins 現在自動載入，不需 marketplace</strong> —— <span class="text-rose-600 dark:text-rose-400">對你的意義：</span>你 <code>~/.claude/skills/</code> 底下一堆 local skill（research-before-answer / review-zh / safe-trial / figma-context-budget …），以前要靠 marketplace 或手動 register；現在直接放目錄就吃得到。另外新增 <code>claude plugin init &lt;name&gt;</code> 一鍵建 plugin 鷹架，你以後固化新 skill 少一段樣板工。</li>
+    <li><strong><code>EnterWorktree</code> 可在同一個 session 中途切換 Claude-managed worktrees</strong>，且 worktree 完成後保持 unlocked、<code>git worktree remove/prune</code> 清得掉 —— <span class="text-rose-600 dark:text-rose-400">對你的意義：</span>你 cmux + 多 worktree 的流程，之前 mid-session 換 worktree 會掉 context、收尾還卡 lock；這版兩個痛點一起修掉。</li>
+  </ul>
+
+  <p class="mt-3 mb-1 font-semibold">★★ 值得知道：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><code>settings.json</code> 的 <code>agent</code> 欄位現在對 dispatched session 生效（也可用 <code>--agent &lt;name&gt;</code> 覆寫）—— 可以設預設 agent，不用每次帶 flag。</li>
+    <li>修正 background session 睡眠喚醒後 model 拿到<strong>錯誤日期</strong>；修正 <code>--resume</code> 沒回報前次還在跑的 background subagent —— <span class="text-gray-500 dark:text-gray-400">你大量用背景 task + workflow，這兩條降踩雷率。</span></li>
+    <li>修正 <code>--worktree</code> 回傳 canonical repo root 而非當前 linked worktree（之前路徑判斷會錯）。</li>
+  </ul>
+
+  <p class="mt-3 mb-1 font-semibold">★ TUI / 雜項：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li>新增「<strong>Workflow keyword trigger</strong>」設定，可關掉 prompt 裡「workflow」字觸發 dynamic workflow —— <span class="text-gray-500 dark:text-gray-400">你常在對話裡講「workflow」，誤觸發過的話這個設定能擋。</span></li>
+    <li>修正 tmux <code>set-clipboard on</code> 下 copy-on-select 進不了系統剪貼板（v2.1.153 regression）；移除「bash commands will be sandboxed」開機橫幅（狀態改在 <code>/status</code> 顯示）；<code>/terminal-setup</code> 在 VS Code/Cursor/Windsurf 停用 GPU 加速防亂碼。</li>
+  </ul>
+
+  <div class="mt-3 p-4 bg-blue-50 dark:bg-blue-900/30 border-l-4 border-blue-500 rounded">
+    <p class="text-sm"><strong>建議動作</strong>：⭐⭐⭐ <code class="bg-white dark:bg-gray-800 px-1 rounded">npm i -g @anthropic-ai/claude-code@latest</code> 升 v2.1.157。升完最值得做的一件事：把目前靠 marketplace / 手動掛的 local skill 改成丟 <code>.claude/skills</code> 自動載入，順手 <code>claude plugin init</code> 試一個。<br>
+    <span class="text-gray-500">PROBES baseline 待更新：<code>v2.1.156 → v2.1.157</code>（digest 結尾會問你是否寫回 PROBES.md）。</span></p>
+  </div>
+</div>
+
+<!-- ===== Anthropic Opus 4.8 + Series H ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-indigo-600 dark:text-indigo-400 mb-3">🏢 Opus 4.8 上線次日 — 社群實測潮 + $965B Series H 反超 OpenAI 餘波</h2>
+  <p class="mb-3">昨天（5/29 digest）寫的是 Anthropic 自己四線同放的「IPO 前敘事整理」；今天是<strong>市場與社群消化那波的第一天</strong>，X 247 條、Reddit r/ClaudeAI 灌爆整版（28 條相關），主軸從「官方公告」轉成「實測手感 + 數字校準」。</p>
+
+  <p class="mt-2 mb-1 font-semibold">① 模型實測 —— 社群焦點是「誠實」跟「effort 階梯」</p>
+  <p class="ml-4 mb-3"><a href="https://x.com/alexalbert__/status/2060043196655362358" class="text-blue-600 dark:text-blue-400 hover:underline">Alex Albert（♥2101）</a>定調「4.8 更懂細微差別、對話更自然」；<a href="https://x.com/simonw/status/2060153712119885867" class="text-blue-600 dark:text-blue-400 hover:underline">Simon Willison 的 notes</a>（含五段 thinking effort 各畫一隻騎腳踏車的鵜鶘）。Reddit 那邊很有意思：<a href="https://www.reddit.com/r/ClaudeAI/comments/1tqz2se/lets_check_opus_48_how_good_is_it/" class="text-blue-600 dark:text-blue-400 hover:underline">「Opus 4.8 到底多好」（▲1220）</a>、<a href="https://www.reddit.com/r/ClaudeAI/comments/1tqt8pl/opus_48s_new_highest_effort_setting/" class="text-blue-600 dark:text-blue-400 hover:underline">「新的最高 effort 設定」（▲888）</a>、還有一條標題就是<strong>「i hate that opus 4.8 is honest」</strong> —— <span class="text-rose-600 dark:text-rose-400">對你的意義：</span>「更誠實 = 更會說我不確定 / 我做不到」這正是你 <code>dispatch-and-verify</code> 想要的行為（宣告完成要附證據、缺 X 先搜），但社群部分人覺得「太誠實很煩」。對照面是 <a href="https://www.reddit.com/r/OpenAI/comments/1tqtmo8/opus_48_craps_himself_in_simplebench/" class="text-blue-600 dark:text-blue-400 hover:underline">r/OpenAI「Opus 4.8 在 SimpleBench 翻車」（▲257 / 💬111）</a> —— 單一 benchmark 退步的反方訊號，當「主張」看別當定論。</p>
+
+  <p class="mt-2 mb-1 font-semibold">② 估值校準 —— $965B 反超是真的，但 $47B 是年化口徑</p>
+  <p class="ml-4 mb-3">fact-check 三源交叉（<a href="https://www.blocktempo.com/anthropic-65-billion-series-h-965-billion-valuation-surpasses-openai/" class="text-blue-600 dark:text-blue-400 hover:underline">blocktempo</a> / <a href="https://www.ithome.com.tw/news/176213" class="text-blue-600 dark:text-blue-400 hover:underline">iThome</a> / <a href="https://x.com/AnthropicAI/status/2060061347522433422" class="text-blue-600 dark:text-blue-400 hover:underline">Anthropic 官方推（♥21659，全站最熱）</a>）：$65B Series H、投後 <strong>$965B</strong>，反超 OpenAI 3 月的 <strong>$852B</strong>。但有兩個要打折的地方 —— (a) $65B 裡 <strong>$15B 是 hyperscaler 先前承諾</strong>（含 Amazon $5B），不是全新資金；(b) <a href="https://x.com/AnthropicAI/status/2060061348818518493" class="text-blue-600 dark:text-blue-400 hover:underline">run-rate 營收 $47B（♥1595）</a>是<strong>年化（當月 ×12）不是 GAAP 已實現</strong> —— 跟昨天同一個口徑提醒，看年化數字記得打折。Micron / Samsung / SK hynix 以「策略性基礎設施夥伴」入列，是這輪比較新的訊號（記憶體供應鏈綁進來）。</p>
+
+  <p class="mt-2 mb-1 font-semibold">③ 對照：OpenAI 營收故事「沒那麼亮」</p>
+  <p class="ml-4 mb-3"><a href="https://x.com/simonw/status/2060486777136456099" class="text-blue-600 dark:text-blue-400 hover:underline">Simon Willison 今早（5/30 06:21）轉 WSJ</a>：OpenAI CFO Sarah Friar 跟內部高層說「<strong>若營收成長不夠快，可能付不起未來的算力合約</strong>」、錯失關鍵營收 / 用戶目標。<span class="text-rose-600 dark:text-rose-400">擺在一起讀：</span>Anthropic 同週放 $965B + run-rate 暴衝，OpenAI 同週傳 CFO 擔心付不起 compute —— 兩邊敘事剛好對撞，但兩邊的數字都帶行銷 / 內部消息成分，當「敘事戰」看。</p>
+
+  <div class="mt-3 p-4 bg-indigo-50 dark:bg-indigo-900/30 border-l-4 border-indigo-500 rounded">
+    <p class="text-sm"><strong>一句話讀這段</strong>：今天是 Opus 4.8 的「社群消化日」—— 官方數字昨天放完，今天看的是手感（誠實 / effort 階梯）跟<strong>口徑校準</strong>（$965B 反超為真、$47B 是年化、$15B 是舊承諾）。對你最實際的是「更誠實」這個行為改變剛好對齊你 verify 紀律；要警惕的是別把年化營收 / 單一 benchmark 當定論。</p>
+  </div>
+</div>
+
+<!-- ===== OpenAI ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mb-3">🤖 OpenAI — GPT-5.5 instant 上線 + Codex 登 Windows + Rosalind 生物防禦</h2>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://x.com/gdb/status/2060294896918094152" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>GPT-5.5 instant 進 ChatGPT（♥945）</strong></a>；<a href="https://www.reddit.com/r/OpenAI/comments/1tr2ny5/gpt56_spotted_in_codex/" class="text-blue-600 dark:text-blue-400 hover:underline">GPT-5.6 已在 Codex 被目擊（▲382）</a> —— 迭代節奏跟 Anthropic 一樣壓得很緊。<a href="https://x.com/emollick/status/2060164072071454857" class="text-blue-600 dark:text-blue-400 hover:underline">Mollick（♥799）</a>持續主張 <strong>GPT-5 Pro 系列在數學證明與學術論文審查仍領先</strong>、是「該拿來 review 技術內容的模型」 —— <span class="text-gray-500 dark:text-gray-400">記錄為「不同任務挑不同模型」的證據，跟你的 effort / model 選擇紀律同向。</span></li>
+    <li><a href="https://x.com/gdb/status/2060432274710315010" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Codex Computer Use 正式登陸 Windows（♥684）</strong></a> + 手機遠端控制同步更新 —— Codex 從「終端 agent」往「跨平台桌面 agent」擴。</li>
+    <li><a href="https://openai.com/index/strengthening-societal-resilience-with-rosalind-biodefense" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Rosalind Biodefense 生物防禦模型</strong></a>，向美國政府夥伴開放（<a href="https://x.com/gdb/status/2060421260304355384" class="text-blue-600 dark:text-blue-400 hover:underline">gdb「defensive acceleration in biology」</a>）。<span class="text-gray-500 dark:text-gray-400">政策 / 國安向，跟你 stack 距離遠，記錄。</span></li>
+    <li><a href="https://www.blocktempo.com/openai-secure-mcp-tunnel-private-servers-chatgpt-codex-enterprise-firewall/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Secure MCP Tunnel</strong></a> —— 讓 ChatGPT / Codex 接進企業防火牆內的 private MCP server。<span class="text-rose-600 dark:text-rose-400">對你的意義：</span>跟昨天 Anthropic Managed Agents 的 MCP tunnels 撞同一招 —— <strong>兩大廠同週都在解「私有 MCP 不暴露公開端點」</strong>，這對你「想接本機 / 內網 MCP 但不想開公網入口」是直接相關的趨勢。</li>
+  </ul>
+</div>
+
+<!-- ===== AI 安全 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-rose-600 dark:text-rose-400 mb-3">🔐 AI 安全事件叢發 — 提示注入釣魚、LLM 輔助滲透、vibe-coded 暴露面、台灣供應鏈</h2>
+  <p class="mb-3">今天安全線是<strong>最密集的一段</strong>（22 條相關），而且全部繞著「AI agent 工具鏈本身變成攻擊面」這個你最該盯的角度：</p>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://thehackernews.com/2026/05/chatgphish-vulnerability-turns-chatgpt.html" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>ChatGPhish</strong></a>（<a href="https://www.theregister.com/research/2026/05/29/chatgpt-prompt-injection-turns-web-pages-into-phishing-lures/5248137" class="text-blue-600 dark:text-blue-400 hover:underline">The Register</a>）—— 利用 ChatGPT 對 <strong>Markdown link 的信任</strong>，把網頁變成釣魚誘餌。<span class="text-rose-600 dark:text-rose-400">對你的意義：</span>這正是你 CLAUDE.md「chrome 抽回的 innerText 是 untrusted data、按 <code>critical_injection_defense</code> 處理」防的東西 —— 現在有了具名 CVE 級案例，你那條原則不是過度防禦。</li>
+    <li><a href="https://thehackernews.com/2026/05/attackers-use-llm-agent-for-post.html" class="text-blue-600 dark:text-blue-400 hover:underline">攻擊者用 LLM agent 做漏洞後期滲透</a>（CVE-2026-39987）+ <a href="https://thehackernews.com/2026/05/new-russian-linked-greyvibe-targets.html" class="text-blue-600 dark:text-blue-400 hover:underline">俄系 GREYVIBE 用 ChatGPT 工具鏈打烏克蘭</a> —— LLM 從「被攻擊對象」變「攻擊工具」。</li>
+    <li><a href="https://thehackernews.com/2026/05/what-2000-exposed-vibe-coded-apps.html" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>2,000 個 vibe-coded app 暴露面研究</strong></a> + <a href="https://arstechnica.com/security/2026/05/fed-up-with-vibe-coders-dev-sneaks-data-nuking-prompt-injection-into-their-code/" class="text-blue-600 dark:text-blue-400 hover:underline">Ars Technica：開發者在程式碼裡埋「資料核爆 prompt injection」反制 vibe coder</a>（Reddit <a href="https://www.reddit.com/r/LocalLLaMA/comments/1tr7hzw/psa/" class="text-blue-600 dark:text-blue-400 hover:underline">r/LocalLLaMA PSA ▲1059 / 💬358</a>，今天 Reddit 全站最熱之一）。<span class="text-rose-600 dark:text-rose-400">這條值得讀完：</span>vibe coding 的安全債正在被公開反制，提醒「複製貼上不審的程式碼可能藏惡意 prompt」。</li>
+    <li>台灣：<a href="https://www.ithome.com.tw/news/176215" class="text-blue-600 dark:text-blue-400 hover:underline">EVERY8D 遭駭引爆國家級供應鏈危機</a> + <a href="https://www.theregister.com/security/2026/05/29/no-fix-yet-for-critical-gogs-rce-bug-exploit-module-is-out/5248691" class="text-blue-600 dark:text-blue-400 hover:underline">Gogs 未修補 RCE 零時差（exploit module 已釋出）</a>。</li>
+  </ul>
+  <div class="mt-3 p-4 bg-rose-50 dark:bg-rose-900/30 border-l-4 border-rose-500 rounded">
+    <p class="text-sm"><strong>對你的行動項</strong>：① 惡意 npm 包仿 OpenSearch/Elasticsearch 的事件（theme 提到）—— 你有 <code>bumblebee</code> 供應鏈掃描 channel，這正是它的守備範圍，今天本機分析跑時值得讓它吃這批 IOC。② 「Markdown link 信任被當釣魚」+ 「程式碼藏 prompt injection」兩條都印證你既有的 untrusted-data 處理原則，不用改、但可以引用為「為什麼要這樣防」的實例。</p>
+  </div>
+</div>
+
+<!-- ===== AI 基建投資 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-amber-700 dark:text-amber-400 mb-3">💰 AI 基建投資潮 — Dell 盤後 +39%、Groq $650M、記憶體成新瓶頸</h2>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://www.blocktempo.com/dell-stock-surge-ai-infrastructure-demand-hardware-vendors-benefiting/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Dell 盤後暴漲約 39%</strong></a>（<span class="text-gray-500 dark:text-gray-400">校準：主軸摘要寫 42%，verified 數字是 ~39%</span>）—— Q1 營收年增 <strong>88% 至 $438.4 億</strong>，全年 AI 伺服器收入預估從 $500 億上調到 <strong>$600 億</strong>，另拿到美國國防部 <strong>$97 億</strong>合約。AI 熱潮從「模型 / 晶片」往下游「伺服器 / 記憶體 / 資料中心」傳導。</li>
+    <li><a href="https://techcrunch.com/2026/05/29/after-nvidias-20b-not-acqui-hire-ai-chip-startup-groq-reportedly-raising-650m/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Groq 傳募 $650M</strong></a> 轉攻 inference cloud —— 接在去年 12 月跟 Nvidia 的「<strong>$20B 非收購</strong>」授權案（部分資深員工轉 Nvidia + 硬體技術授權）之後。</li>
+    <li><a href="https://techcrunch.com/2026/05/29/xcena-secures-135m-at-570m-valuation-betting-on-memory-as-ais-real-bottleneck/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>XCENA $135M（估值 $570M）</strong></a> —— 押注「AI 真正的瓶頸是記憶體」，做近記憶體運算晶片（compute 靠近 DRAM、省掉 CPU↔GPU↔記憶體來回搬運）。<span class="text-rose-600 dark:text-rose-400">這條跟上面 Anthropic 拉 Micron/Samsung/SK hynix 進融資、Dell 記憶體傳導，三條指同一個敘事：</span>2026 的 AI 基建敘事正在從「算力」轉向「記憶體頻寬」。</li>
+    <li><a href="https://www.blocktempo.com/computex-2026-taipei-nvidia-jensen-huang-ai-robotics-keynote-guide/" class="text-blue-600 dark:text-blue-400 hover:underline">COMPUTEX 2026 即將登場</a>，黃仁勳 keynote 成焦點。<span class="text-gray-500 dark:text-gray-400">（台灣本地事件，記錄。）</span></li>
+  </ul>
+</div>
+
+<!-- ===== AI 編碼工具生態 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-cyan-700 dark:text-cyan-400 mb-3">🛠 AI 編碼工具生態 — Cursor 報告、Replit Canvas、harness engineering 成顯學</h2>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://x.com/dotey/status/2060114618932928528" class="text-blue-600 dark:text-blue-400 hover:underline">Cursor 升級支援 Opus 4.8</a>（預設藏掉 4.7、保留 4.6）+ <a href="https://x.com/op7418/status/2060316035790860754" class="text-blue-600 dark:text-blue-400 hover:underline">Cursor 開發者報告</a>：頭部用戶的 token 消耗與 PR 合併量跟中位數差距持續拉大、<strong>input/output token 比例大幅上升（讀程式碼變更越來越貴）</strong>。<span class="text-rose-600 dark:text-rose-400">對你的意義：</span>「讀 code 比寫 code 貴」這條直接對應你的 <code>dispatch</code> 紀律 —— main session 少吃 context、把多檔讀派給 subagent 才省錢。</li>
+    <li><a href="https://www.producthunt.com/products/pancake-6?utm_campaign=producthunt-api&amp;utm_medium=api-v2&amp;utm_source=Application%3A+daily-topic-radar+%28ID%3A+283268%29" class="text-blue-600 dark:text-blue-400 hover:underline">Replit 新版 Canvas</a>（agentic 設計工具，含 GPT-Image 2 圖生 + Seedance 影片）。</li>
+    <li><strong>「harness engineering」成 GitHub Trending 顯學</strong> —— 今天 Trending 一口氣冒出一批代理 / harness 工具（terminal agent multiplexer、AI pentest framework、harness awesome list）。<span class="text-rose-600 dark:text-rose-400">正好印證你早就在做的事</span>（多 channel workflow + dispatch-verify + STATE 管理就是 harness engineering）。<span class="text-gray-500 dark:text-gray-400">每個 repo 的 stars / release / 逐條判斷見下方獨立「🛠 GitHub 倉庫觀察」段。</span></li>
+    <li><a href="https://techcrunch.com/2026/05/29/coders-are-refusing-to-work-without-ai-and-that-could-come-back-to-bite-them/" class="text-blue-600 dark:text-blue-400 hover:underline">TechCrunch：開發者拒絕沒 AI 工作，可能反噬</a> + <a href="https://techcrunch.com/2026/05/29/cognitions-scott-wu-says-ai-coding-agents-shouldnt-replace-humans/" class="text-blue-600 dark:text-blue-400 hover:underline">Cognition Scott Wu：AI coding agent 不該取代人</a> —— 編碼依賴 / 人機分工的論戰。</li>
+  </ul>
+</div>
+
+<!-- ===== 開源模型 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-teal-700 dark:text-teal-400 mb-3">🧩 開源模型與本地推理 — LFM2.5、Qwen3.6、llama.cpp 省 VRAM</h2>
+  <p class="mb-3"><a href="https://huggingface.co/LiquidAI/LFM2.5-8B-A1B" class="text-blue-600 dark:text-blue-400 hover:underline">Liquid AI 發布 LFM2.5-8B-A1B</a>（HF trending ♥218、<a href="https://www.reddit.com/r/LocalLLaMA/comments/1tqqnsl/liquid_ai_releases_lfm258ba1b/" class="text-blue-600 dark:text-blue-400 hover:underline">r/LocalLLaMA ▲182</a>）；<a href="https://www.reddit.com/r/LocalLLaMA/comments/1tr9vzn/qwen3627b_quantization_benchmark/" class="text-blue-600 dark:text-blue-400 hover:underline">Qwen3.6-27B 量化 benchmark</a> 討論活躍；llama.cpp 合併 f16 mask for Flash Attention 省 VRAM（PR #23764）+ 規劃統一 <code>llama</code> binary（Discussion #23875）。<span class="text-gray-500 dark:text-gray-400">你不跑本地模型，這段記錄為 commodity 進度 —— 開源側持續把推理成本往下壓。</span></p>
+</div>
+
+<!-- ===== GitHub 倉庫觀察 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-slate-700 dark:text-slate-300 mb-3">🛠 GitHub 倉庫觀察 — Trending 7 + Rising 14（鐵律：repo 集中一區、逐條判斷）</h2>
+  <p class="mb-3">今天 GitHub source 抓到 <strong>21 個 repo</strong>（Trending 7 + Rising/Trendshift 14）。按鐵律集中列、不散落主題段；stars / release 由 <code>gh repo view</code> 查補。簡介在前、判斷在後：</p>
+
+  <p class="mt-2 mb-1 font-semibold">值得關注（AI / agent / harness）</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><a href="https://github.com/ai-boost/awesome-harness-engineering" class="text-blue-600 dark:text-blue-400 hover:underline">ai-boost/awesome-harness-engineering</a> · ★1,353 · Python —— AI agent harness engineering 的 awesome 清單（tools / patterns / evals / memory / MCP / permissions / observability / orchestration）。<strong class="text-rose-600 dark:text-rose-400">⭐ star 追</strong>：最該追的一條，直接命中你在做的事（多 channel workflow + dispatch-verify + STATE = harness engineering），可挖借鑑模式。</li>
+    <li><a href="https://github.com/ogulcancelik/herdr" class="text-blue-600 dark:text-blue-400 hover:underline">ogulcancelik/herdr</a> · ★3,011 · Rust · rel v0.6.5（昨天剛 push）—— 住在終端機的 agent multiplexer。<strong class="text-rose-600 dark:text-rose-400">📥 試 demo</strong>：你用 cmux 管多 session / worktree，herdr 同領域，值得看值不值得借鑑或取代一部分。</li>
+    <li><a href="https://github.com/GH05TCREW/pentestagent" class="text-blue-600 dark:text-blue-400 hover:underline">GH05TCREW/pentestagent</a> · ★2,500 · Python —— 黑箱安全測試的 AI agent framework（bug bounty / red-team / pentest）。<strong>⏭ 跳過（記錄）</strong>：非你場景，但屬「agent framework」樣本、呼應今天安全主軸。</li>
+    <li><a href="https://github.com/zakirkun/deep-eye" class="text-blue-600 dark:text-blue-400 hover:underline">zakirkun/deep-eye</a> · ★1,577 · Python · rel v1.4 —— 編排多 AI provider（OpenAI / Claude / Grok / Gemini …）做 payload 生成 + 45+ 漏洞掃描。<strong>⏭ 跳過</strong>：滲透測試 agent；「multi-provider orchestration」pattern 可記。</li>
+    <li><a href="https://github.com/galilai-group/stable-worldmodel" class="text-blue-600 dark:text-blue-400 hover:underline">galilai-group/stable-worldmodel</a> · ★1,281 · Python · rel 0.1.0 —— 可重現 world model 研究 / 評估平台。<strong>⏭ 跳過（多模態記錄）</strong>：<span class="text-rose-600 dark:text-rose-400">這是我原本漏掉的那個</span>，屬你多模態興趣但偏 research，按「跳過 paper/research」記錄不追。</li>
+    <li><a href="https://github.com/gcui-art/suno-api" class="text-blue-600 dark:text-blue-400 hover:underline">gcui-art/suno-api</a> · ★2,963 · TypeScript —— 用 API 呼叫 Suno 音樂生成、可整合進 agent。<strong>⏭ 跳過（多模態記錄）</strong>：音樂生成 wrapper，非場景。</li>
+    <li><a href="https://github.com/github-copilot-resources/copilot-metrics-viewer" class="text-blue-600 dark:text-blue-400 hover:underline">github-copilot-resources/copilot-metrics-viewer</a> · ★617 · TypeScript · rel v3.7.1 —— 視覺化 Copilot Business 用量 metrics。<strong>⏭ 跳過</strong>：你用 CC 非 Copilot，但「coding agent 用量可視化」概念呼應你 token 成本關注。</li>
+    <li><a href="https://github.com/ronisarkarexe/story-spark-ai" class="text-blue-600 dark:text-blue-400 hover:underline">ronisarkarexe/story-spark-ai</a> · ★132 · TypeScript —— 單 prompt 生成多版故事。<strong>⏭ 跳過</strong>：低 star 創作工具、無 stack 契合。</li>
+  </ul>
+
+  <p class="mt-2 mb-1 font-semibold">雜項（非 AI，一句帶過 — 多為 Trendshift star milestone / 長青 repo）</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3 text-sm text-gray-600 dark:text-gray-400">
+    <li><a href="https://github.com/ejbills/DockDoor" class="text-blue-600 dark:text-blue-400 hover:underline">ejbills/DockDoor</a> ★5,145 Swift · rel 1.39.1 —— macOS 視窗預覽 / alt-tab。⏭ 你用 mac，興趣級可試 demo、非工作項。</li>
+    <li><a href="https://github.com/lupinemachines/lupine" class="text-blue-600 dark:text-blue-400 hover:underline">lupinemachines/lupine</a> ★1,893 C++ · rel v0.1.0 —— GPU over IP 橋接（遠端 GPU 掛到 CPU-only 機器）。⏭ infra 有趣、記錄。</li>
+    <li><a href="https://github.com/glanceapp/glance" class="text-blue-600 dark:text-blue-400 hover:underline">glanceapp/glance</a> ★34,633 Go · rel v0.8.4 —— 自架 dashboard 把 feed 聚一頁。⏭ dashboard 概念可記、非 AI。</li>
+    <li><a href="https://github.com/chen08209/FlClash" class="text-blue-600 dark:text-blue-400 hover:underline">chen08209/FlClash</a> ★40,206 Dart · rel v0.8.93 —— ClashMeta 代理客戶端。⏭ VPN GUI。</li>
+    <li><a href="https://github.com/bia-pain-bache/BPB-Worker-Panel" class="text-blue-600 dark:text-blue-400 hover:underline">bia-pain-bache/BPB-Worker-Panel</a> ★10,636 TS · rel v4.1.3 —— Cloudflare Worker VPN 面板。⏭ VPN 工具。</li>
+    <li><a href="https://github.com/AdAway/AdAway" class="text-blue-600 dark:text-blue-400 hover:underline">AdAway/AdAway</a> ★9,112 C · rel v6.1.4 —— Android 擋廣告。⏭。</li>
+    <li><a href="https://github.com/WebKit/WebKit" class="text-blue-600 dark:text-blue-400 hover:underline">WebKit/WebKit</a> ★9,854 —— Safari 瀏覽器引擎。⏭ 基礎建設、trending 多半 star milestone。</li>
+    <li><a href="https://github.com/FujiwaraChoki/MoneyPrinterV2" class="text-blue-600 dark:text-blue-400 hover:underline">FujiwaraChoki/MoneyPrinterV2</a> ★30,659 Python —— 自動化線上賺錢。⏭ star-farm 類。</li>
+    <li><a href="https://github.com/Hack-with-Github/Awesome-Hacking" class="text-blue-600 dark:text-blue-400 hover:underline">Hack-with-Github/Awesome-Hacking</a> ★113,365 —— 資安 awesome 清單。⏭ 長青清單。</li>
+    <li><a href="https://github.com/ruanyf/weekly" class="text-blue-600 dark:text-blue-400 hover:underline">ruanyf/weekly</a> ★92,488 —— 科技愛好者周刊（中文）。⏭ 長青中文週報。</li>
+    <li><a href="https://github.com/DataTalksClub/data-engineering-zoomcamp" class="text-blue-600 dark:text-blue-400 hover:underline">DataTalksClub/data-engineering-zoomcamp</a> ★41,601 —— 免費 9 週資料工程課程。⏭ 課程。</li>
+    <li><a href="https://github.com/TCNOco/TcNo-Acc-Switcher" class="text-blue-600 dark:text-blue-400 hover:underline">TCNOco/TcNo-Acc-Switcher</a> ★2,263 C# —— 遊戲帳號切換器。⏭。</li>
+    <li><a href="https://github.com/wtfloris/hestia" class="text-blue-600 dark:text-blue-400 hover:underline">wtfloris/hestia</a> ★243 Python —— 租屋網爬蟲。⏭。</li>
+  </ul>
+  <div class="mt-2 p-3 bg-slate-50 dark:bg-slate-800/40 border-l-4 border-slate-400 rounded">
+    <p class="text-sm">這段是我今天<strong>漏掉的鐵律</strong>（GitHub repo 散進主題段 + 沒逐條判斷 + 漏 stable-worldmodel）事後補的。鐵律已同步寫進專案 <code>CLAUDE.md</code> step 6（不再只靠 memory recall）。</p>
+  </div>
+</div>
+
+<!-- ===== 企業/社會衝擊 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-violet-700 dark:text-violet-400 mb-3">🏛 AI 與企業 / 社會 — Amazon 砍 AI 排行榜、token 預算焦慮、就業論戰收口</h2>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://www.reddit.com/r/singularity/comments/1tr0yps/amazon_scraps_ai_leaderboard_to_stop_workers/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Amazon 砍掉 AI 使用量排行榜</strong></a>（▲221），主管警告「不要為了用 AI 而用 AI」+ <a href="https://www.reddit.com/r/singularity/comments/1trk0vc/encouraged_to_go_allin_on_ai_last_year_and_had/" class="text-blue-600 dark:text-blue-400 hover:underline">「去年被鼓勵 all-in AI、今年被砍 token 預算」</a>（singularity 熱議）。<span class="text-rose-600 dark:text-rose-400">這條接昨天的「企業 token 成本危機」</span> —— 從「鼓勵狂用」到「成本反噬」只隔幾個月，AI 使用的成本管理還沒成熟。</li>
+    <li><a href="https://techcrunch.com/podcast/does-your-ceo-have-ai-psychosis-aaron-levie-thinks-most-of-them-do/" class="text-blue-600 dark:text-blue-400 hover:underline">Box 創辦人 Aaron Levie：「CEO AI psychosis」</a> + <a href="https://www.blocktempo.com/altman-amodei-ipo-walkback-ai-jobs-apocalypse-trillion-dollar-valuation/" class="text-blue-600 dark:text-blue-400 hover:underline">Altman 公開收回「AI 摧毀工作」預言</a> —— 就業衝擊論戰，大佬們在 IPO 前統一收口風。</li>
+    <li><a href="https://x.com/simonw/status/2060209010486493500" class="text-blue-600 dark:text-blue-400 hover:underline">Simon Willison（♥805）質疑「Uber 燒光 AI 預算」故事的可信度</a> —— <span class="text-gray-500 dark:text-gray-400">提醒：流傳的「企業 AI 翻車」故事很多查不到源頭，當段子別當案例。</span></li>
+    <li><a href="https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-omni-3-5-videos/" class="text-blue-600 dark:text-blue-400 hover:underline">Google I/O 餘波：Gemini Omni / 3.5 demo 影片持續釋出</a> + <a href="https://blog.google/innovation-and-ai/technology/ai/io-2026-vibe-coded-quiz/" class="text-blue-600 dark:text-blue-400 hover:underline">AI Studio vibe coding quiz 上線</a>。</li>
+  </ul>
+</div>
+
+<!-- ===== Reddit 社群層 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-orange-700 dark:text-orange-300 mb-3">💬 Reddit 社群層（關 VPN 後 5 sub 共 47 條全回來）</h2>
+  <p class="mb-3">今天 reddit fetcher 走 <code>old.reddit.com/r/X/top/</code> HTML 路徑（5/29 改的那版 <code>reddit.py</code>），VPN 一關就抓回 47 條、<strong>0 失敗</strong>。各 sub 重點：</p>
+  <p class="mt-2 mb-1 font-semibold">r/ClaudeAI — Opus 4.8 灌爆整版</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1tqu934/what_its_like_talking_to_opus_48/" class="text-blue-600 dark:text-blue-400 hover:underline">「跟 Opus 4.8 對話的感覺」</a>（▲620 / 💬241，討論最熱）+ 上面已引的「多好」「最高 effort」「i hate that it's honest」。</li>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1tqx8q5/spent_1156308524_input_tokens_in_may_sharing_what/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>「五月燒了 11.5 億 input token，分享我學到的」</strong></a>（▲963 / 💬123）—— <span class="text-rose-600 dark:text-rose-400">這篇對你有料：</span>實戰 token 省錢清單，其中一條「<strong>JSON 是 token 大胃王、同樣資料用純文字 / markdown table 約省一半</strong>」直接對應你的 workflow 結構化輸出設計取捨。</li>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1tqrzv0/anthropics_claude_will_soon_be_vibecoding_human/" class="text-blue-600 dark:text-blue-400 hover:underline">「Claude 即將 vibecode 人類 DNA」</a>（▲348）—— 接昨天 Anthropic Milan + 生技客戶那條。</li>
+  </ul>
+  <p class="mt-2 mb-1 font-semibold">r/singularity — Dynamic Workflow 「殺掉 wrapper」</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong><a href="https://www.reddit.com/r/singularity/comments/1tqxkab/claude_code_dynamic_workflow_creates_a_harness_on/" class="text-blue-600 dark:text-blue-400 hover:underline">「CC Dynamic Workflow 當場生 harness、殺掉一大批 wrapper」</a></strong>（▲138 / 💬27）—— <span class="text-rose-600 dark:text-rose-400">這條就是你正在用的東西的社群印證：</span>你這份 digest 本身就是 dynamic workflow 跑 137 agents 產的，社群也認同它讓「手寫 wrapper」變得多餘。<a href="https://x.com/dotey/status/2060404667423596843" class="text-blue-600 dark:text-blue-400 hover:underline">dotey 甚至覺得 Dynamic Workflows 意義比 Opus 4.8 更大</a>。</li>
+    <li><a href="https://www.reddit.com/r/singularity/comments/1tr4seo/booster_robotics_from_beijing_came_out_to_show/" class="text-blue-600 dark:text-blue-400 hover:underline">北京 Booster Robotics 秀人形機器人</a>（▲469，全 sub 最熱）。</li>
+  </ul>
+  <p class="mt-2 mb-1 font-semibold">r/LocalLLaMA / r/OpenAI — 安全 + 模型</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li>r/LocalLLaMA：上面已引的 PSA（資料核爆 prompt injection）+ <a href="https://www.reddit.com/r/LocalLLaMA/comments/1tqnx5n/beware_users_trying_to_fork_and_steal_your/" class="text-blue-600 dark:text-blue-400 hover:underline">「小心有人 fork 偷你的專案」</a>（▲414）。</li>
+    <li>r/OpenAI：<a href="https://www.reddit.com/r/OpenAI/comments/1tquvrc/pope_dropping_bars/" class="text-blue-600 dark:text-blue-400 hover:underline">教宗談 AI（▲471）</a>（接昨天教宗 AI 通諭）+ GPT-5.6 spotted。</li>
+    <li>r/MachineLearning 今日多為 [R][D] 純研究帖（confidence probe / ICML 投稿 / monokernel）+ 分數偏低，按你「跳過 paper/research」偏好略過。</li>
+  </ul>
+</div>
+
+<!-- ===== 外部視角校準 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-yellow-700 dark:text-yellow-400 mb-3">🌐 外部視角校準（follow-builders feed 試讀件，review 2026-06-05）</h2>
+  <p class="mb-3">抓 Zara 的 follow-builders feed 三個 raw 跟自家 scan 對 angle diff —— <strong>今天 X feed 活了（26 條）</strong>、podcasts 1、blogs 0：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>重疊度高 + 一條獨家 angle</strong>：feed 裡 Garry Tan、Matt Turck、Guillermo Rauch、Dan Shipper 講的（Opus 4.8 + OpenClaw、tokenmaxxing、Vercel CLI self-updating binary）跟自家 scan 大致重疊。獨家一條值得看：<a href="https://x.com/danshipper/status/2060382815821209801" class="text-blue-600 dark:text-blue-400 hover:underline">Dan Shipper 轉「tokenmaxxing 恐慌為何撐不久」</a> —— 跟下面那集 podcast 同主題。</li>
+    <li><strong>Podcasts 那條值得單獨看</strong>：<a href="https://www.youtube.com/watch?v=Gs2styCcwro" class="text-blue-600 dark:text-blue-400 hover:underline">The MAD Podcast「State of Enterprise AI 2026: Aaron Levie 談 Tokenmaxxing、Headless 興起、AI-Proofing 你的工作」</a> —— <span class="text-rose-600 dark:text-rose-400">跟今天兩條主軸交叉印證：</span>Amazon 砍排行榜（token 焦慮）+ Levie 的 CEO AI psychosis 都指向「企業 AI 投入失速、要從『狂用』轉『管好』」。Levie 提的「headless AI（後端 agent 化、無 UI）」是自家 scan 沒特別抓到的 framing。</li>
+  </ul>
+  <p class="mb-2 text-sm text-gray-600 dark:text-gray-400">Trial 第 9/14 天觀察：X feed 今天恢復、重疊度回到「大致同步」基準；獨特價值仍集中在 <strong>podcast 的 framing</strong>（連兩天 podcasts 那條都拉出自家 scan 沒抓到的 angle —— After Automation、Tokenmaxxing/Headless）。2026-06-05 結論前再累積。</p>
+</div>
+
+<!-- ===== 系統當天動態 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-gray-600 dark:text-gray-400 mb-3">📭 系統當天動態</h2>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>🚨 launchd 今天沒跑（待修）：</strong><code>com.gggodlin.social-info-daily</code> 顯示 <code>runs = 0 / last exit = (never exited) / needs LWCR update</code> —— job 自上次 bootstrap 後從沒執行。早上 10:00 發現今天無 raw md，<strong>關 VPN 後手動 <code>uv run python -m social_info</code> 補跑成功</strong>（480 items / 0 fail）。<span class="text-rose-600 dark:text-rose-400">後續要查：</span>launchd 是否被 bootout 後沒 bootstrap 回來、或 LWCR（launch constraint）需要 update（可能跟近期 brew python 換版 / codesign 有關）。建議跑 <code>launchctl bootout</code> + <code>bootstrap</code> 重載一次再觀察明早 06:00。</li>
+    <li><strong>KNOWN_ISSUES：</strong>手動補跑後 <strong>0 known issues</strong>（昨日 5 個 reddit 🚨 全清）—— 關 VPN + old.reddit HTML fetcher 兩條一起生效，reddit 5 sub 共 47 條全回來。</li>
+    <li><strong>WATCH（有一條 resolve 待你確認）：</strong>Stage 1 grep 命中 → Stage 2 <code>gh</code> 確認 <a href="https://github.com/anthropics/claude-code/issues/44696" class="text-blue-600 dark:text-blue-400 hover:underline">anthropics/claude-code#44696（寬 markdown 表格被拆成 key-value 卡片）已 CLOSED（2026-05-14）</a>。<span class="text-rose-600 dark:text-rose-400">按 WATCH.md「When closed」：</span>可移除 <code>~/.claude/CLAUDE.md</code>「Markdown 表格」段 + memory <code>feedback_prefer_tables_over_bullets.md</code> 2026-05-13 update 段、恢復「視覺體感」原則。要不要我幫你把這條從 WATCH.md ## Active 移到 ## Resolved + 套用那兩處還原？</li>
+    <li><strong>PROBES：</strong>1 條新訊號 —— CC CLI <strong>v2.1.157</strong>（超過 baseline v2.1.156，詳上方 🆕 段）。<span class="text-rose-600 dark:text-rose-400">baseline 待更新 v2.1.156 → v2.1.157</span>（digest 結尾問你）。其餘 stage-2 triggered probes 無 diff。</li>
+    <li><strong>外部 feeds：</strong>X ✅ 26 / Podcasts ✅ 1 / Blogs ⚪ 0（feed lookback window 無新貼，非失敗）。</li>
+    <li><strong>Fetch routing：</strong>chrome（X 30 條，<strong>全 ok</strong>）/ parallel（一般 URL 102 條，<strong>63 抓到內文 / 39 空 body</strong>）。39 空 body 幾乎全是 <strong>GitHub repo 頁</strong>（gh 元資料另走，repo 頁本來就抽不到正文）跟<strong>部分 Reddit thread</strong>（old.reddit 列表頁無內文）—— 非真失敗、無幽靈 URL，引用的內容都有 verified 來源。</li>
+    <li><strong>Stale sources（fetched 但 0 net-new）：</strong>huggingface_spaces / anthropic_blog / mistral_blog / venturebeat_ai / krebs_security —— 抓到但去重後無新內容，非失敗。</li>
+    <li><strong>Workflow：</strong>daily-topic-analysis 137 agents / 6.36M tokens / 11m44s（昨日 105 / 4.56M / 9m11s）—— 量級偏高（480 items 比昨日 287 多、fact-check 132 條），仍在預算內。</li>
+  </ul>
+</div>
+
+<!-- ===== 一句話總結 ===== -->
+<div class="p-6 bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-lg border-2 border-blue-300 dark:border-blue-700">
+  <h2 class="text-2xl font-bold mb-2">🎯 一句話總結</h2>
+  <p>昨天 5/29 是 <strong>Anthropic 自己四線同放</strong>（Opus 4.8 + $65B + Milan + Managed Agents）；今天 5/30 是<strong>市場與社群消化那波的第一天</strong> —— 主軸從「官方公告」轉成「<strong>實測手感 + 數字校準 + 安全反噬</strong>」。三條值得記：① <a href="https://github.com/anthropics/claude-code/releases" class="text-blue-600 dark:text-blue-400 hover:underline font-semibold">CC v2.1.157 讓 <code>.claude/skills</code> 自動載入</a> —— 直接簡化你一堆 local skill 的管理；② Opus 4.8 「更誠實」的行為改變剛好對齊你的 verify 紀律，但要警惕別把 <strong>$47B 年化營收 / SimpleBench 單一退步</strong>當定論；③ <strong>AI 安全事件叢發</strong>（ChatGPhish 提示注入釣魚、vibe-coded app 暴露面、程式碼藏 prompt injection）全在印證你既有的 untrusted-data 防禦原則不是過度防禦。<strong>如果只看一條今天必做</strong>：升 v2.1.157 後把 local skill 改丟 <code>.claude/skills</code> 自動載入。<strong>今天的程序插曲</strong>：launchd 今天沒跑（<code>runs=0</code>）—— 排程層待修，今天靠手動補跑救回；KNOWN_ISSUES 攔截照協議先問你「關 VPN 補跑 / 接受 gap」，你選了關 VPN，結果 480 items 0 fail、社群層完整。</p>
+</div>
+
+</section>
+
+<footer class="mt-16 pt-6 border-t border-gray-200 dark:border-gray-700 text-sm text-gray-500 text-center">
+  <p>raw data: <a href="2026-05-30.md" class="text-blue-600 dark:text-blue-400 hover:underline">2026-05-30.md</a> · pipeline: <a href="https://github.com/GGGODLIN/daily-topic-radar" class="text-blue-600 dark:text-blue-400 hover:underline">GGGODLIN/daily-topic-radar</a> · raw 由 <strong>手動 <code>uv run python -m social_info</code> 於 10:02 補跑</strong>（launchd 06:00 未執行、待修）；digest 由 daily-topic-analysis workflow 跑 137 agents / 6.36M tokens / 11m44s · Reddit 47 條經 old.reddit HTML fetcher 抓回（關 VPN）</p>
+</footer>
+
+</div>
+
+<script>
+const stats = {
+  "sections": [
+    {"name": "X / Twitter", "count": 247},
+    {"name": "中文 / 中國", "count": 95},
+    {"name": "Reddit", "count": 47},
+    {"name": "中文 / 台灣", "count": 29},
+    {"name": "English Tech Media", "count": 25},
+    {"name": "GitHub Rising", "count": 14},
+    {"name": "Lab Blogs & Releases", "count": 9},
+    {"name": "GitHub Trending", "count": 7},
+    {"name": "Hacker News", "count": 4},
+    {"name": "HuggingFace", "count": 2},
+    {"name": "Product Hunt", "count": 1}
+  ],
+  "top_x": [
+    {"who": "@AnthropicAI", "topic": "$65B Series H / $965B", "hearts": 21659},
+    {"who": "@steipete", "topic": "I smell a takedown", "hearts": 2624},
+    {"who": "@emollick", "topic": "Opus 4.8 早期實測 shader", "hearts": 2246},
+    {"who": "@alexalbert__", "topic": "Opus 4.8 發布", "hearts": 2101},
+    {"who": "@AnthropicAI", "topic": "run-rate 營收破 $47B", "hearts": 1595},
+    {"who": "@steipete", "topic": "Vince 加入", "hearts": 1187},
+    {"who": "@gdb", "topic": "GPT-5.5 instant 進 ChatGPT", "hearts": 945},
+    {"who": "@swyx", "topic": "mid-task 改指令不破 cache", "hearts": 843},
+    {"who": "@simonw", "topic": "質疑 Uber 燒光 AI 預算故事", "hearts": 805},
+    {"who": "@emollick", "topic": "GPT-5 Pro 數學證明最強", "hearts": 799},
+    {"who": "@steipete", "topic": "build the thing that builds", "hearts": 761},
+    {"who": "@emollick", "topic": "Opus 4.8 寫學術論文", "hearts": 704},
+    {"who": "@gdb", "topic": "Codex 登 Windows", "hearts": 684},
+    {"who": "@Replit", "topic": "新版 Canvas 設計工具", "hearts": 564}
+  ]
+};
+
+new Chart(document.getElementById('sourceChart'), {
+  type: 'bar',
+  data: {
+    labels: stats.sections.map(s => s.name),
+    datasets: [{
+      label: 'items',
+      data: stats.sections.map(s => s.count),
+      backgroundColor: stats.sections.map(s => s.name === 'Reddit' ? 'rgba(16, 185, 129, 0.7)' : (s.name === '中文 / 台灣' ? 'rgba(20, 184, 166, 0.7)' : (s.name === 'X / Twitter' ? 'rgba(139, 92, 246, 0.7)' : 'rgba(59, 130, 246, 0.6)'))),
+      borderColor: stats.sections.map(s => s.name === 'Reddit' ? 'rgba(16, 185, 129, 1)' : (s.name === '中文 / 台灣' ? 'rgba(20, 184, 166, 1)' : (s.name === 'X / Twitter' ? 'rgba(139, 92, 246, 1)' : 'rgba(59, 130, 246, 1)'))),
+      borderWidth: 1
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { beginAtZero: true } }
+  }
+});
+
+new Chart(document.getElementById('xChart'), {
+  type: 'bar',
+  data: {
+    labels: stats.top_x.map(r => r.who + ' · ' + (r.topic.length > 22 ? r.topic.slice(0,20) + '…' : r.topic)),
+    datasets: [{
+      label: '♥ hearts',
+      data: stats.top_x.map(r => r.hearts),
+      backgroundColor: 'rgba(139, 92, 246, 0.6)',
+      borderColor: 'rgba(139, 92, 246, 1)',
+      borderWidth: 1
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { beginAtZero: true } }
+  }
+});
+
+if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  document.documentElement.classList.add('dark');
+}
+</script>
+
+</body>
+</html>
