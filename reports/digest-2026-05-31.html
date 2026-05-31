@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026-05-31 AI Digest</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  html { scroll-behavior: smooth; }
+  .chart-box { height: 340px; }
+</style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
+
+<div class="max-w-5xl mx-auto px-6 py-10">
+
+<header class="mb-8 pb-6 border-b border-gray-200 dark:border-gray-700">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-4xl font-bold tracking-tight">2026-05-31 AI Digest <span class="text-base font-normal text-gray-400">v3.5 — Opus 4.8 上線週末降溫日：agentic coding 工具競爭白熱化（Salesforce 把 Claude Code 案例攤出來 + xAI Grok Build 挖角 Cursor + Copilot 改 token 計費炸鍋）+ CC v2.1.158 Auto mode 上雲 + 中國大模型 IPO 潮</span></h1>
+      <p class="mt-2 text-gray-500 dark:text-gray-400">為應用層開發者整理 · 重 agent / coding / 商業 / 多模態 · 跳過 paper / research</p>
+      <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">raw 由 <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded">daily-topic-analysis</code> workflow 跑 71 agents、3.55M tokens、7m32s 抽出 8 主軸 + 66 條 fact-check（chrome 5 / parallel 61）</p>
+    </div>
+    <button onclick="document.documentElement.classList.toggle('dark')" class="px-3 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800">🌓 主題</button>
+  </div>
+  <p class="mt-3 text-xs text-emerald-600 dark:text-emerald-400">✅ <strong>今天 06:00 launchd 正常跑了</strong>（<code>generated_at 06:01:26 CST</code>、152 items / 24 sources / <strong>0 failures</strong>）—— 昨天那條 <code>runs=0</code> 排程故障今天沒重演，看來自行恢復或前一晚機器醒著補跑成功。<strong>但今天訊號量明顯縮水</strong>（152 vs 昨日 480）：主因 <strong>X/Twitter 今天 0 net-new</strong>（<code>twitter_tier1 fetched=112 / net_new=0</code> —— 112 條全是前幾天看過的、去重後沒新貼），社群層今天只剩 Reddit 撐。</p>
+</header>
+
+<section class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-blue-600 dark:text-blue-400">152</div>
+    <div class="text-sm text-gray-500 mt-1">總 items（昨日 480）</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-amber-300 dark:border-amber-700">
+    <div class="text-3xl font-bold text-amber-600 dark:text-amber-400">0</div>
+    <div class="text-sm text-gray-500 mt-1">X/Twitter net-new（112 全去重 → 社群層只剩 Reddit）</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-emerald-300 dark:border-emerald-700">
+    <div class="text-3xl font-bold text-emerald-600 dark:text-emerald-400">24 / 0</div>
+    <div class="text-sm text-gray-500 mt-1">active / failed sources</div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <div class="text-3xl font-bold text-purple-600 dark:text-purple-400">06:01</div>
+    <div class="text-sm text-gray-500 mt-1">完成時刻（CST，launchd 正常）</div>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
+  <div class="bg-white dark:bg-gray-800 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <h3 class="font-semibold mb-3">各 source 訊號量（X 今天 0 net-new、不入榜）</h3>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
+    <h3 class="font-semibold mb-3">外部 feed（follow-builders）Top 貼文 (by ♥)<span class="text-xs font-normal text-gray-400 block mt-0.5">今天自家 twitter_tier1 0 net-new，改用外部視角 feed 的 X 訊號</span></h3>
+    <div class="chart-box"><canvas id="xChart"></canvas></div>
+  </div>
+</section>
+
+<section class="space-y-8">
+
+<!-- ===== CC CLI 動態 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-blue-700 dark:text-blue-300 mb-3">🆕 Claude Code v2.1.158 — Auto mode 延伸到 Bedrock / Vertex / Foundry（這條對你「沒直接影響」，但值得記）</h2>
+  <p class="mb-3">PROBES 主動 fetch 攔截：<a href="https://github.com/anthropics/claude-code/releases" class="text-blue-600 dark:text-blue-400 hover:underline">anthropics/claude-code</a> 從你昨天 baseline <strong>v2.1.157</strong> 跳到 <strong>v2.1.158（05-30 02:42 UTC）</strong>。這版只有一條主功能：<strong>Auto mode（原 <code>claude --auto</code>）現在可在 Bedrock、Vertex、Foundry 上跑 Opus 4.7 / 4.8</strong>，需設環境變數 <code>CLAUDE_CODE_ENABLE_AUTO_MODE=1</code> opt-in。</p>
+  <div class="mt-3 p-4 bg-blue-50 dark:bg-blue-900/30 border-l-4 border-blue-500 rounded">
+    <p class="text-sm"><strong>對你的意義（誠實版）：</strong>你的 daily launchd job 跟日常開發都走<strong>本地 anthropic endpoint</strong>，不走 Bedrock/Vertex/Foundry —— <span class="text-rose-600 dark:text-rose-400">這版對你現有 setup 沒直接影響</span>。記錄理由只有一個：如果哪天為了配額 / 區域 / 公司合規考慮把 routing 切到雲端供應商，這條（加上前幾天的 Managed Agents / MCP tunnel）是會回頭 revisit 的線。<strong>非緊急升級，★ 一顆星（awareness only）</strong>。要升就 <code class="bg-white dark:bg-gray-800 px-1 rounded">npm update -g @anthropic-ai/claude-code</code>。<br>
+    <span class="text-gray-500">PROBES baseline 待更新：<code>v2.1.157 → v2.1.158</code>（digest 結尾會問你是否寫回 PROBES.md）。</span></p>
+  </div>
+</div>
+
+<!-- ===== Agentic Coding 工具競爭 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-cyan-700 dark:text-cyan-400 mb-3">🛠 Agentic Coding 工具競爭白熱化 — Salesforce 案例、Grok Build 挖角、Copilot 計費炸鍋</h2>
+  <p class="mb-3">Opus 4.8 上線那波的喧囂散去，今天的主軸轉成「<strong>工具競爭與商業化現實</strong>」—— 三條都直接打到你的 stack：</p>
+
+  <p class="mt-2 mb-1 font-semibold">① Anthropic 端出 Salesforce 案例 —— 把 Claude Code 的 ROI 說死</p>
+  <p class="ml-4 mb-3"><a href="https://x.com/bcherny/status/2060390852619272526" class="text-blue-600 dark:text-blue-400 hover:underline">Boris Cherny（♥2789，今天外部 feed 最熱）</a>轉 Salesforce 的 agentic 實作 writeup：一個原本估 <strong>231 天</strong>的遷移，用 Claude Code <strong>13 天</strong>交付；<strong>一個 PR 出 21 個 endpoint、100% 測試覆蓋</strong>。<a href="https://x.com/bcherny/status/2060390853835726946" class="text-blue-600 dark:text-blue-400 hover:underline">第二推（♥411）</a>補：PR 量上升的同時<strong>總事故數反而降 5%</strong>，因為把安全護欄跟品質標準內建進 agent 工作流本身。<span class="text-rose-600 dark:text-rose-400">對你的意義：</span>這正是你 <code>dispatch-and-verify</code> + TDD 紀律在做的事 —— 不是「agent 跑得快」而是「把驗證內建進流程所以快又穩」。這條可以收進你下次 ako 內部 workshop 的「為什麼要把流程固化成 skill / harness」素材（對應你的 <code>user_internal_tech_workshop_cadence</code>），是大廠背書版的同一個論點。</p>
+
+  <p class="mt-2 mb-1 font-semibold">② xAI Grok Build 半個月衝 11 版、挖 Cursor 兩名核心 —— 正面對標 Claude Code</p>
+  <p class="ml-4 mb-3"><a href="https://www.blocktempo.com/xai-grok-build-coding-agent-cursor-hires-claude-code-benchmark/" class="text-blue-600 dark:text-blue-400 hover:underline">Grok Build</a> 5/14 上線、半月推到 <strong>v0.2.11</strong>：<strong>最多 8 個子代理在獨立 git worktree 並行</strong>、Plan Mode 預設開、唯一整合 X 即時搜尋的 coding 工具；從 Cursor 挖來工程與產品主管、拿到 Cursor 母公司 $60B 收購選擇權。但 <strong>SWE-bench Verified 只有 70.8%</strong>，跟 Claude Code 87.6% / Codex CLI 85–88.7% <strong>差距顯著</strong>。<span class="text-rose-600 dark:text-rose-400">對你的意義：</span>「子代理 + 獨立 worktree 並行」就是你 cmux + workflow dispatch 的核心 pattern —— 連 xAII 都把它當招牌功能在賣。值得知道，但 <strong>benchmark 還差一截、暫不需要動你的工具鏈</strong>（你已經在更成熟的 CC 上跑同一個 pattern）。</p>
+
+  <p class="mt-2 mb-1 font-semibold">③ GitHub Copilot 6/1 改 token 計費 —— 開發者炸鍋</p>
+  <p class="ml-4 mb-3"><a href="https://techcrunch.com/2026/05/30/what-a-joke-github-copilots-new-token-based-billing-spurs-consternation-among-devs/" class="text-blue-600 dark:text-blue-400 hover:underline">TechCrunch：「What a joke」</a> —— Copilot 從 flat 訂閱改成 <strong>按 token 用量計費（6/1 生效）</strong>，小團隊 / 個人成本可能暴增，Reddit / X 一片哀號。<span class="text-rose-600 dark:text-rose-400">對你的意義：</span>你不用 Copilot（走 Claude Code Max 訂閱，對應 <code>feedback_claude_tool_must_ride_existing_subscription</code>），<strong>這條對你沒直接帳單衝擊</strong>。但「讀 code 越來越貴、按 token 計費成趨勢」這個底層經濟學，正是你 <code>dispatch</code> 紀律的理由 —— main session 少吃 context、把多檔讀派給 subagent，省的就是這種 token 帳。</p>
+
+  <p class="mt-2 mb-1 font-semibold">④ 兩條社群雜訊（記錄、別當定論）</p>
+  <ul class="list-disc list-inside space-y-1 ml-4 mb-3">
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1trpxfl/careful_with_the_new_ultracode_its_a_mega_token/" class="text-blue-600 dark:text-blue-400 hover:underline">r/ClaudeAI：「小心新的 UltraCode，是 token 大胃王」</a> —— 有人回報 ultracode 模式燒 170 萬 token 卻沒有效產出、疑似有 bug。<span class="text-gray-500 dark:text-gray-400">你會用 workflow / 高 effort 模式，這條當「ultracode 開下去先盯 token」的提醒（thread 內文今天被 Reddit 403 擋住、只有標題級訊號）。</span></li>
+    <li><a href="https://www.reddit.com/r/singularity/comments/1ts32d2/deepswe_opus_48_results_have_been_released/" class="text-blue-600 dark:text-blue-400 hover:underline">DeepSWE Opus 4.8 跑分釋出（▲168）</a> —— benchmark 帖，數字本身當「主張」看。</li>
+  </ul>
+</div>
+
+<!-- ===== 資安 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-rose-600 dark:text-rose-400 mb-3">🔐 資安 — PAN-OS 認證繞過已被主動利用、研究員賭氣公開微軟一串 0day</h2>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://thehackernews.com/2026/05/pan-os-globalprotect-authentication.html" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>PAN-OS GlobalProtect 認證繞過（CVE-2026-0257，CVSS 7.8）已遭野外主動利用</strong></a> —— 攻擊者可繞過驗證建立未授權 VPN 連線；影響開了 GlobalProtect portal/gateway 且啟用 authentication override cookie + 特定憑證設定的防火牆。<span class="text-gray-500 dark:text-gray-400">網路設備層 CVE，跟你個人 stack 距離遠，記錄為威脅情勢。</span></li>
+    <li><a href="https://www.ithome.com.tw/news/176228" class="text-blue-600 dark:text-blue-400 hover:underline">研究員 Chaotic Eclipse 賭氣公開微軟多項 0day</a>（BlueHammer CVE-2026-33825、RedSun CVE-2026-41091、UnDefend CVE-2026-45498、YellowKey…）—— 因不滿微軟漏洞通報流程，4 月初起逐一公開。微軟譴責「未經協調」。</li>
+    <li><a href="https://blog.zksecurity.xyz/posts/groth16/" class="text-blue-600 dark:text-blue-400 hover:underline">HN：Groth16 零知識證明系統白話解釋</a>（David Wong）—— 密碼學基礎建設教學，非攻擊面，列為 HN 今日技術好文。</li>
+  </ul>
+  <div class="mt-3 p-3 bg-rose-50 dark:bg-rose-900/30 border-l-4 border-rose-500 rounded">
+    <p class="text-sm"><strong>對你的行動項：</strong>今天的安全線都是傳統網路設備 / OS 漏洞，<strong>不在你的 <code>bumblebee</code> 供應鏈掃描守備範圍</strong>（它掃的是 lockfile / 套件 / extension 的已知供應鏈攻擊，不是 PAN-OS / Windows CVE）。今天無 IOC 級供應鏈事件，本機分析跑 bumblebee 時沒有額外要餵的東西。</p>
+  </div>
+</div>
+
+<!-- ===== AI 硬體穿戴 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-violet-700 dark:text-violet-400 mb-3">📱 AI 硬體穿戴與個人助理 — Meta AI 吊墜、Rokid 眼鏡破紀錄、Gemini Spark</h2>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://techcrunch.com/2026/05/30/meta-is-reportedly-developing-an-ai-pendant/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>Meta 開發 AI 吊墜</strong></a>（<a href="https://www.blocktempo.com/meta-ai-pendant-limitless-wearables-work-rayban-target-ten-million/" class="text-blue-600 dark:text-blue-400 hover:underline">blocktempo 細節</a>）—— 基於 2025 底收購的 Limitless（前 Rewind，$99 對話錄音轉寫吊墜），預計一年內測試；目標 2026 下半年出貨 <strong>1000 萬台</strong>穿戴裝置 + 推「Wearables for Work」企業訂閱。背景：Reality Labs Q1 燒掉 $40 億。</li>
+    <li><a href="https://36kr.com/newsflashes/3831673401190273" class="text-blue-600 dark:text-blue-400 hover:underline">Rokid（樂奇）AI 眼鏡在日本 Makuake 眾籌破紀錄</a> —— 累積 <strong>6.24 億日圓</strong>，刷新該平台 13 年來全品類最高眾籌額。</li>
+    <li><a href="https://techcrunch.com/2026/05/30/i-put-googles-24-7-ai-assistant-gemini-spark-to-work-and-its-actually-pretty-useful/" class="text-blue-600 dark:text-blue-400 hover:underline">Google Gemini Spark（24/7 agentic 助理）實測「意外好用」</a> —— 幫你處理線上待辦，但獨立產品定位仍模糊。</li>
+  </ul>
+  <p class="text-xs text-gray-500 dark:text-gray-400 ml-2">⚠️ fact-check 校正：主軸摘要原列的 <code>nvidia/LocateAnything</code>（HF 視覺定位模型）<strong>查證為 404、頁面不存在</strong> —— 已從本段移除，不引用未驗證來源。</p>
+</div>
+
+<!-- ===== 本地 LLM ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-teal-700 dark:text-teal-400 mb-3">🖥 本地 LLM 硬體與效能競賽 — 2×4060ti 跑 Qwen3.6 達 125 tok/s、NVFP4 量化</h2>
+  <p class="mb-3"><a href="https://www.reddit.com/r/LocalLLaMA/comments/1tryp2q/125_toks_for_qwen36_q4xl_on_2x_4060ti_is_insane/" class="text-blue-600 dark:text-blue-400 hover:underline">r/LocalLLaMA：2×4060ti 跑 Qwen3.6 q4xl 達 125 tok/s（▲182）</a>，主打 perf/dollar；<a href="https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4" class="text-blue-600 dark:text-blue-400 hover:underline">NVIDIA 發布 Qwen3.6-35B-A3B 的 NVFP4 量化版</a>；<a href="https://www.reddit.com/r/LocalLLaMA/comments/1trkze4/i_compared_all_specs_of_the_major_gpusmachines/" class="text-blue-600 dark:text-blue-400 hover:underline">「主流 GPU/機型全規格對比（頻寬不是一切）」</a>討論活躍；<a href="https://huggingface.co/Gryphe/Pantheon-Reasoning-27B" class="text-blue-600 dark:text-blue-400 hover:underline">Gryphe/Pantheon-Reasoning-27B</a>（Qwen 3.6 27B 的實驗性 uncensored dense 模型）。</p>
+  <div class="mt-2 p-3 bg-teal-50 dark:bg-teal-900/30 border-l-4 border-teal-500 rounded">
+    <p class="text-sm"><strong>對你的意義（已有定論、不重評）：</strong>你<strong>不把本地模型當 daily-driver 串 CC</strong>（你的 <code>_index_local_llm_serving</code> 早有結論：本地 27–35B 串 CC daily-driver 是死路，只適合翻譯 / STT / lean harness）。這段記錄為 commodity 進度 —— 開源側持續把推理成本壓低，但<strong>那條 125 tok/s 帖底下原作者自己也說「qwen 27b 連 Android app + server 都蓋不太起來、TDD pipeline 跑不順」</strong>，剛好佐證你的判斷：性價比 ≠ 能撐 agentic coding 工作量。</p>
+  </div>
+</div>
+
+<!-- ===== AI 生成內容 / 文化 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-pink-600 dark:text-pink-400 mb-3">🎬 AI 生成內容的現實落差與文化反應 — AI 廣告 vs 現實、Cannes AI 電影、touchbar 梗</h2>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://www.reddit.com/r/singularity/comments/1trwaq0/ai_advertisements_vs_reality/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>「AI 廣告 vs 現實」</strong></a>（r/singularity，<strong>▲1135</strong>，影片帖）—— 今天 singularity 最熱，集體吐槽 AI demo 跟實際落差。<span class="text-gray-500 dark:text-gray-400">（校正：主軸摘要寫 ▲954，verified 為 ▲1135。）</span></li>
+    <li><a href="https://www.reddit.com/r/singularity/comments/1trmaby/a_fully_ai_generated_film_just_screened_at_cannes/" class="text-blue-600 dark:text-blue-400 hover:underline">全球首部全程 AI 生成電影在 Cannes Market 放映</a>（▲295 / 75% upvoted），製作成本 $50 萬。</li>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1trwhsw/the_touchbar_was_too_early_and_didnt_deserve_to/" class="text-blue-600 dark:text-blue-400 hover:underline">r/ClaudeAI 今日最熱：「Touch Bar 來得太早、不該死」</a>（<strong>▲2189 / 💬146</strong>）—— 借 Apple Touch Bar 類比 AI 工具「對的東西出在錯的時間」的梗帖。<span class="text-gray-500 dark:text-gray-400">（內文今天被 Reddit 403 擋、僅標題級訊號。）</span></li>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1trmrn2/is_it_just_me_or_is_opus_48_horrible_for_creative/" class="text-blue-600 dark:text-blue-400 hover:underline">「是我的錯覺還是 Opus 4.8 創意寫作很糟、限制超多」</a> —— 接昨天「i hate that opus 4.8 is honest」那條，<span class="text-rose-600 dark:text-rose-400">同一個行為改變的反面：</span>4.8 更克制 / 更誠實，創作場景的人覺得綁手綁腳。對你（重 coding / 驗證）是優點，對創作向用戶是抱怨。</li>
+    <li><a href="https://www.mooreds.com/wordpress/archives/3737" class="text-blue-600 dark:text-blue-400 hover:underline">HN：「AI Can't Care」</a> —— AI 無法替代「在乎 / 判斷」的哲學討論，今日 HN 思辨好文。</li>
+  </ul>
+</div>
+
+<!-- ===== 中國 AI ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-red-700 dark:text-red-400 mb-3">🇨🇳 中國 AI 生態 — MiniMax/智譜 IPO 會師、智元世界模型登頂、綠色算力上線</h2>
+  <p class="mb-3">今天中文/中國 source 灌了 <strong>78 條</strong>（全 source 最大宗），主軸是「<strong>大模型資本化加速</strong>」：</p>
+  <ul class="list-disc list-inside space-y-2 ml-2 mb-3">
+    <li><a href="https://www.blocktempo.com/minimax-citic-ipo-zhipu-ai-star-board-dual-listing-race/" class="text-blue-600 dark:text-blue-400 hover:underline"><strong>MiniMax 啟動 A 股科創板 IPO 輔導</strong></a>（5/29 簽中信證券），距港股掛牌僅 5 個月，走 H+A 雙重上市；智譜 AI 2 月已簽科創板輔導，<strong>兩大獨角獸 A 股會師</strong>。MiniMax 2025 營收 $7,904 萬（+158.9%、七成海外）、全球 3 億用戶、近兩月年化營收成長破 100%。</li>
+    <li><a href="https://www.ithome.com/0/957/692.htm" class="text-blue-600 dark:text-blue-400 hover:underline">智元自研世界模型 GE 2.0 以 2B 參數登頂 WorldArena Track1</a> —— 「2B 四兩撥千斤」，具身智能向。</li>
+    <li><a href="https://www.ithome.com/0/957/682.htm" class="text-blue-600 dark:text-blue-400 hover:underline">全國首個綠色算力全棧 AI 平台在呼和浩特上線</a>（相容國產芯片）+ <a href="https://www.ithome.com/0/957/684.htm" class="text-blue-600 dark:text-blue-400 hover:underline">北京太空智算研究院成立</a>（2028 前發首發試驗星）。<span class="text-gray-500 dark:text-gray-400">國產算力 + 太空算力布局，記錄。</span></li>
+    <li><a href="https://www.ithome.com/0/957/690.htm" class="text-blue-600 dark:text-blue-400 hover:underline">外媒：微軟下週發 NVIDIA 處理器 Windows PC、戴爾跟進</a> —— 首批 NVIDIA 芯片當主處理器的 Windows PC（Surface 品牌領頭）。<span class="text-gray-500 dark:text-gray-400">ARM/NVIDIA on Windows，硬體向。</span></li>
+  </ul>
+  <p class="text-xs text-gray-500 dark:text-gray-400 ml-2">⚠️ fact-check 校正：主軸摘要提到的 <code>36kr 阶跃星辰 Step 3.7 Flash</code> 那條原文連結（newsflashes/3831050538529409）<strong>查證為已刪除 / 不存在</strong>，本段未引用；Rokid 眼鏡那條（3831673401190273）正常、已併入硬體段。</p>
+</div>
+
+<!-- ===== GitHub 倉庫觀察 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-slate-700 dark:text-slate-300 mb-3">🛠 GitHub 倉庫觀察 — Trending 5 + Rising 7（鐵律：集中一區、逐條判斷、gh 查補數據）</h2>
+  <p class="mb-3">今天 GitHub source 共 <strong>12 個 repo</strong>（Trending 5 + Rising/Trendshift 7）。按鐵律集中列、不散落主題段；stars / release / 簡介由 <code>gh repo view</code> 查補。簡介在前、判斷在後：</p>
+
+  <p class="mt-2 mb-1 font-semibold">值得關注（AI / agent / 工具鏈）</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><a href="https://github.com/voidzero-dev/vite-plus" class="text-blue-600 dark:text-blue-400 hover:underline">voidzero-dev/vite-plus</a> · ★4,761 · Rust · rel v0.1.23 —— Vite+ 統一前端工具鏈（一處管 runtime + 套件管理 + 前端工具）。<strong class="text-rose-600 dark:text-rose-400">⭐ star 追</strong>：voidzero（Vite/Vitest 原班）的下一步，你 personal-site 走 TanStack（對應 <code>_index_tanstack_personal_site</code>），這個統一工具鏈方向值得追看會不會收斂前端 tooling 碎片化。</li>
+    <li><a href="https://github.com/EverMind-AI/EverOS" class="text-blue-600 dark:text-blue-400 hover:underline">EverMind-AI/EverOS</a> · ★6,305 —— <strong>不是 AI OS</strong>（主軸摘要誤標），實際是「<strong>為自我演化 agent 建構 / 評估 / 整合長期記憶</strong>」的框架。<strong class="text-rose-600 dark:text-rose-400">📥 試 demo</strong>：直接命中你的 auto-memory / 記憶系統議題（<code>_index_auto_memory</code>、mempalace 退役後仍在找的結構）—— 值得看它的 memory 架構有沒有可借鑑的 evaluation pattern。</li>
+    <li><a href="https://github.com/dontbesilent2025/dbskill" class="text-blue-600 dark:text-blue-400 hover:underline">dontbesilent2025/dbskill</a> · ★5,737 · rel v2.12.0 —— dontbesilent 的「商業診斷 Skills」合集（中文）。<strong class="text-rose-600 dark:text-rose-400">⭐ star 追</strong>：你在做 skill 固化（<code>user_core_mode_skill_crystallization</code>），這是少見的「中文 + 商業領域」skill 包，值得看別人怎麼組 skill 結構、有沒有可借的 packaging 模式。</li>
+    <li><a href="https://github.com/open-jarvis/OpenJarvis" class="text-blue-600 dark:text-blue-400 hover:underline">open-jarvis/OpenJarvis</a> · ★5,587 · rel desktop-v1.0.2 —— 「個人 AI、跑在個人裝置上」的本地助理。<strong>⏭ 跳過（記錄）</strong>：本地 personal assistant 方向，跟你「不把本地模型當 daily-driver」的結論不契合，當趨勢樣本記。</li>
+    <li><a href="https://github.com/jmaczan/tiny-vllm" class="text-blue-600 dark:text-blue-400 hover:underline">jmaczan/tiny-vllm</a> · ★583 · C++/CUDA —— 教學向「自己造高效 LLM 推理引擎（mini vLLM）」。<strong>⏭ 跳過</strong>：學習素材，非工作項。</li>
+    <li><a href="https://github.com/FareedKhan-dev/train-llm-from-scratch" class="text-blue-600 dark:text-blue-400 hover:underline">FareedKhan-dev/train-llm-from-scratch</a> · ★2,296 —— 從下載資料到生成文字的 LLM 訓練教學。<strong>⏭ 跳過</strong>：教學向、非場景。</li>
+  </ul>
+
+  <p class="mt-2 mb-1 font-semibold">雜項（非 AI / 工具，一句帶過）</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3 text-sm text-gray-600 dark:text-gray-400">
+    <li><a href="https://github.com/apache/airflow" class="text-blue-600 dark:text-blue-400 hover:underline">apache/airflow</a> ★45,615 Python · rel 3.2.2 —— 工作流排程平台。⏭ 長青資料工程基建、Trending 常客。</li>
+    <li><a href="https://github.com/stalwartlabs/stalwart" class="text-blue-600 dark:text-blue-400 hover:underline">stalwartlabs/stalwart</a> ★12,997 Rust · rel v0.16.7 —— 全能郵件 + 協作伺服器（IMAP/JMAP/SMTP/CalDAV…）。⏭ 自架郵件向、有趣記錄。</li>
+    <li><a href="https://github.com/eclipse-zenoh/zenoh" class="text-blue-600 dark:text-blue-400 hover:underline">eclipse-zenoh/zenoh</a> ★2,815 Rust · rel 1.9.0 —— 地理分散式 pub/sub + 儲存 + 運算統一層。⏭ 分散式 infra、非場景。</li>
+    <li><a href="https://github.com/RealKai42/qwerty-learner" class="text-blue-600 dark:text-blue-400 hover:underline">RealKai42/qwerty-learner</a> ★22,202 TS —— 鍵盤工作者的單字 / 肌肉記憶練習軟體。⏭ 學習工具。</li>
+    <li><a href="https://github.com/AnInsomniacy/motrix-next" class="text-blue-600 dark:text-blue-400 hover:underline">AnInsomniacy/motrix-next</a> ★6,801 · rel v3.9.2 —— 全功能下載管理器重寫版。⏭ 工具。</li>
+    <li><a href="https://github.com/AprilNEA/OpenLogi" class="text-blue-600 dark:text-blue-400 hover:underline">AprilNEA/OpenLogi</a> ★408 Rust · rel v0.1.1 —— <strong>不是「物流管理系統」</strong>（主軸摘要誤標 OpenLogi=Logistics，實為 <code>Logi</code>=Logitech）；它是 <strong>Logitech Options+ 的本地原生替代品</strong>（remap 按鍵 / DPI / SmartShift，走 HID++、無帳號無 telemetry）。⏭ 你用 mac + 滑鼠的話興趣級可試，非工作項。</li>
+  </ul>
+</div>
+
+<!-- ===== Reddit 社群層 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-orange-700 dark:text-orange-300 mb-3">💬 Reddit 社群層（46 條抓進 raw、但深層內文今天大量被 403）</h2>
+  <p class="mb-3">今天 reddit fetcher（<code>old.reddit.com</code> HTML）抓回 <strong>46 條列表</strong>，但 digest 階段要展開 thread 內文 / 留言時，<strong>61 條 fact-check 有 13 條失敗、幾乎全是 Reddit 403</strong>（<code>r.jina.ai</code> / old.reddit / chrome 全被擋）。所以下面多是「標題 + 分數」級訊號，少數成功抓到內文的另標：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>r/ClaudeAI</strong>：Touch Bar 梗（▲2189，上面文化段已引）；<a href="https://www.reddit.com/r/ClaudeAI/comments/1trob4h/half_a_billion_gone/" class="text-blue-600 dark:text-blue-400 hover:underline">「Half a billion gone」（半億美元帳單沒了）</a> —— <span class="text-rose-600 dark:text-rose-400">成功抓到內文，社群共識是「八成假新聞」</span>：算過數學覺得是「幻想公司」、且 Anthropic/AWS 有 rate limit + 審核流程不可能讓帳單默默衝到五億。<span class="text-gray-500 dark:text-gray-400">對你的提醒同昨天 Simon Willison 質疑「Uber 燒光 AI 預算」：流傳的「企業 AI 帳單翻車」故事多查無源頭，當段子別當案例。</span></li>
+    <li><strong>r/LocalLLaMA</strong>：125 tok/s（本地 LLM 段已引）、DGX Spark clones 對比圖、GPU 全規格對比、<a href="https://www.reddit.com/r/LocalLLaMA/comments/1trq8kq/this_new_moss_tts_15_is_damn_good_with_voice/" class="text-blue-600 dark:text-blue-400 hover:underline">MOSS TTS 1.5 語音克隆</a>。</li>
+    <li><strong>r/singularity / r/OpenAI</strong>：AI 廣告 vs 現實（▲1135）、Cannes AI 電影、<a href="https://www.reddit.com/r/OpenAI/comments/1trsw3t/this_is_my_biggest_fear/" class="text-blue-600 dark:text-blue-400 hover:underline">r/OpenAI「這是我最大的恐懼」（▲496）</a>；GPT-5.6 15M token context 傳聞（內文 403）。</li>
+  </ul>
+</div>
+
+<!-- ===== 外部視角校準 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-yellow-700 dark:text-yellow-400 mb-3">🌐 外部視角校準（follow-builders feed 試讀件，review 2026-06-05）</h2>
+  <p class="mb-3">抓 Zara 的 follow-builders feed 三個 raw 跟自家 scan 對 angle diff —— <strong>今天 X feed 8 條、podcasts 1、blogs 0</strong>。今天因為自家 <code>twitter_tier1</code> 0 net-new，<span class="text-rose-600 dark:text-rose-400">外部 feed 反而成了今天唯一的 X 訊號來源</span>：</p>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>X feed 重疊度 + 獨家</strong>：bcherny 的 Salesforce 案例（已是今天主軸 ①，外部 feed 跟自家判斷一致）；<a href="https://x.com/steipete/status/2060294413377519808" class="text-blue-600 dark:text-blue-400 hover:underline">steipete「I smell a takedown 3…2…1」（♥2774）</a>轉一篇 <em>Everything That Went Wrong With Claude</em>（clawd.rip）—— OpenClaw 陣營對 Claude 的酸帖；<a href="https://x.com/thsottiaux/status/2060565265906290786" class="text-blue-600 dark:text-blue-400 hover:underline">OpenAI 的 Tibo 暗示「Codex 儀表板上一個讓我開心的數字」（♥1690）</a> —— Codex 採用量風向球。<a href="https://x.com/levie/status/2060525104384418271" class="text-blue-600 dark:text-blue-400 hover:underline">Aaron Levie（♥348）</a>：「一家公司花 $5 億造自己版本的 app 層，這是對 app 層最好的廣告」 —— 接他昨天的「headless AI」framing。</li>
+    <li><strong>Podcasts 那條值得單獨看</strong>：<a href="https://www.youtube.com/watch?v=QDsbFLEt9ro" class="text-blue-600 dark:text-blue-400 hover:underline">No Priors「Building an AI Guardian for Enterprise」（Onyx Security CEO）</a> —— <span class="text-rose-600 dark:text-rose-400">三個觀察跟今天主軸交叉印證：</span>(1) <strong>超過 50% 企業 agent 用量集中在自主 coding agents（Claude Code / Copilot），且成長最快</strong>（佐證今天 Salesforce + Copilot 計費兩條的重要性）；(2) 企業不願讓 Anthropic/OpenAI 拿走歷史 agent 行為資料，給第三方安全廠商留結構性空間；(3) 自動化漏洞挖掘讓企業需要「AI 攻擊面的控制平面」。</li>
+  </ul>
+  <p class="mb-2 text-sm text-gray-600 dark:text-gray-400">Trial 第 10/14 天觀察：今天自家 X 掛掉，外部 feed 直接補位成唯一 X 來源 —— <strong>這是試讀期第一次體現「冗餘價值」</strong>（不只是 angle 校準，是 source failover）。獨特價值仍集中在 podcast 的 framing（連三天 podcasts 那條都拉出自家 scan 沒抓到的 enterprise angle）。2026-06-05 結論前再累積。</p>
+</div>
+
+<!-- ===== 系統當天動態 ===== -->
+<div>
+  <h2 class="text-2xl font-bold text-gray-600 dark:text-gray-400 mb-3">📭 系統當天動態</h2>
+  <ul class="list-disc list-inside space-y-1 ml-2 mb-3">
+    <li><strong>✅ launchd 今天正常跑：</strong>raw md <code>generated_at 06:01:26 CST</code>、152 items / 24 active sources / <strong>0 failures</strong> —— 昨天那條 <code>runs=0</code> 排程故障<strong>今天沒重演</strong>。<span class="text-rose-600 dark:text-rose-400">但昨天還沒實際 bootout/bootstrap 重載過</span>，建議今天還是手動 <code>launchctl print … | grep state</code> 確認一下 job 健康度，避免哪天又靜默漏跑。</li>
+    <li><strong>KNOWN_ISSUES：</strong><strong>0 known issues</strong>（blocking / persistent / dead 三區全空）—— reddit 5 sub 走 old.reddit HTML 全回來、無 fetcher gap。</li>
+    <li><strong>WATCH：</strong>Stage 1 grep <strong>無訊號</strong>（今天 raw md 沒帶出任何 watch entry 的 keyword）→ 按協議跳過 Stage 2 gh query，digest 不寫 watch 段。<span class="text-gray-500 dark:text-gray-400">提醒：上週你 5/30 digest 標的 <a href="https://github.com/anthropics/claude-code/issues/44696" class="text-blue-600 dark:text-blue-400 hover:underline">#44696（寬表格被拆卡片）已 CLOSED</a> 那條，若還沒從 WATCH.md ## Active 移到 ## Resolved，可順手處理（這次 grep 沒命中是因為今天 raw md 沒 CC 表格相關討論，非該 issue 重開）。</span></li>
+    <li><strong>PROBES：</strong>1 條新訊號 —— CC CLI <strong>v2.1.158</strong>（超過 baseline v2.1.157，詳上方 🆕 段，Auto mode 上 Bedrock/Vertex/Foundry）。<code>ruanyf/weekly</code> 仍為第 398 期（無變動，下期 399 預計 6/05）。<span class="text-rose-600 dark:text-rose-400">baseline 待更新 v2.1.157 → v2.1.158</span>（digest 結尾問你）。</li>
+    <li><strong>外部 feeds：</strong>X ✅ 8 / Podcasts ✅ 1 / Blogs ⚪ 0（blogs lookback window 無新貼，非失敗）。<strong>今天 X feed 補位成唯一 X 來源</strong>（自家 twitter_tier1 0 net-new）。</li>
+    <li><strong>Fetch routing：</strong>chrome（X/Twitter 5 條，<strong>4 ok / 1 是已刪推文 404</strong>）/ parallel（一般 URL 61 條，<strong>48 抓到內文 / 13 失敗</strong>）。13 失敗裡 <strong>10 條是 Reddit 403</strong>（r.jina.ai / old.reddit / chrome 全被擋 —— 列表能抓、thread 內文不行）、2 條真 404（<code>nvidia/LocateAnything</code> HF 頁不存在、36kr 那則已刪）、1 條 WSJ 硬封鎖。<strong>引用的內容都有 verified 來源、無幽靈 URL。</strong></li>
+    <li><strong>Stale sources（fetched 但 0 net-new）：</strong>twitter_tier1（112）/ anthropic_blog / openai_blog / google_ai_blog / mistral_blog / product_hunt / huggingface_models / theregister_security / krebs_security / arstechnica_security / ifanr_feed —— 抓到但去重後無新內容，非失敗。<span class="text-gray-500 dark:text-gray-400">twitter_tier1 整批 0 net-new 是今天訊號縮水主因，值得留意是否 X 抓取在快取舊資料（連兩天若都 0 net-new 要查 fetcher）。</span></li>
+    <li><strong>Workflow：</strong>daily-topic-analysis 71 agents / 3.55M tokens / 7m32s（昨日 137 / 6.36M / 11m44s）—— 量級隨 items 數（152 vs 480）同步下降，正常。</li>
+  </ul>
+</div>
+
+<!-- ===== 一句話總結 ===== -->
+<div class="p-6 bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-lg border-2 border-blue-300 dark:border-blue-700">
+  <h2 class="text-2xl font-bold mb-2">🎯 一句話總結</h2>
+  <p>Opus 4.8 上線那波的喧囂散去（今天 X 甚至 0 net-new、訊號量砍半到 152），主軸轉成「<strong>agentic coding 的工具競爭與商業化現實</strong>」。三條值得記：① <a href="https://x.com/bcherny/status/2060390852619272526" class="text-blue-600 dark:text-blue-400 hover:underline font-semibold">Salesforce 案例（Claude Code 把 231 天壓到 13 天、事故反降 5%）</a> —— 大廠背書版的「把驗證內建進流程所以快又穩」，正好是你 dispatch-verify + TDD 紀律的論點，可收進下次 ako workshop 素材；② <strong>xAI Grok Build 把「子代理 + 獨立 worktree 並行」當招牌賣、Copilot 改 token 計費炸鍋</strong> —— 你的 cmux+workflow pattern 跟 CC Max 訂閱兩件事都被市場驗證了方向，但 <strong>都不需要動你現有工具鏈</strong>（Grok benchmark 還差一截、Copilot 你根本沒用）；③ <strong>CC v2.1.158 Auto mode 上雲對你沒直接影響</strong>（你走本地 endpoint），純記錄。<strong>如果只看一條今天必做</strong>：其實今天沒有「必做」—— 是個適合把 Salesforce 案例存進 workshop 素材、順手清掉 WATCH.md #44696 那條 resolved entry 的整理日。<strong>系統面</strong>：launchd 今天正常（vs 昨天 runs=0）、0 known issues；唯一要留意的是 <strong>X twitter_tier1 連續 0 net-new</strong>，若明天還是 0 要查 fetcher 是不是卡在舊快取。</p>
+</div>
+
+</section>
+
+<footer class="mt-16 pt-6 border-t border-gray-200 dark:border-gray-700 text-sm text-gray-500 text-center">
+  <p>raw data: <a href="2026-05-31.md" class="text-blue-600 dark:text-blue-400 hover:underline">2026-05-31.md</a> · pipeline: <a href="https://github.com/GGGODLIN/daily-topic-radar" class="text-blue-600 dark:text-blue-400 hover:underline">GGGODLIN/daily-topic-radar</a> · raw 由 launchd 06:01 正常產出（152 items / 0 fail）；digest 由 daily-topic-analysis workflow 跑 71 agents / 3.55M tokens / 7m32s · 今天 X 0 net-new、社群層靠 Reddit + 外部 feed 補位</p>
+</footer>
+
+</div>
+
+<script>
+const stats = {
+  "sections": [
+    {"name": "中文 / 中國", "count": 78},
+    {"name": "Reddit", "count": 46},
+    {"name": "GitHub Rising", "count": 7},
+    {"name": "Hacker News", "count": 6},
+    {"name": "GitHub Trending", "count": 5},
+    {"name": "English Tech Media", "count": 5},
+    {"name": "中文 / 台灣", "count": 4},
+    {"name": "HuggingFace", "count": 1}
+  ],
+  "top_x": [
+    {"who": "@bcherny", "topic": "Salesforce Claude Code 案例", "hearts": 2789},
+    {"who": "@steipete", "topic": "I smell a takedown", "hearts": 2774},
+    {"who": "@thsottiaux", "topic": "Codex 儀表板的數字", "hearts": 1690},
+    {"who": "@bcherny", "topic": "品質升、事故降 5%", "hearts": 411},
+    {"who": "@levie", "topic": "app 層最好的廣告", "hearts": 348},
+    {"who": "@garrytan", "topic": "錢是汽油不是火", "hearts": 346},
+    {"who": "@danshipper", "topic": "extremely sick", "hearts": 229},
+    {"who": "@joshwoodward", "topic": "Multilingual 變超簡單", "hearts": 70}
+  ]
+};
+
+new Chart(document.getElementById('sourceChart'), {
+  type: 'bar',
+  data: {
+    labels: stats.sections.map(s => s.name),
+    datasets: [{
+      label: 'items',
+      data: stats.sections.map(s => s.count),
+      backgroundColor: stats.sections.map(s => s.name === 'Reddit' ? 'rgba(16, 185, 129, 0.7)' : (s.name === '中文 / 中國' ? 'rgba(239, 68, 68, 0.7)' : (s.name === '中文 / 台灣' ? 'rgba(20, 184, 166, 0.7)' : 'rgba(59, 130, 246, 0.6)'))),
+      borderColor: stats.sections.map(s => s.name === 'Reddit' ? 'rgba(16, 185, 129, 1)' : (s.name === '中文 / 中國' ? 'rgba(239, 68, 68, 1)' : (s.name === '中文 / 台灣' ? 'rgba(20, 184, 166, 1)' : 'rgba(59, 130, 246, 1)'))),
+      borderWidth: 1
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { beginAtZero: true } }
+  }
+});
+
+new Chart(document.getElementById('xChart'), {
+  type: 'bar',
+  data: {
+    labels: stats.top_x.map(r => r.who + ' · ' + (r.topic.length > 22 ? r.topic.slice(0,20) + '…' : r.topic)),
+    datasets: [{
+      label: '♥ hearts',
+      data: stats.top_x.map(r => r.hearts),
+      backgroundColor: 'rgba(139, 92, 246, 0.6)',
+      borderColor: 'rgba(139, 92, 246, 1)',
+      borderWidth: 1
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { beginAtZero: true } }
+  }
+});
+
+if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  document.documentElement.classList.add('dark');
+}
+</script>
+
+</body>
+</html>
