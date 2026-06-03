@@ -20,7 +20,17 @@
 - **Hit signal**: 最新 release `tagName` 比 `Last seen` 新 → 有新 release。
 - **Action on hit**: stage-2 digest 開「🆕 CC CLI 動態」section、列每個新 release 的 tagName + publishedAt + body 重點 entry（按 hook / daemon / MCP / quota / deprecation / fast mode / agents 等分類）+ 每條標跟使用者 workflow 對應的個人化評論 + 顆星排序（★/★★/★★★）+ 升級指令。
 - **Triggered by**: `stage-2-digest` only（**不在 06:45 daily probes 跑** — release 低頻、daily 跑會 spam；digest 階段才有差分價值）
-- **Last seen**: `v2.1.142 (2026-05-14T22:55:10Z)` — 2026-05-15 digest baseline
+- **Last seen**: `v2.1.161 (2026-06-02T21:58:22Z)` — 2026-06-03 digest baseline（**幾乎全是 bug 修復、三個 ★★★ 直接打到 launchd + cmux + 多 worktree 工作流**）：① 並行工具呼叫：Bash 失敗不再取消同批其他呼叫（★★★ 多工具並行 fan-out 更耐錯）② `/autofix-pr` 在 git worktree 內 false-positive「cannot run on default branch」修復 + 背景 session worktree agent 無法編輯自身 worktree 內檔案修復（★★★ cmux + 多 worktree 直接受益）③ background subagent output 污染 `claude -p` stdout 修復（★★★ launchd daily script + 本機分析 7 channel 全用 `-p`、過去 output 可能混過背景雜訊）④ `forceLoginOrgUUID`/`forceLoginMethod` 擋第三方 provider（Bedrock/Vertex/Foundry/Mantle）regression 修復（★★ 始自 v2.1.146、多帳號 setup 相關）⑤ background session 用 daemon env stale model 而非 settings.json 指定 model 修復（★★）⑥ `claude mcp` list/get/add 不再印 secret（★★ `${VAR}` 不展開、credential headers 遮蔽）⑦ `claude agents` rows 顯示 done/total 進度（★）⑧ OTEL_RESOURCE_ATTRIBUTES labels 加到 metric datapoints（★）。★★★ 建議升。前一 baseline v2.1.160 (2026-06-02T02:10:25Z)：安全寫入加 prompt（shell startup / build-tool config）+ CJK IME 位置修正 + ultracode 更名 + background session 多項修復（★★★ 已升）
+
+### ruanyf/weekly 新一期 watcher
+
+- **Why**: 阮一峰《科技愛好者周刊》每週五出一期，內容近兩年高度集中在 AI 編程 / 模型經濟 / 軟體開發方法 / 工程師職涯，跟使用者 daily-topic-radar、interview-tour-2026、本機 AI 工具研究的選題重疊度極高（第 398 期頭條就是 OpenClaw 創辦人曬 Token 用量、Uber 燒爆 AI 預算、微軟棄用 Claude Code）。當成固定外部視角源，有新一期就在當天 digest 摘要+個人化評論。
+- **Source(s)**: <https://github.com/ruanyf/weekly>（README.md 是全期索引、`docs/issue-N.md` 是各期正文）
+- **How to fetch**: 用 authenticated `gh`（匿名 `curl` 打 GitHub API 會撞 rate limit 403）。取最新期號：`gh api repos/ruanyf/weekly/contents/README.md --jq '.content' | base64 -d | grep -oE 'docs/issue-[0-9]+\.md' | head -1 | grep -oE '[0-9]+'`。若 > Last seen，抓正文：`gh api repos/ruanyf/weekly/contents/docs/issue-<N>.md --jq '.content' | base64 -d`。
+- **Hit signal**: 最新期號 > `Last seen` 的期號 → 有新一期。
+- **Action on hit**: stage-2 digest 開「📰 科技愛好者週刊新一期」section、摘該期 12 個固定欄目（封面圖 / 本週話題社論 / 科技動態 / 文章 / 工具 / AI 相關 / 資源 / 圖片 / 文摘 / 言論 / 往年回顧）重點，標跟使用者 stack / 求職 / AI 工具研究對應的個人化評論。**正文裡的 GitHub repo 按 digest「🛠 GitHub 倉庫觀察」鐵律集中、不散落本段**。
+- **Triggered by**: `stage-2-digest` only（**不在 06:45 daily probes 跑** — 週刊一週才一期、比 CC release 更低頻，daily 比對無差分價值徒增 gh call；digest 階段比對 Last seen 即可 catch）
+- **Last seen**: `398（2026-05-29 發布《Token 費用難以負擔》）` — 2026-05-30 手動處理為 baseline，下次 trigger = 第 399 期出現（預計 2026-06-05 週五，偶爾順延週六）
 
 ### Entry 範本
 
