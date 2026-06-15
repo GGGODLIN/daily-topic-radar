@@ -12,8 +12,8 @@ LOG_DIR="$REPO_DIR/logs"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 DATE=$(date +%Y-%m-%d)
-OUT="$OUT_DIR/$DATE-wiki.md"
-LOG="$LOG_DIR/local-analysis-wiki-$DATE.log"
+OUT="$OUT_DIR/$DATE-wiki-candidates.md"
+LOG="$LOG_DIR/local-analysis-wiki-candidates-$DATE.log"
 
 cd "$REPO_DIR"
 
