@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>每日話題分析 — 2026-06-20</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #161922;
+    --bg-soft: #1c2030;
+    --fg: #e6e8ef;
+    --fg-muted: #9aa0b4;
+    --fg-dim: #6e7388;
+    --accent-purple: #b591ff;
+    --accent-blue: #7aa8ff;
+    --accent-green: #6ed79c;
+    --accent-orange: #ffb46b;
+    --accent-red: #ff8585;
+    --border: #2a2f43;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.page {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 28px;
+  }
+  header.page h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+  header.page .meta { color: var(--fg-muted); font-size: 13px; }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 32px; }
+  .stat-card {
+    flex: 1 1 140px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat-card .label { color: var(--fg-dim); font-size: 12px; }
+  .stat-card .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .stat-card.green .value { color: var(--accent-green); }
+  .stat-card.blue .value { color: var(--accent-blue); }
+  .stat-card.purple .value { color: var(--accent-purple); }
+  section.fixed {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 24px 0;
+  }
+  section.fixed.purple { border-left: 3px solid var(--accent-purple); }
+  section.fixed.repo { border-left: 3px solid var(--accent-orange); }
+  section.fixed.system { border-left: 3px solid var(--accent-green); }
+  section.theme {
+    margin: 26px 0;
+    padding-bottom: 22px;
+    border-bottom: 1px dashed var(--border);
+  }
+  h2 { font-size: 20px; margin: 0 0 12px; font-weight: 600; }
+  h2 .tag {
+    font-size: 11px;
+    background: var(--bg-soft);
+    color: var(--fg-muted);
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    font-weight: normal;
+  }
+  h3 {
+    font-size: 15px;
+    margin: 16px 0 8px;
+    color: var(--accent-purple);
+    font-weight: 600;
+  }
+  .summary { color: var(--fg-muted); margin: 0 0 10px; font-size: 14px; }
+  .empty { color: var(--fg-dim); font-style: italic; font-size: 13px; padding: 4px 0 8px; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin: 6px 0; }
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .pill {
+    background: var(--bg-soft);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .pill { font-family: inherit; font-size: 11px; color: var(--fg-muted); }
+  .star { color: var(--accent-orange); font-weight: 600; }
+  .star-low { color: var(--fg-dim); }
+  .verdict { color: var(--accent-green); font-weight: 600; }
+  .verdict-skip { color: var(--fg-dim); }
+  .verdict-watch { color: var(--accent-blue); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--fg-dim); font-weight: 500; }
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0 32px;
+  }
+  @media (max-width: 720px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px 18px;
+  }
+  .chart-card h3 {
+    margin: 0 0 4px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .chart-card .sub {
+    color: var(--fg-dim);
+    font-size: 11.5px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+  .chart-box { height: 280px; position: relative; }
+  footer.page {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+  .voice { color: var(--fg); }
+  .voice::before { content: "💭 "; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; color: var(--fg-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>每日話題分析 — 2026-06-20（週六）</h1>
+  <div class="meta">Workflow run 26 min · 234 agents · 9.6M subagent tokens · 0 verify flagged</div>
+</header>
+
+<div class="stat-row">
+  <div class="stat-card green">
+    <div class="label">KNOWN_ISSUES</div>
+    <div class="value">✅ 全綠</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="label">主軸抽出</div>
+    <div class="value">8</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="label">URL fact-checked</div>
+    <div class="value">221</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">PROBES baseline 寫回</div>
+    <div class="value">1/1 ✅</div>
+  </div>
+</div>
+
+<!-- ============================================== -->
+<!-- Charts: source 分布 + 主軸熱度                -->
+<!-- ============================================== -->
+<div class="chart-row">
+  <div class="chart-card">
+    <h3>各 source 訊號量（raw md items）</h3>
+    <div class="sub">中文 / 中國 84 ｜ X 73 ｜ Reddit 40 ｜ English Media 20 ｜ V2EX 14 ｜ HN 11 ｜ 中文 / 台灣 7 ｜ GH Rising 7 ｜ GH Trending 5 ｜ HF 3 ｜ Product Hunt 1 — 共 265 items</div>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>本日 8 主軸熱度（by 關聯 items）</h3>
+    <div class="sub">OSS Trending 17 ｜ 安全漏洞 14 ｜ GLM-5.2 12 ｜ CC+AI 編輯器 10 ｜ Anthropic Fable 禁令 8 ｜ AI 算力 8 ｜ AI 人才爭奪 6 ｜ AI 醫療機器人 5 — 共 80 関聯 items</div>
+    <div class="chart-box"><canvas id="themeChart"></canvas></div>
+  </div>
+</div>
+
+<!-- ============================================== -->
+<!-- 🟣 Anthropic / Claude 動態（固定獨立段、按鐵律） -->
+<!-- ============================================== -->
+<section class="fixed purple">
+<h2>🟣 Anthropic / Claude 動態 <span class="tag">固定段 · 鐵律首日</span></h2>
+<p class="summary">所有主體為 Anthropic / Claude 的訊號集中本段、不散落主軸。三小節按 鐵律 順序：CC release / 公司政策 / 產品工程。</p>
+
+<h3>🆕 CC CLI release</h3>
+<p><strong>v2.1.183</strong> <span class="pill">2026-06-19T01:20:50Z</span> <span class="star">★★★ 建議升、auto mode 安全強化打中日常 git 工作流</span></p>
+<ul>
+  <li><strong>★★★ auto mode 安全強化</strong>：<code>git reset --hard</code> / <code>git checkout -- .</code> / <code>git clean -fd</code> / <code>git stash drop</code> 在未明確要求丟棄本地變更時封鎖、<code>git commit --amend</code> 僅限本 session agent 自己的 commit（打中 dispatch 紀律與 commit 工作流）、<code>terraform/pulumi/cdk destroy</code> 需明確指定 stack</li>
+  <li><strong>★★</strong> 新增 deprecated / auto-updated model 警告（<code>-p</code> mode + agent frontmatter，打中 cc-vendor-bridge model alias 場景）</li>
+  <li><strong>★</strong> 新增 <code>attribution.sessionUrl</code> setting 可省略 claude.ai session link from commits / PRs（Remote Control / Web session 適用） + <code>/config --help</code> 列全部 shorthand key</li>
+  <li><strong>修復</strong>：<code>thinking.disabled</code> 子 agent spawn 400 error（multi-level subagent pipeline） + WebSearch 在 subagent 回空 + skill 重複出現 slash-command autocomplete（多 plugin 啟用場景） + tmux teammate pane 慢 rc-file 啟動失敗 + 輸入洩漏到新 pane（打中 cmux 工作流） + teammate 完成 turn 時砍掉其背景 task + <strong>scheduled task / webhook trigger 被當 keyboard input</strong>（修前可靜默 approve pending action，<span class="verdict-watch">安全修補</span>） + focus mode 顯示 "Ran N PostToolUse hooks" 時間行（打中 hook 監控）</li>
+</ul>
+<p class="voice voice">前一 baseline v2.1.181 我已升、這版直接升上去。auto mode git 防線跟我目前的 dispatch 紀律很合 — 之前 prompt 約束級的 "別用 git reset --hard"，現在改 harness 攔，這是 [[feedback_mutation_tool_safety_design]] 講的「mutation tool enforce 不靠自律」原則被原廠採納。</p>
+<p>升級：<code>claude update</code> 或 <code>npm i -g @anthropic-ai/claude-code@latest</code></p>
+
+<h3>📢 公司公告 / 政策</h3>
+<ul>
+  <li><strong>Fable 5 / Mythos 5 美國國安禁令仍在</strong>：約 200 家公司仍保有 Mythos 存取權（早於禁令前獲授權），Anthropic 高管向商務部長提交合規方案、承諾加強政府溝通以重獲發布許可。Bloomberg / TechCrunch 多源報導，<a href="https://www.reddit.com/r/ClaudeAI/comments/1u9sq81/about_200_companies_still_have_access_to/">r/ClaudeAI thread</a>、<a href="https://www.bloomberg.com/news/articles/2026-06-19/early-users-of-anthropic-mythos-still-have-access-after-us-order?embedded-checkout=true">Bloomberg</a>、<a href="https://techcrunch.com/podcast/the-us-banned-anthropics-fable-5-release-but-the-numbers-dont-seem-to-care/">TechCrunch podcast</a>。中文 Zhihu 社群討論中國模型何時追上 Fable 級別、馬斯克與智谱 CEO 唐杰預測時間表分歧 <span class="pill">★★★</span></li>
+  <li><strong>John Jumper（諾貝爾獎得主、AlphaFold 主導者）離開 Google DeepMind 加入 Anthropic</strong>：<a href="https://www.bloomberg.com/news/articles/2026-06-19/nobel-winner-john-jumper-to-leave-google-deepmind-for-anthropic">Bloomberg</a>。同 3 天內 Noam Shazeer 離開 Google 去 OpenAI；頂級研究人才集中流向 OpenAI / Anthropic 結構性確立 <span class="pill">★★</span></li>
+</ul>
+<p class="voice">200 家仍有 Mythos 那條訊號跟 6/16 Forbes Fable 5 disabled 那條延續、不算新事；但 Jumper 過去算硬訊號 — DeepMind 從 Hassabis 系下流失頂級 lab director 等級的人，後續看 Anthropic 拿這人做什麼。</p>
+
+<h3>🛠 產品 / 工程動態</h3>
+<ul>
+  <li><strong>Claude Code 現支援 artifacts</strong>：將工作進度轉存為交互式視覺頁面（PR 實例、系統說明、儀表板、發布清單），無須額外溝通工作狀態即可協作。<a href="https://claude.com/blog/artifacts-in-claude-code">claude.com/blog 2026-06-18</a>（external-feeds 抓到、自家 RSS 也有覆蓋）<span class="pill">★★★ Team/Enterprise beta</span></li>
+  <li><strong>Project Fetch Phase 2</strong>：Anthropic Frontier Red Team 測試 Claude 編程機器狗的能力。Opus 4.7 單機速度約去年 Opus 4.1 + 頂級人類團隊的 20 倍（機器狗仍未成功撿到沙灘球）。<a href="https://x.com/AnthropicAI/status/2067651699486200091">@AnthropicAI</a> <span class="pill">★ 研究公關</span></li>
+</ul>
+<p class="voice">Artifacts 功能對我目前的 workflow 個人用沒衝擊（我 daily-topic 是 HTML output、不需要 in-CC 即時 render）；但解掉了「把進度貼給別人看」這個 friction，Team 場景應該 useful。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 sections（去除 Anthropic 主體後的剩餘） -->
+<!-- ============================================== -->
+
+<section class="theme">
+  <h2>AI 程式碼工具動態（非 CC）</h2>
+  <p class="summary">同期 OpenAI Codex Record &amp; Replay + Replit Slack 整合公佈，跟 CC 一起被中文 KOL 連帶解說。</p>
+  <ul>
+    <li><strong>OpenAI Codex「Record &amp; Replay」</strong>：Mac 上示範操作一次（例：填 expense report、提請假申請），Codex 把示範轉成可檢視 / 可編輯 skill；<a href="https://x.com/gdb/status/2067700691062464887">@gdb</a>、<a href="https://x.com/dotey/status/2067699358586253663">@dotey 中文解說</a> <span class="pill">★★</span></li>
+    <li><strong>Replit 進入 Slack 整合</strong>：Replit Agent 可在 Slack 中執行任務、回報結果（<a href="https://x.com/dotey/status/2067708784106160322">@dotey</a>）</li>
+    <li><strong>iFanr 整理 CC v2.1.183 + Codex 同期更新</strong>：<a href="https://www.ifanr.com/1669204">中文長文</a></li>
+  </ul>
+  <p class="voice">Record &amp; Replay 跟我 superpowers 「固化流程成 skill」核心模式同方向、但 OpenAI 走 demo-driven、CC / Anthropic 走 prose-driven，兩家對「skill」的形態想像分岔，值得追。</p>
+</section>
+
+<section class="theme">
+  <h2>GLM-5.2 開源模型領跑開源基準</h2>
+  <p class="summary">智谱 GLM-5.2（744B）在 AA Intelligence Index / AA-Briefcase 知識工作評測 / AA Coding Index 超越 GPT-5.5 與 Opus 4.8，居開源第一；本地 4x3090 + 192GB 可跑 2-bit 量化版 7.3 tok/s。Kimi 2.7 Code 同期在 DeepSWE 首亮相。</p>
+  <ul>
+    <li><a href="https://artificialanalysis.ai/articles/glm-5-2-is-the-new-leading-open-weights-model-on-the-artificial-analysis-intelligence-index">AA: GLM-5.2 領跑開源</a></li>
+    <li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1u9mpty/glm52_744b_2bit_at_73_toks_on_43090_192gb_and_why/">r/LocalLLaMA: 744B 2bit @ 7.3 tok/s 實證</a></li>
+    <li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1u9vfhf/glm52_can_now_run_locally_in_llamacpp_and_unsloth/">llama.cpp + Unsloth Studio 支援</a></li>
+    <li><a href="https://llm-stats.com/blog/research/glm-5-2-vs-claude-opus-4-8">GLM-5.2 vs Claude Opus 4.8 對比</a></li>
+  </ul>
+  <p class="voice">744B 已遠超我 M5 Pro 48GB 物理上限、跟 [[apple-silicon-local-llm-serving]] wiki 的「本地 daily-driver」路線無關。但 2-bit @ 7.3 tok/s 在桌上型 4x3090 跑得起來、推開「開源頂峰 = 服務級雲端硬體獨佔」邊界一格。</p>
+</section>
+
+<section class="theme">
+  <h2>AI 代理人安全漏洞與網路攻擊威脅</h2>
+  <p class="summary">低技能攻擊者用 Claude Code + Codex 入侵 14 家企業、Microsoft 揭 AutoJack 攻擊鏈、HN 出現 SkillsGuard 靜態掃描器。同期非 AI 領域 FortiBleed / SocGholish / iPhone usbliter8 集中爆。</p>
+  <ul>
+    <li><strong>低技能攻擊者用 Claude Code + Codex 入侵 14 家企業</strong>：<a href="https://www.reddit.com/r/ClaudeAI/comments/1ua6sfe/lowskilled_attacker_used_claude_code_and_codex_to/">r/ClaudeAI</a>、<a href="https://www.helpnetsecurity.com/2026/06/17/ai-agents-offensive-cyber-operations-claude-codex/">helpnetsecurity 詳述</a> <span class="pill">★★ 主體是攻擊者、不是 Anthropic — 留主軸</span></li>
+    <li><strong>AutoJack</strong>：AI 瀏覽代理人被注入惡意程式碼執行 <a href="https://thehackernews.com/2026/06/autojack-attack-lets-one-web-page.html">thehackernews</a></li>
+    <li><strong>SkillsGuard</strong>：靜態掃描器偵測惡意 AI 代理人 skill <a href="https://github.com/Teycir/SkillsGuard">GitHub</a>（後文 🛠 GitHub 觀察會詳列）</li>
+    <li>非 AI 集中爆：<a href="https://thehackernews.com/2026/06/unpatchable-usbliter8-exploit-breaks.html">iPhone A12/A13 BootROM usbliter8</a> / <a href="https://thehackernews.com/2026/06/cisa-warns-fortinet-customers-as.html">FortiBleed 86,644 設備</a> / <a href="https://thehackernews.com/2026/06/operation-endgame-disrupts-socgholish.html">SocGholish 14,971 站台</a></li>
+  </ul>
+  <p class="voice">「低技能 + Claude/Codex 攻擊」這條沒解決前，CC auto mode 強化 (本日 v2.1.183) 跟 Anthropic 的 Acceptable Use 政策會是長期議題 — 但對手是攻擊者社群、不是平台、政策施力效果差。</p>
+</section>
+
+<section class="theme">
+  <h2>AI 在醫療與機器人前沿應用突破（非 Anthropic）</h2>
+  <p class="summary">OpenAI 協助醫師跨 60 國 26 科別、為 376 個長期未解病例新找 18 個診斷。宇樹 G1 改裝 Pemba 成功登頂海拔 6,200m 火山。</p>
+  <ul>
+    <li><strong>OpenAI 跨國醫療診斷</strong>：<a href="https://x.com/gdb/status/2067648020934701541">@gdb</a> 報告含一名 9 歲起持續尋因的患者</li>
+    <li><strong>Pemba 機器人登頂 6,200m 火山</strong>：宇樹 G1 改裝、室外極端環境新里程碑 <a href="https://www.ithome.com/0/966/427.htm">ithome</a></li>
+  </ul>
+  <p class="voice">這兩條跟我 stack 無關、純社會議題追蹤。</p>
+</section>
+
+<section class="theme">
+  <h2>AI 算力基礎設施：FERC 加速並網 vs 西雅圖暫停、Google 仿 Nvidia 晶片業務</h2>
+  <p class="summary">FERC 下令 6 大電網運營商加速 AI 資料中心並網；西雅圖議會全票通過暫停新建大型資料中心一年；保守派計劃全國抗議資料中心擴建。WSJ 報導 Google 仿 Nvidia 劇本打造競爭晶片業務；ASML 與美方就頂級光刻機是否流入中國說法矛盾。imec 聯合 TSMC、ASML 在 300mm 晶圓實現 50nm 栅距 2D 材料電晶體驗證。</p>
+  <ul>
+    <li><a href="https://www.wsj.com/tech/ai/google-is-using-nvidias-playbook-to-build-a-rival-ai-chip-business-1eac86f9">WSJ: Google 仿 Nvidia 晶片業務</a></li>
+    <li><a href="https://techcrunch.com/2026/06/19/the-us-says-asmls-top-chip-tool-may-be-in-china-asml-says-it-isnt/">ASML vs 美方說法矛盾</a></li>
+    <li><a href="https://www.axios.com/2026/06/18/conservatives-protest-ai-data-centers">Axios: 保守派全國抗議</a></li>
+    <li><a href="https://www.ithome.com/0/966/435.htm">imec + TSMC + ASML 300mm 2D 材料電晶體</a></li>
+  </ul>
+  <p class="voice">跟我目前工作沒直接交集、但「算力供給政治化」是 6 個月觀察期最大背景變化、長期會反饋到模型成本。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 🛠 GitHub 倉庫觀察（固定獨立段、鐵律已存） -->
+<!-- ============================================== -->
+<section class="fixed repo">
+<h2>🛠 GitHub 倉庫觀察 <span class="tag">固定段</span></h2>
+<p class="summary">今日 Trending / Rising 順帶提到的 repo 集中本段（鐵律 since 2026-05-30）。stars / release 用 <code>gh repo view</code> 查補、個人 stack 判斷在後。</p>
+<table>
+  <thead><tr><th>Repo</th><th>★ stars</th><th>簡介</th><th>判斷</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><a href="https://github.com/stanford-oval/storm">stanford-oval/storm</a></td>
+      <td>34K</td>
+      <td>LLM 知識策展 + 報告生成（Stanford OVAL lab）</td>
+      <td><span class="verdict-watch">⭐ star 追</span> — 跟 deep-research-paced 同領域、看他們 verify 階段怎麼設計</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/OSU-NLP-Group/HippoRAG">OSU-NLP-Group/HippoRAG</a></td>
+      <td>2.6K</td>
+      <td>長期記憶 RAG + 知識圖譜（NeurIPS'24）</td>
+      <td><span class="verdict-watch">⭐ star 追</span> — 跟 me-distill / memory cluster 議題沾邊</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/VectifyAI/OpenKB">VectifyAI/OpenKB</a></td>
+      <td>新</td>
+      <td>開源 LLM 知識庫</td>
+      <td><span class="verdict-skip">⏭ 跳過</span> — 我已有 me-profile + wiki + memory 三層、再裝 KB stack 是疊架</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/stablyai/orca">stablyai/orca</a></td>
+      <td>新</td>
+      <td>平行代理 ADE 桌面 + 行動端</td>
+      <td><span class="verdict-watch">⭐ star 追</span> — 觀察 mobile agent 場景但與我 stack 軌錯</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/vercel/workflow">vercel/workflow</a></td>
+      <td>新</td>
+      <td>TypeScript 持久 agent 工作流 SDK</td>
+      <td><span class="verdict-skip">⏭ 跳過</span> — CC Workflow tool 已 cover daily 用例、Vercel 走 production deploy 場景、非個人需求</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/microsoft/presidio">microsoft/presidio</a></td>
+      <td>4.5K</td>
+      <td>PII 資料保護 / 偵測 / 匿名化</td>
+      <td><span class="verdict-skip">⏭ 跳過</span> — 個人場景無 PII pipeline、企業才需要</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/tursodatabase/turso">tursodatabase/turso</a></td>
+      <td>11K</td>
+      <td>邊緣資料庫（libSQL fork）</td>
+      <td><span class="verdict-skip">⏭ 跳過</span> — 個人專案規模 SQLite 已夠、邊緣節點概念 N/A</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Teycir/SkillsGuard">Teycir/SkillsGuard</a></td>
+      <td>新</td>
+      <td>靜態掃描器、偵測惡意 AI 代理人 skill</td>
+      <td><span class="verdict-watch">📥 試用</span> — 跟 [[safe-trial]] skill 補位、我大量裝外部 skill，scan 一下沒壞處</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/tw93/Pake">tw93/Pake</a></td>
+      <td>40K</td>
+      <td>Rust + Tauri 把網頁轉桌面 app</td>
+      <td><span class="verdict-skip">⏭ 跳過 + 知道存在</span> — 已知工具、無新需求</td>
+    </tr>
+    <tr>
+      <td><a href="https://huggingface.co/microsoft/FastContext-1.0-4B-SFT">microsoft/FastContext-1.0-4B-SFT</a></td>
+      <td>HF Trending</td>
+      <td>4B 長上下文模型（SFT）</td>
+      <td><span class="verdict-watch">⭐ star 追</span> — 跟 [[apple-silicon-local-llm-serving]] 上「Qwen ≤4B 唯一撐繁中」線索同 scale、值得實測繁中</td>
+    </tr>
+  </tbody>
+</table>
+<details>
+<summary>其他次要 trending（不展開判斷）</summary>
+<ul>
+  <li><a href="https://github.com/massgravel/Microsoft-Activation-Scripts">massgravel/Microsoft-Activation-Scripts</a> — Windows 啟用、與我 stack 無關</li>
+  <li><a href="https://github.com/yaojingang/yao-meta-skill">yaojingang/yao-meta-skill</a> — 個人專案</li>
+  <li><a href="https://github.com/Kong/insomnia">Kong/insomnia</a> — API client（Kong 維護）</li>
+  <li><a href="https://github.com/TabularisDB/tabularis">TabularisDB/tabularis</a> — 新資料庫</li>
+  <li><a href="https://huggingface.co/signsur4739379373/LTX-2.3-Finetuned-I2V">LTX-2.3 Finetuned I2V</a> — image-to-video</li>
+  <li><a href="https://www.producthunt.com/products/upstream-3">Upstream (PH 冠軍)</a> — 收件匣 for 人 / agent</li>
+</ul>
+</details>
+</section>
+
+<!-- ============================================== -->
+<!-- 系統當天動態 -->
+<!-- ============================================== -->
+<section class="fixed system">
+<h2>系統當天動態 <span class="tag">digest pipeline 自身</span></h2>
+<ul>
+  <li><strong>workflow 全綠</strong>：26 分 / 234 agents / 9.6M subagent tokens；verify 0 flagged（chrome_a_flagged 0 / parallel_a_flagged 0 / parallel_b_misaligned 0、parallel_b_sampled 8）</li>
+  <li><strong>KNOWN_ISSUES</strong>：✅ 全綠、無 🚨 / 🛠 / 🪦 條目</li>
+  <li><strong>WATCH</strong>：## Active Issues / ## Watched Topics 兩段都空</li>
+  <li><strong>PROBES baseline 寫回</strong>：1/1 成功（v2.1.181 → v2.1.183；ruanyf/weekly 第 401 期端午休刊未發、保持 400 baseline）</li>
+  <li><strong>External feeds backstop</strong>：follow-builders x feed 19 KOL 27K bytes、blogs feed 1 篇 5.3K bytes（Claude Code artifacts、自家 RSS 也有覆蓋、無漏抓）</li>
+  <li><strong>🟣 Anthropic / Claude 動態鐵律首日落地</strong>：本 digest 為新區首次出現、三小節結構與 source id 路由按 CLAUDE.md「鐵律」執行；下次 digest 比對行為穩定性</li>
+  <li><strong>fact-check fallback</strong>：reddit URL 14 條 parallel 路徑全 fail（一律寫死拒絕，預期）— chrome 路徑 72 條全成、parallel 非 reddit 路徑成；總計 221 URL fact-checked</li>
+</ul>
+</section>
+
+<footer class="page">
+  <div>Generated by social-info daily-topic-analysis workflow + main session HTML synth</div>
+  <div>Source: <code>~/.claude/workflows/daily-topic-analysis.js</code> · Run ID: <code>wf_170aa981-5a6</code></div>
+</footer>
+
+</div>
+
+<script>
+const sourceCtx = document.getElementById('sourceChart').getContext('2d');
+new Chart(sourceCtx, {
+  type: 'bar',
+  data: {
+    labels: ['中文/中國', 'X / Twitter', 'Reddit', 'English Media', 'V2EX', 'HN', '中文/台灣', 'GH Rising', 'GH Trending', 'HF', 'PH'],
+    datasets: [{
+      label: 'items',
+      data: [84, 73, 40, 20, 14, 11, 7, 7, 5, 3, 1],
+      backgroundColor: ['#06b6d4', '#3b82f6', '#f97316', '#8b5cf6', '#eab308', '#f43f5e', '#10b981', '#fb7185', '#a78bfa', '#facc15', '#64748b'],
+      borderRadius: 4
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#9aa0b4', font: { size: 10 } }, grid: { color: '#2a2f43' } },
+      y: { ticks: { color: '#9aa0b4' }, grid: { color: '#2a2f43' } }
+    }
+  }
+});
+
+const themeCtx = document.getElementById('themeChart').getContext('2d');
+new Chart(themeCtx, {
+  type: 'bar',
+  data: {
+    labels: ['OSS Trending', '安全漏洞', 'GLM-5.2', 'CC+AI 編輯器', 'Anthropic Fable', 'AI 算力', 'AI 人才', 'AI 醫療機器人'],
+    datasets: [{
+      label: 'related items',
+      data: [17, 14, 12, 10, 8, 8, 6, 5],
+      backgroundColor: ['#fb923c', '#ef4444', '#0d9488', '#d97706', '#b591ff', '#06b6d4', '#e11d48', '#10b981'],
+      borderRadius: 4
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#9aa0b4', font: { size: 10 } }, grid: { color: '#2a2f43' } },
+      y: { ticks: { color: '#9aa0b4' }, grid: { color: '#2a2f43' } }
+    }
+  }
+});
+</script>
+
+</body>
+</html>
