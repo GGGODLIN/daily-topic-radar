@@ -51,6 +51,9 @@ def load_ignore():
 def norm(v):
     return re.sub(r'^v', '', (v or "").strip())
 
+def pep503_norm(n):
+    return re.sub(r'[-_.]+', '-', n or "").lower()
+
 # ---- installed 偵測 ----
 def cargo_git_installed():
     out = {}
@@ -70,7 +73,7 @@ def cargo_git_installed():
 
 def brew_installed():
     out = {}
-    s = run(["brew", "list", "--versions"])
+    s = run(["brew", "list", "--versions", "--formula"])
     if s:
         for line in s.splitlines():
             p = line.split()
@@ -94,12 +97,36 @@ def npm_g_installed():
     return out
 
 def uv_installed():
+    import glob
     out = {}
+    tools_root = os.path.expanduser("~/.local/share/uv/tools")
+    if os.path.isdir(tools_root):
+        for tool_name in os.listdir(tools_root):
+            tool_dir = os.path.join(tools_root, tool_name)
+            if not os.path.isdir(tool_dir):
+                continue
+            target = pep503_norm(tool_name)
+            for meta in glob.glob(os.path.join(tool_dir, "lib/python*/site-packages/*.dist-info/METADATA")):
+                try:
+                    name = ver = None
+                    with open(meta) as f:
+                        for line in f:
+                            if line.startswith("Name: "):
+                                name = line[6:].strip()
+                            elif line.startswith("Version: "):
+                                ver = line[9:].strip()
+                            if name and ver:
+                                break
+                    if name and ver and pep503_norm(name) == target:
+                        out[tool_name] = ver
+                        break
+                except Exception:
+                    pass
     s = run(["uv", "tool", "list"])
     if s:
         for line in s.splitlines():
             m = re.match(r'(\S+)\s+v?([\d.]+)', line)
-            if m:
+            if m and m.group(1) not in out:
                 out[m.group(1)] = m.group(2)
     return out
 
