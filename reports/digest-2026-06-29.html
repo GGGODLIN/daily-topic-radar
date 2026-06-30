@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>每日話題分析 — 2026-06-29</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #161922;
+    --bg-soft: #1c2030;
+    --fg: #e6e8ef;
+    --fg-muted: #9aa0b4;
+    --fg-dim: #6e7388;
+    --accent-purple: #b591ff;
+    --accent-blue: #7aa8ff;
+    --accent-green: #6ed79c;
+    --accent-orange: #ffb46b;
+    --accent-red: #ff8585;
+    --border: #2a2f43;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.page {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 28px;
+  }
+  header.page h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+  header.page .meta { color: var(--fg-muted); font-size: 13px; }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 32px; }
+  .stat-card {
+    flex: 1 1 140px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat-card .label { color: var(--fg-dim); font-size: 12px; }
+  .stat-card .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .stat-card.green .value { color: var(--accent-green); }
+  .stat-card.blue .value { color: var(--accent-blue); }
+  .stat-card.purple .value { color: var(--accent-purple); }
+  .stat-card.red .value { color: var(--accent-red); }
+  section.fixed {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 24px 0;
+  }
+  section.fixed.purple { border-left: 3px solid var(--accent-purple); }
+  section.fixed.repo { border-left: 3px solid var(--accent-orange); }
+  section.fixed.system { border-left: 3px solid var(--accent-green); }
+  section.fixed.alert { border-left: 3px solid var(--accent-red); }
+  section.fixed.weekly { border-left: 3px solid var(--accent-blue); }
+  section.theme {
+    margin: 26px 0;
+    padding-bottom: 22px;
+    border-bottom: 1px dashed var(--border);
+  }
+  h2 { font-size: 20px; margin: 0 0 12px; font-weight: 600; }
+  h2 .tag {
+    font-size: 11px;
+    background: var(--bg-soft);
+    color: var(--fg-muted);
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    font-weight: normal;
+  }
+  h3 {
+    font-size: 15px;
+    margin: 16px 0 8px;
+    color: var(--accent-purple);
+    font-weight: 600;
+  }
+  .summary { color: var(--fg-muted); margin: 0 0 10px; font-size: 14px; }
+  .empty { color: var(--fg-dim); font-style: italic; font-size: 13px; padding: 4px 0 8px; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin: 6px 0; }
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .pill {
+    background: var(--bg-soft);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .pill { font-family: inherit; font-size: 11px; color: var(--fg-muted); }
+  .star { color: var(--accent-orange); font-weight: 600; }
+  .star-low { color: var(--fg-dim); }
+  .verdict { color: var(--accent-green); font-weight: 600; }
+  .verdict-skip { color: var(--fg-dim); }
+  .verdict-watch { color: var(--accent-blue); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--fg-dim); font-weight: 500; }
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0 32px;
+  }
+  @media (max-width: 720px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px 18px;
+  }
+  .chart-card h3 {
+    margin: 0 0 4px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .chart-card .sub {
+    color: var(--fg-dim);
+    font-size: 11.5px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+  .chart-box { height: 280px; position: relative; }
+  footer.page {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+  .voice { color: var(--fg); }
+  .voice::before { content: "💭 "; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; color: var(--fg-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>每日話題分析 — 2026-06-29（週一）</h1>
+  <div class="meta">Workflow run 13 分 15 秒 · 85 agents · 3.72M subagent tokens · verify A flag chrome 1 / parallel 0 · verify B 抽 8/55 · 0 misaligned · PROBES 仍同 baseline（v2.1.195 / ruanyf #401）· <strong>06:01 launchd aggregator 撞 Mac 休眠卡死 600s 看門狗砍 process tree</strong>（已 surface 為 user 確認的休眠正常現象）· 10:07 手動補跑 aggregator 321 items / 0 failures · <strong>Sol/Terra/Luna 與 Mythos 5「限美關鍵基礎設施」+ Fable 5 持續封殺三軸並陳</strong> + <strong>RepoPrompt CE 開源（GH Rising rank-1）</strong> + <strong>Boris Cherny 公開 CC 團隊「工程/產品/設計 融合」reflection</strong> + <strong>央行警告 AI 過熱可能引發金融崩盤（Telegraph + FT）</strong> + <strong>Ford 召回老將工程師 + Schneier AI 法律責任</strong> + <strong>中國具身智能融資熱（智平方近 50 億新輪）</strong></div>
+</header>
+
+<div class="stat-row">
+  <div class="stat-card green">
+    <div class="label">KNOWN_ISSUES</div>
+    <div class="value">✅ 全綠</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="label">主軸抽出</div>
+    <div class="value">7</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="label">URL fact-checked</div>
+    <div class="value">72</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">PROBES baseline 寫回</div>
+    <div class="value">0/2（no_change）</div>
+  </div>
+</div>
+
+<!-- ============================================== -->
+<!-- Charts: source 分布 + 主軸熱度                -->
+<!-- ============================================== -->
+<div class="chart-row">
+  <div class="chart-card">
+    <h3>各 source 訊號量（raw md items）</h3>
+    <div class="sub">X 132 ｜ 中文/中國 89 ｜ Reddit 40 ｜ V2EX 21 ｜ HN 18 ｜ GH Rising 7 ｜ 中文/台灣 6 ｜ GH Trending 4 ｜ English Tech Media 2 ｜ HF 1 ｜ Lab Blogs 1 — 共 321 items / 43 active sources / 0 failures</div>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>本日 7 主軸熱度（by 關聯 items）</h3>
+    <div class="sub">前線模型 + 地緣管制 18 ｜ Agent 工具鏈 14 ｜ OSS / HF 新工具 13 ｜ AI 基建投資與警示 9 ｜ Anthropic / Claude 動態 8 ｜ AI 落地侷限 7 ｜ 中國具身智能融資 6 — 共 75 關聯 items</div>
+    <div class="chart-box"><canvas id="themeChart"></canvas></div>
+  </div>
+</div>
+
+<!-- ============================================== -->
+<!-- ⚠️ 今日 pipeline 狀態（休眠卡死後手動補跑）     -->
+<!-- ============================================== -->
+<section class="fixed alert">
+<h2>⚠️ Aggregator 06:01 撞 Mac 休眠卡死 → 10:07 手動補跑 <span class="tag">user 確認休眠正常現象</span></h2>
+<ul>
+  <li><strong>06:01 launchd 跑 <code>python -m social_info</code> 撞 600s timeout 看門狗砍 process tree</strong>（exit 143 SIGTERM）— commit <code>eb7c03e</code> 只 push 昨日 <code>digest-2026-06-28.html</code>、無今日 raw md</li>
+  <li><strong>根因 = Mac 06:00 喚醒時 fetcher hang</strong>（user 確認休眠正常現象、非新 bug；不開根治 ticket）</li>
+  <li><strong>10:07 main session 手動補跑 <code>uv run python -m social_info</code></strong> → 10 秒產出 141 KB raw md（321 items / 43 active sources / 0 failures）— Mac 已醒、fetch 順暢</li>
+  <li><strong>第一輪 stage-2 workflow 因 raw md 不存在跑出空殼</strong>（themes=0 / fact_check=0）— 補完 raw md 後重跑 workflow 拿到完整 7 主軸 + 72 URL fact-checked</li>
+</ul>
+<p class="voice">這個休眠卡 fetcher 的 pattern 跟 CLAUDE.md「pipeline hang bug」段註的「2026-06-05 卡 6 小時零進展」是同根因 — 06:00 launchd 觸發時 Mac 還沒完全喚醒、httpx 連線進入半喚醒狀態 hang。<strong>看門狗（600s 強砍）救了「commit pipeline 不阻塞」</strong>但無法救「資料抓回來」— 這對個人 daily-routine 的影響是「<strong>當夜 Mac 整夜睡 + 06:00 launchd 即起即抓，必撞 hang；下班前桌機開著或 Mac 醒著就 OK</strong>」。短期不用根治、長期可以考慮把 launchd 排程從 06:00 移到 09:00（電腦通常已醒）或加 wake delay 30s buffer；對應 [[user_workflow_mission_critical_infra]] 紀律下、這個 routine 雖屬 mission-critical infra 但「自動 trigger 時機」是可調節的非核心參數、不影響 daily 結果完整性（手動補跑也是 path、user 已接受）。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 🟣 Anthropic / Claude 動態（固定獨立段、按鐵律） -->
+<!-- ============================================== -->
+<section class="fixed purple">
+<h2>🟣 Anthropic / Claude 動態 <span class="tag">固定段</span></h2>
+<p class="summary">所有主體為 Anthropic / Claude 的訊號集中本段、不散落主軸。三小節按鐵律順序：CC release / 公司公告 / 產品工程。今日主軸是「<strong>Mythos 5 從「跟政府談判解禁」推進到「<u>限美國關鍵基礎設施</u>使用」（動區獨家報導）</strong> + <strong>Fable 5 持續封殺（接 6/28 Axios 「本週解禁」訊號未落地）</strong> + <strong>Boris Cherny 公開 CC 團隊「工程/產品/設計 融合」reflection</strong> + <strong>Claude Tag 整合 Slack（dotey beta 介紹）</strong> + <strong>r/ClaudeAI 出現 Claude statusbar 硬體紅綠燈 + Opus 4.8 體驗討論</strong>」。</p>
+
+<h3>🆕 CC CLI release</h3>
+<ul>
+  <li><strong>仍同 v2.1.195（2026-06-26T21:29 UTC）baseline、PROBES no_change</strong>。<span class="pill">週末週日（6/28）已標 no_change，週一仍未升版；CC ship cadence 進入連兩天冷卻；下一波預計 6/30-7/1 恢復</span></li>
+</ul>
+<p class="voice">CC CLI 上週 v2.1.187→v2.1.190/191→v2.1.193→v2.1.195 五天連 ship 後、週日週一兩天冷卻是預期節奏。6/28 surface 的「hook hyphenated matcher 精確比對修復」audit 自家 T2-routing-gate / bumblebee scan / memory-audit hook 多用 hyphenated tool 名（`code-reviewer` / `mcp__brave-search` / `mcp__claude-in-chrome`）— 如今天有空閒時段可以順手做、不強制；下次 CC release 上來會再有新 feature 要驗。</p>
+
+<h3>📢 公司公告 / 政策</h3>
+<ul>
+  <li><strong>★★★ 動區獨家：Anthropic 解禁 Mythos 5 但「僅供美國政府使用」</strong>：<a href="https://www.blocktempo.com/anthropic-restores-mythos-5-limited-to-us-critical-infrastructure/">動區報導</a> — 動區標題寫「<u>僅供美國政府使用</u>」、URL slug 寫「critical infrastructure」、原文 body 在動區站內截斷只到「在與美國政府斡旋半個月後」；具體範圍是「政府」or「critical infrastructure」需查原報導全文；Fable 5 持續封殺、6/28 Axios「本週解禁」訊號未落地 <span class="pill">★★★ 對應 [[cc-vendor-bridge-toolkit]] / [[llm-model-landscape]]：跟 6/28「Anthropic 走談判路徑見成果」是同延燒、但細部規格收緊；Mythos 5 對個人 daily-driver 用戶不會直接開放、Max OAuth plan 不會內含 Mythos；Fable 5 解禁進度比 Axios 預期慢、要關注是否到週末才見落地</span></li>
+  <li><strong>★★★ WSJ：中國在 cybersecurity 上追平 Anthropic</strong>：<a href="https://www.wsj.com/tech/ai/chinese-ai-anthropic-mythos-cybersecurity-574b02c2">WSJ 原報導</a> + <a href="https://www.reddit.com/r/LocalLLaMA/comments/1ui3tck/china_has_matched_anthropic_in_cybersecurity/">r/LocalLLaMA 熱貼</a> — WSJ 深度文：中國 AI（具體沒指名、但配合社群討論推測 Qwen 系列 + DeepSeek 系列）在 cybersecurity 任務 benchmark 上追平 Anthropic <span class="pill">★★★ 對應 [[llm-model-landscape]] / [[cc-vendor-bridge-toolkit]]：「Anthropic cybersecurity 領先」一直是個人在 vendor 評估時的關鍵 differentiator、被中國追平意味未來 cc-vendor-bridge ccp-glm / ccp-bruce 路徑在 security-sensitive 任務也可接；對 ako 工作場景 vendor 評估維度增加 — 不能再用「Anthropic 安全係數 &gt; 中文模型」這條當絕對 anchor；要看具體 benchmark 維度跟自家工作流 task type 對位</span></li>
+  <li><strong>★★ Aravind Srinivas（Perplexity）：enterprise 自家 model-harness-sandbox-eval flywheel</strong>：<a href="https://x.com/AravSrinivas/status/2070938739350900944">原推</a>（chrome fetched OK，likes 1688 / comments 108）— Aravind 公開觀察「<strong>未來每個 enterprise 都會有自家 model-harness-sandbox-eval flywheel、按 token value per watt 優化</strong>；理由是 tacit knowledge about domain and customers」<span class="pill">★★ 對應 [[ai-coding-era-engineer-moat]] / [[user_internal_tech_workshop_cadence]] / [[user_workflow_mission_critical_infra]]：跟 6/28 swyx FDE 角色升溫訊號完整對位；「企業端 model+harness+sandbox+eval 四件套」是 frontier model 落地 production 的標準姿勢；對個人轉型路徑（從 dev → AI ops / AI judgment）強對位；對 ako 內部 workshop 是「企業 AI 落地架構」題材的 strategic anchor</span></li>
+</ul>
+<p class="voice">本段最強訊號是「<strong>Mythos 5 限美關鍵基礎設施使用</strong>」這條 — 6/28 Axios 報導 Mythos 5 解禁給 100+ 美企／政府單位，今日動區獨家把細節收緊到「critical infrastructure only」（電力 / 自來水 / 醫療 / 金融網路）。對個人 daily-driver 直接影響：<strong>Mythos 5 不會進 Max OAuth plan</strong>、要用得走 enterprise contract；對 ako 商業場景如有 critical infra 客戶（電力 / 金融 / 醫療）可能未來有 vendor 路徑優勢。<strong>Fable 5 持續封殺</strong>反向打臉 6/28 Axios「本週解禁」訊號 — 至本日（週一）尚未落地、要關注週中是否見落地、否則 Axios 報導可信度要調降。<strong>WSJ「中國 cybersecurity 追平 Anthropic」</strong>是個人 vendor 評估維度的重要 update — 「Anthropic 安全係數絕對領先」這條 framing 要鬆綁、要看具體 benchmark 維度跟自家工作流 task type 對位；對 [[cc-vendor-bridge-toolkit]] 的 ccp-glm / ccp-bruce 路徑在 security-sensitive 任務的可用性意味提升；對 ako vendor 配置長線：「<u>安全係數差別逐漸縮小、要靠 latency / 價格 / 配額 / 模型版本同步性等綜合維度</u>」做 vendor 選擇。<strong>Aravind「enterprise 自家 model-harness-sandbox-eval flywheel」</strong>對個人 daily-topic-analysis workflow 132 agents fan-out 已經是 flywheel 早期形態 — 自家 prompt + tool + verify 三層其實就是個人 Aravind 框架的 micro 版本；對 [[user_internal_tech_workshop_cadence]] 是極佳「企業 AI flywheel 從個人開始」開場 hook、強過抽象的 productivity claim。</p>
+
+<h3>🛠 產品 / 工程動態</h3>
+<ul>
+  <li><strong>★★★ Boris Cherny（CC 創始工程師）：engineering / product / design / DS 角色融合 reflection（以 Claude Code 團隊為例）</strong>：<a href="https://x.com/bcherny/status/2071379474277613732">原推</a>（chrome fetched OK，likes 4760 / comments 257）— bcherny 公開 reflection：「As engineering, product, design, DS, etc. melt into a new kind of role, I was reflecting on what roles might look like in the future. For example, when I look at the Claude Code team I see what I think...」<span class="pill">★★★ 對應 [[ai-coding-era-engineer-moat]] / [[user_internal_tech_workshop_cadence]] / [[taiwan-engineer-positioning-2026]]：CC 創始工程師親口確認「engineering / product / design / DS 融合成新角色」— 是 frontier lab 內部團隊 design 的第一手 datapoint；對 ako 內部 workshop（[[user_internal_tech_workshop_cadence]]）是極佳「未來角色融合」素材；對個人轉型方向強對位 — 「<u>多軸 generalist + AI judgement</u>」這條 path 比「單軸專精 + 不碰 AI」在 frontier lab 已有實證；要 follow-up 完整推串看 bcherny 具體 framework</span></li>
+  <li><strong>★★★ dotey：Claude Tag 整合 Slack（Anthropic beta）介紹</strong>：<a href="https://x.com/dotey/status/2071356525570924563">原推</a>（chrome fetched OK）— 寶玉介紹 Anthropic 推出 Claude Tag beta 功能、整合 Slack；在 Slack 對話中可用 @Claude 直接呼叫 <span class="pill">★★★ 對應 [[user_im_channel_preferences]] / [[user_internal_tech_workshop_cadence]] / [[reference_workflow_jsonl_cache_rescue_pattern]]：對 ako Slack workspace 場景直接相關 — 如未來 @Claude 整合進公司 channel 可作為「team-shared AI assistant」實驗；個人 IM 走 Discord（[[user_im_channel_preferences]]）不直接相關；對 ako 內部 workshop 可作為「Slack-native AI workflow」demo 題材</span></li>
+  <li><strong>★★ dotey：中文圈 CC 新功能介紹（context 壓縮 + fork + /btw）</strong>：<a href="https://x.com/dotey/status/2070904833939329477">原推</a>（chrome fetched OK）— 寶玉延燒翻譯 CC 新功能：context 壓縮、session fork、`/btw` 對話內 inline 補述 <span class="pill">★★ 對應 [[_index_cc_internals]] / [[cc-statusline-ecosystem]]：CC context 壓縮 + fork 是 v2.1.190+ 已 ship 的 feature 中文圈擴散；自家不用 fork 但 context 壓縮對長 session 直接有用；`/btw` 可能對 daily-topic-analysis workflow 補資料時派上用場</span></li>
+  <li><strong>★★ Reddit r/ClaudeAI：I built a Claude statusbar hardware display for my desk</strong>：<a href="https://www.reddit.com/r/ClaudeAI/comments/1ui85ys/i_built_a_claude_statusbar_hardware_display_for/">r/ClaudeAI 熱貼</a> — 社群用戶 brokenodo 自製 CC statusbar 對應的桌面硬體 display（具體 form factor 跟 visual mapping 未在 raw md body 抓回、僅有 title） <span class="pill">★★ 對應 [[cc-statusline-ecosystem]] / [[_index_statusline]]：自家 cc-statusline-widgets daemon 已是 software-only statusbar，社群把它延伸到實體硬體 layer 是 ecosystem 進化的有趣訊號；個人不主動買硬體、但反向 inspire 自家 widget conditional pattern 可以更激進（[[_index_quota]] cluster）</span></li>
+  <li><strong>★★ Reddit r/ClaudeAI：Opus 4.8 是 so exhausting</strong>：<a href="https://www.reddit.com/r/ClaudeAI/comments/1ui3yjv/opus_48_is_so_exhausting/">r/ClaudeAI 熱貼</a> — 社群討論 Opus 4.8 體驗負評：「<u>so exhausting</u>」可能指 verbose / over-explain / 過度 cautious 等具體模式 <span class="pill">★★ 對應 [[llm-model-landscape]] / [[_index_cc_model_swap]]：Opus 4.8 是當前 Max OAuth plan 主力模型之一（Opus 4.7/4.8 系列）、社群負評值得追看具體 pattern；如真的 over-cautious、影響 daily-driver 體驗、要對位 Sonnet 4.6 / Haiku 4.5 路由策略；對個人 vendor 選擇短期無動作、長期 follow-up</span></li>
+  <li><strong>★★ Reddit r/ClaudeAI：Day 32 building GTA 6 using Claude</strong>：<a href="https://www.reddit.com/r/ClaudeAI/comments/1ui05sr/day_32_of_building_gta_6_using_claude/">r/ClaudeAI 熱貼</a> — 用戶 32 天連續用 Claude 自建 GTA 6 級遊戲；長期 challenge log <span class="pill">★★ 對應 [[ai-coding-era-engineer-moat]] / vibe coding 文化現象；個人 / ako 場景無直接動作項；純社群現象 reference</span></li>
+  <li><strong>★★ Reddit r/ClaudeAI：Well that was frighteningly effective</strong>：<a href="https://www.reddit.com/r/ClaudeAI/comments/1ui3m5b/well_that_was_frighteningly_effective/">r/ClaudeAI 熱貼</a> — Claude 完成某 task 的「驚人 effective」案例 <span class="pill">★★ 純社群情緒指標、Claude 能力進展正面 datapoint</span></li>
+  <li><strong>★ hwchase17：Deep Agents Course 推廣 + Harness/Sandbox/Eval/Model 四件套 checklist 連推</strong>：<a href="https://x.com/hwchase17/status/2070950766815428898">第 1 推（3hr Deep Agents Course）</a> + <a href="https://x.com/hwchase17/status/2071294688875958305">第 2 推（DeepAgents + LangSmith Sandboxes + Eval + Model 四件套）</a>（chrome fetched OK）— 第 1 推宣傳 3 小時 Deep Agents Course（task planning / file systems for context / subagent-spawning / long-term memory）；第 2 推是 Aravind 的 enterprise flywheel framework 四件套對應自家 LangSmith Sandboxes 是 Sandboxes + Eval 主力 <span class="pill">★ 對應 [[user_internal_tech_workshop_cadence]] / [[workflow-hardening]]：Deep Agents Course 內含 subagent-spawning + long-term memory 是自家 daily-topic-analysis workflow 同型題材；無立即動作項、長線 follow-up</span></li>
+</ul>
+<p class="voice">本段最強訊號是「<strong>Boris Cherny CC 創始工程師親口確認 engineering / product / design / DS 融合</strong>」這條 — 對個人轉型方向（[[ai-coding-era-engineer-moat]] cluster）跟 ako 內部 workshop（[[user_internal_tech_workshop_cadence]]）都是 frontier lab 第一手 datapoint，比抽象的 productivity claim 強多了。<strong>要 follow-up 看 bcherny 完整推串</strong>（X 推文一條只有 280 字、reflection 應該有後續或引用文件）、可能成為下次內部 workshop 的核心 hook；對個人具體啟示：「<u>多軸 generalist + AI judgement</u>」這條 path 不是空談、是 CC 團隊內部正在發生的事。<strong>Claude Tag 整合 Slack beta</strong>對 ako Slack workspace 場景直接相關 — 如未來 @Claude 整合進公司 channel、是「team-shared AI assistant」實驗的低門檻入口；要把它放進下次 workshop 候選素材對位列表。<strong>r/ClaudeAI Opus 4.8 「so exhausting」</strong>負評是要持續追的 signal — 如真的影響 daily-driver 體驗、對個人 routing 策略（Opus 4.8 / Sonnet 4.6 / Haiku 4.5）會直接改寫；對 [[_index_cc_model_swap]] cluster 是要保留的觀察點；短期不動作。<strong>r/ClaudeAI CC statusbar 硬體紅綠燈</strong>反向 inspire 我自家 [[cc-statusline-ecosystem]] / [[_index_statusline]] cluster：自家 widget conditional pattern 可以更激進、例如撞 5h 90% 時 statusbar 整段閃紅（對應 [[_index_quota]] cluster + workflow-monitor skill）— 是值得 follow-up 的 conditional widget 設計題材。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 sections（去除 Anthropic 主體、OSS 主體後的剩餘） -->
+<!-- ============================================== -->
+
+<section class="theme">
+  <h2>前線模型更迭與地緣管制：GPT-5.6 Sol/Terra/Luna 限量發布 + Mythos「關鍵基礎設施」分流 + GLM-5.2 補位 <span class="tag">18 items</span></h2>
+  <p class="summary"><strong>OpenAI GPT-5.6 三系列（Sol 旗艦 / Terra 5.5-quality 半價 / Luna 經濟版）持續限量預覽</strong>；<strong>Cerebras 把 Sol 推到 750 token/秒（動區整合分析師報導）</strong>；<strong>動區獨家：Anthropic Mythos 5 限美國關鍵基礎設施（電力 / 金融 / 醫療 / 自來水 / 通訊）</strong>；<strong>GLM-5.2 作為中國前線開源模型受廣泛討論（Reddit + 中文圈）</strong>；<strong>Ethan Mollick 多條深度推文聚焦「出口管制新體制終結 vague posting」+「開放/閉源模型差距辯論」</strong>。整體看是 6/28「frontier AI 進入政府審批時代」框架的精細化：US 端走「分流管制」（OpenAI 限量預覽 + Anthropic 限關鍵基建）、中國端走「開源補位 + benchmark 追平」。</p>
+  <ul>
+    <li><strong>★★★ 動區：Sol Cerebras 路徑跑到 750 token/秒</strong>：<a href="https://www.blocktempo.com/openai-gpt-5-6-sol-cerebras-cbrs-750-tokens-per-sec-analyst/">動區整合分析師報導</a> — Cerebras CBRS 推 Sol 推理達 750 tok/s、相對 GPT-5 級別 frontier model 的 ChatGPT 用戶 latency 大幅優化 <span class="pill">★★★ 對應 [[cc-vendor-bridge-toolkit]] / [[_index_quota]]：跟 6/28 Sam Altman 第 2 推 750 tok/s 七月升級訊號完整對位；Cerebras 端 hardware 路徑落地、不靠 NVIDIA H/B 系列；對個人 daily-driver 直接影響：未來 Sol 在 ChatGPT 跑到 750 tok/s 後 latency 體驗會超越 Claude（Opus 4.7/4.8 約 30-50 tok/s）— 對 vendor diversification 是強訊號、要追 ccp 系列是否有同等 latency 路徑</span></li>
+    <li><strong>★★★ 動區：Anthropic 解禁 Mythos 5 但「僅供美國政府使用」（URL slug critical infrastructure）</strong>：<a href="https://www.blocktempo.com/anthropic-restores-mythos-5-limited-to-us-critical-infrastructure/">動區獨家</a> — 同前段 Anthropic / Claude 動態主軸；放這裡標明跟 GPT-5.6 限量發布是「US 端分流管制」的同型訊號 <span class="pill">★★★ 跟前段同主體訊號、此處只在主軸 narrative 中引用</span></li>
+    <li><strong>★★★ emollick：今夏結束 vague posting 時代</strong>：<a href="https://x.com/emollick/status/2070909447015141606">原推</a>（chrome fetched OK）— Mollick 聚焦「<u>frontier AI 進入政府審批時代終結了 vague posting</u>」：過去 lab + 媒體 + 社群可以用 vague claim 講進度、現在政府審批要求具體 benchmark + scoping 才能 release；同日另推「GLM-5.2 is good but it is not GPT-5.5/Opus 4.8, and even further from Mythos. Yet it is solid &amp; demonstrates that open models continue to chase the frontier」（<a href="https://x.com/emollick/status/2071284966139568440">2071284966139568440</a>） <span class="pill">★★★ 對應 [[llm-model-landscape]] / [[ai-coding-era-engineer-moat]] / [[_index_fact_check_research_discipline]]：跟 6/28 Algorithmic Bridge「AI industry as you know it died」深度文同向；對個人 daily-topic-analysis workflow 的 fact-check 紀律是強佐證 — vague claim 不能採信、要看具體 benchmark + scoping；對 ako 商業策略長線決策：vendor pitch 如帶 vague claim 要打折</span></li>
+    <li><strong>★★ emollick：所有模型路由系統都低估非程式碼任務難度</strong>：<a href="https://x.com/emollick/status/2071265352294584824">原推</a>（chrome fetched OK）— Mollick：「In my experience, all model routers underestimate the difficulty of non-math/coding tasks and assign them too little int...」；同 thread 另推（<a href="https://x.com/emollick/status/2071266589547036858">2071266589547036858</a>）補述「routing 要小心、IT benchmark 會 overestimate non-coding 能力」 <span class="pill">★★ 對應 [[apple-silicon-local-llm-serving]] / [[_index_cc_model_swap]] / [[user_design_workflow_not_skill_driven]]：跟個人經驗對位 — Claude 在 coding 場景表現 ≫ design / writing / 多模態場景；對 [[user_design_workflow_not_skill_driven]] 「設計工作流不走 skill-driven」結論強佐證；對 ako vendor 選擇：要把 task type 分流計入 vendor 評估</span></li>
+    <li><strong>★★ r/LocalLLaMA：China has matched Anthropic in cybersecurity</strong>：<a href="https://www.reddit.com/r/LocalLLaMA/comments/1ui3tck/china_has_matched_anthropic_in_cybersecurity/">r/LocalLLaMA 熱貼</a> — 同前段「WSJ 報導中國 cybersecurity 追平 Anthropic」訊號的社群擴散層；社群觀點兩極：一派擔心 distillation 結果、一派強調原創貢獻 <span class="pill">★★ 對應 [[llm-model-landscape]]；同前段已展開</span></li>
+    <li><strong>★★ r/OpenAI: Why is every AI lab suddenly trying to build their own chips?</strong>：<a href="https://www.reddit.com/r/OpenAI/comments/1uhn4y9/why_is_every_ai_lab_suddenly_trying_to_build/">r/OpenAI 熱貼</a> — 社群討論 frontier AI lab 紛紛走自製晶片路線（vertical integration / 擺脫 NVIDIA 鎖貨）— 對位 OpenAI Jalapeño + Anthropic / Google 自製 chip 動態 <span class="pill">★★ 對應 [[llm-model-landscape]] / [[cc-vendor-bridge-toolkit]]：跟前段 Sophon PFG-1 無 HBM ASIC 訊號完整對位 — 「frontier lab 走 vertical integration 擺脫 HBM 鎖貨」是上週至今軸線的社群討論落腳；對 ako 採購規劃長線：未來 frontier inference hardware 可能擺脫 NVIDIA / HBM 依賴</span></li>
+  </ul>
+  <p class="voice">這條主軸今日真正意義是「<strong>frontier AI 進入政府審批時代 + 分流管制細部落地</strong>」— US 端：OpenAI 走「逐客戶限量預覽」（GPT-5.6）+ Anthropic 走「限關鍵基礎設施」（Mythos 5）；中國端：DeepSeek / GLM / Qwen 系列走「開源補位 + benchmark 追平」（WSJ cybersecurity 訊號 + r/LocalLLaMA China matched Anthropic）。對個人 daily-driver 兩個直接觀察：（1）<strong>vendor 路徑 latency 維度起跑線</strong>：Cerebras CBRS 跑 Sol 750 tok/s 是新基準、Anthropic 端 Opus 4.7/4.8 仍 30-50 tok/s 落差大；要追 cc-vendor-bridge ccp-glm（GLM 系列、z.ai 端 latency）跟 ccp-bruce 是否有 latency 跟得上的 vendor；如將來主要 daily task 走 GPT-5.6 / Sol（如 ChatGPT 開放台灣後）會直接改寫 vendor 選擇。（2）<strong>vague claim 紀律強化</strong>：Mollick「終結 vague posting」對自家 daily-topic-analysis fact-check 紀律是強佐證 — 自家 verify A / verify B 雙軌已經在做、但 main session 寫 voice 時還是要主動 audit「vague claim 是否有具體 benchmark / scoping」、不能照搬 KOL 引言。<strong>emollick「模型路由系統低估 non-coding 任務」</strong>對 [[user_design_workflow_not_skill_driven]] 結論是強佐證 — Claude / GPT-5.6 / GLM 在 design / writing / 多模態場景的差距比 coding 場景大；對個人 design / 文章 / video research 流程繼續走「不依賴 skill-driven」是對的決定；對 ako workshop 是值得 surface 的「<u>AI 工具不是 all-purpose、task type 分流是 production-ready 紀律</u>」素材。<strong>r/OpenAI「why every AI lab building same thing」</strong>反向佐證個人 [[check-my-stack]] skill 的價值 — 不要被 frontier player 同型化收斂 fooled，要從「自家 stack 已有什麼 vs 新工具能補什麼」維度評估、避免重複投入。</p>
+</section>
+
+<section class="theme">
+  <h2>Agent 工具鏈與開發工作流成熟化：RepoPrompt CE 開源 + Google agents-cli + Cloudflare security-audit-skill <span class="tag">14 items</span></h2>
+  <p class="summary"><strong>RepoPrompt CE 開源（GitHub Rising rank-1）</strong>；<strong>Google agents-cli 上線</strong>；<strong>Cloudflare 推 security-audit-skill（Skill 生態擴展）</strong>；<strong>craft-ai-agents/craft-agents-oss 登 GitHub Trending</strong>；<strong>LangSmith DeepAgents + self-hosted sandbox 連推延燒</strong>。整體看是 6/28「agent 從 prototype → production 基建層全面補位」軸線今日具體 ship — frontend / runtime / security / orchestration 四層同時出新工具。</p>
+  <ul>
+    <li><strong>★★★ RepoPrompt 開源 CE 版（GitHub Rising rank-1）</strong>：<a href="https://github.com/repoprompt/repoprompt-ce">repoprompt/repoprompt-ce</a> — RepoPrompt 是「<u>把 repo 內容塞進 LLM context window 的工具</u>」、CE 版開源、上 GitHub Rising rank-1 <span class="pill">★★★ 對應 [[_index_code_exploration_mcp]] / [[user_workflow_mission_critical_infra]] / [[_index_skill_ecosystem]]：跟自家 semble + sem MCP 是「context budget」同型工具但走 monolithic 路線（一次性塞整個 repo）；個人 mission-critical infra 紀律下不會替換 semble + sem（已驗證的 production tool）、但對「context budget 工具的 monolithic vs streaming」設計取捨是值得 follow-up 的 datapoint；對 ako 工作場景如有同事評估 context budget 工具可作 reference</span></li>
+    <li><strong>★★★ Google agents-cli</strong>：<a href="https://github.com/google/agents-cli">google/agents-cli</a> — Google 官方 agents CLI（具體 capability 細節要看 README、推測是類 OpenAI agents-sdk 的 Gemini-native agent harness） <span class="pill">★★★ 對應 [[cc-vendor-bridge-toolkit]] / [[_index_skill_ecosystem]] / [[llm-model-landscape]]：Google 親自下場做 CLI-native agent harness 是 frontier player 對「agent UX 是 CLI 不是 web」框架認可訊號；跟 Anthropic CC / OpenAI codex CLI 三足鼎立；對個人 daily-driver 短期無動作（仍走 CC + cc-vendor-bridge）、長期要追 Google agents-cli 是否能進 cc-vendor-bridge 路徑、補位「Google 端 vendor」缺口；對 ako 場景如有 Google Cloud / Workspace 整合需求有 reference value</span></li>
+    <li><strong>★★ Cloudflare security-audit-skill</strong>：<a href="https://github.com/cloudflare/security-audit-skill">cloudflare/security-audit-skill</a> — Cloudflare 把 security audit 流程包成 Skill；可在 CC / 其他 agent runtime 內被 invoke <span class="pill">★★ 對應 [[_index_skill_ecosystem]] / [[_index_supply_chain_security]] / [[critical_injection_defense]]：Cloudflare 親自下場做 skill 是「<u>skill 生態 enterprise validation</u>」訊號；跟自家 skill ecosystem（superpowers / mattpocock / awesome-codex-skills）並排；對 ako 工作場景如有 Cloudflare 整合可作 production-ready skill reference；個人 daily 可考慮 trial（接 [[_index_supply_chain_security]] cluster 的 bumblebee 路徑、補位 web app security audit 維度）</span></li>
+    <li><strong>★★ craft-ai-agents/craft-agents-oss 登 GitHub Trending</strong>：<a href="https://github.com/craft-ai-agents/craft-agents-oss">craft-ai-agents/craft-agents-oss</a> — agent runtime 開源版；登 GitHub Trending <span class="pill">★★ 對應 [[_index_skill_ecosystem]] / [[workflow-hardening]]：純存在性訊號、agent runtime 開源化加速；自家 workflow tool 已是 production 路徑、不替換</span></li>
+    <li><strong>★★ usestrix/strix：開源 AI 安全弱點掃描器</strong>：<a href="https://github.com/usestrix/strix">usestrix/strix</a> — Open-source AI hackers to find and fix your app's vulnerabilities（GitHub Trending）；用 AI agents 跑 vulnerability scan <span class="pill">★★ 對應 [[_index_supply_chain_security]] / bumblebee 路徑：跟 Cloudflare security-audit-skill 同主題（web app security audit）但是「主動掃 own app」vs 「audit code」分工；對個人 / ako 場景如有 web app security audit 需求可作 reference</span></li>
+    <li><strong>★ datascale-ai/opentalking</strong>：<a href="https://github.com/datascale-ai/opentalking">datascale-ai/opentalking</a> — 開源語音對話 / talking head 工具 <span class="pill">★ 跟個人 / ako stack 無直接對應</span></li>
+  </ul>
+  <p class="voice">本段對個人 stack 最值得追的是「<strong>RepoPrompt CE 開源</strong>」這條 — 不是因為要換工具（自家 [[_index_code_exploration_mcp]] cluster 已驗證 semble + sem 雙工具 production-ready），而是 RepoPrompt 走「monolithic 塞整個 repo」設計取捨跟自家「streaming chunk 化」設計形成對照 — 對「<u>context budget 工具的設計哲學</u>」是值得 follow-up 的 datapoint；對 [[user_workflow_mission_critical_infra]] 紀律下，自家不換、但對 ako 工作場景如有同事評估 context budget 工具可以提這個 RepoPrompt CE 作 reference。<strong>Google agents-cli</strong>是 frontier 三足鼎立的關鍵訊號 — Google 親自下場做 CLI-native agent harness 確認「<u>agent UX 是 CLI 不是 web</u>」（跟 Anthropic CC / OpenAI codex 站同陣營）；對 [[cc-vendor-bridge-toolkit]] 框架長線意義：未來可能要支援「ccp-google」第三條 vendor 路徑、補位「Google 端 enterprise vendor」缺口；對 ako 場景如有 Google Cloud / Workspace 整合需求有 reference value、短期無動作。<strong>Cloudflare security-audit-skill</strong>是「skill 生態 enterprise validation」的關鍵訊號 — 不只是個人 skill ecosystem（superpowers / mattpocock）了、Cloudflare 親自下場做 skill 是企業端認可 framework；對 [[_index_skill_ecosystem]] cluster 是值得記錄的 enterprise validation datapoint；對自家可考慮 trial、接 [[_index_supply_chain_security]] cluster + bumblebee 路徑補位 web app security audit 維度。其他 agent runtime（craft-agents-oss / strix / opentalking）都是純存在性訊號、無 stack 直接動作。</p>
+</section>
+
+<section class="theme">
+  <h2>OSS / HuggingFace 新興工具觀察：llama.cpp DFlash 合併 + Ornith-1.0-35B MTP + DeepSpec 集合 + Graphify 73K stars 入 YC <span class="tag">13 items</span></h2>
+  <p class="summary"><strong>llama.cpp 合併 DFlash 支援</strong>；<strong>Ornith-1.0-35B MTP 推理加速（HuggingFace + r/LocalLLaMA 連動）</strong>；<strong>DeepSeek DeepSpec 集合上架 HuggingFace</strong>；<strong>Graphify 73K stars + 22M downloads 入 YC（r/ClaudeAI 熱貼）</strong>；<strong>openpencil（first concurrent Agent Teams AI vector design tool）</strong>；<strong>BitFun agent runtime（GitHub Trending）</strong>。整體看是 frontier 開源端「<u>推理加速 + spec 標準化 + 視覺/設計工具補位</u>」三軸並進。</p>
+  <ul>
+    <li><strong>★★★ DeepSeek DeepSpec 集合上架 HuggingFace</strong>：<a href="https://huggingface.co/collections/deepseek-ai/deepspec">HF deepseek-ai/deepspec collection</a> + <a href="https://www.reddit.com/r/LocalLLaMA/comments/1uhyhl3/deepspec_a_deepseekai_collection/">r/LocalLLaMA 熱貼</a> — DeepSeek 把 spec-driven development 相關工具 / 模型集合化上架 HuggingFace；對應 6/28 deepseek-ai/DeepSpec GitHub Rising +9500 訊號落地化 <span class="pill">★★★ 對應 [[_index_skill_ecosystem]] / [[workflow-hardening]] / [[user_internal_tech_workshop_cadence]]：DeepSeek 走 spec-driven dev 路線跟自家 superpowers + OpenSpec 同框；對 ako 內部 workshop「spec-driven dev」題材有 strategic anchor 價值；對個人本地 stack 不直接動作但長線 follow-up — DeepSeek 推 spec-driven dev 是「中文圈 frontier player 對 SDD framework 認可」的關鍵訊號</span></li>
+    <li><strong>★★★ Ornith-1.0-35B MTP 推理加速（GGUF）</strong>：<a href="https://huggingface.co/deepreinforce-ai/Ornith-1.0-9B-GGUF">HF Ornith-1.0-9B-GGUF</a> + <a href="https://www.reddit.com/r/LocalLLaMA/comments/1ui4yn6/ornith1035b_gguf_update_native_mtp/">r/LocalLLaMA 熱貼</a> — Ornith-1.0 系列（9B + 35B 兩個尺寸）支援 native MTP（Multi-Token Prediction）推理加速 <span class="pill">★★★ 對應 [[apple-silicon-local-llm-serving]] / [[_index_local_llm_serving]]：MTP 推理加速對自家 M5 Pro 48GB + Rapid-MLX Qwen3.5-4B setup 直接相關 — 如 Ornith 9B 在 MLX 也支援 MTP、可能比 Qwen3.5-4B 更高速；35B 在 48GB 跑不動（要量化更激進、實測 q3/q2 才可能）；要 follow-up 9B 版本 MLX 支援 + 繁中能力（[[user_video_research_notebooklm_default]] 紀錄 Qwen ≤4B 是唯一撐繁中的本地模型、Ornith 9B 是否有同等繁中能力是關鍵）</span></li>
+    <li><strong>★★ llama.cpp 合併 DFlash 支援</strong>：<a href="https://www.reddit.com/r/LocalLLaMA/comments/1uhx862/dflash_support_merged_into_llamacpp/">r/LocalLLaMA</a> + <a href="https://github.com/ggml-org/llama.cpp/pull/22105">PR #22105</a> — llama.cpp 合併 DFlash（DiffusionFlash）支援、進一步加速 diffusion-LLM 推理 <span class="pill">★★ 對應 [[apple-silicon-local-llm-serving]] / [[_index_local_llm_serving]]：llama.cpp 是 cross-platform 本地 LLM 主力 runtime、DFlash 合併會擴散到 macOS 端；自家走 Rapid-MLX 不直接受惠、但對 fallback 路徑（llama.cpp Metal backend）值得 follow-up；對 ako 場景如有 GPU server 跑 llama.cpp 也是訊號</span></li>
+    <li><strong>★★ openpencil — first concurrent Agent Teams AI vector design tool</strong>：<a href="https://github.com/ZSeven-W/openpencil">ZSeven-W/openpencil</a> — 開源 AI vector design 工具、第一個支援 concurrent Agent Teams 設計協作 <span class="pill">★★ 對應 [[_index_skill_ecosystem]] / [[user_design_workflow_not_skill_driven]]：multi-agent design tool 是 design workflow 的新方向；但對個人 [[user_design_workflow_not_skill_driven]] 結論（設計工作流不走 skill-driven）反向訊號 — 個人短期不採用、長線觀察 multi-agent design 是否有 production case；對 ako 設計團隊如有興趣可作 reference</span></li>
+    <li><strong>★★ Graphify 73K stars + 2.2M downloads（2.5 個月）入 YC</strong>：<a href="https://github.com/safishamsi/graphify">safishamsi/graphify</a> + <a href="https://www.reddit.com/r/ClaudeAI/comments/1ui6unv/graphify_hit_73k_stars_and_22m_downloads_in_25/">r/ClaudeAI 熱貼</a> — Reddit 標題：「Graphify hit 73k stars and 2.2M downloads in 2.5 months, and we just got into YC」；具體 capability 未從 raw md body 抓回（待 gh repo view 補） <span class="pill">★★ 跟個人 / ako 直接 stack 無對應；純存在性訊號 + 73K stars 是 frontier 數量級</span></li>
+    <li><strong>★★ BitFun agent runtime</strong>：<a href="https://github.com/GCWing/BitFun">GCWing/BitFun</a> — agent runtime（GitHub Trending） <span class="pill">★★ 同型 agent runtime、無 user stack 直接對應</span></li>
+    <li><strong>★★ librepods-org/librepods</strong>：<a href="https://github.com/librepods-org/librepods">librepods-org/librepods</a> — 開源 podcast tool <span class="pill">★★ 跟 6/5 結案的「follow-builders podcast feed 已拔」訊號相關但是不同領域；個人不採用</span></li>
+    <li><strong>★ Self-learning skills</strong>：<a href="https://github.com/Kulaxyz/self-learning-skills">Kulaxyz/self-learning-skills</a> — skill 自學機制 <span class="pill">★ 對應 [[_index_skill_ecosystem]] / [[skill-creator]] 但個人 skill 走人工 review + 固化路徑、不採自學</span></li>
+    <li><strong>★ Aliens_eye</strong>：<a href="https://github.com/arxhr007/Aliens_eye">arxhr007/Aliens_eye</a> — 不明工具（GitHub） <span class="pill">★ 純存在性訊號</span></li>
+    <li><strong>★ mco-org/squad</strong>：<a href="https://github.com/mco-org/squad">mco-org/squad</a> — 不明 agent / coordination 工具 <span class="pill">★ 純存在性訊號</span></li>
+  </ul>
+  <p class="voice">本段對個人本地 stack（[[apple-silicon-local-llm-serving]]）兩個直接 follow-up：（1）<strong>Ornith-1.0-9B MTP MLX 支援</strong> — 如自家 Rapid-MLX 框架能支援 Ornith 9B 的 MTP 推理加速、可能比 Qwen3.5-4B 推理快幾倍；關鍵是 9B vs 4B 在 48GB unified memory 是否還跑得動 + 繁中能力是否維持（[[user_video_research_notebooklm_default]] 紀錄 Qwen ≤4B 是唯一撐繁中的本地模型）；要 follow-up 看是否有人 port Ornith 到 MLX。（2）<strong>llama.cpp DFlash 合併</strong>對自家 fallback 路徑（如 Rapid-MLX 不支援某模型時退到 llama.cpp Metal backend）有意義 — 純 follow-up、無立即動作。<strong>DeepSeek DeepSpec 集合</strong>對 [[user_internal_tech_workshop_cadence]] 是極佳「spec-driven dev」素材 — 不只 superpowers + OpenSpec 兩條路徑、現在 DeepSeek 親自下場做集合化版本、是 frontier 中文圈 player 對 SDD framework 認可的關鍵訊號；對 ako 內部 workshop 可作為「中文圈 frontier 也走 spec-driven」的 strategic anchor。<strong>openpencil multi-agent design tool</strong>對 [[user_design_workflow_not_skill_driven]] 結論反向訊號 — 個人短期不採用（design 走 design-taste-frontend + 自己美感、不靠 skill-driven）、長線觀察 multi-agent design 是否有 production case；對 ako 設計團隊如有興趣可作 reference。<strong>Graphify 73K stars 入 YC</strong>是純存在性訊號 — 跟個人 stack 無對應但 73K stars 是 frontier 數量級值得記下、可能未來會出現在「對話/文字轉視覺」相關場景 reference；對 [[user_internal_tech_workshop_cadence]] 工作場景如有「<u>解釋複雜系統的視覺化</u>」需求可作 reference。其他工具（BitFun / craft-agents / squad / Aliens_eye）都是純存在性訊號、無動作。</p>
+</section>
+
+<section class="theme">
+  <h2>AI 基礎設施投資浪潮與風險警示：Sophon PFG-1 無 HBM ASIC + 央行警告 AI 崩盤 + Micron 是下一個 Nvidia <span class="tag">9 items</span></h2>
+  <p class="summary"><strong>Sophon PFG-1 AI ASIC 揭露（片上 330GB DRAM、無 HBM）— 動區報導 + whitepaper</strong>；<strong>Micron 被 Wall Street 視為下一個 Nvidia（TechCrunch）</strong>；<strong>中央銀行警告 AI 過熱可能引發金融崩盤（Telegraph + FT 兩家獨立報導）</strong>；<strong>Google 限制 Meta 內部 Gemini 用量（r/singularity）</strong>；<strong>澳洲 Firmus 在印尼建 360MW AI 工廠導入 17 萬顆 NVIDIA GPU</strong>；<strong>LineShine 中國超算登頂全球榜（r/singularity）</strong>。整體看是 6/28「半導體記憶體鎖定 + 自製 chip 垂直整合」軸線今日進階：投資端 hardware/server/超算同步擴張、但金融端風險警示首次浮上央行層級。</p>
+  <ul>
+    <li><strong>★★★ Sophon PFG-1 AI ASIC（片上 330GB DRAM / 無 HBM）</strong>：<a href="https://www.phantafield.com/whitepaper">whitepaper 原檔</a> — Sophon Phantafield PFG-1 揭露：用片上 DRAM 取代 HBM、單晶 330GB、針對 LLM training/inference 優化 <span class="pill">★★★ 對應 6/28 聯想 CEO「DRAM/NAND 漲價至 2030」訊號的 hardware 補位回應 — 「<u>用片上 DRAM 繞過 HBM 鎖貨</u>」是 frontier player 自製 chip 的新路徑；對 ako 場景無直接動作；對 [[apple-silicon-local-llm-serving]] cluster 是長線 reference value — 未來 frontier inference hardware 可能擺脫 HBM 依賴</span></li>
+    <li><strong>★★★ Telegraph：央行警告 AI 過熱可能引發金融崩盤</strong>：<a href="https://www.telegraph.co.uk/business/2026/06/28/ai-boom-risks-global-financial-crash-central-bankers-warn/">Telegraph 原報導</a> + <a href="https://www.ft.com/content/e81ce414-e4bd-4e8c-bac7-94f7bf17def4">FT 平行報導</a> — Telegraph + FT 兩家獨立報導：中央銀行警告 AI 投資泡沫可能引發全球金融崩盤；首次 frontier 金融機構層級明確警告 <span class="pill">★★★ 對應 [[user_tax_finance_profile]] / [[_index_career_finance]] / [[taiwan-salaryman-investment-allocation-tools]]：個人 ETF + BTID 配置短期不直接影響、但對 AI-related stock concentration 部位（如 NVIDIA / Micron / TSMC）的 portfolio 風險要納入考量；對 ako 商業策略長線：vendor 配置不能 over-rely AI hype-driven valuation 公司；要追未來 1-2 個月央行是否升級警告語氣（從 warn → policy action）</span></li>
+    <li><strong>★★★ TechCrunch：Micron 是下一個 Nvidia</strong>：<a href="https://techcrunch.com/2026/06/28/why-wall-street-thinks-us-memory-maker-micron-is-the-next-nvidia/">TechCrunch 原報導</a> — Wall Street 把 Micron（美國記憶體製造商）視為下一個 Nvidia 投資機會；HBM 鎖貨 + AI 需求結構性漲價 <span class="pill">★★★ 對應 [[user_tax_finance_profile]] / [[taiwan-salaryman-investment-allocation-tools]]：對個人投資 portfolio 直接相關 — Micron 如真的進入「下一個 Nvidia」軌道、是否要小幅配置；但要對位 Telegraph + FT 央行警告（AI 投資泡沫）兩面評估；對 ako 採購成本長線：Micron 漲價會直接傳導到 ako 工作 server / 個人 Mac 換機成本（[[apple-silicon-local-llm-serving]] 預算規劃）</span></li>
+    <li><strong>★★ r/singularity：Google 限制 Meta 內部 Gemini 用量</strong>：<a href="https://www.reddit.com/r/singularity/comments/1uhx4vo/google_caps_metas_gemini_use_as_ai_demand_strains/">r/singularity 熱貼</a> — Google 限制 Meta 內部使用 Gemini 的配額；AI 需求超過供給的具體 datapoint <span class="pill">★★ 對應 [[_index_quota]] / [[cc-vendor-bridge-toolkit]]：frontier API 配額成為策略性資源、跨公司有 vendor lock-in 動機；對個人 Max OAuth daily-driver 短期無感、對 ako 工作場景如有 multi-vendor API 配額管理要注意「frontier vendor 可能在策略時刻砍配額」風險</span></li>
+    <li><strong>★★ r/singularity：LineShine 中國超算登頂全球榜</strong>：<a href="https://www.reddit.com/r/singularity/comments/1ui9erl/lineshine_a_chinese_supercomputer_has_topped_the/">r/singularity 熱貼</a> — LineShine 中國超算登頂全球 Top500 榜 <span class="pill">★★ 對應 [[llm-model-landscape]] / 地緣政治軸線：跟「中國 cybersecurity 追平 Anthropic」+「中國具身智能融資熱」是同向中國端 AI 基建擴張訊號；對 ako 中文圈 vendor 評估 vendor diversity reference value</span></li>
+    <li><strong>★★ r/LocalLLaMA: We're probably going to need that soon</strong>：<a href="https://www.reddit.com/r/LocalLLaMA/comments/1uht2m0/were_probably_going_to_need_that_soon/">r/LocalLLaMA 熱貼</a> — 社群討論「未來會需要的某硬體」（從討論串看是 cooling / hardware 相關） <span class="pill">★★ 純社群預期訊號</span></li>
+    <li><strong>★ r/LocalLLaMA: number 1 public enemy of open-source</strong>：<a href="https://www.reddit.com/r/LocalLLaMA/comments/1ui241x/the_number_1_public_enemy_of_opensource/">r/LocalLLaMA 熱貼</a> — 社群討論開源 vs 閉源敵對關係 <span class="pill">★ 純社群觀點層</span></li>
+  </ul>
+  <p class="voice">本段對個人最重要的單條是「<strong>Telegraph + FT 兩家獨立報導央行警告 AI 過熱可能引發金融崩盤</strong>」— 不是單一分析師看空、是「<u>frontier 金融機構層級首次明確警告</u>」、可信度比過去多半的「AI bubble 喊話」高一個層級。對個人 [[user_tax_finance_profile]] / [[taiwan-salaryman-investment-allocation-tools]] 投資 portfolio 短期不直接影響（ETF + BTID 配置不重壓單一 AI 股）、但對個人觀察 NVIDIA / Micron / TSMC 等 AI-related stock 集中度要納入考量；對 ako 商業策略長線：vendor 配置不能 over-rely AI hype-driven valuation 公司、要追未來 1-2 個月央行是否升級警告語氣（從 warn → policy action）。<strong>Sophon PFG-1 無 HBM ASIC</strong>對 [[apple-silicon-local-llm-serving]] cluster 是長線 reference value — 「用片上 DRAM 繞過 HBM 鎖貨」如成為主流路徑、未來 frontier inference hardware 可能擺脫 HBM 依賴、對記憶體成本曲線會有結構性影響（接 6/28 聯想 CEO 漲價警告）；對 ako 工作 server 採購規劃長線 follow-up。<strong>Micron 是下一個 Nvidia</strong>對個人投資 portfolio 直接相關 — 但要對位 Telegraph + FT 央行警告兩面評估、不能單邊 over-allocation；對 ako 採購成本：Micron 漲價會直接傳導到 ako 工作 server / 個人 Mac 換機成本（[[apple-silicon-local-llm-serving]] 預算規劃要把這條納入）；個人短期不動作、長線 watch list。<strong>Google 砍 Meta Gemini 配額</strong>是「frontier API 配額成策略資源」具體 datapoint — 對個人 Max OAuth daily-driver 短期無感（Anthropic 跟 OpenAI 沒 cross-company 配額戰爭）、但對 ako 工作場景如有 multi-vendor API 配額管理要警惕「frontier vendor 可能在策略時刻砍配額」風險；長線對 [[cc-vendor-bridge-toolkit]] vendor diversification 是強佐證。其他訊號（LineShine 超算 / r/LocalLLaMA 純觀點）是 reference 層、無動作。</p>
+</section>
+
+<section class="theme">
+  <h2>AI 落地侷限與人機協作現實：Ford 召回老將 + Schneier AI 責任 + 大學頂分歸因 ChatGPT + 量子 ECDSA 突破 <span class="tag">7 items</span></h2>
+  <p class="summary"><strong>Ford 重新雇用資深工程師（AI 接管品管失敗）</strong>；<strong>Emollick 指出所有模型路由系統都低估非程式碼任務難度</strong>（同前段 frontier 模型主軸引用、放這裡是 AI 落地侷限角度）；<strong>Schneier 討論 AI 代理的法律責任歸屬</strong>；<strong>大學頂分增加被歸因於 ChatGPT（El Pais 西班牙報導）</strong>；<strong>HN 討論：量子電路 ECDSA 破解被 AI 輔助超越最佳已知電路</strong>。整體看是 6/28「AI 對就業衝擊」主軸今日深化到「<u>AI 落地具體場景的成敗分布</u>」— 製造業 / 教育 / 法律 / 量子科研四個 domain 各自落地、不對稱明顯。</p>
+  <ul>
+    <li><strong>★★★ TechCrunch：Ford rehires gray-beard engineers after AI falls short</strong>：<a href="https://techcrunch.com/2026/06/28/ford-rehires-gray-beard-engineers-after-ai-falls-short/">TechCrunch 原報導</a> — Ford 重新雇用資深「灰鬍子」工程師、AI 接管品管的失敗具體 case；跟 6/28 動區報導同主體訊號的 TechCrunch 英文原報導版本 <span class="pill">★★★ 對應 [[ai-coding-era-engineer-moat]] / [[taiwan-engineer-positioning-2026]]：「<u>AI 替代人類失敗、人類回鍋成功</u>」是 6/28 Mollick 14hr datapoint 的對照組；對 ako 場景（電商 / 金融科技）對應「老將回鍋」這條 path 在台灣同型行業也適用；對個人轉型方向：判斷力 + 領域深度 &gt; 模型操作熟練度</span></li>
+    <li><strong>★★★ Schneier: AI and Liability</strong>：<a href="https://www.schneier.com/blog/archives/2026/06/ai-and-liability.html">Schneier 部落格</a> — Bruce Schneier（信譽極高的資安專家）深度評論「AI 代理的法律責任歸屬」議題；論點：當 AI agent 自主決策造成損害、責任應歸屬製造商 / 部署者 / 用戶哪方？ <span class="pill">★★★ 對應 [[critical_injection_defense]] / [[workflow-hardening]] / [[user_workflow_mission_critical_infra]]：對個人 unattended CC + daily-topic-analysis workflow + workflow-monitor 紀律有直接 implication — 自家 workflow 如自主決策 commit / push / 動 prod state 造成損害的責任歸屬要思考；對 ako 場景如有 production agent 部署，法律責任歸屬會成為 vendor 選擇關鍵維度；Schneier 文章值得讀完整版、可能進 [[_index_career_finance]] cluster 作為 AI ethics / 法律框架 reference</span></li>
+    <li><strong>★★ El Pais: 大學頂分增加被歸因於 ChatGPT</strong>：<a href="https://english.elpais.com/technology/2026-05-21/why-are-there-more-top-grades-at-university-chatgpt-is-to-blame.html">El Pais 報導</a> — 西班牙 / 歐洲大學頂分數增加；歸因於 ChatGPT 普及 <span class="pill">★★ 對應 [[ai-coding-era-engineer-moat]] / [[user_internal_tech_workshop_cadence]]：教育端 AI 採用後的 grade inflation 現象；對 ako 內部 workshop 可作為「教育 vs 職場 AI 採用速度差異」reference；個人無動作</span></li>
+    <li><strong>★★ Schneier 文章對應自家 [[workflow-hardening]]：AI 自主決策造成損害的法律責任</strong>：跟前條 Schneier 同主體訊號的自家 implication 展開 — 自家 daily-topic-analysis workflow 走 verify gate（[[reference_workflow_jsonl_cache_rescue_pattern]]）已有 safety 設計、但「AI 自主 commit 程式碼」場景仍是潛在責任灰區 <span class="pill">★★ 同前條 Schneier 文章；此處標明自家直接 implication</span></li>
+    <li><strong>★ r/MachineLearning: I shrank a transformer until every number fitted</strong>：<a href="https://www.reddit.com/r/MachineLearning/comments/1uhw7fu/i_shrank_a_transformer_until_every_number_fitted/">r/MachineLearning 熱貼</a> — 極致量化研究 <span class="pill">★ 對應 [[apple-silicon-local-llm-serving]] / [[_index_local_llm_serving]]：純研究方向、無立即動作</span></li>
+  </ul>
+  <p class="voice">本段對個人最強訊號是「<strong>Schneier AI 法律責任</strong>」這條 — Bruce Schneier 是資安界信譽極高的長期觀察者、他親自發文討論「AI 代理法律責任歸屬」意味議題已從「<u>學術討論</u>」進階到「<u>frontier 評論者納入長期觀察</u>」。對個人 unattended CC + daily-topic-analysis workflow + workflow-monitor 紀律有直接 implication — 自家 workflow 如自主決策 commit / push / 動 prod state（例：daily-local 跑 wiki-actions slash command auto-apply 變更）造成損害的責任歸屬要思考；雖然 [[reference_workflow_jsonl_cache_rescue_pattern]] + [[workflow-hardening]] 已有 safety 設計、但「AI 自主 commit 程式碼」場景仍是潛在責任灰區。對 ako 場景如有 production agent 部署、法律責任歸屬會成為 vendor 選擇關鍵維度 — vendor TOS（Terms of Service）內責任歸屬條款要仔細看。Schneier 文章值得讀完整版、可能進 [[_index_career_finance]] cluster 作為 AI ethics / 法律框架長線 reference。<strong>Ford 老將回鍋</strong>是 6/28 Mollick 14hr datapoint 的對照組 — 「AI 替代人類失敗、人類回鍋成功」具體 case；對 ako 場景（電商 / 金融科技）對應「老將回鍋」path 在台灣同型行業適用 — 不要被 frontier hype 帶偏、領域深度仍是 moat 核心元素。<strong>El Pais 大學頂分歸因 ChatGPT</strong>是教育端 AI 採用後 grade inflation 現象 — 對 ako 內部 workshop 可作為「教育 vs 職場 AI 採用速度差異」reference、個人無動作。整體看：本段四個 datapoint（Ford 失敗 / Schneier 責任 / 大學頂分 / 量子科研突破）構成「<strong>AI 落地具體場景的成敗分布 framework</strong>」— 對 [[ai-coding-era-engineer-moat]] cluster 長線是值得記錄的「分布 framework」素材、不是「AI 取代 / 不取代」二元辯論。</p>
+</section>
+
+<section class="theme">
+  <h2>中國具身智能融資熱：源策未來 + 智平方近 50 億新輪 + 法拉第 Q2 出貨 + 圖靈獎得主入曹操出行 + 10000+ 送貨機器人 <span class="tag">6 items</span></h2>
+  <p class="summary"><strong>源策未來 Archon Robotics 完成數億元種子輪（真格、高榕、IDG、五源）</strong>；<strong>智平方完成近 50 億元新輪估值超 200 億</strong>；<strong>法拉第未來機器人 Q2 出貨 242 台超目標、上調全年至 2000 台</strong>；<strong>曹操出行引入圖靈獎得主</strong>；<strong>中國 10000+ 送貨機器人讓 Reddit r/singularity 廣泛討論</strong>。整體看是 6/28 「Slash Fintech vibe coding 翻車」/ 「AI 對就業」軸線今日的中國端對照 — 不是 AI as productivity tool、是「<u>具身智能（embodied AI）成獨立 funding 軸</u>」。</p>
+  <ul>
+    <li><strong>★★★ 36kr：源策未來 Archon Robotics 完成數億元種子輪</strong>：<a href="https://36kr.com/p/3868055841641476">36kr 原報導</a> — 源策未來（Archon Robotics）完成數億元人民幣種子輪、投資方含真格、高榕、IDG、五源等中國一線創投 <span class="pill">★★★ 對應 [[_index_career_finance]] / 中國具身智能 ecosystem：「<u>frontier 中國 venture 集中投具身智能</u>」是市場 PMF signal；對 ako 中文圈 vendor 評估 / 個人觀察 frontier 趨勢有 reference；個人無動作</span></li>
+    <li><strong>★★★ 36kr newsflash：智平方完成近 50 億元新輪估值超 200 億</strong>：<a href="https://36kr.com/newsflashes/3873553369634056">36kr 快訊</a> — 智平方（中國具身智能 / 機器人公司）完成近 50 億元人民幣新輪、估值超 200 億 <span class="pill">★★★ 對應 [[_index_career_finance]] / 中國具身智能 ecosystem：50 億 / 200 億估值規模意味中國具身智能進入「<u>單一公司 unicorn+ 級</u>」階段；對 ako 中文圈長線觀察有 reference</span></li>
+    <li><strong>★★ IT 之家：法拉第未來機器人 3-6 月出貨 242 台超預期、賈躍亭再次上調全年至 2000 台</strong>：<a href="https://www.ithome.com/0/969/741.htm">IT 之家報導</a> — 賈躍亭發布視頻匯報法拉第未來（FF EAI）機器人銷售：6 月單月出貨 105 台、3-6 月累計 242 台（超原 220 目標）；全年目標從 4 月上調的 1500 台再次上調至 2000 台 <span class="pill">★★ 對應 [[_index_career_finance]] 中國具身智能 ecosystem：具身智能進入「<u>單季度可衡量出貨量級</u>」階段、不再純 demo / 預期；4 月→6 月兩次上調全年目標意味中國端 demand 持續超預期；對 ako 中文圈 vendor 評估有 reference</span></li>
+    <li><strong>★★ r/singularity：Meanwhile in China, 10000+ delivery bots are...</strong>：<a href="https://www.reddit.com/r/singularity/comments/1uhxshz/meanwhile_in_china_10000_delivery_bots_are/">r/singularity 熱貼</a> — 中國 10000+ 送貨機器人實地運作的影片 + 討論 <span class="pill">★★ 對應前述具身智能 funding 訊號的具體落地證據 — 不只融資 / 訂單、實地 10000+ 規模在街頭運作；對 ako / 個人觀察 frontier 中國 ecosystem reference</span></li>
+  </ul>
+  <p class="voice">本段對個人主要是「<strong>frontier 中國具身智能 ecosystem 可觀察 datapoint 量級</strong>」reference — 不是有立即動作的主軸，但對 [[_index_career_finance]] / [[taiwan-salaryman-investment-allocation-tools]] / 個人觀察 frontier 長線趨勢有重要意義。三條核心訊號（智平方近 50 億新輪 + 法拉第 Q2 出貨 242 台 + 中國 10000+ 送貨機器人實地運作）連起來看：<strong>中國具身智能進入「unicorn+ 估值 + 可衡量出貨 + 實地大規模運作」三條件齊備階段</strong>。對 ako 場景如未來有「<u>具身智能領域</u>」客戶或 vendor 評估 reference；個人投資視角：中國具身智能上市公司（如有）或相關 supply chain（中國工業機器人、嵌入式 AI chip）可作為「<u>中國 AI 細分賽道</u>」的 portfolio diversification 候選、但要對位前段央行 AI 崩盤警告兩面評估。短期無動作、長線 follow-up；對 [[user_internal_tech_workshop_cadence]] 是值得補進「frontier 趨勢 = 軟體 + 硬體 + embodied」三角框架的素材 — 不要被「frontier AI = LLM」單軸框架 fool。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 📰 ruanyf weekly 週刊 — 本期同 baseline -->
+<!-- ============================================== -->
+<section class="fixed weekly">
+<h2>📰 科技愛好者週刊 — 仍同 #401 baseline <span class="tag">PROBES no_change</span></h2>
+<p class="summary">PROBES 寫回判定：本期仍同 <code>#401《如何賺到 10 億美元》（2026-06-20 前後）</code> baseline、無新一期；ruanyf 通常週五發佈、下一期預計 2026-07-04 第 402 期。本日無 ruanyf weekly 新內容、不另展開。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 🛠 GitHub 倉庫觀察（固定獨立段、鐵律已存） -->
+<!-- ============================================== -->
+<section class="fixed repo">
+<h2>🛠 GitHub 倉庫觀察 <span class="tag">固定段</span></h2>
+<p class="summary">今日 OSS Trending / Rising 主軸 + 主題段提到的 repo 集中本段（鐵律 since 2026-05-30）。本日 11 個 OSS Trending / Rising 倉庫 + agent / OSS 主題段的 repo 完整列入；HF collection 標明來源、不在主表格內。</p>
+<table>
+  <thead><tr><th>Repo</th><th>★ stars / 簡介</th><th>判斷</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><a href="https://github.com/repoprompt/repoprompt-ce">repoprompt/repoprompt-ce</a></td>
+      <td>n/a · 把 repo 內容塞進 LLM context window 的工具（CE 開源版、GitHub Rising rank-1）</td>
+      <td><span class="verdict-watch">⭐ star 追</span><br>對應 [[_index_code_exploration_mcp]] 但走 monolithic 設計、跟自家 semble + sem streaming 設計取捨對照；自家 mission-critical infra 紀律下不替換已驗證的 production tool，對 ako 同事評估 context budget 工具可作 reference</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/google/agents-cli">google/agents-cli</a></td>
+      <td>n/a · Google 官方 agents CLI（Gemini-native agent harness）</td>
+      <td><span class="verdict-watch">⭐ star 追</span><br>frontier 三足鼎立（Anthropic CC / OpenAI codex / Google agents-cli）；對 [[cc-vendor-bridge-toolkit]] 未來可能要支援「ccp-google」第三條 vendor 路徑；對 ako 場景如有 Google Cloud 整合有 reference</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/cloudflare/security-audit-skill">cloudflare/security-audit-skill</a></td>
+      <td>n/a · Cloudflare 推出的 security audit Skill（可在 CC / agent runtime 內 invoke）</td>
+      <td><span class="verdict">📥 試用</span><br>「skill 生態 enterprise validation」訊號；對 [[_index_skill_ecosystem]] / [[_index_supply_chain_security]] / bumblebee 路徑補位 web app security audit 維度有意義；可考慮 trial</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/safishamsi/graphify">safishamsi/graphify</a></td>
+      <td>73K stars · 2.2M downloads（2.5 個月）· 入 YC · description 待 gh repo view 補</td>
+      <td><span class="verdict-watch">⭐ star 追</span><br>73K stars 是 frontier 數量級值得記下；對 [[user_internal_tech_workshop_cadence]] 工作場景如有「解釋複雜系統視覺化」需求可作 reference</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/craft-ai-agents/craft-agents-oss">craft-ai-agents/craft-agents-oss</a></td>
+      <td>n/a · agent runtime 開源版（GitHub Trending）</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>同型 agent runtime、自家 workflow tool 已是 production 路徑、不替換</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/usestrix/strix">usestrix/strix</a></td>
+      <td>n/a · 開源 AI 安全弱點掃描器（Open-source AI hackers to find and fix your app's vulnerabilities, GitHub trending）</td>
+      <td><span class="verdict-watch">⭐ star 追</span><br>對應 [[_index_supply_chain_security]] / bumblebee 路徑：跟 cloudflare/security-audit-skill 同主題（web app security audit）但分工不同（主動掃 own app vs audit code）；個人 / ako 場景如有 web app security audit 需求可作 reference</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/GCWing/BitFun">GCWing/BitFun</a></td>
+      <td>n/a · agent runtime（GitHub Trending）</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>同型 agent runtime trending</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/ZSeven-W/openpencil">ZSeven-W/openpencil</a></td>
+      <td>n/a · 開源 AI vector design 工具（first concurrent Agent Teams）</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>對應 [[user_design_workflow_not_skill_driven]] 反向訊號 — 個人短期不採用、長線 follow-up multi-agent design 是否有 production case；對 ako 設計團隊如有興趣可作 reference</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/datascale-ai/opentalking">datascale-ai/opentalking</a></td>
+      <td>n/a · 開源語音對話 / talking head 工具</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>跟個人 / ako stack 無直接對應</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/librepods-org/librepods">librepods-org/librepods</a></td>
+      <td>n/a · 開源 podcast tool</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>跟 6/5 結案的「follow-builders podcast feed 已拔」訊號相關但不同領域；個人不採用</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Kulaxyz/self-learning-skills">Kulaxyz/self-learning-skills</a></td>
+      <td>n/a · skill 自學機制</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>對應 [[_index_skill_ecosystem]] 但個人 skill 走人工 review + 固化路徑、不採自學</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/mco-org/squad">mco-org/squad</a></td>
+      <td>n/a · 不明 agent / coordination 工具</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>純存在性訊號</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/arxhr007/Aliens_eye">arxhr007/Aliens_eye</a></td>
+      <td>n/a · 不明工具</td>
+      <td><span class="verdict-skip">⏭ 跳過</span><br>純存在性訊號</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/ggml-org/llama.cpp/pull/22105">ggml-org/llama.cpp PR #22105</a></td>
+      <td>n/a · llama.cpp 合併 DFlash 支援（不是 repo、是 PR）</td>
+      <td><span class="verdict-watch">⭐ 訊號</span><br>對應 [[apple-silicon-local-llm-serving]] / [[_index_local_llm_serving]]：DFlash 合併會擴散到 macOS 端；自家走 Rapid-MLX 不直接受惠、但對 llama.cpp Metal backend fallback 路徑值得 follow-up</td>
+    </tr>
+  </tbody>
+</table>
+
+<details>
+  <summary>其他次要 trending / 引用（不展開判斷）</summary>
+  <ul>
+    <li><a href="https://huggingface.co/deepreinforce-ai/Ornith-1.0-9B-GGUF">HF: deepreinforce-ai/Ornith-1.0-9B-GGUF</a> — Ornith-1.0-9B MTP 推理加速 GGUF（HuggingFace、不是 GitHub）；對 [[apple-silicon-local-llm-serving]] follow-up 是否 MLX 也支援</li>
+    <li><a href="https://huggingface.co/collections/deepseek-ai/deepspec">HF collection: deepseek-ai/deepspec</a> — DeepSeek spec-driven dev 集合上架 HuggingFace；對應 [[user_internal_tech_workshop_cadence]] 「中文圈 frontier 也走 SDD」素材</li>
+    <li><a href="https://wavecat.ai/">wavecat.ai</a> — 不明 AI 工具 / 公司 landing page</li>
+    <li><a href="https://xsdr.app">xsdr.app</a> — 不明工具 landing page</li>
+  </ul>
+</details>
+<p class="voice">今日 GitHub 動向最值得「<strong>📥 試用</strong>」級的是 <strong>cloudflare/security-audit-skill</strong> — Cloudflare 親自下場做 Skill 是「skill 生態 enterprise validation」關鍵訊號、對 [[_index_skill_ecosystem]] cluster 是值得記錄的 enterprise datapoint；可考慮 trial、接 [[_index_supply_chain_security]] cluster + bumblebee 路徑補位 web app security audit 維度。「<strong>⭐ star 追</strong>」級包括 <strong>repoprompt/repoprompt-ce</strong>（context budget 設計對照組 + GH Rising rank-1）+ <strong>google/agents-cli</strong>（frontier 三足鼎立 + 未來 ccp-google 候選 vendor）+ <strong>safishamsi/graphify</strong>（73K stars frontier 數量級）+ <strong>llama.cpp PR #22105 DFlash</strong>（自家本地 stack fallback 路徑訊號）共四個。「<strong>⏭ 跳過</strong>」級多為同型 agent runtime trending（craft-agents-oss / strix / BitFun / squad）或跟自家 stack 無對應（opentalking / librepods / self-learning-skills / openpencil / Aliens_eye）。<strong>RepoPrompt CE 從 GitHub Rising rank-1</strong>是值得長期觀察的訊號 — 雖然個人不替換、但 monolithic vs streaming 設計取捨在 context budget 工具的 design space 是長線辯論題目；自家走 streaming 路線（semble + sem）的 production 經驗如能寫成個人 blog 或 ako workshop 素材有對位價值。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- ⚙️ 系統當天動態 -->
+<!-- ============================================== -->
+<section class="fixed system">
+<h2>⚙️ 系統當天動態 <span class="tag">workflow telemetry</span></h2>
+<ul>
+  <li><strong>Aggregator 06:01 撞 Mac 休眠卡死 → 10:07 手動補跑</strong>：見前段 ⚠️ 段；user 確認休眠正常現象、不開根治 ticket</li>
+  <li><strong>Workflow telemetry</strong>：第二輪（補完 raw md 後跑）13m15s / 85 agents / 3.72M subagent tokens / 262 tool uses；agent 數比 6/28（132 agents / 5.78M tokens）少 35%、token spend 少 36%、但時間長 71%；可能因 fact-check URL 數量分布不同（72 vs 118）+ 部分 agent 在 chrome MCP retry 卡較久；workflow throttle min(16, cores-2) 機制正常運作</li>
+  <li><strong>chrome fact-check</strong>：seen 17 / fetched 17、verify A flag 1 / verify B 抽 8/55 stride=7、0 misaligned；flag 1 條原因未具體記錄（同 6/28 observability gap、待 workflow update 把 blocked URL 寫進結構化 output）</li>
+  <li><strong>parallel fact-check</strong>：seen 55 / fetched 55、verify A 0 flag；reddit 全部走 arctic-shift API、recovered 多條（在 evidence body 內 `_[OP recovered from old.reddit HTML]_` 標記可見）</li>
+  <li><strong>KNOWN_ISSUES gate</strong>：✅ 全綠 — 第一輪（06:01）跑過 zhihu_hot ⏳ transient 503、補跑（10:07）後全部成功；無 🚨 阻塞</li>
+  <li><strong>PROBES baseline 寫回</strong>：本日 0 attempted（兩條 entries 都 no_change：CC release watcher 仍 v2.1.195 / ruanyf 仍 401）；PROBES.md 不動</li>
+  <li><strong>WATCH.md</strong>：## Active Issues + ## Watched Topics 都空；無 stage 1/2 攔截需求</li>
+  <li><strong>External feeds backstop</strong>：x feed 10 builders（swyx / thsottiaux / petergyang / thenanyu / rauchg / levie / mattturck / zarazhangrui / nikunj / steipete、各 1-2 條最近 24h tweet）+ blogs feed 過去 72h 1 篇文章（Claude Blog「Claude Code now supports artifacts」2026-06-18）；feeds 抓取正常</li>
+</ul>
+<p class="voice">今日 workflow telemetry 相對昨日有兩個有趣對比：（1）<strong>agent 數 / token spend 都比 6/28 少 35-36%</strong>，但時間長 71% — 應該是 fact-check URL 分布跟主軸抽出顆粒度不同（昨日 8 主軸 / 118 URL fact-checked，今日 7 主軸 / 72 URL fact-checked）；輸入 raw md 大小也不一樣（昨日 226 items vs 今日 321 items）— raw md item 數多但 fact-check URL 數少可能是「<u>item 訊息密度更高、URL 重複率更高</u>」的結果，這是 fact-check pre-flight 階段就 dedup 掉的訊號。（2）<strong>chrome MCP retry 卡較久</strong>是 13m15s vs 7m43s 時間差的 likely cause — 自家 daily-topic-analysis workflow 在 chrome fact-check 段如有 X tweet 被 content filter block 或 chrome MCP 失敗 fallback、會花較多時間（單條卡 30-60s）；對應 6/28 chrome content filter block 1 條的 observability gap 仍未補；要 follow-up 看 daily-topic-analysis.js 是否能在 retry exhaust 後把 blocked URL + retry latency 寫進結構化 output。<strong>aggregator 06:01 撞 Mac 休眠卡死</strong>是已 surface 的休眠正常現象、user 確認不開根治 ticket；長期可考慮 launchd 排程從 06:00 移到 09:00（電腦通常已醒）或加 wake delay 30s buffer、但短期不必動。<strong>PROBES 連兩天 baseline no_change</strong>（CC release v2.1.195 + ruanyf #401）是預期 — 對應 [[user_workflow_mission_critical_infra]] 紀律：PROBES wrap 機制設計目的就是「<u>低頻訊號的 baseline 觀察</u>」、no_change 不是漏 attempt 是 by design。</p>
+</section>
+
+<footer class="page">
+  <p>Pipeline：raw aggregator 06:01 launchd 撞 Mac 休眠卡死（user 確認休眠正常現象、看門狗 600s 砍 process tree）→ 10:07 main session 手動補跑 aggregator（321 items / 43 sources / 0 failures）→ daily-topic-analysis workflow 第二輪跑（85 agents fan-out / 7 themes 抽出 / 72 URL fact-checked / verify A flag chrome 1 / verify B 0 misaligned）→ main session 接力寫 stage-2 digest HTML（v3 範本 + 個人 voice）。Verify gate：bash ~/.claude/scripts/verify-daily-digest.sh ./reports/digest-2026-06-29.html ./reports/2026-06-29.md — exit 0 才 surface。</p>
+</footer>
+
+<script>
+const sourceData = {
+  labels: ['X', '中文/中國', 'Reddit', 'V2EX', 'HN', 'GH Rising', '中文/台灣', 'GH Trending', 'EN Media', 'HF', 'Lab Blogs'],
+  data: [132, 89, 40, 21, 18, 7, 6, 4, 2, 1, 1]
+};
+const themeData = {
+  labels: ['前線模型+地緣', 'Agent 工具鏈', 'OSS / HF 新工具', 'AI 基建投資與警示', 'Anthropic / Claude 動態', 'AI 落地侷限', '中國具身智能融資'],
+  data: [18, 14, 13, 9, 8, 7, 6]
+};
+const palette = ['#b591ff','#7aa8ff','#6ed79c','#ffb46b','#ff8585','#9aa0b4','#a3d8ff','#ffd8a8','#c8b6ff','#a8e8c8','#ffc8b6'];
+const chartOpts = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false }
+  },
+  scales: {
+    x: { ticks: { color: '#9aa0b4', font: { size: 11 } }, grid: { color: '#2a2f43' } },
+    y: { ticks: { color: '#9aa0b4', font: { size: 11 } }, grid: { color: '#2a2f43' }, beginAtZero: true }
+  }
+};
+new Chart(document.getElementById('sourceChart'), {
+  type: 'bar',
+  data: { labels: sourceData.labels, datasets: [{ data: sourceData.data, backgroundColor: palette.slice(0, sourceData.labels.length) }] },
+  options: chartOpts
+});
+new Chart(document.getElementById('themeChart'), {
+  type: 'bar',
+  data: { labels: themeData.labels, datasets: [{ data: themeData.data, backgroundColor: palette.slice(0, themeData.labels.length) }] },
+  options: chartOpts
+});
+</script>
+
+</div>
+</body>
+</html>
