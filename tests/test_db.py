@@ -195,6 +195,58 @@ def test_last_failed_sources_returns_only_currently_failing(db):
     assert failed == ["source_b"]
 
 
+def test_items_schema_has_last_surfaced_at(db):
+    cols = {row["name"] for row in db.conn.execute("PRAGMA table_info(items)")}
+    assert "last_surfaced_at" in cols, \
+        "items table missing last_surfaced_at column (Phase 2 migration missing)"
+
+
+def test_migration_backfills_last_surfaced_at_from_posted_at():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "test.db"
+
+        legacy = sqlite3.connect(str(db_path))
+        legacy.execute(
+            """
+            CREATE TABLE items (
+                id TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                canonical_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                title_hash TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_handle TEXT,
+                source_tier INTEGER,
+                posted_at TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                author TEXT,
+                excerpt TEXT,
+                language TEXT,
+                engagement_json TEXT,
+                also_appeared_in TEXT
+            )
+            """
+        )
+        legacy.execute(
+            "INSERT INTO items (id, url, canonical_url, title, title_hash, "
+            "source, source_handle, source_tier, posted_at, fetched_at) "
+            "VALUES ('id1', 'https://x/', 'https://x/', 't', 'th', 's', 'h', 1, "
+            "'2026-06-01T00:00:00', '2026-06-01T00:00:00')"
+        )
+        legacy.commit()
+        legacy.close()
+
+        d = Database(db_path)
+        d.init_schema()
+
+        row = d.conn.execute(
+            "SELECT last_surfaced_at, posted_at FROM items WHERE id = 'id1'"
+        ).fetchone()
+        d.close()
+        assert row["last_surfaced_at"] == row["posted_at"], \
+            "migration should backfill last_surfaced_at from posted_at"
+
+
 def test_recent_fetch_runs(db):
     now = utcnow()
     db.log_fetch_run(

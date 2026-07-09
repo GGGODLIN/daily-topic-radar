@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS items (
     language TEXT,
     engagement_json TEXT,
     also_appeared_in TEXT,
-    comments_json TEXT
+    comments_json TEXT,
+    last_surfaced_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_items_title_hash ON items(title_hash);
 CREATE INDEX IF NOT EXISTS idx_items_posted_at ON items(posted_at);
@@ -72,6 +73,13 @@ class Database:
         }
         if "comments_json" not in existing_item_cols:
             self.conn.execute("ALTER TABLE items ADD COLUMN comments_json TEXT")
+
+        if "last_surfaced_at" not in existing_item_cols:
+            self.conn.execute("ALTER TABLE items ADD COLUMN last_surfaced_at TEXT")
+            self.conn.execute(
+                "UPDATE items SET last_surfaced_at = posted_at "
+                "WHERE last_surfaced_at IS NULL"
+            )
 
         self.conn.commit()
 
