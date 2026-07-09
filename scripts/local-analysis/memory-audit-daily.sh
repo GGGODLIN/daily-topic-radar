@@ -17,10 +17,9 @@ LOG="$LOG_DIR/local-analysis-memory-$DATE.log"
 
 {
   echo "=== memory audit started: $(date) ==="
-  # cd 到 ~/code/projects 透 ~/.claude/projects/ symlink 對應主 memory dir
-  # (-Users-linhancheng-code-projects → -Users-linhancheng-Desktop-projects)
-  # 避開 ~/Desktop TCC；同 social-info code↔Desktop symlink pattern
-  cd /Users/linhancheng/code/projects
+  # consolidated memory：autoMemoryDirectory(~/.claude/memory) 已統一，cwd 無關
+  # (2026-05-30；舊 code-projects→Desktop-projects symlink 已移除，/memory-audit 改讀 autoMemoryDirectory)
+  cd /
   "$CLAUDE" -p "/memory-audit" > "$OUT" 2>&1
   echo "=== memory audit finished: $(date) ==="
   echo "Output: $OUT ($(wc -c < "$OUT") bytes)"

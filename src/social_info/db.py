@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS fetch_runs (
     items_fetched INTEGER,
     error TEXT,
     error_class TEXT,
-    attempts INTEGER
+    attempts INTEGER,
+    net_new INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_fetch_runs_source ON fetch_runs(source);
 CREATE INDEX IF NOT EXISTS idx_fetch_runs_started ON fetch_runs(started_at);
@@ -62,6 +63,8 @@ class Database:
             self.conn.execute("ALTER TABLE fetch_runs ADD COLUMN error_class TEXT")
         if "attempts" not in existing_cols:
             self.conn.execute("ALTER TABLE fetch_runs ADD COLUMN attempts INTEGER")
+        if "net_new" not in existing_cols:
+            self.conn.execute("ALTER TABLE fetch_runs ADD COLUMN net_new INTEGER")
 
         existing_item_cols = {
             row["name"]
@@ -109,11 +112,12 @@ class Database:
         error: str,
         error_class: str = "",
         attempts: int = 1,
+        net_new: int | None = None,
     ) -> None:
         self.conn.execute(
             "INSERT INTO fetch_runs "
-            "(source, started_at, ended_at, status, items_fetched, error, error_class, attempts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(source, started_at, ended_at, status, items_fetched, error, error_class, attempts, net_new) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 source,
                 started_at.isoformat(),
@@ -123,6 +127,7 @@ class Database:
                 error,
                 error_class,
                 attempts,
+                net_new,
             ),
         )
         self.conn.commit()

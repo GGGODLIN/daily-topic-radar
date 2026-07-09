@@ -119,7 +119,13 @@ async def _main() -> int:
     date = args.date or now_tw.strftime("%Y-%m-%d")
     rows = db.items_for_date(date)
     all_items_today = [_row_to_item(r) for r in rows]
-    out = write_report(all_items_today, failures, args.reports, date, now_tw)
+    stale = [
+        r for r in results
+        if r.ok and r.items_count() > 0 and r.net_new == 0
+    ]
+    out = write_report(
+        all_items_today, failures, args.reports, date, now_tw, stale=stale
+    )
 
     enabled_ids = {s.id for s in config.enabled_sources()}
     issues = [i for i in db.current_known_issues() if i["source"] in enabled_ids]

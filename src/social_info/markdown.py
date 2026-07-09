@@ -17,6 +17,7 @@ PLATFORM_GROUP_ORDER = [
     ("huggingface", "HuggingFace"),
     ("rss_lab", "Lab Blogs & Releases"),
     ("rss_media", "English Tech Media"),
+    ("v2ex", "V2EX (開發者社群)"),
     ("zh_cn", "中文 / 中國"),
     ("wechat", "中文 / 微信公眾號"),
     ("zh_tw", "中文 / 台灣"),
@@ -25,6 +26,8 @@ PLATFORM_GROUP_ORDER = [
 
 def _group_key_for_source(source: str, source_handle: str, language: str) -> str:
     """Bucket a (source, handle, language) triple into one of the platform groups."""
+    if source == "v2ex":
+        return "v2ex"
     if language.startswith("zh-TW"):
         return "zh_tw"
     if language.startswith("zh-CN"):
@@ -92,6 +95,7 @@ def render_file(
     generated_at: datetime,
     items: list[Item],
     failures: list[FetchResult],
+    stale: list[FetchResult] | None = None,
 ) -> str:
     grouped: dict[str, list[Item]] = defaultdict(list)
     for it in items:
@@ -112,6 +116,10 @@ def render_file(
         lines.append("> failures:")
         for f in failures:
             lines.append(f">   - {f.source_id}: {f.error}")
+    if stale:
+        lines.append("> stale (fetched ok but 0 net-new after dedup):")
+        for s in stale:
+            lines.append(f">   - {s.source_id}: fetched={s.items_count()} net_new=0")
     lines.append("")
     lines.append("---")
     lines.append("")

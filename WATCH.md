@@ -8,24 +8,7 @@
 
 ## Active Issues
 
-### anthropics/claude-code#44696 — Wide markdown tables collapse into stacked key-value cards instead of rendering as tables
-
-- **Opened**: 2026-04-07 by waihonger (Wai Hong Fong)
-- **State**: OPEN（last updated 2026-05-13 03:51）
-- **URL**: <https://github.com/anthropics/claude-code/issues/44696>
-- **Match keywords**: `table|markdown.*table|key-value|wide.*table|stacked.*card`（grep 配對 CC scope 內）
-- **Impact on me**: CC TUI 80-cols terminal 寬時 markdown table 強制降級成「每 entry 一個 section + ──── 分隔線」key-value card 列表。實證環境 CC v2.1.140 / cmux / 80 cols / Opus 4.7 1M context（2026-05-13）
-- **Workaround**: Response 時主動寫短 cell 表 + 長動作換段落。**實測 hard rule**（T1-T13 binary search 13 tests, 2026-05-13）：row display width ≤ 120 chars (中文字符算 2) → keep；≥ 142 chars 必降級。Rule 已寫進 `~/.claude/CLAUDE.md` 「Markdown 表格」段
-- **When closed**: 移除 `~/.claude/CLAUDE.md` 「Markdown 表格」整段 + memory `feedback_prefer_tables_over_bullets.md` 2026-05-13 update 段；恢復「視覺體感」原則為主、不嚴格壓縮 cell
-
-### anthropics/claude-code#55938 — Wide-table fallback leaves stale bordered paint in scroll buffer alongside the key-value re-render
-
-- **Opened**: 2026-05-04 by ofcRS (Aleksandr Sakhatskii)
-- **State**: OPEN（last updated 2026-05-12）
-- **URL**: <https://github.com/anthropics/claude-code/issues/55938>
-- **Match keywords**: `scroll.*buffer|stale.*border|wide.*table.*fallback|paint`（grep 配對 CC scope 內）
-- **Impact on me**: #44696 fallback 觸發後 scroll buffer 殘留舊表格邊框、視覺混亂。比 #44696 影響輕、但同一條 fix path
-- **Related to**: #44696（同一個 wide-table fallback feature 的副作用 bug）
+_(空 — #55938 已於 2026-06-12 CLOSED 移至 ## Resolved)_
 
 ## Watched Topics
 
@@ -49,7 +32,21 @@ Watched topic 跟 Active issue 差別：
 
 ## Resolved
 
-_(空)_
+### anthropics/claude-code#55938 — Wide-table fallback leaves stale bordered paint in scroll buffer alongside the key-value re-render
+
+- **Opened**: 2026-05-04 by ofcRS (Aleksandr Sakhatskii)
+- **Closed**: 2026-06-12（closedAt 2026-06-12T11:24:17Z；2026-06-13 stage-2 digest WATCH attempt 在 Stage 1 raw md 無命中，但例行 gh confirm 抓到 state=CLOSED — 跟 CC v2.1.174–176 三連發同日，極可能其中一版帶了修復、release notes 未明寫）
+- **URL**: <https://github.com/anthropics/claude-code/issues/55938>
+- **What it was**: #44696 wide-table fallback 觸發後 scroll buffer 殘留舊表格邊框、視覺混亂；同一個 markdown table 在 scroll history 出現兩次（先壞掉的 bordered ASCII、後 stacked key-value cards）。實證環境 CC v2.1.126 / Alacritty / macOS
+- **Resolution applied (2026-06-13)**: 升 CC v2.1.174+ 後驗證寬表格輸出不再 paint stale border；副作用 issue 跟父 bug #44696 同方向修復告一段落，整個 wide-table fallback feature 線收尾
+
+### anthropics/claude-code#44696 — Wide markdown tables collapse into stacked key-value cards instead of rendering as tables
+
+- **Opened**: 2026-04-07 by waihonger (Wai Hong Fong)
+- **Closed**: 2026-05-14（closedAt 2026-05-14T21:28:19Z；2026-05-30 stage-2 digest Stage 1 grep 命中 → `gh issue view` 確認 CLOSED）
+- **URL**: <https://github.com/anthropics/claude-code/issues/44696>
+- **What it was**: CC TUI 80-cols terminal 寬時 markdown table 強制降級成 key-value card 列表（每 entry `────` 分隔）。實證環境 CC v2.1.140 / cmux / 80 cols
+- **Resolution applied (2026-05-30)**: 已移除 `~/.claude/CLAUDE.md`「Markdown 表格」整段 + memory `feedback_prefer_tables_over_bullets.md` 2026-05-13 update 段，恢復「視覺體感」原則為主、不嚴格壓縮 cell。副作用 issue #55938（stale border paint）仍 OPEN、留 ## Active 監控
 
 ## Check protocol（two-stage：raw md 訊號當低成本 filter，gh 確認）
 

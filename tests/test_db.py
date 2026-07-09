@@ -1,10 +1,12 @@
 import json
+import sqlite3
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from social_info._time import utcnow
 from social_info.db import Database
 
 
@@ -117,6 +119,54 @@ def test_log_fetch_run(db):
     assert rows == [("hn", "ok", 10)]
 
 
+def test_log_fetch_run_records_net_new(db):
+    db.log_fetch_run(
+        source="x_tier1",
+        started_at=datetime(2026, 5, 18, 6, 0, 0),
+        ended_at=datetime(2026, 5, 18, 6, 0, 5),
+        status="ok",
+        items_fetched=106,
+        error="",
+        net_new=0,
+    )
+    cur = db.conn.execute(
+        "SELECT items_fetched, net_new FROM fetch_runs WHERE source='x_tier1'"
+    )
+    assert tuple(cur.fetchone()) == (106, 0)
+
+
+def test_log_fetch_run_net_new_defaults_null(db):
+    db.log_fetch_run(
+        source="hn",
+        started_at=datetime(2026, 5, 18, 6, 0, 0),
+        ended_at=datetime(2026, 5, 18, 6, 0, 5),
+        status="ok",
+        items_fetched=10,
+        error="",
+    )
+    cur = db.conn.execute("SELECT net_new FROM fetch_runs WHERE source='hn'")
+    assert cur.fetchone()[0] is None
+
+
+def test_init_schema_adds_net_new_to_legacy_fetch_runs():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "legacy.db"
+        legacy = sqlite3.connect(str(path))
+        legacy.execute(
+            "CREATE TABLE fetch_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "source TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, "
+            "status TEXT, items_fetched INTEGER, error TEXT)"
+        )
+        legacy.commit()
+        legacy.close()
+
+        d = Database(path)
+        d.init_schema()
+        cols = {r["name"] for r in d.conn.execute("PRAGMA table_info(fetch_runs)")}
+        d.close()
+        assert "net_new" in cols
+
+
 def test_last_failed_sources_returns_only_currently_failing(db):
     # source A: failed then succeeded — should NOT be returned
     db.log_fetch_run(
@@ -146,18 +196,19 @@ def test_last_failed_sources_returns_only_currently_failing(db):
 
 
 def test_recent_fetch_runs(db):
+    now = utcnow()
     db.log_fetch_run(
         "hn",
-        datetime(2026, 4, 25, 9, 0),
-        datetime(2026, 4, 25, 9, 0, 5),
+        now - timedelta(days=2),
+        now - timedelta(days=2, seconds=-5),
         "ok",
         10,
         "",
     )
     db.log_fetch_run(
         "hn",
-        datetime(2026, 4, 26, 9, 0),
-        datetime(2026, 4, 26, 9, 0, 5),
+        now - timedelta(days=1),
+        now - timedelta(days=1, seconds=-5),
         "failed",
         0,
         "boom",

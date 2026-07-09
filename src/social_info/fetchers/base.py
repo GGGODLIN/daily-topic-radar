@@ -59,6 +59,7 @@ class FetchResult:
     attempts: int = 1
     started_at: datetime = field(default_factory=utcnow)
     ended_at: datetime | None = None
+    net_new: int | None = None
 
     def items_count(self) -> int:
         return len(self.items)

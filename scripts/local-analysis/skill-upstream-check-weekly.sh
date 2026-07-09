@@ -66,11 +66,11 @@ done
 # 本地 skill-creator 是官方舊版 fork（出處注記在其 SKILL.md 頭），刻意不同步；
 # 這段只巡邏 anthropics/skills 上游有沒有新 commit，surface 給使用者決定，絕不 auto-pull。
 SC_MARKER="$LOG_DIR/.skill-creator-upstream-seen"
-sc_latest=$(gh api "repos/anthropics/skills/commits?path=skills/skill-creator&per_page=1" --jq '.[0].sha[:8] + " " + .[0].commit.committer.date[:10] + " " + (.[0].commit.message | split("\n")[0])' 2>/dev/null || echo "")
+sc_latest=$(gh api "repos/anthropics/skills/commits?path=skills/skill-creator&per_page=1" --jq ".[0].sha[:8] + " " + .[0].commit.committer.date[:10] + " " + (.[0].commit.message | split("\\n")[0])" 2>/dev/null) || sc_latest=""
 {
   echo ""
   echo "## skill-creator 上游巡邏（fork 對沖，不同步只通報）"
-  if [ -z "$sc_latest" ]; then
+  if [ -z "${sc_latest:-}" ]; then
     echo "- ⚠️ gh api 查詢失敗，本週跳過"
   else
     sc_seen=$(cat "$SC_MARKER" 2>/dev/null || echo "")

@@ -1,5 +1,13 @@
-"""Reddit fetcher via public top.json endpoint."""
+"""Reddit fetcher via old.reddit.com listing HTML.
+
+www.reddit.com `.json` endpoints are blocked for unauthenticated clients
+(HTTP 403 "blocked by network security"), independent of VPN/IP — a
+residential IP reaches the HTML pages (200) but not the JSON API. old.reddit
+listing HTML stays publicly reachable and carries score / permalink / author /
+comment-count / timestamp as data-* attributes on each `div.thing`.
+"""
 import httpx
+from bs4 import BeautifulSoup
 
 from social_info._time import utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
@@ -8,13 +16,56 @@ from social_info.url_utils import canonical_url
 
 USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 
+_REDDIT_INTERNAL_PREFIXES = (
+    "https://www.reddit.com",
+    "https://reddit.com",
+    "https://old.reddit.com",
+    "https://i.redd.it",
+    "https://v.redd.it",
+)
+
+
+def _int_attr(thing, name: str) -> int:
+    raw = (thing.get(name) or "").strip()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_things(html: str, subreddit: str, limit: int) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    parsed: list[dict] = []
+    for thing in soup.find_all("div", class_="thing"):
+        if (thing.get("data-promoted") or "").strip() == "true":
+            continue
+        permalink = (thing.get("data-permalink") or "").strip()
+        if not permalink:
+            continue
+        title_el = thing.find("a", class_="title")
+        title = title_el.get_text(strip=True) if title_el else ""
+        if not title:
+            continue
+        parsed.append({
+            "title": title,
+            "permalink": permalink,
+            "outbound": (thing.get("data-url") or "").strip(),
+            "author": (thing.get("data-author") or "").strip(),
+            "score": _int_attr(thing, "data-score"),
+            "comments": _int_attr(thing, "data-comments-count"),
+            "timestamp_ms": _int_attr(thing, "data-timestamp"),
+        })
+        if len(parsed) >= limit:
+            break
+    return parsed
+
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     subreddit = source.params["subreddit"]
     time_window = source.params.get("time_window", "day")
     limit = source.params.get("limit", 10)
 
-    url = f"https://www.reddit.com/r/{subreddit}/top.json"
+    url = f"https://old.reddit.com/r/{subreddit}/top/"
     resp = await http.get(
         url,
         params={"t": time_window, "limit": limit},
@@ -22,25 +73,23 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
         timeout=30.0,
     )
     resp.raise_for_status()
-    data = resp.json()
 
     items: list[Item] = []
     now = utcnow()
-    for child in data.get("data", {}).get("children", []):
-        post = child.get("data", {})
-        title = post.get("title") or ""
-        link = post.get("url") or f"https://www.reddit.com{post.get('permalink', '')}"
-        if not title or not link:
-            continue
-        if post.get("is_self") or post.get("post_hint") == "image":
-            link = f"https://www.reddit.com{post.get('permalink', '')}"
-        excerpt = (post.get("selftext") or "").strip()[:200]
-        try:
-            posted_at = utcfromtimestamp(post.get("created_utc", 0))
-        except (TypeError, ValueError):
+    for post in _parse_things(resp.text, subreddit, limit):
+        link = f"https://www.reddit.com{post['permalink']}"
+        outbound = post["outbound"]
+        is_external_link = bool(outbound) and not outbound.startswith(_REDDIT_INTERNAL_PREFIXES) and not outbound.startswith("/")
+        excerpt = f"src [{outbound}]({outbound})" if is_external_link else ""
+        if post["timestamp_ms"]:
+            try:
+                posted_at = utcfromtimestamp(post["timestamp_ms"] / 1000)
+            except (TypeError, ValueError, OverflowError):
+                posted_at = now
+        else:
             posted_at = now
         items.append(Item(
-            title=title,
+            title=post["title"],
             url=link,
             canonical_url=canonical_url(link),
             source="reddit",
@@ -48,12 +97,12 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             source_tier=source.tier,
             posted_at=posted_at,
             fetched_at=now,
-            author=post.get("author") or "",
+            author=post["author"],
             excerpt=excerpt,
             language="en",
             engagement={
-                "score": int(post.get("score") or 0),
-                "comments": int(post.get("num_comments") or 0),
+                "score": post["score"],
+                "comments": post["comments"],
             },
         ))
     return items

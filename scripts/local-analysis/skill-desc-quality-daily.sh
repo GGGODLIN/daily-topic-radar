@@ -54,7 +54,7 @@ awk -F'|' '
     in_table=0; next
   }
   /^## (Excluded|維護紀律|audit channel|2026-|來源驗證|個人 config|Audit)/ { scope=""; in_table=0; next }
-  /^\|---/ { in_table=1; next }
+  /^\| *-+/ { in_table=1; next }
   scope != "" && in_table && /^\|/ {
     skill=$2; audit=$4
     gsub(/^ +| +$/, "", skill); gsub(/^ +| +$/, "", audit)

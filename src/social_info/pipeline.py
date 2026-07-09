@@ -22,6 +22,7 @@ from social_info.fetchers import (
     threads_apify,
     trendshift,
     twitter,
+    v2ex,
     wewe_rss,
 )
 from social_info.fetchers.base import FetchResult, Item
@@ -72,6 +73,21 @@ def classify_error(exc: BaseException) -> str:
     return "persistent_error"
 
 
+def annotate_net_new(
+    results: list["FetchResult"], new_items: list["Item"]
+) -> None:
+    """Set FetchResult.net_new = how many of a source's fetched items survived
+    dedup into the report. Ok results that fetched items but contributed 0
+    net-new (all duplicates) get net_new=0 — distinguishable from a failed
+    fetch. Failed results keep net_new=None.
+    """
+    survivors = {id(it) for it in new_items}
+    for r in results:
+        if not r.ok:
+            continue
+        r.net_new = sum(1 for it in r.items if id(it) in survivors)
+
+
 FETCHER_REGISTRY = {
     "hn_algolia": hn.fetch,
     "reddit": reddit.fetch,
@@ -84,6 +100,7 @@ FETCHER_REGISTRY = {
     "threads": threads.fetch,
     "threads_apify": threads_apify.fetch,
     "trendshift": trendshift.fetch,
+    "v2ex": v2ex.fetch,
     "wewe_rss": wewe_rss.fetch,
 }
 
@@ -155,6 +172,17 @@ async def run_pipeline(
     async with httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT) as http:
         results = await asyncio.gather(*[_run_one_fetcher(s, http) for s in enabled])
 
+    all_items: list[Item] = []
+    for r in results:
+        if not r.ok:
+            continue
+        items = r.items[:limit_per_source] if limit_per_source else r.items
+        all_items.extend(items)
+
+    deduper = Deduper(db)
+    new_items = deduper.process(all_items)
+    annotate_net_new(results, new_items)
+
     if not dry_run:
         for r in results:
             db.log_fetch_run(
@@ -166,19 +194,8 @@ async def run_pipeline(
                 error=r.error,
                 error_class=r.error_class,
                 attempts=r.attempts,
+                net_new=r.net_new,
             )
-
-    all_items: list[Item] = []
-    for r in results:
-        if not r.ok:
-            continue
-        items = r.items[:limit_per_source] if limit_per_source else r.items
-        all_items.extend(items)
-
-    deduper = Deduper(db)
-    new_items = deduper.process(all_items)
-
-    if not dry_run:
         for it in new_items:
             row = it.to_db_row(
                 item_id=compute_item_id(it.canonical_url),
@@ -195,10 +212,15 @@ def write_report(
     out_dir: Path,
     date: str,
     generated_at: datetime,
+    stale: list[FetchResult] | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md = render_file(
-        date=date, generated_at=generated_at, items=new_items, failures=failures
+        date=date,
+        generated_at=generated_at,
+        items=new_items,
+        failures=failures,
+        stale=stale,
     )
     out_path = out_dir / f"{date}.md"
     out_path.write_text(md, encoding="utf-8")

@@ -93,3 +93,35 @@ def test_render_file_with_failures():
     assert "sources_failed: 1" in out
     assert "dcard_engineer" in out
     assert "timeout after 30s" in out
+
+
+def test_render_file_surfaces_stale_all_deduped_source():
+    fetched = [
+        _item(url=f"https://x.com/{i}", canonical_url=f"https://x.com/{i}")
+        for i in range(3)
+    ]
+    out = render_file(
+        date="2026-05-18",
+        generated_at=datetime(2026, 5, 18, 6, 0, 0),
+        items=[],
+        failures=[],
+        stale=[
+            FetchResult(
+                source_id="twitter_tier1", items=fetched, ok=True, net_new=0
+            )
+        ],
+    )
+    assert "sources_failed: 0" in out
+    assert "stale" in out.lower()
+    assert "twitter_tier1" in out
+    assert "3" in out
+
+
+def test_render_file_no_stale_line_when_none():
+    out = render_file(
+        date="2026-05-18",
+        generated_at=datetime(2026, 5, 18, 6, 0, 0),
+        items=[_item()],
+        failures=[],
+    )
+    assert "stale" not in out.lower()

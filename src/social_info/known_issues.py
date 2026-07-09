@@ -13,12 +13,18 @@ from typing import Any
 
 TAIPEI = timezone(timedelta(hours=8))
 
+_REDDIT_HINT = (
+    "Reddit 擋未認證 .json API（HTTP 403，非 VPN/IP — 住宅 IP 打 HTML 仍 200）。"
+    "fetcher 已改抓 old.reddit.com 列表 HTML；若這裡仍出現代表 old.reddit 也被擋，"
+    "需改接 Reddit OAuth API（註冊 app + client credentials）。"
+)
+
 ACTION_HINTS: dict[str, str] = {
-    "reddit_localllama": "VPN 開著時 Reddit 必擋。關 VPN 或 split-tunnel exclude reddit.com。",
-    "reddit_claudeai": "VPN 開著時 Reddit 必擋。關 VPN 或 split-tunnel exclude reddit.com。",
-    "reddit_openai": "VPN 開著時 Reddit 必擋。關 VPN 或 split-tunnel exclude reddit.com。",
-    "reddit_singularity": "VPN 開著時 Reddit 必擋（或 reddit 偶發 5xx）。關 VPN 試一次。",
-    "reddit_machinelearning": "VPN 開著時 Reddit 必擋。關 VPN 或 split-tunnel exclude reddit.com。",
+    "reddit_localllama": _REDDIT_HINT,
+    "reddit_claudeai": _REDDIT_HINT,
+    "reddit_openai": _REDDIT_HINT,
+    "reddit_singularity": _REDDIT_HINT,
+    "reddit_machinelearning": _REDDIT_HINT,
     "threads_keyword": "Apify actor D15iJFBNZ9wgeWAhw schema 不合，已知持續壞。換 actor 或 sources.yml 設 enabled:false。",
     "twitter_tier1": "X 偶發 ReadError。先試 retry，仍失敗檢查 RSS hub / scrape 設定。",
 }
