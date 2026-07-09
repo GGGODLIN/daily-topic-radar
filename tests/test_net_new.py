@@ -71,11 +71,11 @@ async def test_pipeline_records_zero_net_new_for_all_deduped_source(monkeypatch)
         db = Database(Path(tmp) / "t.db")
         db.init_schema()
 
-        new1, res1 = await run_pipeline(config, db)
+        new1, res1, _ = await run_pipeline(config, db)
         assert len(new1) == 1
         assert res1[0].net_new == 1
 
-        new2, res2 = await run_pipeline(config, db)
+        new2, res2, _ = await run_pipeline(config, db)
         assert new2 == []
         assert res2[0].ok is True
         assert res2[0].net_new == 0

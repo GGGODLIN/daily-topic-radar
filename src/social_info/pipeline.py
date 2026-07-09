@@ -166,13 +166,13 @@ async def run_pipeline(
     dry_run: bool = False,
     limit_per_source: int | None = None,
     resurface_days: int = 30,
-) -> tuple[list[Item], list[FetchResult]]:
-    """Run all enabled fetchers in parallel, dedup, return (new_items, all_results).
+) -> tuple[list[Item], list[FetchResult], list[str]]:
+    """Run all enabled fetchers in parallel, dedup, return (new_items, all_results, resurface_ids).
 
-    resurface_ids computed by the dedup pass are not resolved or applied here —
-    see resolve_resurface_items() / db.update_last_surfaced_at(). Timestamps
-    must only be bumped once a caller has actually rendered those items, so
-    it stays out of this function's unconditional per-run side effects.
+    resurface_ids computed by the dedup pass are returned but not resolved
+    or applied here — see resolve_resurface_items() / db.update_last_surfaced_at().
+    Timestamps must only be bumped once a caller has actually rendered those
+    items, so it stays out of this function's unconditional per-run side effects.
     """
     enabled = config.enabled_sources()
     if only_sources:
@@ -214,7 +214,7 @@ async def run_pipeline(
             row["last_surfaced_at"] = it.fetched_at.isoformat()
             db.insert_item(row)
 
-    return new_items, results
+    return new_items, results, dedup_result.resurface_ids
 
 
 def _row_to_item(row: dict[str, Any]) -> Item:

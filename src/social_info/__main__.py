@@ -14,7 +14,7 @@ from social_info.db import Database  # noqa: E402
 from social_info.fetchers.base import Item  # noqa: E402
 from social_info import known_issues  # noqa: E402
 from social_info.markdown import render_item  # noqa: E402
-from social_info.pipeline import run_pipeline, write_report  # noqa: E402
+from social_info.pipeline import resolve_resurface_items, run_pipeline, write_report  # noqa: E402
 
 TAIPEI = timezone(timedelta(hours=8))
 
@@ -88,7 +88,7 @@ async def _main() -> int:
     limit_per_source = 3 if args.smoke else None
     dry_run = args.dry_run or args.smoke
 
-    new_items, results = await run_pipeline(
+    new_items, results, resurface_ids = await run_pipeline(
         config,
         db,
         only_sources=only_sources,
@@ -119,13 +119,16 @@ async def _main() -> int:
     date = args.date or now_tw.strftime("%Y-%m-%d")
     rows = db.items_for_date(date)
     all_items_today = [_row_to_item(r) for r in rows]
+    resurface_items = resolve_resurface_items(db, resurface_ids)
     stale = [
         r for r in results
         if r.ok and r.items_count() > 0 and r.net_new == 0
     ]
     out = write_report(
-        all_items_today, failures, args.reports, date, now_tw, stale=stale
+        all_items_today, failures, args.reports, date, now_tw,
+        stale=stale, resurface_items=resurface_items,
     )
+    db.update_last_surfaced_at(resurface_ids)
 
     enabled_ids = {s.id for s in config.enabled_sources()}
     issues = [i for i in db.current_known_issues() if i["source"] in enabled_ids]
@@ -133,7 +136,8 @@ async def _main() -> int:
 
     print(
         f"Wrote {out} ({len(all_items_today)} items rendered, "
-        f"{len(new_items)} new this run, {len(failures)} failures)"
+        f"{len(new_items)} new this run, {len(resurface_items)} resurfaced, "
+        f"{len(failures)} failures)"
     )
     print(f"Wrote {issues_path} ({len(issues)} known issue(s))")
     db.close()
