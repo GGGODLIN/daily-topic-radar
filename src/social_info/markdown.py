@@ -28,6 +28,8 @@ def _group_key_for_source(source: str, source_handle: str, language: str) -> str
     """Bucket a (source, handle, language) triple into one of the platform groups."""
     if source == "v2ex":
         return "v2ex"
+    if source == "github_search":
+        return "github_trending"
     if language.startswith("zh-TW"):
         return "zh_tw"
     if language.startswith("zh-CN"):

@@ -125,3 +125,32 @@ def test_render_file_no_stale_line_when_none():
         failures=[],
     )
     assert "stale" not in out.lower()
+
+
+def test_github_search_items_render_in_github_trending_group():
+    """github_search source should bucket into github_trending group per _group_key_for_source."""
+    from social_info.markdown import _group_key_for_source, render_file
+
+    assert _group_key_for_source("github_search", "query:foo", "en") == "github_trending"
+
+    from social_info.fetchers.base import Item
+
+    item = Item(
+        title="mattpocock/skills",
+        url="https://github.com/mattpocock/skills",
+        canonical_url="https://github.com/mattpocock/skills",
+        source="github_search",
+        source_handle="query:skills+in:name+claude",
+        source_tier=1,
+        posted_at=datetime(2026, 7, 9, 0, 0, 0),
+        fetched_at=datetime(2026, 7, 9, 0, 0, 0),
+        engagement={"stars": 162000},
+    )
+    md = render_file(
+        date="2026-07-09",
+        generated_at=datetime(2026, 7, 9, 6, 0, 0),
+        items=[item],
+        failures=[],
+    )
+    assert "mattpocock/skills" in md, "github_search item silently dropped from output"
+    assert "GitHub Trending" in md, "github_search item did not land in GitHub Trending section"
