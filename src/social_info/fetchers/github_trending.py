@@ -1,5 +1,6 @@
 """GitHub Trending HTML scraper."""
 import asyncio
+import sys
 
 import httpx
 from bs4 import BeautifulSoup
@@ -43,36 +44,40 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     now = utcnow()
     for lang in languages:
         for since in since_values:
-            url = f"https://github.com/trending/{lang}".rstrip("/") + f"?since={since}"
-            resp = await http.get(url, timeout=30.0)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for repo in soup.select("article.Box-row"):
-                link_el = repo.select_one("h2 a")
-                if not link_el:
-                    continue
-                slug = link_el.get("href", "").strip("/")
-                if not slug:
-                    continue
-                full_url = f"https://github.com/{slug}"
-                title = slug
-                description_el = repo.select_one("p")
-                description = description_el.text.strip() if description_el else ""
-                stars_el = repo.select_one('a[href$="/stargazers"]')
-                stars = _parse_stars(stars_el.text if stars_el else "")
-                items.append(Item(
-                    title=title,
-                    url=full_url,
-                    canonical_url=canonical_url(full_url),
-                    source="github_trending",
-                    source_handle=f"trending:{lang or 'all'}:{since}",
-                    source_tier=source.tier,
-                    posted_at=now,
-                    fetched_at=now,
-                    author=slug.split("/")[0],
-                    excerpt=description[:200],
-                    language="en",
-                    engagement={"stars": stars},
-                ))
+            try:
+                url = f"https://github.com/trending/{lang}".rstrip("/") + f"?since={since}"
+                resp = await http.get(url, timeout=30.0)
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for repo in soup.select("article.Box-row"):
+                    link_el = repo.select_one("h2 a")
+                    if not link_el:
+                        continue
+                    slug = link_el.get("href", "").strip("/")
+                    if not slug:
+                        continue
+                    full_url = f"https://github.com/{slug}"
+                    title = slug
+                    description_el = repo.select_one("p")
+                    description = description_el.text.strip() if description_el else ""
+                    stars_el = repo.select_one('a[href$="/stargazers"]')
+                    stars = _parse_stars(stars_el.text if stars_el else "")
+                    items.append(Item(
+                        title=title,
+                        url=full_url,
+                        canonical_url=canonical_url(full_url),
+                        source="github_trending",
+                        source_handle=f"trending:{lang or 'all'}:{since}",
+                        source_tier=source.tier,
+                        posted_at=now,
+                        fetched_at=now,
+                        author=slug.split("/")[0],
+                        excerpt=description[:200],
+                        language="en",
+                        engagement={"stars": stars},
+                    ))
+            except Exception as e:
+                print(f"github_trending {lang} {since} failed: {e}", file=sys.stderr)
+                continue
             await asyncio.sleep(0.1)
     return items

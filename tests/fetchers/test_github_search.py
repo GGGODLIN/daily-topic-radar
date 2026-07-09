@@ -36,6 +36,39 @@ async def test_fetch_github_search_parses_response():
     assert all(it.engagement.get("stars", 0) > 0 for it in items)
 
 
+@pytest.mark.asyncio
+async def test_fetch_isolates_per_query_failure():
+    fixture_path = Path("tests/fixtures/github_search_response.json")
+    fixture_data = json.loads(fixture_path.read_text())
+
+    cfg = SourceConfig(
+        id="github_search",
+        type="github_search",
+        enabled=True,
+        tier=1,
+        params={
+            "queries": [
+                "stars:>10000 broken-query pushed:>{7d}",
+                "stars:>10000 claude in:description pushed:>{7d}",
+            ],
+            "per_query_limit": 30,
+        },
+    )
+
+    def fake_gh_search(query, per_page=30):
+        if "broken-query" in query:
+            raise RuntimeError("gh search failed: rate limited")
+        return fixture_data
+
+    with patch(
+        "social_info.fetchers.github_search._gh_search", side_effect=fake_gh_search
+    ):
+        items = await fetch(cfg)
+
+    assert len(items) > 0
+    assert all(it.source == "github_search" for it in items)
+
+
 def test_substitute_query_template_date():
     from datetime import datetime
 

@@ -139,6 +139,8 @@ tail -f /Users/linhancheng/code/social-info/logs/local-analysis-*-$(date +%Y-%m-
 - stars / release **不硬猜** → `gh repo view <owner/repo> --json stargazerCount,latestRelease,description,primaryLanguage` 查補
 - **例外**：CC release watcher PROBES 抓到的 `anthropics/claude-code` 留在「🟣 Anthropic / Claude 動態」的「🆕 CC CLI release」小節（release 本身就是該段主題、不是順帶 ship 的 repo）
 - 關聯規則：每條 entry 寫到 star / clone / 跳過判斷（含 vs mainstream 差別 + stack 契合度 + 成熟度）
+- **`source: github_search`（2026-07-09 新增 fetcher）**：description/name 關鍵字搜尋（GitHub REST API `/search/repositories`），補 `github_trending` 抓不到的「已過 rising 期但仍活躍」的穩定 AI repo。跟 `github_trending` 一視同仁進同一張「🛠 GitHub 倉庫觀察」表格、判斷邏輯相同，**不要**另開一張表或分開列
+- **🔁 resurface marker**：raw md `### 🔁 [title](url)` 標題帶 🔁 前綴 = 這條之前出現過、超過 N 天（`RESURFACE_DAYS`，預設 30）閾值後重新浮上來的舊 item，不是今天新抓到的。寫進「🛠 GitHub 倉庫觀察」表格時保留這個訊號（entry 附小字「🔁 重現」註記即可），**不要**跳過不寫、也不要當成全新條目重複列一次
 
 **🟣 Anthropic / Claude 動態 鐵律（always-on，2026-06-20）**：所有主體是 Anthropic / Claude 的訊號**必須**集中在獨立 section「🟣 Anthropic / Claude 動態」、不可散落主軸段。
 

@@ -72,6 +72,40 @@ async def test_fetch_returns_all_repos_no_keyword_filter(httpx_mock):
 
 
 @pytest.mark.asyncio
+async def test_fetch_isolates_per_lang_failure(httpx_mock):
+    html = Path("tests/fixtures/github_trending.html").read_text()
+    httpx_mock.add_exception(
+        httpx.ConnectError("boom"),
+        url=re.compile(r"https://github\.com/trending/rust.*"),
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"https://github\.com/trending/python.*"),
+        text=html,
+        is_reusable=True,
+    )
+
+    cfg = SourceConfig(
+        id="github_trending",
+        type="github_trending",
+        enabled=True,
+        tier=1,
+        params={
+            "languages": ["rust", "python"],
+            "since": ["daily"],
+        },
+    )
+
+    async with httpx.AsyncClient() as client:
+        items = await fetch(cfg, client)
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    expected_count = len(soup.select("article.Box-row"))
+    assert len(items) == expected_count
+    assert all(it.source == "github_trending" for it in items)
+
+
+@pytest.mark.asyncio
 async def test_fetch_iterates_since_list(httpx_mock):
     html = Path("tests/fixtures/github_trending.html").read_text()
     httpx_mock.add_response(

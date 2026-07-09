@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -61,36 +62,35 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
         query = _substitute_template(query_template, now=now)
         try:
             data = await asyncio.to_thread(_gh_search, query, per_query_limit)
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"gh search failed: {e.stderr}") from e
-        except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"gh search timed out: {e}") from e
 
-        for repo in data.get("items", []):
-            full_name = repo["full_name"]
-            url = repo["html_url"]
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
+            for repo in data.get("items", []):
+                full_name = repo["full_name"]
+                url = repo["html_url"]
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
 
-            desc = repo.get("description") or ""
-            pushed_at = datetime.fromisoformat(
-                repo["pushed_at"].replace("Z", "+00:00")
-            ).replace(tzinfo=None)
+                desc = repo.get("description") or ""
+                pushed_at = datetime.fromisoformat(
+                    repo["pushed_at"].replace("Z", "+00:00")
+                ).replace(tzinfo=None)
 
-            items.append(Item(
-                title=full_name,
-                url=url,
-                canonical_url=canonical_url(url),
-                source="github_search",
-                source_handle=f"query:{query[:50]}",
-                source_tier=source.tier,
-                posted_at=pushed_at,
-                fetched_at=now,
-                author=repo.get("owner", {}).get("login", full_name.split("/")[0]),
-                excerpt=desc[:200],
-                language="en",
-                engagement={"stars": repo.get("stargazers_count", 0)},
-            ))
+                items.append(Item(
+                    title=full_name,
+                    url=url,
+                    canonical_url=canonical_url(url),
+                    source="github_search",
+                    source_handle=f"query:{query[:50]}",
+                    source_tier=source.tier,
+                    posted_at=pushed_at,
+                    fetched_at=now,
+                    author=repo.get("owner", {}).get("login", full_name.split("/")[0]),
+                    excerpt=desc[:200],
+                    language="en",
+                    engagement={"stars": repo.get("stargazers_count", 0)},
+                ))
+        except Exception as e:
+            print(f"github_search query '{query}' failed: {e}", file=sys.stderr)
+            continue
 
     return items
