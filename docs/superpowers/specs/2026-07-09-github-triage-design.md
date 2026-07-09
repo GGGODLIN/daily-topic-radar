@@ -47,9 +47,10 @@ CLIProxyAPI relay 2026-07-05 部署完當日 park、`ds-flash` 免費池（Zen 5
    - 4/30 入表 → 之後 trendshift / github_trending 再撈到都因 id 衝突被丟
    - **沒有「N 天後可以再 surface」機制**
 
-2. **Trendshift fetcher 壞了（次要）**
-   - 過去 5 天 raw md `trendshift` 命中 = 0
-   - 修好也於事無補：dedup 那關會擋
+2. ~~**Trendshift fetcher 壞了（次要）**~~ **[已更正 2026-07-09 Task 2 實測]**
+   - Trendshift fetcher **沒壞**、live fetch 每天正常抓 25 items、raw md 每天 3-7 個 `` `trendshift:rising:rank-N` `` items（過去 9 天 2026-07-01 ~ 2026-07-09 全部驗證）
+   - 早上「過去 5 天 raw md `trendshift` 命中 = 0」的 grep 用了錯 pattern（`` `trendshift` `` 半形無 colon suffix）、實際 label 是 `` `trendshift:rising:rank-N` `` (colon + rank 編號) → grep 從沒 match 過 → 誤判 fetcher 壞
+   - **Lesson**：memory recall / grep pattern 結果不 verify 就當事實 = 「memory ≠ 行為證據」再犯（[[_index_observation_discipline]] cluster 已 documented pattern、本 session 內第二次案例、第一次 = me-distill NOOP claim 也是先信 pointer 字面）
 
 3. **GitHub trending 結構性不 surface 過峰值 stable repo（結構）**
    - 我 curl 現在 `github.com/trending/typescript?since=weekly|monthly` 都沒 mattpocock/skills

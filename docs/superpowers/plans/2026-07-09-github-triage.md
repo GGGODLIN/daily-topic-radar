@@ -138,7 +138,9 @@ git commit -m "chore: measure phase 0 baseline for github triage spec"
 
 ---
 
-## Task 2: Phase 1 — 修 trendshift fetcher
+## Task 2: Phase 1 — ~~修 trendshift fetcher~~ **N/A (2026-07-09 implementer 實測 fetcher 沒壞)**
+
+**Status**: 完成 defensive test add、無 code fix — trendshift fetcher 一直正常運作、原「5 天 0 hits」premise 是 grep pattern bug 誤判（詳見 spec Findings #2 更正段）。Commit `b4474a6` 加了 `tests/fetchers/test_trendshift.py` 當 regression 防護、無 fetcher 邏輯改動。以下 steps 保留作為 reference（若未來 fetcher 真壞、按這個 flow 修）。
 
 **Files:**
 - Investigate: `src/social_info/fetchers/trendshift.py`（現況 5 天 0 hit）
@@ -1494,7 +1496,7 @@ Expected: 至少一個 raw md 命中（或 5 個系統性漏 repo 至少 3 個�
 ```bash
 for i in 1 2 3; do
   d=$(date -v-${i}d +%F)
-  count=$(grep -c "\`trendshift\`" reports/${d}.md 2>/dev/null || echo 0)
+  count=$(grep -cE '`trendshift[^`]*`' reports/${d}.md 2>/dev/null || echo 0)
   echo "${d}: trendshift hits = ${count}"
 done
 ```
