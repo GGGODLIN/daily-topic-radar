@@ -42,6 +42,7 @@ def _redact_secrets(s: str) -> str:
 
 TRANSIENT_RETRY_DELAYS = (5, 15, 30)
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+RESURFACE_DAYS = 30
 
 
 def classify_error(exc: BaseException) -> str:
@@ -165,7 +166,7 @@ async def run_pipeline(
     only_sources: list[str] | None = None,
     dry_run: bool = False,
     limit_per_source: int | None = None,
-    resurface_days: int = 30,
+    resurface_days: int = RESURFACE_DAYS,
 ) -> tuple[list[Item], list[FetchResult], list[str]]:
     """Run all enabled fetchers in parallel, dedup, return (new_items, all_results, resurface_ids).
 

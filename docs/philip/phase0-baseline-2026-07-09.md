@@ -22,3 +22,13 @@
 avg hi / day:  0.7
 avg med / day: 4.2
 avg hi+med / day: 4.9
+
+## N-value dry-run result (2026-07-09)
+
+Ran `scripts/dry-run-n-value.py` against production `state.db`（8,544 items with `fetched_at` within past 30 天）:
+
+- N=15: 4,329 items / 30 days (~144.3 / day)
+- N=30: 423 items / 30 days (~14.1 / day)  ← 選定
+- N=60: 165 items / 30 days (~5.5 / day)
+
+**Rationale**：N=15 每天 ~144 個 resurface、會把 digest 灌爆；N=30 落在 <20/day 門檻內（~14.1/day），resurface 頻率合理又不會太保守錯過 30+ 天前看過的 stable repo；維持既有 `Deduper(db, resurface_days=30)` 預設，於 `pipeline.py` 補 `RESURFACE_DAYS = 30` module-level 常數當唯一真相來源。
