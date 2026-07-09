@@ -13,6 +13,7 @@ from social_info.config import Config, SourceConfig
 from social_info.db import Database
 from social_info.dedup import Deduper, compute_item_id, compute_title_hash
 from social_info.fetchers import (
+    github_search,
     github_trending,
     hn,
     huggingface,
@@ -95,6 +96,7 @@ FETCHER_REGISTRY = {
     "hn_algolia": hn.fetch,
     "reddit": reddit.fetch,
     "github_trending": github_trending.fetch,
+    "github_search": github_search.fetch,
     "product_hunt": product_hunt.fetch,
     "huggingface": huggingface.fetch,
     "rss": rss.fetch,
