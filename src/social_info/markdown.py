@@ -41,9 +41,10 @@ def _group_key_for_source(source: str, source_handle: str, language: str) -> str
     return source
 
 
-def render_item(item: Item) -> str:
+def render_item(item: Item, is_resurface: bool = False) -> str:
     lines = []
-    lines.append(f"### [{item.title}]({item.url})")
+    prefix = "🔁 " if is_resurface else ""
+    lines.append(f"### {prefix}[{item.title}]({item.url})")
     lines.append("")
 
     meta_parts = [
@@ -96,21 +97,26 @@ def render_file(
     items: list[Item],
     failures: list[FetchResult],
     stale: list[FetchResult] | None = None,
+    resurface_items: list[Item] | None = None,
 ) -> str:
+    resurface_items = resurface_items or []
+    resurface_object_ids = {id(it) for it in resurface_items}
+    all_items = items + resurface_items
+
     grouped: dict[str, list[Item]] = defaultdict(list)
-    for it in items:
+    for it in all_items:
         grouped[_group_key_for_source(it.source, it.source_handle, it.language)].append(it)
 
     for k in grouped:
         grouped[k].sort(key=lambda x: (x.source_tier, -sum(x.engagement.values())))
 
-    sources_active = len({(i.source, i.source_handle) for i in items})
+    sources_active = len({(i.source, i.source_handle) for i in all_items})
 
     lines = [
         f"# AI Daily Digest — {date}",
         "",
         f"> generated_at: {generated_at.isoformat()} (Asia/Taipei)",
-        f"> total_items: {len(items)}  |  sources_active: {sources_active}  |  sources_failed: {len(failures)}",
+        f"> total_items: {len(all_items)}  |  sources_active: {sources_active}  |  sources_failed: {len(failures)}",
     ]
     if failures:
         lines.append("> failures:")
@@ -131,6 +137,6 @@ def render_file(
         lines.append(f"## {label} ({len(bucket)} items)")
         lines.append("")
         for it in bucket:
-            lines.append(render_item(it))
+            lines.append(render_item(it, is_resurface=id(it) in resurface_object_ids))
 
     return "\n".join(lines)

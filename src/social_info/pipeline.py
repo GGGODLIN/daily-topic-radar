@@ -1,8 +1,10 @@
 """End-to-end orchestration: load config -> fetch all -> dedup -> render."""
 import asyncio
+import json
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -163,8 +165,15 @@ async def run_pipeline(
     only_sources: list[str] | None = None,
     dry_run: bool = False,
     limit_per_source: int | None = None,
+    resurface_days: int = 30,
 ) -> tuple[list[Item], list[FetchResult]]:
-    """Run all enabled fetchers in parallel, dedup, return (new_items, all_results)."""
+    """Run all enabled fetchers in parallel, dedup, return (new_items, all_results).
+
+    resurface_ids computed by the dedup pass are not resolved or applied here —
+    see resolve_resurface_items() / db.update_last_surfaced_at(). Timestamps
+    must only be bumped once a caller has actually rendered those items, so
+    it stays out of this function's unconditional per-run side effects.
+    """
     enabled = config.enabled_sources()
     if only_sources:
         enabled = [s for s in enabled if s.id in only_sources]
@@ -179,8 +188,9 @@ async def run_pipeline(
         items = r.items[:limit_per_source] if limit_per_source else r.items
         all_items.extend(items)
 
-    deduper = Deduper(db)
-    new_items = deduper.process(all_items)
+    deduper = Deduper(db, resurface_days=resurface_days)
+    dedup_result = deduper.process(all_items)
+    new_items = dedup_result.new_items
     annotate_net_new(results, new_items)
 
     if not dry_run:
@@ -201,9 +211,39 @@ async def run_pipeline(
                 item_id=compute_item_id(it.canonical_url),
                 title_hash=compute_title_hash(it.title),
             )
+            row["last_surfaced_at"] = it.fetched_at.isoformat()
             db.insert_item(row)
 
     return new_items, results
+
+
+def _row_to_item(row: dict[str, Any]) -> Item:
+    return Item(
+        title=row["title"],
+        url=row["url"],
+        canonical_url=row["canonical_url"],
+        source=row["source"],
+        source_handle=row["source_handle"] or "",
+        source_tier=row["source_tier"] or 2,
+        posted_at=datetime.fromisoformat(row["posted_at"]),
+        fetched_at=datetime.fromisoformat(row["fetched_at"]),
+        author=row.get("author") or "",
+        excerpt=row.get("excerpt") or "",
+        language=row.get("language") or "en",
+        engagement=json.loads(row.get("engagement_json") or "{}"),
+        also_appeared_in=json.loads(row.get("also_appeared_in") or "[]"),
+        comments=json.loads(row.get("comments_json") or "[]"),
+    )
+
+
+def resolve_resurface_items(db: Database, resurface_ids: list[str]) -> list[Item]:
+    """Rebuild full Item objects for resurface_ids so they can be rendered.
+
+    Does not touch last_surfaced_at — call db.update_last_surfaced_at()
+    separately, after the caller has actually rendered the returned items.
+    """
+    rows = db.get_items_by_ids(resurface_ids)
+    return [_row_to_item(r) for r in rows]
 
 
 def write_report(
@@ -213,6 +253,7 @@ def write_report(
     date: str,
     generated_at: datetime,
     stale: list[FetchResult] | None = None,
+    resurface_items: list[Item] | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md = render_file(
@@ -221,6 +262,7 @@ def write_report(
         items=new_items,
         failures=failures,
         stale=stale,
+        resurface_items=resurface_items,
     )
     out_path = out_dir / f"{date}.md"
     out_path.write_text(md, encoding="utf-8")

@@ -110,6 +110,25 @@ class Database:
         )
         self.conn.commit()
 
+    def update_last_surfaced_at(self, item_ids: list[str]) -> None:
+        if not item_ids:
+            return
+        now = utcnow().isoformat()
+        self.conn.executemany(
+            "UPDATE items SET last_surfaced_at = ? WHERE id = ?",
+            [(now, item_id) for item_id in item_ids],
+        )
+        self.conn.commit()
+
+    def get_items_by_ids(self, item_ids: list[str]) -> list[dict[str, Any]]:
+        if not item_ids:
+            return []
+        placeholders = ",".join("?" for _ in item_ids)
+        cur = self.conn.execute(
+            f"SELECT * FROM items WHERE id IN ({placeholders})", item_ids
+        )
+        return [dict(row) for row in cur.fetchall()]
+
     def log_fetch_run(
         self,
         source: str,
