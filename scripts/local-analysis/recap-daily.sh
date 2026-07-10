@@ -95,9 +95,27 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 - **Rule health**：append 後統計 ledger 內同一 rule 近 30 天出現次數，≥3 → 報告標「⚠ 規則 X 30 天內第 N 次被糾正 → 措辭可能該改（往精確閾值方向）」
 - 報告呈現：有命中 → 報告末尾「⚠ 規則糾正: N 次」段，每事件一行（規則名 + 短引用）；`new_rule_candidate` 標明「候選，未驗證——不要自動寫入任何規則檔」；沒有命中 → 完全不列
 
-**輸出報告前的最後動作（必做）**：把本輪全部存活的規則糾正事件 append 進 `rule-adherence-ledger.jsonl`（先 grep 去重）。先寫 ledger、再輸出報告——順序顛倒就會忘。
+## codebase-aliases 候選挖掘（akocommerce 特化，2026-07-09 起加入；跟 rule-adherence 段對稱走 ledger 模式）
 
-嚴格 read-only：不寫任何檔案、不 commit、不修改 memory。唯一例外：上述 rule-adherence ledger 的 append。
+Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-linhancheng-Desktop-work-akocommerce`），找對話中反覆用長描述指同一個東西、且沒被 `~/Desktop/work/akocommerce/docs/codebase-aliases.md` 現有 alias 表 cover——「該建 term collapse」候選。
+
+- **掃描範圍**：只讀 akocommerce session（path 含 `-Users-linhancheng-Desktop-work-akocommerce`）、其他 project session 跳過。讀 user + assistant text（跳 tool_result / noise regex）
+- **參考 alias 表**：讀 `~/Desktop/work/akocommerce/docs/codebase-aliases.md`（現 226 行、涵蓋 v1-v4 CVS 世代 / 前端頁面 / widget / pickup 等既有代稱）；候選 phrase 若已在表內 alias 或別名欄命中就跳過
+- **Signal**：同一個東西被反覆用**長描述**指涉（3+ 字 phrase、講 3 次以上、跨多個 turn）、且 alias 表沒收
+- **Skeptic 自審先過再算數**：
+  - 自然重述（同 turn 內 rephrase、agent 覆述使用者的話）→ 不算
+  - 只講 1-2 次的 phrase → 不算
+  - 短 phrase（1-2 字）→ 不算（無 collapse 價值）
+  - 純技術詞（不是 domain-specific 概念）→ 不算
+  - 模稜兩可 → 寧漏勿誤報
+- 每候選抽取：`phrase`（反覆長描述、50 字內）+ `suggested_term`（建議短 term、kebab-case、5-15 字元）+ `session`（jsonl basename）+ `count`（24h 內出現次數）+ `context_snippet`（代表性 quote、80 字內）
+- **Ledger 寫回（read-only 的第二個例外）**：append 到 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`、每候選一行 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`。**Append 前先 grep ledger 有無同 phrase**（跨日避免重複），有就跳過
+- **Scan marker（每天必寫、含 0 候選日）**：ledger 每天固定 append 一行 `{"date":"<今日>","kind":"scan_marker","scanned":<akocommerce session 數>,"candidates":<存活候選數>}`——0 候選日也寫，讓「掃了沒中」跟「靜默跳過」在 ledger 上可分辨。Append 前 grep 同日 scan_marker、有就跳過
+- 報告呈現：有命中 → 報告末尾「📌 codebase-aliases 候選: N 個 → 見 ledger」段、每候選一行（suggested_term + 短引用）；沒命中 → 完全不列（scan marker 只進 ledger、不進報告）
+
+**輸出報告前的最後動作（必做）**：把本輪全部存活的規則糾正事件 append 進 `rule-adherence-ledger.jsonl`，並把 codebase-aliases 候選 append 進 `codebase-aliases-candidate-ledger.jsonl`（兩個 ledger 都先 grep 去重）。先寫兩個 ledger、再輸出報告——順序顛倒就會忘。
+
+嚴格 read-only：不寫任何檔案、不 commit、不修改 memory。唯一例外：上述 rule-adherence ledger 跟 codebase-aliases candidate ledger 的 append。
 
 stdout 只輸出 markdown 報告本身，不要 preamble（「整理完...」「以下是...」）、不要結語、不要 code fence wrap。第一個 byte 直接是 `# Daily Recap` 或數字總覽行。
 EOF
