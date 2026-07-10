@@ -75,11 +75,33 @@ sc_latest=$(gh api "repos/anthropics/skills/commits?path=skills/skill-creator&pe
   else
     sc_seen=$(cat "$SC_MARKER" 2>/dev/null || echo "")
     if [ "$sc_latest" = "$sc_seen" ]; then
-      echo "- ✅ 無新 commit（latest: $sc_latest）"
+      echo "- ✅ 無新 commit（latest: ${sc_latest}）"
     else
       echo "- 🔔 **上游有新動態**: $sc_latest"
       echo "  - 本地是刻意凍結的 fork（base 0f77e501）——看一眼有沒有值得 cherry-pick 的想法即可，不要整支同步"
       echo "$sc_latest" > "$SC_MARKER"
+    fi
+  fi
+} >> "$LOG_FILE"
+
+# --- systematic-debugging 上游巡邏（2026-07-09 加）---
+# 本地 debugging（fork 自 systematic-debugging）是 obra/superpowers 6.1.1 fork（差異 = Phase 3 多假設，注記在 SKILL.md 頭）；
+# 這段只巡邏上游 skills/systematic-debugging 新 commit 讓 fork 決定要不要吸收（PreToolUse hook 擋 upstream 挑取、見 ~/.claude/hooks/superpowers-systematic-debugging-shadow.sh）。
+SD_MARKER="$LOG_DIR/.systematic-debugging-upstream-seen"
+sd_latest=$(gh api "repos/obra/superpowers/commits?path=skills/systematic-debugging&per_page=1" --jq '.[0] | .sha[:8] + " " + .commit.committer.date[:10] + " " + (.commit.message | split("\n")[0])' 2>/dev/null) || sd_latest=""
+{
+  echo ""
+  echo "## debugging 上游巡邏（fork 對沖，不同步只通報）"
+  if [ -z "${sd_latest:-}" ]; then
+    echo "- ⚠️ gh api 查詢失敗，本週跳過"
+  else
+    sd_seen=$(cat "$SD_MARKER" 2>/dev/null || echo "")
+    if [ "$sd_latest" = "$sd_seen" ]; then
+      echo "- ✅ 無新 commit（latest: ${sd_latest}）"
+    else
+      echo "- 🔔 **上游有新動態**: $sd_latest"
+      echo "  - 本地 fork base = superpowers 6.1.1，Phase 3 改多假設——看新 commit 有沒有值得吸收的想法"
+      echo "$sd_latest" > "$SD_MARKER"
     fi
   fi
 } >> "$LOG_FILE"
