@@ -125,7 +125,7 @@ tail -f /Users/linhancheng/code/social-info/logs/local-analysis-*-$(date +%Y-%m-
 3. **PROBES.md 攔截**（見下「PROBES.md 攔截 protocol」） — (a) cat 當天 daily probes report 看訊號 / (b) **讀 PROBES.md 過濾 `Triggered by: stage-2-digest` 或 `both` 的 entries、agent 主動 fetch、比對 `Last seen`、surface 有差分的訊號、update `Last seen` 寫回**
 3.5. **外部視角 backstop 抓取（2026-06-05 試讀結案 → KEEP as backstop）**（見下「外部視角 backstop protocol」） — 抓 [follow-builders](https://github.com/zarazhangrui/follow-builders) 2 個 GitHub raw feed（x + blogs，**podcast feed 已拔**）進 `reports/external-feeds/`，stage-2 LLM 階段平行讀當「**自家 source 漏抓 backstop**」（不再當「校準主軸」— 兩週試讀重複率 79%、真正價值是補自家 RSS/X source 漏抓）
 4. **raw md scan + cross-cutting themes 抽取** — 主軸結構成形
-5. **URL fact-check + OSS enrichment**（見下「URL 抓取路由」） — 按 source 分流（reddit / 失敗 fallback → `~/.claude/scripts/fetch-fallback.sh` / Cloudflare → `mcp__fetch__fetch` / 需 cookie / SPA / X / Twitter → `claude-in-chrome` / 其他 → `WebFetch`）+ GitHub `gh repo view`
+5. **URL fact-check + OSS enrichment**（見下「URL 抓取路由」） — 按 source 分流（reddit / 失敗 fallback → `~/.claude/scripts/fetch-fallback.sh` / **X / Twitter → `~/.claude/scripts/x-fetch.sh --full`（2026-07-11 從 chrome 搬過來）** / Cloudflare → `mcp__fetch__fetch` / 需 cookie / SPA → `claude-in-chrome` / 其他 → `WebFetch`）+ GitHub `gh repo view`
 6. **寫 digest HTML** — 依 v3 範本（header / stat cards / charts / 主軸 sections / **🟣 Anthropic / Claude 動態（獨立段，固定出現，見下「Anthropic / Claude 動態 鐵律」）** / **🛠 GitHub 倉庫觀察（獨立段，見下「GitHub repo 鐵律」）** / 系統當天動態 / footer）
 
 **不可跳過 step 3(b)** — 這是「即時追蹤訊號」管道（例：CC CLI release watcher），漏掉等於使用者要求的「每次 digest 都即時 fetch upstream」沒做到。
@@ -253,7 +253,7 @@ digest 階段要展開原文（解讀 / 摘要 / 引用）時，**按來源分�
 | 來源 | 主要工具 | 備援 | 備註 |
 |---|---|---|---|
 | `reddit.com` 全域 | `~/.claude/scripts/fetch-fallback.sh <url>`（reddit_track 第 1 階走 arctic-shift API）| `mcp__chrome-devtools` MCP（selftext 缺失時走、不是 claude-in-chrome）| WebFetch + claude-in-chrome navigate 兩條對 reddit 整域擋；現主力 arctic-shift（[[reference_arctic_shift_reddit_api]]），selftext 缺才升 chrome-devtools（[[reference_chrome_devtools_mcp_reddit_escape]]）|
-| X / Twitter | `claude-in-chrome` MCP（本機已登入 Chrome）| — | WebFetch 回 402、匿名出站普遍被擋；見 `reference_x_tweet_fetch_fallback.md` |
+| X / Twitter | `~/.claude/scripts/x-fetch.sh <url> --full`（headless、免帳號；syndication CDN + FxTwitter v2 conversation/quotes）| `claude-in-chrome` MCP（sensitive interstitial / 需登入才看得到的內容） | 2026-07-11 從 chrome 主力搬到 headless；`fetch-fallback.sh` 已自動分派 x/twitter domain → x-fetch.sh；見 `reference_x_tweet_fetch_fallback.md` |
 | 需 cookie / SPA / JS render / 大站動態 | `claude-in-chrome` MCP（帶 daily Chrome cookie）| `chrome-devtools` MCP headless | fact-check 主力；見 `reference_chrome_devtools_mcp_default_behavior.md` + `reference_chrome_fallback_extraction_pattern.md` |
 | Cloudflare 系列（ithome.com.tw / thehackernews.com 等）| `mcp__fetch__fetch` | `~/.claude/scripts/fetch-fallback.sh` | WebFetch 一律 403；2026-04-30 觀察期實測 5/5 全勝 |
 | HN / 一般 RSS / 部落格 / 新聞 / 結構簡單站 | `WebFetch` | 4xx/封鎖 → `~/.claude/scripts/fetch-fallback.sh` → exit 75/1 升 `claude-in-chrome` | 結構簡單站直接通 |
