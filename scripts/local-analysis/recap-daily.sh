@@ -91,7 +91,7 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 - 對每個存活事件分類：
   - 對應得到既有規則（`~/.claude/CLAUDE.md`、`~/.claude/rules/*.md` 的具體條目）→ `rule_violation` + 規則名
   - 對應不到 → `new_rule_candidate`
-- **Ledger 寫回（read-only 的唯一例外）**：append 到 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`，每事件一行 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`。append 前先 grep ledger 有無同 quote（session 跨日會被掃兩次），有就跳過
+- **Ledger 寫回（read-only 的第一個例外）**：append 到 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`，每事件一行 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`。append 前先 grep ledger 有無同 quote（session 跨日會被掃兩次），有就跳過
 - **Rule health**：append 後統計 ledger 內同一 rule 近 30 天出現次數，≥3 → 報告標「⚠ 規則 X 30 天內第 N 次被糾正 → 措辭可能該改（往精確閾值方向）」
 - 報告呈現：有命中 → 報告末尾「⚠ 規則糾正: N 次」段，每事件一行（規則名 + 短引用）；`new_rule_candidate` 標明「候選，未驗證——不要自動寫入任何規則檔」；沒有命中 → 完全不列
 
@@ -99,7 +99,7 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 
 Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-linhancheng-Desktop-work-akocommerce`），找對話中反覆用長描述指同一個東西、且沒被 `~/Desktop/work/akocommerce/docs/codebase-aliases.md` 現有 alias 表 cover——「該建 term collapse」候選。
 
-- **掃描範圍**：只讀 akocommerce session（path 含 `-Users-linhancheng-Desktop-work-akocommerce`）、其他 project session 跳過。讀 user + assistant text（跳 tool_result / noise regex）
+- **掃描範圍**：只讀 akocommerce session（path 含 `-Users-linhancheng-Desktop-work-akocommerce`）、其他 project session 跳過。讀 user + assistant text（跳 tool_result / noise regex），每則截 400 字（跟 rule-adherence 段同校準；assistant text 是 jsonl 最大宗、不截高活動日會爆量）
 - **參考 alias 表**：讀 `~/Desktop/work/akocommerce/docs/codebase-aliases.md`（現 226 行、涵蓋 v1-v4 CVS 世代 / 前端頁面 / widget / pickup 等既有代稱）；候選 phrase 若已在表內 alias 或別名欄命中就跳過
 - **Signal**：同一個東西被反覆用**長描述**指涉（3+ 字 phrase、講 3 次以上、跨多個 turn）、且 alias 表沒收
 - **Skeptic 自審先過再算數**：
@@ -109,9 +109,13 @@ Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-
   - 純技術詞（不是 domain-specific 概念）→ 不算
   - 模稜兩可 → 寧漏勿誤報
 - 每候選抽取：`phrase`（反覆長描述、50 字內）+ `suggested_term`（建議短 term、kebab-case、5-15 字元）+ `session`（jsonl basename）+ `count`（24h 內出現次數）+ `context_snippet`（代表性 quote、80 字內）
-- **Ledger 寫回（read-only 的第二個例外）**：append 到 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`、每候選一行 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`。**Append 前先 grep ledger 有無同 phrase**（跨日避免重複），有就跳過
+- **Ledger 寫回（read-only 的第二個例外）**：append 到 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`、每候選一行 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`。**Append 前先 grep ledger 有無同 phrase 或同 suggested_term**（雙鍵去重、跨日避免重複——phrase 是每輪 LLM 挑的代表句、跨日會漂，suggested_term 才是穩定錨點），任一命中就跳過
 - **Scan marker（每天必寫、含 0 候選日）**：ledger 每天固定 append 一行 `{"date":"<今日>","kind":"scan_marker","scanned":<akocommerce session 數>,"candidates":<存活候選數>}`——0 候選日也寫，讓「掃了沒中」跟「靜默跳過」在 ledger 上可分辨。Append 前 grep 同日 scan_marker、有就跳過
 - 報告呈現：有命中 → 報告末尾「📌 codebase-aliases 候選: N 個 → 見 ledger」段、每候選一行（suggested_term + 短引用）；沒命中 → 完全不列（scan marker 只進 ledger、不進報告）
+
+## Commit outcome 追蹤（2026-07-11 起加入）
+
+repo_commit 線掃描時順帶檢查結局回饋：24h 內 commit subject 以 `Revert` 開頭、或 body 含 "This reverts commit"（用 `git -C <repo> log --since='24 hours ago' --grep='This reverts commit' --pretty=format:'%H%x1f%s%x1f%b'` 補抓）→ 對每個命中用 `git -C <repo> log -1 --pretty=format:'%cI%x1f%s' <被revert的sha>` 查原 commit 日期與 subject。原 commit 是近 14 天內產出 → 報告末尾加「↩️ commit 被 revert」段、每筆一行：`<repo>: <原 subject>（原 commit <日期>）`。目的：把「先前 session 產出、後來被打掉」的結局回饋進 recap，讓後續工作看得到失敗訊號。amend 不追（偵測依賴 reflog、噪音高）。沒有命中 → 完全不列。
 
 **輸出報告前的最後動作（必做）**：把本輪全部存活的規則糾正事件 append 進 `rule-adherence-ledger.jsonl`，並把 codebase-aliases 候選 append 進 `codebase-aliases-candidate-ledger.jsonl`（兩個 ledger 都先 grep 去重）。先寫兩個 ledger、再輸出報告——順序顛倒就會忘。
 

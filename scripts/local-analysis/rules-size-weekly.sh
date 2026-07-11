@@ -15,6 +15,10 @@ OUT="$OUT_DIR/$DATE-rules-size.md"
 LOG="$LOG_DIR/local-analysis-rules-size-$DATE.log"
 
 # P-len 門檻（harness-audit-2026-07-03 拍板；env 可覆寫供測試）
+# 校準依據補充（2026-07-11 自 HumanLayer "Writing a Good CLAUDE.md" 收）：
+# LLM 可穩定遵循 ~150-200 條 instruction（CC system prompt 已占 ~50 條）、
+# 單檔理想 <300 行、prompt 周邊位置（開頭/結尾）注意力較高。
+# byte cap 是 proxy——若未來要調 cap，用「指令條數」重新換算而非直接放大 bytes。
 CLAUDE_MD="/Users/linhancheng/.claude/CLAUDE.md"
 CLAUDE_CAP="${RULES_SIZE_CLAUDE_CAP:-12288}"   # 12KB
 RULE_CAP="${RULES_SIZE_RULE_CAP:-9728}"        # 9.5KB

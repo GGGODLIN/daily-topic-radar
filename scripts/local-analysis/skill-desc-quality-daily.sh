@@ -121,6 +121,10 @@ missing: [specific_triggers, when_to_use, when_not_to_use, concrete_verbs]
 discriminative=True（有具體 trigger + 反向排除）：
 > "Use when user pastes a video URL (YouTube / Bilibili). Trigger phrases: 研究這支影片、幫我看這個影片. Do not use for: video editing requests (not analysis)."
 
+# Full-denominator 原則（2026-07-11 起；自 Schliff 收）
+
+未測維度不得從分母消失：changed list 內任何一個 SKILL.md 因 frontmatter 抽取失敗、檔案讀不到、或格式異常而**沒有完成判準評估** → 不准靜默略過，「## 掃描範圍」段加一行 `Unmeasured: <K>（<原因>）`，且 Pass/Fail 統計的分母寫 `M`（changed 總數）不是 `M-K`。coverage 缺口要顯式壓低結論可信度，不是讓分母悄悄縮小。
+
 # 不要重複現役 regex hook 已抓的
 
 現役 `~/.claude/hooks/skill-description-gate.sh` 已抓硬閘（< 40 char / > 600 char / 完全無 use-when keyword / 完全無 do-not-use keyword）。本 channel 補的是「regex 看 keyword 通過、但 LLM 看實質不到位」的 subtle case：

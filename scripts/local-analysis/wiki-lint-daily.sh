@@ -55,6 +55,7 @@ cat <<'EOF'
 2. Broken [[]]: entity 內文有 [[xxx]] 但 ~/.claude/wiki/xxx.md 不存在 → 列入 🔴 Broken
 3. Frontmatter 缺欄位: 缺 topic / last_updated / confidence / lifecycle / sources 任一 → 列入 🟢 缺欄位
 4. 重複 entity: 兩個 entity TL;DR 相似度 > 70% → 列入 ⚠️ 重複
+5. God-node（2026-07-11 起）: entity 被 `[[]]` inbound 引用 ≥ 15 次（wiki + memory 合計）→ 不開新段，在「🎯 今日推薦 actions」以 `[LOW] god-node: <slug>（inbound N）` 列出、建議 action = 檢視是否該拆子 entity 或確認為合理 hub（hub 合法就標 `wiki_lint.god-node: declined` 一次性關閉）。7 段結構不變
 
 # Recommendation block 格式
 

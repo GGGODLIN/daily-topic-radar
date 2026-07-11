@@ -42,6 +42,7 @@ cat <<'EOF'
 1. **平文 mention 沒 wikilink**: wiki entity A 內文出現 "mempalace"（純字、不含 `[[]]`）但既有 `~/.claude/wiki/mempalace.md` 存在 → 該補 `[[mempalace]]`
 2. **記憶 cluster 引用漂移**: memory cluster 用 `[[name]]` 引用某 wiki entity，但 entity 沒 backlink 回 cluster source
 3. **新 entity 加入後沒 backlink**: `last_updated:` 在 7 天內加的 entity，其他既有 entity 0 引用
+4. **Alias-aware mention**（2026-07-11 起）: entity 的別名也算平文 mention——別名來源限兩處：frontmatter `aliases:` 欄位（若有）、entity 檔首段明寫的「舊名 / 又稱 / 前身」（例 cn-model-swap-landscape 是 llm-model-landscape 前身）。命中 → propose 補 canonical slug 的 `[[]]`。別名同樣過 False positive 防護（短於 5 字元 / 常用詞不 propose）
 
 # False positive 防護（必做）
 
