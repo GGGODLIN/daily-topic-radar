@@ -58,12 +58,15 @@ awk -F'|' '
   scope != "" && in_table && /^\|/ {
     skill=$2; audit=$4
     gsub(/^ +| +$/, "", skill); gsub(/^ +| +$/, "", audit)
+    if (skill ~ / \(command\)$/) next
     if (audit ~ /^yes/) print scope "/" skill "/SKILL.md"
   }
 ' ~/.claude/skills/INVENTORY.md
 ```
 
 預期 output ~37 條 path（21 global + 16 project-scoped）。若數量大幅偏離（< 15 或 > 60），表示 INVENTORY 維護出問題、報告內加 ⚠️ warning。
+
+**`(command)` 後綴 skip**：INVENTORY 內 `align (command)` / `harness (command)` / `trial-review (command)` 這類 row 是 slash command 不是 skill、實體檔在 `<project>/.claude/commands/<name>.md` 而非 `<scope>/<name>/SKILL.md`；且 command 由使用者顯式 `/<name>` 觸發、沒有 LLM discriminative trigger match 問題、本 channel 判準不適用 → awk 直接 skip。
 
 # Incremental 機制（必做、唯一允許的寫操作）
 
