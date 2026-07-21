@@ -4,7 +4,7 @@ set -euo pipefail
 
 REPO_DIR="/Users/linhancheng/code/social-info"
 UV_BIN="/Users/linhancheng/.local/bin/uv"
-PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
 export PATH
 
 cd "$REPO_DIR"

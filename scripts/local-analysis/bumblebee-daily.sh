@@ -30,17 +30,22 @@ if [ ! -x "$BIN" ]; then
 fi
 
 # 1. Pull latest catalog
+# ⚠️ 2026-07-17 起 pin 在 d753592（最後一個 schema 0.1.0 commit）：
+#    upstream 07-16 起 catalog 全面 bump schema_version 0.2.0，本機 binary v0.1.1（latest release
+#    v0.1.2 亦早於 bump）只支援 0.1.0，會整包拒讀、scan 零覆蓋。
+#    解除條件：upstream 出支援 0.2.0 的 release → 換 bin/bumblebee → 刪 CATALOG_PIN 恢復 track main。
+CATALOG_PIN="d75359246a6be8a6a8fcaca089ef2dabcf5d75fe"
 PREV_HEAD="$(git -C "$CATALOG_REPO" rev-parse HEAD)"
 NEW_HEAD="$PREV_HEAD"
+UPSTREAM_HEAD=""
 if git -C "$CATALOG_REPO" fetch --quiet origin main && \
-   git -C "$CATALOG_REPO" reset --hard --quiet origin/main; then
+   git -C "$CATALOG_REPO" reset --hard --quiet "$CATALOG_PIN"; then
   NEW_HEAD="$(git -C "$CATALOG_REPO" rev-parse HEAD)"
+  UPSTREAM_HEAD="$(git -C "$CATALOG_REPO" rev-parse --short origin/main)"
   if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
-    log "catalog updated: $(echo $PREV_HEAD | cut -c1-7) -> $(echo $NEW_HEAD | cut -c1-7)"
-    git -C "$CATALOG_REPO" log --oneline "$PREV_HEAD..$NEW_HEAD" -- threat_intel/ \
-      | tee -a "$LOG" || true
+    log "catalog moved to pin: $(echo $PREV_HEAD | cut -c1-7) -> $(echo $NEW_HEAD | cut -c1-7) (upstream main=$UPSTREAM_HEAD)"
   else
-    log "catalog unchanged (HEAD=$(echo $NEW_HEAD | cut -c1-7))"
+    log "catalog pinned (HEAD=$(echo $NEW_HEAD | cut -c1-7), upstream main=$UPSTREAM_HEAD)"
   fi
 else
   log "WARN: git pull failed, using stale catalog"
@@ -65,6 +70,27 @@ else
 fi
 SCAN_DUR=$(( $(date +%s) - SCAN_START ))
 
+# 4a. Loud fail：scan 非 0 退出或 findings 檔沒產生 → 醒目報告 + 桌面通知（2026-07-17 加，
+#     防當日 schema mismatch 造成 silent "?" 假乾淨、digest 誤讀 findings=0）
+if [ "$SCAN_RC" -ne 0 ] || [ ! -s "$FINDINGS_FILE" ]; then
+  {
+    echo "# Bumblebee daily scan — $DATE"
+    echo ""
+    echo "## 🚨 SCAN FAILED — 今日供應鏈掃描零覆蓋"
+    echo ""
+    echo "- exit code: \`$SCAN_RC\`；findings 檔 $([ -f "$FINDINGS_FILE" ] && echo '為空' || echo '未產生')"
+    echo "- log tail："
+    echo '```'
+    tail -5 "$LOG"
+    echo '```'
+    echo ""
+    echo "⚠️ findings=0 不可信（掃描未執行）。先查 binary 與 catalog schema 相容性再信結果。"
+  } > "$OUT"
+  osascript -e "display notification \"Bumblebee scan FAILED (exit $SCAN_RC) — 今日零掃描覆蓋\" with title \"🚨 Bumblebee scan failed\" sound name \"Sosumi\"" 2>/dev/null || true
+  log "SCAN FAILED: loud report written (rc=$SCAN_RC)"
+  exit 0
+fi
+
 # 4. Parse summary
 FINDING_COUNT=$(jq -s '[.[] | select(.record_type=="finding")] | length' "$FINDINGS_FILE" 2>/dev/null || echo "?")
 PKG_COUNT=$(jq -s '.[] | select(.record_type=="scan_summary") | .package_records_suppressed' "$FINDINGS_FILE" 2>/dev/null || echo "?")
@@ -85,6 +111,8 @@ CATALOG_HEAD="$(echo $NEW_HEAD | cut -c1-7)"
   echo "| Catalog entries | $ENTRY_COUNT |"
   echo "| Packages 掃過 | $PKG_COUNT |"
   echo "| **Findings** | **$FINDING_COUNT** |"
+  echo ""
+  echo "⚠️ Catalog pinned at \`$CATALOG_HEAD\`（binary v0.1.1 不支援 upstream schema 0.2.0；upstream main=\`${UPSTREAM_HEAD:-?}\`）——新 threat entries 暫停進場，upstream release 支援 0.2.0 後換 binary 解除 pin。"
   echo ""
   if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
     echo "## Catalog 變動"

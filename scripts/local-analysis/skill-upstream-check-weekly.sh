@@ -33,6 +33,13 @@ for skill_git in "$HOME"/.claude/skills/*/.git; do
   cd "$parent" || continue
   remote_url=$(git remote get-url origin 2>/dev/null || echo "no remote")
 
+  # local-only repo（無 origin）不是巡邏失效——沒有 upstream 可巡，中性跳過不進 ⚠️ 升級段
+  # （2026-07-15 me-distill 誤報 fetch failed 修正）
+  if [ "$remote_url" = "no remote" ]; then
+    echo "- ℹ️ $name — local-only repo（無 origin remote）、無 upstream 可巡，跳過" >> "$LOG_FILE"
+    continue
+  fi
+
   if ! git fetch --quiet origin 2>/dev/null; then
     echo "- ⚠️ **$name** — fetch failed ($remote_url)" >> "$LOG_FILE"
     continue

@@ -33,7 +33,7 @@ d = json.load(open(sys.argv[1]))
 items = d.get('diagnostics') or d.get('issues') or d.get('results') or []
 for i in items:
     f = i['file'].replace('/Users/linhancheng/.claude/', '')
-    print(f"{i['level']}|{i['rule']}|{f}|{i['message'][:160]}")
+    print(f"{i['level']}|{i['rule']}|{f}|{i['message'][:160].replace('|', '¦')}")
 PYEOF
 
   if [ ! -f "$BASELINE" ]; then

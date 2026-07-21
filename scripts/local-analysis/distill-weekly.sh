@@ -8,6 +8,8 @@ cd /
 
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
 export PATH
+# headless channel run: 走 hook Defense 0 跳過 nudge 類 Stop hook（checkpoint-judge 曾把最後一則訊息蓋成「skip」、claude -p stdout 只印最後一則，2026-07-15 查因）
+export CC_VENDOR=headless-channel
 
 CLAUDE="/Users/linhancheng/.local/bin/claude"
 REPO_DIR="/Users/linhancheng/code/social-info"
@@ -73,7 +75,7 @@ ls ~/.claude/skills/ ~/.claude/commands/ ~/.claude/workflows/
 digest 在 `/Users/linhancheng/code/social-info/reports/local-analysis/distill-errors.txt`（Step 1 已更新；每段 `=== session: <路徑> (errors: N)` + 逐筆 `[時間] [error] <摘要>`）。檔案可能 >100KB，**不要整檔讀**：
 
 1. 先做頻次總覽：`grep '\[error\]' <digest> | sed 's/^\[[^]]*\] //' | cut -c1-60 | sort | uniq -c | sort -rn | head -20`
-2. 對 top 群判「同型」：同一種錯誤訊息形狀 = 同型（例：「File has not been read yet」「String to replace not found」各是一型）
+2. 對 top 群判「同型」：同一種錯誤訊息形狀 = 同型（例：「File has not been read yet」「String to replace not found」各是一型）。聚類時先用以下六類種子標籤（源自 interleaved-thinking failure taxonomy、2026-07-12 absorb）：context_degradation（context 髒/過長導致品質掉）、tool_confusion（選錯工具/參數用錯）、instruction_drift（做著做著偏離原指令）、goal_abandonment（中途放棄目標或宣稱完成）、circular_reasoning（繞圈重複同樣嘗試）、premature_conclusion（證據不足就下結論）。命中就掛標籤；不命中才開新類並命名。跨週統計沿用同一組標籤名。
 3. 雜訊過濾：平行呼叫連帶取消（`Cancelled: parallel tool call`）、一次性環境問題（網路抖動 / 單日 API 錯）不算訊號
 4. 跨日門檻同 Step 4：同型錯誤 **≥3 個不同日**出現才算候選；用 digest 內時間戳數不同日
 5. 候選 = 修正提案訊號：drill 該型錯誤所在 session 的 `=== session:` 標頭看是哪類工作流反覆產生它，提案指向對應資產（某支 skill 缺步驟 / 某 hook 該擋 / 某流程該補 guard）。提案紀律同 Step 6 第 4 點（最小 bounded edit、絕不直接改）

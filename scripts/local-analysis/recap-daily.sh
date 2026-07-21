@@ -4,6 +4,8 @@ set -euo pipefail
 
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
 export PATH
+# headless channel run: 走 hook Defense 0 跳過 nudge 類 Stop hook（checkpoint-judge 曾把最後一則訊息蓋成「skip」、claude -p stdout 只印最後一則，2026-07-15 查因）
+export CC_VENDOR=headless-channel
 
 CLAUDE="/Users/linhancheng/.local/bin/claude"
 REPO_DIR="/Users/linhancheng/code/social-info"
@@ -111,6 +113,7 @@ Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-
 - 每候選抽取：`phrase`（反覆長描述、50 字內）+ `suggested_term`（建議短 term、kebab-case、5-15 字元）+ `session`（jsonl basename）+ `count`（24h 內出現次數）+ `context_snippet`（代表性 quote、80 字內）
 - **Ledger 寫回（read-only 的第二個例外）**：append 到 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`、每候選一行 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`。**Append 前先 grep ledger 有無同 phrase 或同 suggested_term**（雙鍵去重、跨日避免重複——phrase 是每輪 LLM 挑的代表句、跨日會漂，suggested_term 才是穩定錨點），任一命中就跳過
 - **Scan marker（每天必寫、含 0 候選日）**：ledger 每天固定 append 一行 `{"date":"<今日>","kind":"scan_marker","scanned":<akocommerce session 數>,"candidates":<存活候選數>}`——0 候選日也寫，讓「掃了沒中」跟「靜默跳過」在 ledger 上可分辨。Append 前 grep 同日 scan_marker、有就跳過
+- **決策回寫（2026-07-16 補、trial review 發現的缺口）**：掃描時順帶偵測既有候選的結局——(a) 候選的 suggested_term 或對應條目已出現在 alias 表 → append `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"accepted"}`；(b) session 內使用者對某候選明確拒絕（「不用收」「拒絕」「這個不需要」指向該候選）→ append `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"rejected","reason":"<一句原因、抓得到才寫>"}`。Append 前 grep 同 term 的 decision、有就跳過。**已有 decision 的候選不再重複提報**。沒有這段，採納率（trial 軸 2）永遠算不出來、被拒候選會重複浮上
 - 報告呈現：有命中 → 報告末尾「📌 codebase-aliases 候選: N 個 → 見 ledger」段、每候選一行（suggested_term + 短引用）；沒命中 → 完全不列（scan marker 只進 ledger、不進報告）
 
 ## Commit outcome 追蹤（2026-07-11 起加入）

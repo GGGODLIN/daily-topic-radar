@@ -41,9 +41,11 @@ cat <<'EOF'
 # 判準
 
 1. **`lifecycle: stale` 已 N 天**: lifecycle 標為 stale，距 `last_updated:` > 30 天沒 refresh → 列「💤 Lifecycle:stale」
-2. **久未 changelog**: confidence 不是 stale、`lifecycle != verified`、最後 changelog entry > 90 天 → 列「📜 久未 changelog」
+2. **久未 changelog**: confidence 不是 stale、`lifecycle != verified`、最後 changelog entry > N 天 → 列「📜 久未 changelog」。N 按 frontmatter 選填欄 `volatility:` 分級（2026-07-12 加）：high → 30 天、medium → 90 天、low → 180 天、**留空 → 90 天（原預設不變）**
 
 注意：兩條判準互斥（lifecycle 是 stale 走 1、非 stale 走 2）。
+
+排序：報告內 entity 按 volatility 排（high 在前、留空當 medium、low 在後），同級按天數降冪——高易腐先進使用者視線。
 
 # Recommendation block 格式
 

@@ -106,6 +106,7 @@ digest 階段展開原文（解讀 / 摘要 / 引用）時**按來源分流**。
 | X / Twitter | `~/.claude/scripts/x-fetch.sh <url> --full`（headless、免帳號；syndication CDN + FxTwitter v2 conversation/quotes）| `claude-in-chrome` MCP（sensitive interstitial / 需登入才看得到的內容） | 2026-07-11 從 chrome 主力搬到 headless；`fetch-fallback.sh` 已自動分派 x/twitter domain → x-fetch.sh；見 `reference_x_tweet_fetch_fallback.md` |
 | 需 cookie / SPA / JS render / 大站動態 | `claude-in-chrome` MCP（帶 daily Chrome cookie）| `chrome-devtools` MCP headless | fact-check 主力；見 `reference_chrome_devtools_mcp_default_behavior.md` + `reference_chrome_fallback_extraction_pattern.md` |
 | Cloudflare 系列（ithome.com.tw / thehackernews.com 等）| `mcp__fetch__fetch` | `~/.claude/scripts/fetch-fallback.sh` | WebFetch 一律 403；2026-04-30 觀察期實測 5/5 全勝 |
+| `arstechnica.com` | `~/.claude/scripts/fetch-fallback.sh` | `claude-in-chrome` MCP | WebFetch 結構性失敗（2026-07 三天內 6 次、全在 digest workflow subagent）；fetch-fallback Googlebot HTML 軌 2026-07-21 實測 exit 0 直通，不要先試 WebFetch |
 | HN / 一般 RSS / 部落格 / 新聞 / 結構簡單站 | `WebFetch` | 4xx/封鎖 → `~/.claude/scripts/fetch-fallback.sh` → exit 75/1 升 `claude-in-chrome` | 結構簡單站直接通 |
 
 

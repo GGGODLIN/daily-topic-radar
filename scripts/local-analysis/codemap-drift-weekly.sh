@@ -4,6 +4,8 @@ set -euo pipefail
 
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
 export PATH
+# headless channel run: 走 hook Defense 0 跳過 nudge 類 Stop hook（checkpoint-judge 曾把最後一則訊息蓋成「skip」、claude -p stdout 只印最後一則，2026-07-15 查因）
+export CC_VENDOR=headless-channel
 
 CLAUDE="/Users/linhancheng/.local/bin/claude"
 REPO_DIR="/Users/linhancheng/code/social-info"

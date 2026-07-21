@@ -4,6 +4,8 @@ set -euo pipefail
 
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
 export PATH
+# headless channel run: 走 hook Defense 0 跳過 nudge 類 Stop hook（checkpoint-judge 曾把最後一則訊息蓋成「skip」、claude -p stdout 只印最後一則，2026-07-15 查因）
+export CC_VENDOR=headless-channel
 
 CLAUDE="/Users/linhancheng/.local/bin/claude"
 REPO_DIR="/Users/linhancheng/code/social-info"
@@ -44,13 +46,14 @@ PROMPT=$(cat <<'EOF'
 （滿足 mature 但 entity-vs-discipline 邊界不清的 cluster；**無候選寫「無」、不省略段標題**）
 
 ## 已有對應 wiki entity (snapshot only)
-（列既有 wiki entity slug + 該 entity 最近 source mtime；幫忙判斷需不需要 refresh）
+（列既有 wiki entity slug + 該 entity 最近 source mtime；幫忙判斷需不需要 refresh。**對應 entity 已 SUPERSEDED / tombstone 凍結的 cluster 不列落差戶、不計落差天數**——落差 by-design，最多記一行「已 SUPERSEDED、依拍板 suppress」；2026-07-19 加。**suppress 以 cluster 為單位、不是 entity 配對**：`_index_active_trials` 的正式對應 entity 是已 SUPERSEDED 的 desktop-personal-ai-landscape（07-17 拍板不 refresh），一律 suppress——**不要**改對應到其他「部分覆蓋」entity（如 llm-wiki）重新起算落差天數；07-19/07-20 兩度因改配 llm-wiki 繞過本規則誤報 13/14 天落差戶，2026-07-20 補此措辭）
 
 ## 已掃但不夠 mature
 （列被判準 1/2 過濾掉的 cluster + 哪條失敗、預估幾天後可重評；幫忙下次跑時 carry forward）
 ```
 
 **禁止輸出**（理由：歷史報告 5K-12K bytes 是 baseline，短輸出 = short-circuit failure 不是真的無候選）：
+- `_index_active_trials` 出現在任何落差戶表格 / 建議 / 摘要（含配對到 llm-wiki 或任何「部分覆蓋」entity、含計算落差天數）——該 cluster 唯一合法輸出形式是 suppress 段一行「已 SUPERSEDED、依 07-17 拍板 suppress」；違反此條 = 報告無效（prompt 版勸說 07-19/07-20 兩輪失敗、07-21 第三次違規後升硬規則）
 - 單行 `skip` / `無候選` / 空檔 / 任何 < 500 bytes 報告
 - 整份報告用 code fence 包起來
 - Preamble（「以下是 ...」「整理完...」「以下提供...」）

@@ -29,9 +29,11 @@ jq -rs 'group_by(.sig) | map({sig: .[0].sig, n: length, dates: (map(.date)|uniqu
 
 ## Step 3 — 語意聚類（本 channel 唯一判斷步驟）
 
-聚合表裡多個簽名可能是同一個 root cause 的變體（同工具不同參數、同 API 不同 endpoint）。判斷哪些該併為一個 pattern。寧可漏不可硬湊。
+聚合表裡多個簽名可能是同一個 root cause 的變體（同工具不同參數、同 API 不同 endpoint）。判斷哪些該併為一個 pattern。寧可漏不可硬湊。聚類時先用以下六類種子標籤（源自 interleaved-thinking failure taxonomy、2026-07-12 absorb）：context_degradation（context 髒/過長導致品質掉）、tool_confusion（選錯工具/參數用錯）、instruction_drift（做著做著偏離原指令）、goal_abandonment（中途放棄目標或宣稱完成）、circular_reasoning（繞圈重複同樣嘗試）、premature_conclusion（證據不足就下結論）。命中就掛標籤；不命中才開新類並命名。跨週統計沿用同一組標籤名。
 
 **噪音過濾（不報）**：使用者主動中斷（interrupted by user）、permission 拒絕（那是使用者決策不是坑）、一次性網路抖動類（timeout / ECONNRESET 未跨多日）、已知且已有防線的 pattern（報告前 grep `~/.claude/memory/` 確認沒有既有防線條目——有防線還在重複出現才要報、且升級措辭）。
+
+**Ledger cross-check（2026-07-19 加，比照 cross-link channel 前例）**：報告前 grep `/Users/linhancheng/code/social-info/reports/local-analysis/pending-actions.jsonl` 找語意相同 pattern 的 status=killed 條目——命中 = 使用者已拍板「不建防線」→ **不列 pattern、不進建議、不觸發 escalation**，最多在掃描範圍段記一行「<pattern> 已拍殺（<date>）、僅 baseline 統計」。已知案例：Edit/Write 未讀先寫（07-19 拍殺、原生限制即防線）。重開條件以該 ledger 條目 note 為準（如數量級惡化）。
 
 ## 輸出格式
 

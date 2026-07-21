@@ -36,12 +36,16 @@ cat <<'EOF'
 
 `wiki_graduation: hold-<reason>` → 列「⏸ HOLD」+ 一行 hold 理由，不催促、不計久懸天數。
 
+**marker 只認 frontmatter**（檔案開頭第一個 `---` ... `---` 區塊內的欄位）：正文、code block、yaml 範例內出現的 `wiki_graduation:` 字樣一律不算 marker、不得列 placeholder/HOLD finding（已知誤報案例 = `wiki-automation-toolkit.md` 正文的 yaml 範例 block，2026-07-12 判定、2026-07-17 根治寫進本 prompt）。
+
 # 判準（4 條全滿足才列「🎓 升級候選」）
 
 1. `confidence: high`
 2. `lifecycle: verified`
 3. Changelog 近 1 個月無大改動：最後 changelog entry 日期 > 30 天前
 4. 跨 cluster / standalone 引用 ≥ 3：`grep -r "\[\[<slug>\]\]" ~/.claude/memory/` 統計
+
+**C3 碼錶被 refresh 重置 = by-design、不是 finding（2026-07-17 使用者定調）**：維護 refresh 寫 changelog → 30 天計時歸零 → 達標日後移，正是 C3 本意——內容還在演化就不該畢業（唯一真實畢業案 fact-check-protocol 即內容凍結後才達標）。「達標日因 refresh 推遲」不列 finding、不進推薦 actions、不逐日追蹤；只報真的 4/4 達標的畢業候選。
 
 滿足 3/4 條的 → 列「⏸ 接近成熟」段。
 
