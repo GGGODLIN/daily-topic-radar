@@ -23,6 +23,7 @@ _(空 — 使用者之後 append 感興趣的議題 / 動向 entry)_
 - **Match keywords**: `<regex>`（在 CC scope 或全域 grep raw md）
 - **Scope filter**（optional）: `Claude Code|claude-code` 之類，限縮上下文
 - **Action on hit**: <命中時做什麼 — surface 進 digest 哪段 / 標 priority / 想抓細節 follow up>
+- **Added**（optional）: <YYYY-MM-DD，entry 加入日期。填了的話，加入起 3 個曆日內 surface 時 digest 會自動掛「⚠️ 新來源待驗」標記；不填 = 視為老來源、不標記>
 ```
 
 Watched topic 跟 Active issue 差別：
