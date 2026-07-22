@@ -53,11 +53,13 @@ PROMPT=$(cat <<'EOF'
 ```
 
 **禁止輸出**（理由：歷史報告 5K-12K bytes 是 baseline，短輸出 = short-circuit failure 不是真的無候選）：
-- `_index_active_trials` 出現在任何落差戶表格 / 建議 / 摘要（含配對到 llm-wiki 或任何「部分覆蓋」entity、含計算落差天數）——該 cluster 唯一合法輸出形式是 suppress 段一行「已 SUPERSEDED、依 07-17 拍板 suppress」；違反此條 = 報告無效（prompt 版勸說 07-19/07-20 兩輪失敗、07-21 第三次違規後升硬規則）
+- **任何 cluster frontmatter 帶 `wiki_correspondence: none-*` marker（如 `none-trial-ledger-convention`）出現在落差戶表格 / 建議 / 摘要（含配對到任何「部分覆蓋」entity、含計算落差天數）**——該類 cluster 唯一合法輸出形式是 suppress 段一行「wiki_correspondence marker: <值> — 不列落差戶」；2026-07-22 marker 化，涵蓋原 `_index_active_trials` 硬編規則（原規則歷史：prompt 版勸說 07-19/07-20 兩輪失敗、07-21 第三次違規後升硬規則、07-22 marker 化統一）
 - 單行 `skip` / `無候選` / 空檔 / 任何 < 500 bytes 報告
 - 整份報告用 code fence 包起來
 - Preamble（「以下是 ...」「整理完...」「以下提供...」）
 - 略過任何 1 個段標題
+
+**Orphan / 孤兒警訊 suppress 規則**（agent 若主動加孤兒段時遵守；2026-07-22 加）：掃到「不在任何 `_index_*.md` 或 `MEMORY.md` 中被引用」的檔前，先查兩件事——(1) frontmatter 有無 `archived: true` / `wiki_promote: declined-*` / `stale: true`；(2) 檔首 body 前 5 行有無 `⚠️ STALE` / `⚠️ ARCHIVED` / `⚠️ DEPRECATED` marker。命中任一 → 從孤兒警訊移除、改列 `## 已 archived / stale 記憶`（若無此段可簡化為孤兒段內以「[⚠️ archived] <檔名>」單行掛註）。理由：`reference_search_tool_comparison_2026_05_10.md` 2026-07-20 檔頭已補 ⚠️ STALE 註記、內容有殘值不刪；audit 若忽視 marker 每天續列孤兒 = 誤報疲勞。
 
 歷史報告 5K-12K bytes 是 baseline。今日 < 500 bytes 視為 short-circuit failure。
 
