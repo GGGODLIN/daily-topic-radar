@@ -85,15 +85,44 @@ def brew_leaves():
     s = run(["brew", "leaves"])
     return [l.strip() for l in s.splitlines() if l.strip()] if s else []
 
+def _vkey(v):
+    return tuple(int(x) if x.isdigit() else 0 for x in re.split(r'[.\-+]', norm(v))[:4])
+
+def npm_global_roots():
+    # PATH 上的 npm 可能是 homebrew 也可能是 nvm（視 shell 是否跑過 nvm init），
+    # `npm ls -g` 因此非確定性。改直接掃兩個 prefix：homebrew + nvm 最新版
+    # （舊 nvm 版本是殘留、不掃，否則 discovered 會湧出殭屍套件）。
+    import glob
+    roots = ["/opt/homebrew/lib/node_modules", "/usr/local/lib/node_modules"]
+    nvm = glob.glob(os.path.expanduser("~/.nvm/versions/node/v*"))
+    if nvm:
+        newest = max(nvm, key=lambda p: _vkey(os.path.basename(p)))
+        roots.append(os.path.join(newest, "lib/node_modules"))
+    return [r for r in roots if os.path.isdir(r)]
+
 def npm_g_installed():
     out = {}
-    s = run_raw(["npm", "ls", "-g", "--depth=0", "--json"])
-    if s:
+    def take(name, ver):
+        if not name or not ver:
+            return
+        if name not in out or _vkey(ver) > _vkey(out[name]):
+            out[name] = ver
+    def read_pkg(d):
         try:
-            for name, info in json.loads(s).get("dependencies", {}).items():
-                out[name] = info.get("version")
+            j = json.load(open(os.path.join(d, "package.json")))
+            take(j.get("name"), j.get("version"))
         except Exception:
             pass
+    for root in npm_global_roots():
+        for entry in os.listdir(root):
+            path = os.path.join(root, entry)
+            if not os.path.isdir(path):
+                continue
+            if entry.startswith("@"):
+                for sub in os.listdir(path):
+                    read_pkg(os.path.join(path, sub))
+            else:
+                read_pkg(path)
     return out
 
 def uv_installed():

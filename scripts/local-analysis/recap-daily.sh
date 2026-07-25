@@ -31,9 +31,11 @@ PROMPT=$(cat <<'EOF'
    - NOISE_REGEX（跳過）：`^(<(local-command|command-name|command-message|command-args|system-reminder)|Caveat:|Shell cwd|Stop hook feedback|AUTO-SAVE)`
    - 每筆 prompt content truncate 到 500 chars 再評估，不要一次 dump 整個 jsonl
 
-2. **repo_commit** — `~/Desktop/work/*` + `~/Desktop/projects/*` 含 `.git` 的 dir
-   - `find ~/Desktop/work ~/Desktop/projects -maxdepth 2 -name .git -type d 2>/dev/null`
-   - 對每個 repo 跑：`git -C <repo> log --since='24 hours ago' --pretty=format:'%H%x1f%cI%x1f%s%x1f%an' --no-merges`
+2. **repo_commit** — `~/Desktop/work/*` + `~/Desktop/projects/*` + `~/code/*` 含 `.git` 的 dir
+   - `find ~/Desktop/work ~/Desktop/projects ~/code -maxdepth 2 -name .git -type d 2>/dev/null | xargs -n1 dirname | xargs -n1 -I{} sh -c 'cd {} && pwd -P' | sort -u`
+   - **⚠ 為什麼要含 `~/code` + realpath 去重（2026-07-25 加）**：`~/Desktop/projects/social-info` 是指向 `~/code/social-info` 的 **symlink**，`find` 預設不跟隨 symlink → 只掃 Desktop 兩條會整個漏掉這個 repo。加 `~/code` 補實體路徑，再用 `pwd -P` + `sort -u` 去重避免同一 repo 被算兩次
+   - 對每個 repo 跑：`git -C <repo> log --branches --since='24 hours ago' --pretty=format:'%H%x1f%cI%x1f%s%x1f%an' --no-merges`
+   - **⚠ 必須帶 `--branches`（2026-07-25 加）**：不帶等於只掃當前 HEAD，開在 feature branch 上的 commit 會整批漏掉（2026-07-24 實際漏掉兩筆 akocommerce commit）。用 `--branches`（所有本地 branch）而非 `--all`——後者會把 `origin/*` remote-tracking ref 上同事的 commit 也算進來
    - 注意：`%x1f` (ASCII Unit Separator) 是欄位分隔符（commit message 可能含 `|`，所以不用 `|`）；`%cI` 是 committer date（不是 `%aI` author date，因為 `--since` 用 committer date filter）
    - `~/Desktop/` 遇到 TCC permission denied 時，明確報告「Desktop TCC 擋」並繼續其他線
 
@@ -93,8 +95,12 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 - 對每個存活事件分類：
   - 對應得到既有規則（`~/.claude/CLAUDE.md`、`~/.claude/rules/*.md` 的具體條目）→ `rule_violation` + 規則名
   - 對應不到 → `new_rule_candidate`
-- **Ledger 寫回（read-only 的第一個例外）**：append 到 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`，每事件一行 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`。append 前先 grep ledger 有無同 quote（session 跨日會被掃兩次），有就跳過
-- **Rule health**：append 後統計 ledger 內同一 rule 近 30 天出現次數，≥3 → 報告標「⚠ 規則 X 30 天內第 N 次被糾正 → 措辭可能該改（往精確閾值方向）」
+- **Ledger 寫回（read-only 的第一個例外）**：append 到 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`，每事件一行 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","rule_family":"<家族>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`。append 前先 grep ledger 有無同 quote（session 跨日會被掃兩次），有就跳過
+- **`rule_family` 必填（2026-07-25 加）**：`rule` 欄是自由書寫、同一條規則跨天會分裂成十幾個變體字串，單靠它統計抓不到集中度。從下列固定 enum 挑一個最貼近的填 `rule_family`：`evidence-level`（證據 / 驗證 / 行為數據 / 不憑推測）、`plain-language`（白話 / 反晶晶體 / 措辭 / 繁中）、`self-research-first`（查得到的事實自己查 / 先搜再說缺）、`ask-vs-decide`（停下問 vs 自決 / 討論模式 / 一次收斂 / 訪談）、`scope-discipline`（只改當次範圍 / 修改前先讀）、`process-completeness`（skill 流程不省略 / trial 紀律 / 固化）、`output-delivery`（答案進最終訊息 / 連結格式 / 呈現）、`tooling-routing`（抓取路由 / fetch 退路 / 工具選擇）。都不貼近才填 `unclassified`
+- **Rule health**：append 後跑 `python3 ~/code/social-info/scripts/local-analysis/rule-family-health.py`（家族聚合層，優先讀 `rule_family`、缺欄走關鍵字 fallback，舊 entry 無需 migration），取其輸出：
+  - 家族 30 天 ≥5 次 → 報告標「⚠ 規則家族 X 30 天內 N 次（占 P%）→ 該家族措辭或 enforce 方式可能該改」
+  - 單一 rule 字串 30 天 ≥3 次 → 照舊標「⚠ 規則 X 30 天內第 N 次被糾正 → 措辭可能該改（往精確閾值方向）」
+  - 兩層都報，家族層在前——單一字串層看得到「哪句話要改」、家族層才看得到「哪個紀律真的沒守住」
 - 報告呈現：有命中 → 報告末尾「⚠ 規則糾正: N 次」段，每事件一行（規則名 + 短引用）；`new_rule_candidate` 標明「候選，未驗證——不要自動寫入任何規則檔」；沒有命中 → 完全不列
 
 ## codebase-aliases 候選挖掘（akocommerce 特化，2026-07-09 起加入；跟 rule-adherence 段對稱走 ledger 模式）

@@ -46,6 +46,7 @@ marker 實際格式 = frontmatter 扁平 scalar：`wiki_cross_link: declined-<re
    - **導覽指標型引用不要求回鏈（2026-07-18 拍板）**：cluster index 對 entity 的引用若屬「導覽指標」性質（指路句如「選型先讀這篇」、非內容被吸收進 entity）→ entity「相關」段照慣例只連其他 wiki entity、不連回引用它的 memory cluster index，此類單向引用**非漂移、不列 finding**。與 07-13「sources/frontmatter 慣例不放 wikilink 不補回鏈」同族；判斷標準=引用行是否在指路（導覽）而非標注內容來源（吸收）
 3. **新 entity 加入後沒 backlink**: `last_updated:` 在 7 天內加的 entity，其他既有 entity 0 引用
    - **inbound 健康門檻按 entity 類型分流（2026-07-15 拍板）**：skill 說明型 entity（描述單一 skill / command 用法、slug 常帶 `-skill` 後綴或 topic 是單一 skill，如 review-zh-skill / bitbucket-pr-review-skill / figma-mcp-alignment）門檻 = **inbound ≥1 即健康**——這類 entity 天生引用面窄（被 ecosystem landscape 或姊妹 skill 引一次就合理），**不要套 landscape 型的 ≥3**、inbound 1-2 不標 ⚠️ 偏低、不進推薦 actions、不逐日 carry forward。landscape / discipline / toolkit / cookbook 型維持 ≥3。inbound = 0 才列（任何類型）
+   - **wiki-to-wiki「相關」段互引不對稱不列 finding（2026-07-25 拍板 declined）**：entity A 的「相關」段連了 B、B 沒回連 A → **不算漂移、不列 finding、不 carry-forward**。理由三條：(a) 規模上 23 筆單向 / 3157 個 link = 0.7%，不是漂移訊號是正常形狀；(b) 單向常常才是對的——專題 → 總覽合理，總覽回連每個專題會把總覽變連結牆；(c) 與本 channel 自己的 god-node 檢查直接打架（強制雙向必然推高 hub entity 的 inbound/outbound）。本條只 declined「wiki↔wiki 相關段」這一種不對稱，**cluster→wiki 的 backlink 漂移（判準 2）不受影響、照常列**。要重開需有新論據（非「數字又長了」）
 4. **Alias-aware mention**（2026-07-11 起）: entity 的別名也算平文 mention——別名來源限兩處：frontmatter `aliases:` 欄位（若有）、entity 檔首段明寫的「舊名 / 又稱 / 前身」（例 cn-model-swap-landscape 是 llm-model-landscape 前身）。命中 → propose 補 canonical slug 的 `[[]]`。別名同樣過 False positive 防護（短於 5 字元 / 常用詞不 propose）
 
 # False positive 防護（必做）

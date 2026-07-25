@@ -8,8 +8,8 @@
 # Task: 掃自上次檢查點以來改過的 SKILL.md description、用 LLM 判斷觸發鑑別力（discriminative）、
 # 補現役 ~/.claude/hooks/skill-description-gate.sh regex hook 抓不到的 subtle case。
 # Scan target source-of-truth: ~/.claude/skills/INVENTORY.md (Audit=yes / yes (patched) rows)
-#   含 global ~/.claude/skills/ 21 個 + project-scoped 16 個 = 37 個 user-managed SKILL.md。
-#   不含 cloned 上游 / .agents/ / .plugins/。維護紀律由 skill-creator SKILL.md 第 7 條 enforce。
+#   路徑與 global/project/total 數量由 ~/.claude/scripts/skill-inventory-paths.sh 動態產生。
+#   不含 cloned 上游 / .agents/ / .plugins/。維護紀律由 skill-creator SKILL.md 第 8 條 enforce。
 # Incremental: state file ~/.claude/state/skill-desc-quality.last_run + path mtime vs state file 比對。
 
 cat <<'EOF'
@@ -37,34 +37,16 @@ cat <<'EOF'
 
 掃描範圍**不**等於 `~/.claude/skills/` 全部、而是 INVENTORY.md 內 Audit=`yes` 或 `yes (patched)` 的 row（含 global + project-scoped sections）。Cloned 上游 skill description 是上游 author 寫的、user 不負責修、不掃。
 
-# 抽 audit-eligible path list（必跑）
+# 抽 audit-eligible path list 與衍生數字（必跑）
 
-用以下 awk recipe 從 INVENTORY.md 抽出 absolute path list：
+唯一 parser owner 是 `~/.claude/scripts/skill-inventory-paths.sh`：
 
 ```bash
-awk -F'|' '
-  /^## Global skills/ { scope="/Users/linhancheng/.claude/skills"; in_table=0; next }
-  /^## Project: .*\(`.*`\)/ {
-    s=$0
-    sub(/^.*\(`/, "", s)
-    sub(/`\).*$/, "", s)
-    gsub(/^~/, ENVIRON["HOME"], s)
-    sub(/\/+$/, "", s)
-    scope=s
-    in_table=0; next
-  }
-  /^## (Excluded|維護紀律|audit channel|2026-|來源驗證|個人 config|Audit)/ { scope=""; in_table=0; next }
-  /^\| *-+/ { in_table=1; next }
-  scope != "" && in_table && /^\|/ {
-    skill=$2; audit=$4
-    gsub(/^ +| +$/, "", skill); gsub(/^ +| +$/, "", audit)
-    if (skill ~ / \(command\)$/) next
-    if (audit ~ /^yes/) print scope "/" skill "/SKILL.md"
-  }
-' ~/.claude/skills/INVENTORY.md
+bash ~/.claude/scripts/skill-inventory-paths.sh --paths
+bash ~/.claude/scripts/skill-inventory-paths.sh --counts
 ```
 
-預期 output ~37 條 path（21 global + 16 project-scoped）。若數量大幅偏離（< 15 或 > 60），表示 INVENTORY 維護出問題、報告內加 ⚠️ warning。
+`--paths` 的輸出作為完整掃描範圍；`--counts` 的 `global / project / total` 原樣寫進「## 掃描範圍」。若 total 大幅偏離（< 15 或 > 60），表示 INVENTORY 維護出問題、報告內加 ⚠️ warning。INVENTORY 或本 prompt 不再手寫預期數量。
 
 **`(command)` 後綴 skip**：INVENTORY 內 `align (command)` / `harness (command)` / `trial-review (command)` 這類 row 是 slash command 不是 skill、實體檔在 `<project>/.claude/commands/<name>.md` 而非 `<scope>/<name>/SKILL.md`；且 command 由使用者顯式 `/<name>` 觸發、沒有 LLM discriminative trigger match 問題、本 channel 判準不適用 → awk 直接 skip。
 
@@ -79,7 +61,7 @@ awk -F'|' '
 5. 跑完判斷後 `touch ~/.claude/state/skill-desc-quality.last_run` 更新 timestamp（不管 finding 數、永遠 touch）
 6. ## 掃描範圍 段必寫：
    - state file: <old_timestamp> → <now>
-   - audit-eligible total: <N>（INVENTORY 抽出的 path 總數）
+   - audit-eligible: global <G> / project <P> / total <N>（INVENTORY 抽出的 path 總數）
    - Changed SKILL.md: <M>（本次篩出 -newer 的）
    - Pass: <P>
    - Fail: <F>
@@ -90,7 +72,7 @@ awk -F'|' '
 
 ## 掃描範圍
 - state file: <old_timestamp> → <now>
-- audit-eligible total: <N>
+- audit-eligible: global <G> / project <P> / total <N>
 - Changed SKILL.md: 0
 
 ## 無 description 變動
@@ -120,6 +102,25 @@ missing: [specific_triggers, when_to_use, when_not_to_use, concrete_verbs]
 
 discriminative=True（有具體 trigger + 反向排除）：
 > "Use when user pastes a video URL (YouTube / Bilibili). Trigger phrases: 研究這支影片、幫我看這個影片. Do not use for: video editing requests (not analysis)."
+
+# 刻意省略 marker suppress（2026-07-25 加；照 wiki-candidates 的 marker convention）
+
+有些 missing 維度是**拍板後刻意留白**、不是疏漏。重報這類 finding = 誤報疲勞（實例：`debugging` skill 的 `when_not_to_use` 2026-07-10 拍板拿掉——它要跟 superpowers plugin 版搶觸發、自我設限會輸；channel 純看 regex 不知道這段歷史，2026-07-24 報過一次被判「不動」、2026-07-25 又報一次）。
+
+**判 discriminative 之前**先掃該 SKILL.md **body 前 15 行**有無 marker：
+
+```
+<!-- desc-audit-suppress: <field>[,<field>] — <理由與拍板日期> -->
+```
+
+`<field>` 取值 = 上面 4 種 missing 維度名（`specific_triggers` / `when_to_use` / `when_not_to_use` / `concrete_verbs`），或 `all`。
+
+- marker 命中的 field → **從該檔的 missing 清單移除**，不列進 fail、不進「今日推薦 actions」
+- 移除後 missing 若變空 → 該檔判 pass，pass 理由註明「`<field>` 由 suppress marker 豁免（<marker 內理由>）」
+- marker 只豁免它明列的 field，其餘維度照常判
+- 報告「## 掃描範圍」段加一行 `Suppressed: <S>（marker 豁免的 field 數）`，S=0 也寫——豁免要看得見，不能靜默
+
+**Marker 不是萬用消音器**：只有「已與使用者拍板、且理由寫在 marker 裡」才配掛。channel 不自己加 marker，也不因為某檔連續被報就自動 suppress。
 
 # Full-denominator 原則（2026-07-11 起；自 Schliff 收）
 
