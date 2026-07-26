@@ -86,6 +86,8 @@ cluster 同時滿足 4 條才列進「升級候選」段：
 
 「不夠 mature」段是 carry-forward 機制：cluster mtime 4-6 天時列出來、寫「預估 3 天後 ≥ 7d cap 可重評」，下次跑時 follow-up 段可直接抓。
 
+**不要判 broken link（2026-07-26 加）**：本 channel 只判「該不該升格 wiki entity」，`[[]]` 引用是否有效**不是本 channel 的維度**——那是 wiki-lint 的事。看到 `[[xxx]]` 對不上 `~/.claude/wiki/xxx.md` 時，**不要**寫進「附帶觀察」或任何段落說它是 broken link。07-25 就是這樣把 `work/akocommerce/_INDEX.md` 的 `[[bitbucket-api]]` 誤報成「既有 broken link」——它其實解析得到 `memory/work/akocommerce/reference_bitbucket_api.md` 的 frontmatter `name: bitbucket-api`，完全有效，卻進了 digest 待辦、佔用使用者一次拍板。若真要提，先跑完四條解析路徑（`~/.claude/commands/memory-audit.md` 的「`[[slug]]` 四路解析規則」段是 SSOT）並在報告貼出判定輸出，否則一律不提。
+
 # 前一日候選 follow-up（必做）
 
 讀 /Users/linhancheng/code/social-info/reports/local-analysis/，找昨天日期 (today - 1d) 的 wiki.md：

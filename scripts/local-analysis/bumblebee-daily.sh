@@ -51,6 +51,28 @@ else
   log "WARN: git pull failed, using stale catalog"
 fi
 
+# 1b. Pin 解除條件自動偵測（2026-07-26 加）
+#     原本 script 只 log catalog HEAD、解除條件全靠人記 → pin 會靜默凍死（實際凍 9 天沒人動）。
+#     這裡比對 upstream release tag：PIN_KNOWN_RELEASE 是設 pin 當下的 latest release，
+#     出現更新的 tag = 可能已支援 schema 0.2.0 → 提醒換 binary 解 pin。
+#     gh 不可用或 API 失敗一律 graceful skip、絕不阻塞 scan 本身。
+PIN_SINCE="2026-07-17"
+PIN_KNOWN_RELEASE="v0.1.2"
+PIN_DAYS=$(( ( $(date +%s) - $(date -j -f "%Y-%m-%d" "$PIN_SINCE" +%s 2>/dev/null || echo 0) ) / 86400 ))
+LATEST_RELEASE=""
+PIN_RELEASE_MOVED=0
+if command -v gh >/dev/null 2>&1; then
+  LATEST_RELEASE="$(gh api repos/perplexityai/bumblebee/releases/latest --jq '.tag_name' 2>/dev/null || echo "")"
+  if [ -n "$LATEST_RELEASE" ] && [ "$LATEST_RELEASE" != "$PIN_KNOWN_RELEASE" ]; then
+    PIN_RELEASE_MOVED=1
+    log "PIN-UNBLOCK?: upstream release $PIN_KNOWN_RELEASE -> $LATEST_RELEASE (pinned ${PIN_DAYS}d) — 驗 schema 0.2.0 支援後換 binary 解 pin"
+  else
+    log "pin still valid (upstream latest=${LATEST_RELEASE:-?}, unchanged since pin, pinned ${PIN_DAYS}d)"
+  fi
+else
+  log "WARN: gh unavailable, skip pin-unblock check (pinned ${PIN_DAYS}d)"
+fi
+
 # 2. Snapshot catalog entry count
 ENTRY_COUNT=$(find "$CATALOG_DIR" -name '*.json' -exec jq '.entries | length' {} \; \
   | awk '{s+=$1} END {print s}')
@@ -112,7 +134,15 @@ CATALOG_HEAD="$(echo $NEW_HEAD | cut -c1-7)"
   echo "| Packages 掃過 | $PKG_COUNT |"
   echo "| **Findings** | **$FINDING_COUNT** |"
   echo ""
-  echo "⚠️ Catalog pinned at \`$CATALOG_HEAD\`（binary v0.1.1 不支援 upstream schema 0.2.0；upstream main=\`${UPSTREAM_HEAD:-?}\`）——新 threat entries 暫停進場，upstream release 支援 0.2.0 後換 binary 解除 pin。"
+  echo "⚠️ Catalog pinned at \`$CATALOG_HEAD\`（binary v0.1.1 不支援 upstream schema 0.2.0；upstream main=\`${UPSTREAM_HEAD:-?}\`）——新 threat entries 暫停進場，已凍結 **${PIN_DAYS} 天**。"
+  echo ""
+  if [ "$PIN_RELEASE_MOVED" = "1" ]; then
+    echo "🔔 **解除條件可能成立**：upstream 出了新 release \`$LATEST_RELEASE\`（設 pin 時是 \`$PIN_KNOWN_RELEASE\`）。下一步 = 驗它支不支援 schema 0.2.0 → 支援就換 \`bin/bumblebee\` 並刪掉 script 裡的 \`CATALOG_PIN\` 恢復 track main。"
+  elif [ -n "$LATEST_RELEASE" ]; then
+    echo "解除條件尚未成立：upstream latest release 仍是 \`$LATEST_RELEASE\`（= 設 pin 當時的版本），pin 目前正確。"
+  else
+    echo "解除條件未檢查：\`gh\` 不可用或 API 查詢失敗，本次跳過 release 比對。"
+  fi
   echo ""
   if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
     echo "## Catalog 變動"
@@ -142,6 +172,13 @@ if [ "$FINDING_COUNT" != "0" ] && [ "$FINDING_COUNT" != "?" ]; then
   log "ALERT: $FINDING_COUNT findings detected"
   cp "$OUT" "$REPO_DIR/ALERT-bumblebee.md"
   osascript -e "display notification \"Bumblebee found $FINDING_COUNT supply-chain match(es) — see $OUT\" with title \"⚠️ Bumblebee Alert\" sound name \"Sosumi\"" 2>/dev/null || true
+fi
+
+# 6b. Alert: pin 解除條件成立 → 桌面通知（2026-07-26 加，比照 findings alert；
+#     報告沉在 digest 裡容易被略過，pin 凍太久等於防線停更、值得一次主動打斷）
+if [ "$PIN_RELEASE_MOVED" = "1" ]; then
+  log "ALERT: pin unblock candidate — upstream release $LATEST_RELEASE"
+  osascript -e "display notification \"upstream 出了 $LATEST_RELEASE（pin 已 ${PIN_DAYS} 天）— 驗 schema 0.2.0 後可解 pin\" with title \"🔔 Bumblebee pin 可解除？\" sound name \"Ping\"" 2>/dev/null || true
 fi
 
 # 7. Prune archive findings.ndjson > 30 days
