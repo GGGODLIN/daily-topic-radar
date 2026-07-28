@@ -41,7 +41,7 @@ jq -rs 'group_by(.sig) | map({sig: .[0].sig, n: length, dates: (map(.date)|uniqu
 
 ```
 ## 掃描範圍
-（extract 輸出 / ledger 總行數 / 過門檻候選數 / 聚類後 pattern 數）
+（extract 輸出 / ledger 總行數 / 過門檻候選數 / 聚類後 pattern 數 / **本次增量掃描的 session 檔數**）
 
 ## 🔁 重複錯誤 pattern（按次數降冪）
 每個 pattern：
@@ -52,6 +52,8 @@ jq -rs 'group_by(.sig) | map({sig: .[0].sig, n: length, dates: (map(.date)|uniqu
 
 ## 無新 pattern（過門檻候選為 0 時）
 ```
+
+**跨輪計數不可比（2026-07-25 trial review 加，治已犯過的錯）**：每輪掃的 session 檔數不同（07-14 掃 41 檔、07-21 掃 127 檔），且 07-11 首跑是 180 天回看 baseline——**原始次數跨輪比較無效**。要講趨勢只能報**每 100 session 發生率**（`次數 ÷ 本次掃描檔數 × 100`，兩位小數）並同句附兩輪的檔數；算不出來就明寫「本輪 Nx（跨輪計數不可比、僅本輪內排序用）」。**禁用措辭**：「規模縮小 / 明顯改善 / 遵循率提升 / 逐漸生效」等任何基於原始次數跨輪對比的因果推論。
 
 **Escalation 規則（使用者 digest 只讀 top-2、沉底即消失）**：任何 pattern 第 2 次進報告（上週報過這週還在）→ 標題前加 ⚠️ 且必須排進報告前兩項；第 3 次 → 標 🚨（digest 端不得濃縮省略）。
 

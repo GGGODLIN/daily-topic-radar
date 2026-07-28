@@ -104,6 +104,7 @@ cluster 同時滿足 4 條才列進「升級候選」段：
 - 嚴格 read-only：絕對不執行 /wiki-promote、不寫任何 memory / wiki file
 - 只產 markdown 到 stdout
 - **第一個 byte 永遠是 `## 掃描範圍`**，不論今日有沒有新候選
+- **trial 到期 / review 催辦不是本 channel 的維度（2026-07-27 使用者拍板）**：trial review 一律由使用者另行處理，**不要**把「N 筆 trial 到期未結案」「review 日已到」之類列成 FYI / 待辦 / 建議——任何段落都不行。trial 狀態只能作為 wiki promote 判斷的背景資料（如 hold-until-trial 的解除依據），不得自成 actionable 項目
 - **trial / review-date 判斷必 cross-check `~/Desktop/projects/.claude/trials/archived.md`**：已結案 trial 標 `### ✅ [結案 YYYY-MM-DD · KEEP/KILL ...]`。memory 條目（如 `project_*_intro.md` / `_index_active_trials.md`）可能 stale 未同步——`active.md` + `archived.md` 是 trial 狀態 source of truth、memory 不是。寫「trial review N 天超期 / 待拍板」前必 grep archived.md 確認該 trial 沒已結案；已結案的別列「超期 / 待拍板」、改提「memory stale 需 sync」（若仍有 wiki entity promote 議題、跟 trial 狀態切開講）
 EOF
 )

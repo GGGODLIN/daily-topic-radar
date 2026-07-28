@@ -107,7 +107,7 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 
 Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-linhancheng-Desktop-work-akocommerce`），找對話中反覆用長描述指同一個東西、且沒被 `~/Desktop/work/akocommerce/docs/codebase-aliases.md` 現有 alias 表 cover——「該建 term collapse」候選。
 
-- **掃描範圍**：只讀 akocommerce session（path 含 `-Users-linhancheng-Desktop-work-akocommerce`）、其他 project session 跳過。讀 user + assistant text（跳 tool_result / noise regex），每則截 400 字（跟 rule-adherence 段同校準；assistant text 是 jsonl 最大宗、不截高活動日會爆量）
+- **掃描範圍**：只讀 akocommerce session（path 含 `-Users-linhancheng-Desktop-work-akocommerce`）、其他 project session 跳過。**補撈規則（2026-07-27 加、治 path filter 漏網）**：akocommerce / CVS 工作不一定發生在 repo 路徑的 session——07-26 實例：當日 CVS 工作在 `-Users-linhancheng-Desktop-projects` session `7d9ade0a` 進行、path filter 整個漏掉。故對 path 含 `-Users-linhancheng-Desktop-projects` 的 24h 窗內 session，各抽 user text 前 20 則 grep `akocommerce|CVS|convenience.?store`（case-insensitive），命中 ≥3 則就把該 session 納入本段掃描範圍；未命中照舊跳過（不對全部 projects session 做全文掃、控成本）。讀 user + assistant text（跳 tool_result / noise regex），每則截 400 字（跟 rule-adherence 段同校準；assistant text 是 jsonl 最大宗、不截高活動日會爆量）
 - **參考 alias 表**：讀 `~/Desktop/work/akocommerce/docs/codebase-aliases.md`（現 226 行、涵蓋 v1-v4 CVS 世代 / 前端頁面 / widget / pickup 等既有代稱）；候選 phrase 若已在表內 alias 或別名欄命中就跳過
 - **Signal**：同一個東西被反覆用**長描述**指涉（3+ 字 phrase、講 3 次以上、跨多個 turn）、且 alias 表沒收
 - **Skeptic 自審先過再算數**：

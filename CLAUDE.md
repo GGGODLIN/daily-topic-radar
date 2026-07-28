@@ -38,7 +38,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `reports/local-analysis/` 是 [`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js) workflow 的 proposal markdown 輸出，user review 完手動 apply。`.gitignore` 已排除（個人 path + 分析結果不 commit）。
 
-- **Channel 清單 / 頻率 / 沿革以 workflow 檔內 `CHANNELS` 陣列 + 檔頂註解為 SSOT**（2026-07-12 時點 21 個 channel、分 LLM 對內整理與 shell scan 兩類、daily / weekly-tue 兩頻率），本檔不列表、不重複維護
+- **Channel 清單 / 頻率 / 沿革以 workflow 檔內 `CHANNELS` 陣列 + 檔頂註解為 SSOT**（2026-07-25 時點 22 個 channel = LLM 對內整理 13 + shell scan 9、daily 14 / weekly-tue 8；數字有疑義時以 `CHANNELS` 陣列現查為準、不以本行為據），本檔不列表、不重複維護
 - 觸發：「今日本機分析」等語句走 hook 注入 workflow；備援 slash command `/daily-local`
 - 原 launchd 排程 2026-05-26 已停用（plist 在 `~/Library/LaunchAgents/disabled-local-analysis-2026-05-26/`，要恢復 mv 回去 launchctl load）；沿革見 memory `reference_cc_workflow_tool_2026_05`
 - bumblebee channel = 純 Go binary 供應鏈掃描（不耗 LLM）：findings > 0 寫 `ALERT-bumblebee.md` 到 repo root + osascript 通知；設計見 [`scripts/local-analysis/bumblebee-daily.sh`](file:///Users/linhancheng/code/social-info/scripts/local-analysis/bumblebee-daily.sh) 檔頭
@@ -105,7 +105,7 @@ digest 階段展開原文（解讀 / 摘要 / 引用）時**按來源分流**。
 | `reddit.com` 全域 | `~/.claude/scripts/fetch-fallback.sh <url>`（reddit_track 第 1 階走 arctic-shift API）| `mcp__chrome-devtools` MCP（selftext 缺失時走、不是 claude-in-chrome）| WebFetch + claude-in-chrome navigate 兩條對 reddit 整域擋；現主力 arctic-shift（[[reference_arctic_shift_reddit_api]]），selftext 缺才升 chrome-devtools（[[reference_chrome_devtools_mcp_reddit_escape]]）|
 | X / Twitter | `~/.claude/scripts/x-fetch.sh <url> --full`（headless、免帳號；syndication CDN + FxTwitter v2 conversation/quotes）| `claude-in-chrome` MCP（sensitive interstitial / 需登入才看得到的內容） | 2026-07-11 從 chrome 主力搬到 headless；`fetch-fallback.sh` 已自動分派 x/twitter domain → x-fetch.sh；見 `reference_x_tweet_fetch_fallback.md` |
 | 需 cookie / SPA / JS render / 大站動態 | `claude-in-chrome` MCP（帶 daily Chrome cookie）| `chrome-devtools` MCP headless | fact-check 主力；見 `reference_chrome_devtools_mcp_default_behavior.md` + `reference_chrome_fallback_extraction_pattern.md` |
-| Cloudflare 系列（ithome.com.tw / thehackernews.com 等）| `mcp__fetch__fetch` | `~/.claude/scripts/fetch-fallback.sh` | WebFetch 一律 403；2026-04-30 觀察期實測 5/5 全勝 |
+| Cloudflare 系列（ithome.com.tw / thehackernews.com 等）| `~/.claude/scripts/fetch-fallback.sh` | `claude-in-chrome` MCP | 原主力 `mcp__fetch__fetch` server 已移除（幽靈引用、2026-07-27 清理）；同日實測：ithome WebFetch 仍 403、fetch-fallback exit 0；thehackernews WebFetch 已通、不必先繞 |
 | `arstechnica.com` | `~/.claude/scripts/fetch-fallback.sh` | `claude-in-chrome` MCP | WebFetch 結構性失敗（2026-07 三天內 6 次、全在 digest workflow subagent）；fetch-fallback Googlebot HTML 軌 2026-07-21 實測 exit 0 直通，不要先試 WebFetch |
 | HN / 一般 RSS / 部落格 / 新聞 / 結構簡單站 | `WebFetch` | 4xx/封鎖 → `~/.claude/scripts/fetch-fallback.sh` → exit 75/1 升 `claude-in-chrome` | 結構簡單站直接通 |
 
