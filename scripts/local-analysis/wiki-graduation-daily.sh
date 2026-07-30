@@ -45,6 +45,14 @@ cat <<'EOF'
 3. Changelog 近 1 個月無大改動：最後 changelog entry 日期 > 30 天前
 4. 跨 cluster / standalone 引用 ≥ 3：`grep -r "\[\[<slug>\]\]" ~/.claude/memory/` 統計
 
+**C3 的 changelog 段怎麼找（2026-07-30 補，別只認字面 `## Changelog`）**：多數 entity 的標題是 `## Changelog`，但有 entity 用**編號 / 複合標題**，逐字比對會判成「沒有 changelog」而漏掉整個 entity。實測 87 個 entity 中有 2 個是變體：`harness-implementation-landscape` = `## §7 Changelog`、`llm-model-landscape` = `## 8. Sources & freshness — Changelog`。定位方式改成**匹配任何含 `Changelog` 字樣的標題行**：
+
+```bash
+grep -nE '^#+ .*[Cc]hangelog' <file>
+```
+
+真的一個都沒匹配到 → C3 記「無 changelog 段、無法判定」列進 report，**不要當成「> 30 天前」自動給過**（沒 changelog ≠ 內容凍結）。
+
 **C3 碼錶被 refresh 重置 = by-design、不是 finding（2026-07-17 使用者定調）**：維護 refresh 寫 changelog → 30 天計時歸零 → 達標日後移，正是 C3 本意——內容還在演化就不該畢業（唯一真實畢業案 fact-check-protocol 即內容凍結後才達標）。「達標日因 refresh 推遲」不列 finding、不進推薦 actions、不逐日追蹤；只報真的 4/4 達標的畢業候選。
 
 滿足 3/4 條的 → 列「⏸ 接近成熟」段。
@@ -70,7 +78,7 @@ cat <<'EOF'
 - **4 條判準逐條 verify**:
   - ✅ confidence: high
   - ✅ lifecycle: verified
-  - ✅ Changelog 最後 entry: <YYYY-MM-DD> (X 天前)
+  - ✅ Changelog 最後 entry: <YYYY-MM-DD> (X 天前)｜標題行: <實際匹配到的標題，如 `## Changelog` / `## §7 Changelog`>
   - ✅ 跨 cluster 引用: <count> 次（list 引用源）
 - **升級 target**: CLAUDE.md / ~/.claude/rules/<name>.md / 不適合升（純 snapshot）
 - **預估會吸收哪段 rule**: <1-2 句描述要從 entity 提煉出的 rule 文字>

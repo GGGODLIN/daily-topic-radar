@@ -44,7 +44,7 @@ cat <<'EOF'
 
 掃到的 entity 若 frontmatter 出現 `wiki_lint:` 段，按其值處理、不進入判準流程：
 
-- `wiki_lint.<finding-key>: declined` → 該 finding 對該 entity 完全跳過，不列任何段
+- `wiki_lint.<finding-key>: declined` → 該 finding 對該 entity 完全跳過，不列任何段；Orphan 的 Only-MEMORY 資訊列示也屬同一 finding，必須一併排除
 - `wiki_lint.<finding-key>: hold-<reason>` → 列「⏸ HOLD」（額外段在「🎯 今日推薦 actions」之前）、不催促
 
 # 判準
@@ -57,7 +57,7 @@ cat <<'EOF'
    s="${s%%#*}"; [ -f ~/.claude/wiki/"$s".md ] || grep -rql "^name: $s\$" ~/.claude/memory/ \
      || [ -n "$(find ~/.claude/memory -name "$s.md" -print -quit)" ] && echo VALID || echo BROKEN
    ```
-   2026-07-26 實測全樹 617 slug：①87 / ②84 / ③404 / 皆不中 42——**只查 ① 會誤判 488 個有效引用**（07-25 `[[bitbucket-api]]` 誤報即走 ②）。四條皆不中仍**不報**的三類：bash `[[ ]]` 測試語法（含空白 / `$` / `==` / 以 `-` 開頭）、schema 佔位符（`another-entity` / `wiki-entity` / `X` / 含尖括號）、skill 與 rules 檔名（`[[research-before-answer]]` / `[[subagent-routing]]`，它們在 `~/.claude/skills/`、`~/.claude/rules/`）。完整規則見 `~/.claude/commands/memory-audit.md` 的「`[[slug]]` 四路解析規則」段（SSOT）
+   2026-07-26 實測全樹 617 slug：①87 / ②84 / ③404 / 皆不中 42——**只查 ① 會誤判 488 個有效引用**（07-25 `[[bitbucket-api]]` 誤報即走 ②）。四條皆不中仍**不報**的四類：inline code 或 fenced code block 內的 `[[...]]` 示意文字（Markdown 不會解析成 wikilink）、bash `[[ ]]` 測試語法（含空白 / `$` / `==` / 以 `-` 開頭）、schema 佔位符（`another-entity` / `wiki-entity` / `X` / 含尖括號）、skill 與 rules 檔名（`[[research-before-answer]]` / `[[subagent-routing]]`，它們在 `~/.claude/skills/`、`~/.claude/rules/`）。完整規則見 `~/.claude/commands/memory-audit.md` 的「`[[slug]]` 四路解析規則」段（SSOT）
 3. Frontmatter 缺欄位: 缺 topic / last_updated / confidence / lifecycle / sources 任一 → 列入 🟢 缺欄位
 4. 重複 entity: 兩個 entity TL;DR 相似度 > 70% → 列入 ⚠️ 重複
 5. God-node（2026-07-11 起）: entity 被 `[[]]` inbound 引用 ≥ 15 次（wiki + memory 合計）→ 不開新段，在「🎯 今日推薦 actions」以 `[LOW] god-node: <slug>（inbound N）` 列出、建議 action = 檢視是否該拆子 entity 或確認為合理 hub（hub 合法就標 `wiki_lint.god-node: declined` 一次性關閉）。7 段結構不變

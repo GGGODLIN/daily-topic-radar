@@ -15,7 +15,7 @@ OUT_DIR="$REPO_DIR/reports/local-analysis"
 LOG_DIR="$REPO_DIR/logs"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR" "$ARCHIVE_DIR"
-DATE=$(date +%Y-%m-%d)
+DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
 OUT="$OUT_DIR/$DATE-bumblebee.md"
 LOG="$LOG_DIR/local-analysis-bumblebee-$DATE.log"
 FINDINGS_FILE="$ARCHIVE_DIR/$DATE-findings.ndjson"

@@ -8,7 +8,7 @@ export PATH
 REPO_DIR="/Users/linhancheng/code/social-info"
 OUT_DIR="$REPO_DIR/reports/local-analysis"
 LOG_DIR="$REPO_DIR/logs"
-DATE=$(date +%Y-%m-%d)
+DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
 OUT="$OUT_DIR/$DATE-symlink-drift.md"
 LOG="$LOG_DIR/local-analysis-symlink-drift-$DATE.log"
 mkdir -p "$OUT_DIR" "$LOG_DIR"

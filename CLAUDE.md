@@ -87,7 +87,8 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 Main session 需要知道的：
 
-- **KNOWN_ISSUES 🚨 條目阻塞**：workflow 回報有 🚨 時要問使用者「先處理還是接受 gap」等回答（處理 → `uv run python -m social_info --retry-failures` 補資料再產；接受 → digest 開頭明寫缺口）；🛠 / 🪦 surface 不阻塞
+- **workflow 三道 fail-fast guard（2026-07-28 加）**：workflow 會在早期中止並回 `aborted: true` + `abort_stage` + `next_action`，main session 拿到 result 的第一步是判 `aborted`、為 true 就跳過 digest_write / digest_audit / verify gate 那套流程。三個 stage：`input_precheck`（raw md 缺檔或截斷 → 補跑 aggregator 再重跑）、`known_issues_gate`（retry 完仍有 🚨 → **停下來問使用者**「先處理還是接受缺口」，接受才用 args `{"date":"…","accept_gaps":true}` 重跑，main 不得自行決定）、`themes`（主軸抽空 → 查 raw md 與 journal 找因，不原樣重跑）。動機：2026-07-28 raw md 缺檔 + reddit 全 403，workflow 兩次跑到一半才被手動打斷、白燒約 149 個 agent。門檻常數 `MIN_RAW_MD_BYTES` / `MIN_RAW_MD_SECTIONS` 在 workflow script 內，調它等於關掉保護
+- **🚨 條目的處理路徑**：retry 由 workflow 的 KnownIssuesGate 自動跑（≤ 2 次），retry 後仍失敗才走上面的 `known_issues_gate` abort；最常見成因是 VPN 開著讓 reddit 整域 403（關掉後 `uv run python -m social_info --retry-failures` 即可補回）。選擇接受缺口時 digest 開頭要明寫缺口；🛠 / 🪦 surface 不阻塞
 - **三份攔截檔都在 repo root、手動 maintain**：`KNOWN_ISSUES.md`（pipeline 自動寫，四區 🚨/🛠/🪦/⏳）、`WATCH.md`（被動 grep raw md 的 upstream bug 清單）、`PROBES.md`（主動 fetch 外部 source 的訊號清單）——各檔自帶 schema + 維護規則，新增 entry 照檔內規範 append
 - **手動觸發 probes**：使用者說「跑 probes」→ `bash scripts/local-analysis/probes-daily.sh`（overwrite 當天 probes report、對所有 entries 跑）
 - **external-feeds backstop**：follow-builders feed 定位是「自家 source 漏抓 backstop」非主軸校準；feed 404 不阻塞 digest；上游 repo 消失 → 移除該 pre-flight step；試讀結案數據見 memory `reference_follow_builders_trial_2026_06_05`

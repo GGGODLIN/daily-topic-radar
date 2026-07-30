@@ -10,7 +10,7 @@ OUT_DIR="$REPO_DIR/reports/local-analysis"
 LOG_DIR="$REPO_DIR/logs"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
-DATE=$(date +%Y-%m-%d)
+DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
 OUT="$OUT_DIR/$DATE-rules-size.md"
 LOG="$LOG_DIR/local-analysis-rules-size-$DATE.log"
 

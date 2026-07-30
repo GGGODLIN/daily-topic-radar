@@ -11,7 +11,7 @@ LOG_DIR="$REPO_DIR/logs"
 PROJECTS_DIR="/Users/linhancheng/.claude/projects"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
-DATE=$(date +%Y-%m-%d)
+DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
 OUT="$OUT_DIR/$DATE-codex-violation.md"
 LOG="$LOG_DIR/local-analysis-codex-violation-$DATE.log"
 

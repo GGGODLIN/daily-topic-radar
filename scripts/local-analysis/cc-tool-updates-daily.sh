@@ -11,7 +11,8 @@ case " $* " in
   *" --json "*) : ;;
   *)
     SI="/Users/linhancheng/code/social-info"
-    export CCTOOL_OUT="${CCTOOL_OUT:-$SI/reports/local-analysis/$(date +%F)-tool-updates.md}"
+    DATE="${LOCAL_ANALYSIS_DATE:-$(date +%F)}"
+    export CCTOOL_OUT="${CCTOOL_OUT:-$SI/reports/local-analysis/$DATE-tool-updates.md}"
     mkdir -p "$(dirname "$CCTOOL_OUT")" 2>/dev/null || true
   ;;
 esac
@@ -72,13 +73,18 @@ def cargo_git_installed():
     return out
 
 def brew_installed():
+    # 一個 formula 留多個 keg 時 `brew list --versions` 會在同一行列出全部，
+    # 而且順序無保證（實測 `sqlite 3.53.0 3.51.3 3.53.2`）。原本取 p[-1] 等於
+    # 隨機挑一個 keg，通常是舊的 → 已升級的工具每天被回報「有新版」。
+    # 2026-07-30 實測誤報：ast-grep（0.45.0 0.44.1）、beads（1.1.2 1.1.0）兩個
+    # 白名單工具連日假陽性。改成按版本取最大。
     out = {}
     s = run(["brew", "list", "--versions", "--formula"])
     if s:
         for line in s.splitlines():
             p = line.split()
             if len(p) >= 2:
-                out[p[0]] = p[-1]
+                out[p[0]] = max(p[1:], key=_vkey)
     return out
 
 def brew_leaves():

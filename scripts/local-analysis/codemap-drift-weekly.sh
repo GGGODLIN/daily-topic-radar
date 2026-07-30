@@ -34,8 +34,11 @@ PROMPT=$(cat <<'EOF'
 
 1. 掃 /Users/linhancheng/Desktop/projects/* 和 /Users/linhancheng/Desktop/work/* 找含 docs/CODEMAPS/ 目錄的 project
 2. 對每個有 codemap 的 project（用 absolute path，因 launchd 環境可能影響 ~/Desktop 存取）：
-   - 看 codemap 最後 git commit 時間（git log -1 --format=%cI docs/CODEMAPS/）跟 mtime
-   - 看 src code 主要目錄（src/, lib/, app/, components/, pages/, routes/, server/）自 codemap 最後 update 後的 commit 數（git log <since> --oneline）
+   - **⚠ 先 `git -C <repo> fetch --quiet` 再算任何 commit 數（2026-07-30 加）**。`fetch` 只更新 remote-tracking ref、不動 working tree 也不動任何 codemap 檔，**不違反下面的 read-only 紀律**、必須做。
+   - **⚠ 比對基準用 `origin/<default-branch>`，不要用本地 HEAD**。本地 master 可能落後好幾天，而且如果當下 checkout 在 feature branch，`git log` 算的是錯的分支。取 default branch：`git -C <repo> symbolic-ref --short refs/remotes/origin/HEAD`（拿不到就退 `origin/master` → `origin/main`）。
+     - 為什麼：2026-07-21 實證，codemap channel 拿 stale 本地 master 判定「6/26 之後未覆蓋」，實際 drift 是「07-21 align 之後 7 天 / 10 PR」——**誤報方向是高估 drift、會催出不必要的 rescan**（rescan 要派 5 個 subagent，成本不低）。同型教訓 recap channel 已在 2026-07-25 修過（改用 `--branches`），本 channel 當時漏同步。
+   - 看 codemap 最後 git commit 時間（`git -C <repo> log -1 --format=%cI origin/<default-branch> -- docs/CODEMAPS/`）跟 mtime
+   - 看 src code 主要目錄（src/, lib/, app/, components/, pages/, routes/, server/）自 codemap 最後 update 後的 commit 數（`git -C <repo> log <since>..origin/<default-branch> --oneline -- <dirs>`）
    - 看主要 .ts/.tsx/.js/.py/.go/.rs 檔案變動數
 3. 估 drift 程度：commit 數 + 主要檔案變動 + 主要 src dir mtime 跟 codemap mtime 差距
 

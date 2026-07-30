@@ -7,15 +7,25 @@
 # - Some skills have local edits (e.g. deep-research description 中文化) — auto-pull would conflict
 # - User decides when to actually pull (script gives the exact command)
 # - Matches read-only nature of sibling local-analysis routines
+#
+# 兩種被巡邏的 skill 形態（2026-07-28 起）：
+# 1. git clone 型（帶 .git 目錄）→ fetch + HEAD 比對（下方第一段迴圈）
+# 2. 散檔 fork 型（無 .git）→ SKILL.md frontmatter 自帶線索：
+#      upstream: <owner/repo> / upstream-path: <path> / upstream-pinned: <sha>
+#      選配 upstream-branch:（預設 main）、upstream-status: orphaned（已知上游移除、不巡）
+#    upstream-pinned 語意 =「已對賬到此 commit」：只在看過 diff、拍板吸收與否之後推進；
+#    不得為了讓報告閉嘴而推進——推進本身是對賬 ritual 的最後一步
 
 set -uo pipefail
 
-LOG_DIR="$HOME/code/social-info/reports/local-analysis/skill-updates"
+SKILLS_DIR="${SKILLS_DIR:-$HOME/.claude/skills}"
+LOG_DIR="${LOG_DIR:-$HOME/code/social-info/reports/local-analysis/skill-updates}"
+ANALYSIS_DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/$(date -u +%Y-%m-%d).md"
+LOG_FILE="$LOG_DIR/$ANALYSIS_DATE.md"
 
 {
-  echo "# Skill upstream check — $(date -u +%Y-%m-%d)"
+  echo "# Skill upstream check — $ANALYSIS_DATE"
   echo ""
   echo "掃 \`~/.claude/skills/*/.git\` 看上游有沒有新 commit（read-only，不 auto-pull）"
   echo ""
@@ -24,7 +34,7 @@ LOG_FILE="$LOG_DIR/$(date -u +%Y-%m-%d).md"
 found_skills=0
 behind_count=0
 
-for skill_git in "$HOME"/.claude/skills/*/.git; do
+for skill_git in "$SKILLS_DIR"/*/.git; do
   [ -d "$skill_git" ] || continue
   parent=$(dirname "$skill_git")
   name=$(basename "$parent")
@@ -74,6 +84,68 @@ for skill_git in "$HOME"/.claude/skills/*/.git; do
     } >> "$LOG_FILE"
   fi
 done
+
+# --- 散檔 fork frontmatter 對賬巡邏（2026-07-28 加）---
+# 散檔複製型 fork 無 .git、上面迴圈照不到；線索由 SKILL.md frontmatter 自帶（欄位語意見檔頭）。
+# 與 marker 型段落（下方 skill-creator / debugging）不同：behind 會每週持續報，直到對賬推進 pinned。
+# 已知限制：compare API 的 files 上限 300 檔，超大 delta 可能漏列 path（本用例 delta 極小、可接受）。
+fm_watched=0
+fm_behind=0
+{
+  echo ""
+  echo "## 散檔 fork 對賬巡邏（frontmatter 線索、pinned 語意）"
+} >> "$LOG_FILE"
+if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+  echo "- ⚠️ gh 不可用或未登入，散檔 fork 對賬整段跳過（勿當全綠）" >> "$LOG_FILE"
+else
+  for sk_md in "$SKILLS_DIR"/*/SKILL.md; do
+    [ -f "$sk_md" ] || continue
+    sk_name=$(basename "$(dirname "$sk_md")")
+    fm=$(awk '/^---[[:space:]]*$/{c++; next} c==1{print} c>=2{exit}' "$sk_md")
+    up_repo=$(printf '%s\n' "$fm" | sed -n 's/^upstream:[[:space:]]*//p' | head -1)
+    [ -n "$up_repo" ] || continue
+    fm_watched=$((fm_watched + 1))
+    up_status=$(printf '%s\n' "$fm" | sed -n 's/^upstream-status:[[:space:]]*//p' | head -1)
+    if [ "$up_status" = "orphaned" ]; then
+      echo "- ℹ️ ${sk_name} — 已知 orphaned（上游已移除、不巡；provenance 留檔用）" >> "$LOG_FILE"
+      continue
+    fi
+    up_path=$(printf '%s\n' "$fm" | sed -n 's/^upstream-path:[[:space:]]*//p' | head -1)
+    up_pin=$(printf '%s\n' "$fm" | sed -n 's/^upstream-pinned:[[:space:]]*//p' | head -1)
+    up_branch=$(printf '%s\n' "$fm" | sed -n 's/^upstream-branch:[[:space:]]*//p' | head -1)
+    up_branch="${up_branch:-main}"
+    if [ -z "$up_path" ] || [ -z "$up_pin" ]; then
+      echo "- ⚠️ **${sk_name}** — frontmatter 線索不完整（缺 upstream-path 或 upstream-pinned）" >> "$LOG_FILE"
+      fm_behind=$((fm_behind + 1))
+      continue
+    fi
+    contents_error=$(mktemp)
+    if ! gh api "repos/$up_repo/contents/$up_path?ref=$up_branch" --jq .sha >/dev/null 2> "$contents_error"; then
+      if grep -q 'HTTP 404' "$contents_error"; then
+        echo "- 🪦 **${sk_name}** — 上游 path 消失（${up_repo}@${up_branch}:${up_path}）：疑似 orphaned 或改名，人工確認後改 frontmatter（確認移除 → 補 upstream-status: orphaned）" >> "$LOG_FILE"
+      else
+        echo "- ⚠️ **${sk_name}** — upstream API 查詢失敗（非 404），本輪無法判定 path 是否存在" >> "$LOG_FILE"
+      fi
+      rm -f "$contents_error"
+      fm_behind=$((fm_behind + 1))
+      continue
+    fi
+    rm -f "$contents_error"
+    cmp_files=$(gh api "repos/$up_repo/compare/$up_pin...$up_branch" --jq '.files[].filename' 2>/dev/null) || cmp_files="__CMP_FAIL__"
+    if [ "$cmp_files" = "__CMP_FAIL__" ]; then
+      echo "- ⚠️ **${sk_name}** — compare 失敗（pinned \`${up_pin}\` 可能已不在上游、或 API 失敗），人工確認" >> "$LOG_FILE"
+      fm_behind=$((fm_behind + 1))
+    elif printf '%s\n' "$cmp_files" | grep -Fxq "$up_path"; then
+      echo "- ⬆️ **${sk_name}** — 上游有未對賬變更（只看 \`${up_path}\`；對賬後推進 upstream-pinned）: https://github.com/${up_repo}/compare/${up_pin}...${up_branch}" >> "$LOG_FILE"
+      fm_behind=$((fm_behind + 1))
+    else
+      echo "- ✅ ${sk_name} — 對賬點後上游未動該檔（pinned \`${up_pin}\`）" >> "$LOG_FILE"
+    fi
+  done
+  if [ "$fm_watched" -eq 0 ]; then
+    echo "- ⚠️ 掃到 0 支帶 upstream 線索的 skill——散檔 fork 全部脫離雷達，確認 frontmatter 欄位還在" >> "$LOG_FILE"
+  fi
+fi
 
 # --- skill-creator 上游巡邏（2026-06-12 加）---
 # 本地 skill-creator 是官方舊版 fork（出處注記在其 SKILL.md 頭），刻意不同步；
@@ -159,7 +231,7 @@ fi
 {
   echo ""
   echo "---"
-  echo "**Summary**: $found_skills 個 git-tracked skill 掃過，$behind_count 個有上游更新"
+  echo "**Summary**: ${found_skills} 個 git-tracked skill 掃過（${behind_count} 個落後）；${fm_watched} 支散檔 fork 對賬巡過（${fm_behind} 支待對賬 / 待確認）"
   echo ""
   echo "Done — $(date -u +%H:%M:%S) UTC"
 } >> "$LOG_FILE"
