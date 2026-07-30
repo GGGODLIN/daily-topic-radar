@@ -40,6 +40,16 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 - **Channel 清單 / 頻率 / 沿革以 workflow 檔內 `CHANNELS` 陣列 + 檔頂註解為 SSOT**（2026-07-25 時點 22 個 channel = LLM 對內整理 13 + shell scan 9、daily 14 / weekly-tue 8；數字有疑義時以 `CHANNELS` 陣列現查為準、不以本行為據），本檔不列表、不重複維護
 - 觸發：「今日本機分析」等語句走 hook 注入 workflow；備援 slash command `/daily-local`
+- **2026-07-30 三分架構（改任何一層之前先確認你動的是哪一層）**：
+  | 層 | 誰做 | 職責 |
+  |---|---|---|
+  | 偵測 | channel agent（workflow fan-out）| 掃檔 / 比版本 / 找 marker，並自驗 finding |
+  | 算術與狀態閘 | [`scripts/local-analysis/ledger-reconcile.py`](file:///Users/linhancheng/code/social-info/scripts/local-analysis/ledger-reconcile.py) | `next_due` / `escalate_at` / observing-kept 靜默 / count 同日不重複 / 家族計數（讀 `rule-family-health.py`）/ 可查物存在性證據；**`status` 轉換只走 `--decide`** |
+  | 排檔與根因 | main session | 語意比對、三檔 H/M/L、根因判斷、拍板回寫 |
+  - **workflow 不再產 digest**（合成 agent 已移除），回傳結構化 channel 清單 + `reconcile_cmd`
+  - 排檔規則的**單一來源**是 [`~/.claude/hooks/daily-local-analysis-trigger.sh`](file:///Users/linhancheng/.claude/hooks/daily-local-analysis-trigger.sh) 的 `msg` heredoc（關鍵字觸發時自動注入、走 `/daily-local` 時該 command 叫 main 去讀）；**每條規則的「為什麼」在 workflow script 的「合成 agent 已移除」註解段**，改規則前先讀
+  - 動機：誤報常態性稽核（ledger 178 筆 / 49 天）顯示 21 筆（12%）是 channel 判斷本身錯，且集中在 6 個可修根因；合成 agent 只有 3-5 行濃縮、沒有原始素材與查證工具，只能靠推論補因果
+  - 回歸測試：`bash scripts/local-analysis/ledger-reconcile.test.sh`（35 項）＋ `bash ~/.claude/hooks/daily-local-analysis-trigger.test.sh`（27 項）
 - 原 launchd 排程 2026-05-26 已停用（plist 在 `~/Library/LaunchAgents/disabled-local-analysis-2026-05-26/`，要恢復 mv 回去 launchctl load）；沿革見 memory `reference_cc_workflow_tool_2026_05`
 - bumblebee channel = 純 Go binary 供應鏈掃描（不耗 LLM）：findings > 0 寫 `ALERT-bumblebee.md` 到 repo root + osascript 通知；設計見 [`scripts/local-analysis/bumblebee-daily.sh`](file:///Users/linhancheng/code/social-info/scripts/local-analysis/bumblebee-daily.sh) 檔頭
 - 設計原則：input 不改、output separate、嚴格 read-only（例外 = 各 channel prompt 明文要求的 ledger 寫回）；細部設計背景見 memory `reference_cc_recap_design_2026_05_12`（recap）/ `reference_claude_config_dir_multi_account`（symlink drift）
