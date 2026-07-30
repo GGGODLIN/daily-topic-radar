@@ -86,6 +86,16 @@ cluster 同時滿足 4 條才列進「升級候選」段：
 
 「不夠 mature」段是 carry-forward 機制：cluster mtime 4-6 天時列出來、寫「預估 3 天後 ≥ 7d cap 可重評」，下次跑時 follow-up 段可直接抓。
 
+**宣稱「已被既有 entity 覆蓋」前必須 grep 具體專名（2026-07-30 加，強制）**：主題相近**不算**覆蓋。要說某素材的內容已落進既有 entity，先對該素材的**具體專名**跑 grep 並在報告貼出輸出——外部 repo 名 / 工具名 / 機制名 / 欄位名這類只會出現一次的字串：
+
+```bash
+grep -rli '<專名1>\|<專名2>' ~/.claude/wiki/*.md
+```
+
+0 命中 → 就是**沒有**覆蓋，據此寫；有命中 → 貼出檔名再說覆蓋。**「大原則已有 owner」不等於「具體機制已落地」，兩者要分開講**：前者說「通則在 X 的哪一段」、後者說「四項具體機制 wiki 零覆蓋」。
+
+已知誤報案例（本規則的來由）：2026-07-30 U1 段稱「四項抽件實際落地內容已分散進 `tool-adoption-discipline`、`observation-discipline` 等既有 entity」。實查全 87 個 entity：`lopopolo` / `OpenHarness` / `grok-build` / 交接點 / `retrieved` / `parser owner` **全部 0 命中**。真正被覆蓋的只有背後通則（`tool-adoption-discipline.md:197` 的 graft 紀律段），四項具體機制 wiki 零覆蓋。這個誤報會讓使用者以為「已經寫過了、不用管」而錯過真實缺口，方向比漏報更危險。
+
 **不要判 broken link（2026-07-26 加）**：本 channel 只判「該不該升格 wiki entity」，`[[]]` 引用是否有效**不是本 channel 的維度**——那是 wiki-lint 的事。看到 `[[xxx]]` 對不上 `~/.claude/wiki/xxx.md` 時，**不要**寫進「附帶觀察」或任何段落說它是 broken link。07-25 就是這樣把 `work/akocommerce/_INDEX.md` 的 `[[bitbucket-api]]` 誤報成「既有 broken link」——它其實解析得到 `memory/work/akocommerce/reference_bitbucket_api.md` 的 frontmatter `name: bitbucket-api`，完全有效，卻進了 digest 待辦、佔用使用者一次拍板。若真要提，先跑完四條解析路徑（`~/.claude/commands/memory-audit.md` 的「`[[slug]]` 四路解析規則」段是 SSOT）並在報告貼出判定輸出，否則一律不提。
 
 # 前一日候選 follow-up（必做）
