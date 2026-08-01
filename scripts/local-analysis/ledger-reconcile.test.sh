@@ -165,6 +165,26 @@ python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/untouched.jsonl" --findings "
 AFTER=$(shasum -a 256 < "$TMP/untouched.jsonl")
 check "dry-run ledger 位元不變" "$BEFORE" "$AFTER"
 
+echo "== findings channel 白名單：旁路要 fail-closed =="
+cat > "$TMP/missing-channel.json" <<'EOF'
+[{"title":"missing-channel-item","match":null}]
+EOF
+cat > "$TMP/unknown-channel.json" <<'EOF'
+[{"title":"unknown-channel-item","match":null,"channel":"typo-channel"}]
+EOF
+cat > "$TMP/beads-channel.json" <<'EOF'
+[{"title":"beads-item","match":null,"channel":"beads-aging"}]
+EOF
+for case_name in missing-channel unknown-channel beads-channel; do
+  cp "$TMP/gates.jsonl" "$TMP/$case_name.jsonl"
+  BEFORE=$(shasum -a 256 < "$TMP/$case_name.jsonl")
+  python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/$case_name.jsonl" --findings "$TMP/$case_name.json" --apply --no-health >/dev/null 2>&1
+  STATUS=$?
+  AFTER=$(shasum -a 256 < "$TMP/$case_name.jsonl")
+  check "$case_name -> 非 0 退出" 1 "$STATUS"
+  check "$case_name -> ledger 位元不變" "$BEFORE" "$AFTER"
+done
+
 echo "== 壞輸入要明確失敗、不得靜默 =="
 printf '{"title":"ok","status":"pending","count":1,"first_seen":"2026-07-01","last_seen":"2026-07-01","note":""}\nNOT JSON\n' > "$TMP/broken.jsonl"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/broken.jsonl" --no-health >/dev/null 2>&1

@@ -52,6 +52,13 @@ HEALTH = os.path.join(DIR, "rule-family-health.py")
 HOME = os.path.expanduser("~")
 
 TERMINAL = ("done", "killed")
+ALLOWED_FINDING_CHANNELS = frozenset({
+    "memory", "wiki-candidates", "wiki-cross-link", "wiki-graduation", "wiki-lint",
+    "wiki-stale", "deep-research-pending", "skill-desc-quality", "recap", "codemap",
+    "distill", "recurring-errors", "rba-verify", "bumblebee", "symlink", "skill-upstream",
+    "skill-doctor", "tool-updates", "codex-violation", "rules-size", "skill-collision",
+    "agnix", "skill-trigger",
+})
 PATH_RE = re.compile(r"(~?/[\w./@-]+\.\w{1,6}|[\w-]+\.(?:md|sh|py|js|mjs|json|jsonl|txt|toml))")
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
@@ -156,6 +163,17 @@ def verify_evidence(entry):
         seen.add(key)
         checks.append({"kind": "path", "target": target, "exists": os.path.exists(expand(target))})
     return checks[:8]
+
+
+def validate_findings(findings):
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict):
+            sys.exit(f"finding {index} must be a JSON object")
+        channel = finding.get("channel")
+        if not isinstance(channel, str) or not channel:
+            sys.exit(f"finding {index} must include a non-empty channel")
+        if channel not in ALLOWED_FINDING_CHANNELS:
+            sys.exit(f"finding {index} channel {channel!r} is not allowed to write the ledger")
 
 
 def apply_findings(rows, findings, date):
@@ -358,6 +376,7 @@ def main():
     findings = json.load(open(a.findings)) if a.findings else []
     if not isinstance(findings, list):
         sys.exit("findings must be a JSON array")
+    validate_findings(findings)
 
     decisions = json.load(open(a.decide)) if a.decide else []
     if not isinstance(decisions, list):
