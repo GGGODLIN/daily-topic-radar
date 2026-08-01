@@ -21,7 +21,7 @@ LOCK_DIRS=("$HOME/.claude-team" "$HOME/.claude-max")
 is_whitelisted() {
   local name="$1"
   case "$name" in
-    .claude.json|backups|policy-limits.json|.DS_Store) return 0 ;;
+    .claude.json|backups|policy-limits.json|.DS_Store|.last-update-result.json) return 0 ;;
     .claude.json.backup.*) return 0 ;;
   esac
   return 1
@@ -74,7 +74,7 @@ done
   echo ""
   echo "**目標**：偵測 \`~/.claude-team\` / \`~/.claude-max\` 內被 claude binary atomic write 拆 symlink 變 real file/dir 的 entries。"
   echo ""
-  echo "**Whitelist（不算 drift）**：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`policy-limits.json\` / \`.DS_Store\`"
+  echo "**Whitelist（不算 drift）**：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`policy-limits.json\` / \`.DS_Store\` / \`.last-update-result.json\`（updater ephemeral state、atomic write 必拆 symlink，2026-07-31 拍板）"
   echo ""
   echo "## 結果"
   echo ""
@@ -95,7 +95,7 @@ done
     echo '  shopt -s nullglob dotglob 2>/dev/null'
     echo '  for name in *; do'
     echo '    case "$name" in'
-    echo '      .claude.json|.claude.json.backup.*|backups|policy-limits.json|.DS_Store) continue ;;'
+    echo '      .claude.json|.claude.json.backup.*|backups|policy-limits.json|.DS_Store|.last-update-result.json) continue ;;'
     echo '    esac'
     echo '    [[ -L "$name" ]] && continue'
     echo '    [[ -e "$HOME/.claude/$name" ]] || continue'
