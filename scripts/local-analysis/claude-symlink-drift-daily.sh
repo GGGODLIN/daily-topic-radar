@@ -18,10 +18,22 @@ log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG"; }
 CLAUDE_ROOT="$HOME/.claude"
 LOCK_DIRS=("$HOME/.claude-team" "$HOME/.claude-max")
 
+# 白名單分兩族，理由不同、不要混談：
+#   (1) updater / OS ephemeral state：atomic write 必拆 symlink
+#       .claude.json / .claude.json.backup.* / backups / .DS_Store / .last-update-result.json
+#   (2) 帳號綁定的 server 狀態：本來就該每個 lock dir 各存一份，重建 symlink 反而是錯的
+#       policy-limits.json / mcp-needs-auth-cache.json / remote-settings.json
+#       依據：~/.zshrc 的 _cc_sync_mcp 註 6 明文「claude.ai connector 的 OAuth 綁帳號、
+#       同步不了，各 dir 自己 /mcp 授權」；~/.claude/.gitignore 也已把後兩者列為
+#       never-sync 的 machine-specific state；且 .claude-max（alex 帳號）根本沒有這兩個檔，
+#       證明是各 dir 用到才產生。反例警告：本 script 產出的修復指令是 for-loop 跑
+#       **兩個** lock dir，若不白名單而照著重建，-max 一旦出現同名檔就會被 symlink 到
+#       philip 的授權狀態＝跨帳號污染。2026-08-01 拍板。
 is_whitelisted() {
   local name="$1"
   case "$name" in
     .claude.json|backups|policy-limits.json|.DS_Store|.last-update-result.json) return 0 ;;
+    mcp-needs-auth-cache.json|remote-settings.json) return 0 ;;
     .claude.json.backup.*) return 0 ;;
   esac
   return 1
@@ -74,7 +86,9 @@ done
   echo ""
   echo "**目標**：偵測 \`~/.claude-team\` / \`~/.claude-max\` 內被 claude binary atomic write 拆 symlink 變 real file/dir 的 entries。"
   echo ""
-  echo "**Whitelist（不算 drift）**：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`policy-limits.json\` / \`.DS_Store\` / \`.last-update-result.json\`（updater ephemeral state、atomic write 必拆 symlink，2026-07-31 拍板）"
+  echo "**Whitelist（不算 drift）**，兩族理由不同："
+  echo "- **updater / OS ephemeral state**（atomic write 必拆 symlink，2026-07-31 拍板）：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`.DS_Store\` / \`.last-update-result.json\`"
+  echo "- **帳號綁定的 server 狀態**（本來就該各 lock dir 各存一份，重建 symlink 會跨帳號污染，2026-08-01 拍板）：\`policy-limits.json\` / \`mcp-needs-auth-cache.json\` / \`remote-settings.json\`"
   echo ""
   echo "## 結果"
   echo ""
@@ -96,6 +110,7 @@ done
     echo '  for name in *; do'
     echo '    case "$name" in'
     echo '      .claude.json|.claude.json.backup.*|backups|policy-limits.json|.DS_Store|.last-update-result.json) continue ;;'
+    echo '      mcp-needs-auth-cache.json|remote-settings.json) continue ;;'
     echo '    esac'
     echo '    [[ -L "$name" ]] && continue'
     echo '    [[ -e "$HOME/.claude/$name" ]] || continue'
