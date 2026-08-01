@@ -162,7 +162,7 @@ cp .claude/hooks/digest-write-verify.sh.bak-2026-07-30 .claude/hooks/digest-writ
 
 ## 五、待決事項
 
-1. **全域 trial ledger 要不要登記**：`~/.claude` 的 trial 紀律要求開新 trial 時 append 到全域 `trials/active.md` 才會拿到 +7 天 review 提醒。使用者 2026-07-30 指示「不要放全域的、放這個專案就好」，故本檔為唯一記錄、**沒有自動 review 提醒**。若希望 8/6 前後被自動提醒，需要另外登記。
+1. **Active ownership 已移回全域 ledger**：使用者先前指示「不要放全域的、放這個專案就好」，是因當時誤以為沒有現成全域 trial；確認既有 `digest-audit-severity-gate` 後，2026-07-30 最新拍板改由 `~/Desktop/projects/.claude/trials/active.md` 的該 H2 擔任唯一 active owner，review date 為 2026-08-06。本檔保留完整技術史、改造細節與回退資訊，不另維護 review 提醒或第二套 active 判準。
 2. **上限何時降**：見上方「降上限的判準」。
 3. **層 1 SOFT 誤報率**：`S2 同 repo 數字衝突` 目前對「同一 repo 在表格與 li 帶不同量級數字」會報，但正常情況下 stars 與 Trendshift ▲ 本來就不同量級。連幾天觀察誤報頻率，> 5 筆/天就收緊判準或降級為純資訊。
 
