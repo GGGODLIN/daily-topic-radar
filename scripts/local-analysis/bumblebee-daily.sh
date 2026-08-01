@@ -31,9 +31,11 @@ fi
 
 # 1. Pull latest catalog
 # ⚠️ 2026-07-17 起 pin 在 d753592（最後一個 schema 0.1.0 commit）：
-#    upstream 07-16 起 catalog 全面 bump schema_version 0.2.0，本機 binary v0.1.1（latest release
-#    v0.1.2 亦早於 bump）只支援 0.1.0，會整包拒讀、scan 零覆蓋。
+#    upstream 07-08 / 07-16 把 catalog 全面 bump 到 schema_version 0.2.0，但支援 0.2.0 的
+#    binary code 只在 main（4a02b80）、尚未剪成 release。latest release v0.1.2（2026-06-18）
+#    早於該 code 改動，只支援 0.1.0；直接 track main 會整包拒讀、scan 零覆蓋。
 #    解除條件：upstream 出支援 0.2.0 的 release → 換 bin/bumblebee → 刪 CATALOG_PIN 恢復 track main。
+#    本機 binary 現況由 Step 1b 動態偵測（2026-08-01 起，不再寫死在註解裡）。
 CATALOG_PIN="d75359246a6be8a6a8fcaca089ef2dabcf5d75fe"
 PREV_HEAD="$(git -C "$CATALOG_REPO" rev-parse HEAD)"
 NEW_HEAD="$PREV_HEAD"
@@ -51,26 +53,32 @@ else
   log "WARN: git pull failed, using stale catalog"
 fi
 
-# 1b. Pin 解除條件自動偵測（2026-07-26 加）
+# 1b. Binary drift + pin 解除條件自動偵測（2026-07-26 加、2026-08-01 改比對基準）
 #     原本 script 只 log catalog HEAD、解除條件全靠人記 → pin 會靜默凍死（實際凍 9 天沒人動）。
-#     這裡比對 upstream release tag：PIN_KNOWN_RELEASE 是設 pin 當下的 latest release，
-#     出現更新的 tag = 可能已支援 schema 0.2.0 → 提醒換 binary 解 pin。
+#     ⚠️ 2026-08-01 修：舊版比對的是「upstream latest vs PIN_KNOWN_RELEASE（設 pin 當下的版本）」，
+#        兩邊都是 v0.1.2 就永遠報 valid——完全看不到「本機裝的 binary 落後 upstream」這件事。
+#        實際後果：本機停在 v0.1.1 長達 44 天（v0.1.2 於 2026-06-18 就發布），缺 homebrew /
+#        MCP inventory / agent-skill 三個掃描器（升級後 packages 70,630 → 78,108）。
+#     現在比對基準改成「**實際安裝的 binary 版本** vs upstream latest release」，一條涵蓋兩個問題：
+#        (a) 本機落後 → 可能缺新掃描器，該升
+#        (b) 新 release 可能支援 schema 0.2.0 → 驗過就能刪 CATALOG_PIN 解凍
 #     gh 不可用或 API 失敗一律 graceful skip、絕不阻塞 scan 本身。
 PIN_SINCE="2026-07-17"
-PIN_KNOWN_RELEASE="v0.1.2"
 PIN_DAYS=$(( ( $(date +%s) - $(date -j -f "%Y-%m-%d" "$PIN_SINCE" +%s 2>/dev/null || echo 0) ) / 86400 ))
+BIN_VERSION="$("$BIN" --version 2>/dev/null | awk '/^bumblebee v/ {print $2; exit}')"
+BIN_VERSION="${BIN_VERSION:-unknown}"
 LATEST_RELEASE=""
-PIN_RELEASE_MOVED=0
+BIN_BEHIND=0
 if command -v gh >/dev/null 2>&1; then
   LATEST_RELEASE="$(gh api repos/perplexityai/bumblebee/releases/latest --jq '.tag_name' 2>/dev/null || echo "")"
-  if [ -n "$LATEST_RELEASE" ] && [ "$LATEST_RELEASE" != "$PIN_KNOWN_RELEASE" ]; then
-    PIN_RELEASE_MOVED=1
-    log "PIN-UNBLOCK?: upstream release $PIN_KNOWN_RELEASE -> $LATEST_RELEASE (pinned ${PIN_DAYS}d) — 驗 schema 0.2.0 支援後換 binary 解 pin"
+  if [ -n "$LATEST_RELEASE" ] && [ "$BIN_VERSION" != "unknown" ] && [ "$BIN_VERSION" != "$LATEST_RELEASE" ]; then
+    BIN_BEHIND=1
+    log "BINARY-BEHIND: installed $BIN_VERSION < upstream $LATEST_RELEASE (pinned ${PIN_DAYS}d) — 升級可能補掃描器，並驗 schema 0.2.0 支援以解 pin"
   else
-    log "pin still valid (upstream latest=${LATEST_RELEASE:-?}, unchanged since pin, pinned ${PIN_DAYS}d)"
+    log "binary up to date ($BIN_VERSION = upstream ${LATEST_RELEASE:-?}, pinned ${PIN_DAYS}d)"
   fi
 else
-  log "WARN: gh unavailable, skip pin-unblock check (pinned ${PIN_DAYS}d)"
+  log "WARN: gh unavailable, skip binary-drift check (installed=$BIN_VERSION, pinned ${PIN_DAYS}d)"
 fi
 
 # 2. Snapshot catalog entry count
@@ -129,19 +137,20 @@ CATALOG_HEAD="$(echo $NEW_HEAD | cut -c1-7)"
   echo "|---|---|"
   echo "| Status | \`$STATUS\` |"
   echo "| Scan 時長 | ${SCAN_DUR}s |"
+  echo "| Binary | \`$BIN_VERSION\`（upstream latest \`${LATEST_RELEASE:-?}\`） |"
   echo "| Catalog HEAD | \`$CATALOG_HEAD\` |"
   echo "| Catalog entries | $ENTRY_COUNT |"
   echo "| Packages 掃過 | $PKG_COUNT |"
   echo "| **Findings** | **$FINDING_COUNT** |"
   echo ""
-  echo "⚠️ Catalog pinned at \`$CATALOG_HEAD\`（binary v0.1.1 不支援 upstream schema 0.2.0；upstream main=\`${UPSTREAM_HEAD:-?}\`）——新 threat entries 暫停進場，已凍結 **${PIN_DAYS} 天**。"
+  echo "⚠️ Catalog pinned at \`$CATALOG_HEAD\`（binary \`$BIN_VERSION\` 不支援 upstream schema 0.2.0；upstream main=\`${UPSTREAM_HEAD:-?}\`）——新 threat entries 暫停進場，已凍結 **${PIN_DAYS} 天**。"
   echo ""
-  if [ "$PIN_RELEASE_MOVED" = "1" ]; then
-    echo "🔔 **解除條件可能成立**：upstream 出了新 release \`$LATEST_RELEASE\`（設 pin 時是 \`$PIN_KNOWN_RELEASE\`）。下一步 = 驗它支不支援 schema 0.2.0 → 支援就換 \`bin/bumblebee\` 並刪掉 script 裡的 \`CATALOG_PIN\` 恢復 track main。"
+  if [ "$BIN_BEHIND" = "1" ]; then
+    echo "🔔 **本機 binary 落後**：安裝的是 \`$BIN_VERSION\`、upstream latest 是 \`$LATEST_RELEASE\`。兩件事要驗：(1) 新版有沒有補掃描器（ecosystem / inventory 類）→ 直接升就有 (2) 新版支不支援 schema 0.2.0 → 支援就換 \`bin/bumblebee\` 並刪掉 script 裡的 \`CATALOG_PIN\` 恢復 track main。"
   elif [ -n "$LATEST_RELEASE" ]; then
-    echo "解除條件尚未成立：upstream latest release 仍是 \`$LATEST_RELEASE\`（= 設 pin 當時的版本），pin 目前正確。"
+    echo "本機 binary \`$BIN_VERSION\` = upstream latest \`$LATEST_RELEASE\`，無版本落差。pin 解除仍需等 upstream 剪出支援 schema 0.2.0 的新 release。"
   else
-    echo "解除條件未檢查：\`gh\` 不可用或 API 查詢失敗，本次跳過 release 比對。"
+    echo "版本比對未執行：\`gh\` 不可用或 API 查詢失敗，本次跳過。"
   fi
   echo ""
   if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
@@ -174,11 +183,12 @@ if [ "$FINDING_COUNT" != "0" ] && [ "$FINDING_COUNT" != "?" ]; then
   osascript -e "display notification \"Bumblebee found $FINDING_COUNT supply-chain match(es) — see $OUT\" with title \"⚠️ Bumblebee Alert\" sound name \"Sosumi\"" 2>/dev/null || true
 fi
 
-# 6b. Alert: pin 解除條件成立 → 桌面通知（2026-07-26 加，比照 findings alert；
-#     報告沉在 digest 裡容易被略過，pin 凍太久等於防線停更、值得一次主動打斷）
-if [ "$PIN_RELEASE_MOVED" = "1" ]; then
-  log "ALERT: pin unblock candidate — upstream release $LATEST_RELEASE"
-  osascript -e "display notification \"upstream 出了 $LATEST_RELEASE（pin 已 ${PIN_DAYS} 天）— 驗 schema 0.2.0 後可解 pin\" with title \"🔔 Bumblebee pin 可解除？\" sound name \"Ping\"" 2>/dev/null || true
+# 6b. Alert: 本機 binary 落後 upstream → 桌面通知（2026-07-26 加、2026-08-01 改比對基準；
+#     報告沉在 digest 裡容易被略過，binary 落後等於掃描器停更、pin 凍太久等於防線停更，
+#     兩者都值得一次主動打斷）
+if [ "$BIN_BEHIND" = "1" ]; then
+  log "ALERT: binary behind — installed $BIN_VERSION < upstream $LATEST_RELEASE"
+  osascript -e "display notification \"本機 $BIN_VERSION、upstream $LATEST_RELEASE（pin 已 ${PIN_DAYS} 天）— 升級補掃描器，並驗 schema 0.2.0 可否解 pin\" with title \"🔔 Bumblebee binary 落後\" sound name \"Ping\"" 2>/dev/null || true
 fi
 
 # 7. Prune archive findings.ndjson > 30 days
