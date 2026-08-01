@@ -53,6 +53,10 @@ grep -nE '^#+ .*[Cc]hangelog' <file>
 
 真的一個都沒匹配到 → C3 記「無 changelog 段、無法判定」列進 report，**不要當成「> 30 天前」自動給過**（沒 changelog ≠ 內容凍結）。
 
+**C3 的日期怎麼取（2026-07-31 補，兩條都是當日實撞）**：
+1. **取全部 entry 日期的最大值、不是「區塊最後一行」**——changelog entry 有的 entity 新到舊倒序排列（實例：`codebase-exploration-mcp-landscape` 倒序，按最後一行取會把 6 天前誤判成 84 天前而錯誤給過 C3）。
+2. **日期格式至少涵蓋三種**：裸 `YYYY-MM-DD`、backtick 包裹、粗體 `**YYYY-MM-DD**:`——只抓前兩種會漏粗體格式、拿到更舊的日期（wiki-stale channel 同日實撞同 bug）。
+
 **C3 碼錶被 refresh 重置 = by-design、不是 finding（2026-07-17 使用者定調）**：維護 refresh 寫 changelog → 30 天計時歸零 → 達標日後移，正是 C3 本意——內容還在演化就不該畢業（唯一真實畢業案 fact-check-protocol 即內容凍結後才達標）。「達標日因 refresh 推遲」不列 finding、不進推薦 actions、不逐日追蹤；只報真的 4/4 達標的畢業候選。
 
 滿足 3/4 條的 → 列「⏸ 接近成熟」段。

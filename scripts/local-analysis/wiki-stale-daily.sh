@@ -45,6 +45,10 @@ cat <<'EOF'
 
 注意：兩條判準互斥（lifecycle 是 stale 走 1、非 stale 走 2）。
 
+**「最後 changelog entry」的日期怎麼取（2026-07-31 補，兩條都是當日實撞）**：
+1. **取全部 entry 日期的最大值、不是「區塊最後一行」**——有 entity 的 changelog 新到舊倒序排列，按最後一行取會拿到最舊的 entry（wiki-graduation channel 同日實撞：6 天前被誤判成 84 天前）。
+2. **日期格式至少涵蓋三種**：裸 `YYYY-MM-DD`、backtick 包裹、粗體 `**YYYY-MM-DD**:`——本 channel 2026-07-31 實撞漏抓粗體格式，導致 last_changelog 誤判成更早的舊條目。
+
 排序：報告內 entity 按 volatility 排（high 在前、留空當 medium、low 在後），同級按天數降冪——高易腐先進使用者視線。
 
 # Recommendation block 格式
