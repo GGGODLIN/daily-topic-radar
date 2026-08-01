@@ -34,13 +34,13 @@ mkdir -p "$(dirname "$OUT")" "$(dirname "$LOG")" "$(dirname "$BASELINE")"
     npx -y "agnix@$AGNIX_VERSION" --format json . > "$RAW" 2> "$ERROR" || AGNIX_RC=$?
   fi
 
-  if [ "$AGNIX_RC" -ne 0 ] || [ ! -s "$RAW" ]; then
+  if [ ! -s "$RAW" ]; then
     {
       echo "# agnix config-lint 掃描失敗 — $DATE"
       echo ""
       echo "## 🚨 掃描器未產生可用 JSON"
       echo ""
-      echo "npx exit code: $AGNIX_RC。詳見 $LOG。baseline 未更新。"
+      echo "npx exit code: ${AGNIX_RC}（agnix 有 finding 時本來就以 1 退出，判失敗只看輸出是否為空）。詳見 ${LOG}。baseline 未更新。"
     } > "$OUT"
     [ ! -s "$ERROR" ] || while IFS= read -r line; do printf '%s\n' "$line"; done < "$ERROR"
     echo "agnix execution failed rc=$AGNIX_RC"
