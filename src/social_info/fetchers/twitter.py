@@ -93,4 +93,16 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
                 "retweets": int(tw.get("retweetCount") or 0),
             },
         ))
+
+    if data and not items:
+        mocks = sum(
+            1 for tw in data
+            if isinstance(tw, dict) and tw.get("type") == "mock_tweet"
+        )
+        raise RuntimeError(
+            f"actor returned {len(data)} records but 0 usable tweets "
+            f"({mocks} mock_tweet padding) — upstream X search found nothing "
+            f"for {len(handles)} handles over {window_hours}h"
+        )
+
     return items
