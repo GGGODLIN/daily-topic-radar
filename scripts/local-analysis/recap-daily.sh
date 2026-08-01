@@ -125,7 +125,7 @@ Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-
 
 ## Commit outcome 追蹤（2026-07-11 起加入）
 
-repo_commit 線掃描時順帶檢查結局回饋：24h 內 commit subject 以 `Revert` 開頭、或 body 含 "This reverts commit"（用 `git -C <repo> log --since='24 hours ago' --grep='This reverts commit' --pretty=format:'%H%x1f%s%x1f%b'` 補抓）→ 對每個命中用 `git -C <repo> log -1 --pretty=format:'%cI%x1f%s' <被revert的sha>` 查原 commit 日期與 subject。原 commit 是近 14 天內產出 → 報告末尾加「↩️ commit 被 revert」段、每筆一行：`<repo>: <原 subject>（原 commit <日期>）`。目的：把「先前 session 產出、後來被打掉」的結局回饋進 recap，讓後續工作看得到失敗訊號。amend 不追（偵測依賴 reflog、噪音高）。沒有命中 → 完全不列。
+repo_commit 線掃描時順帶檢查結局回饋：24h 內 commit subject 以 `revert` 開頭（**大小寫不拘**，含 `revert(scope):` / `Revert "..."` 等 Conventional Commits 與 git 預設兩種形式；2026-07-31 實例：`revert(checkout-invoice):` 小寫開頭被漏、人工補上）、或 body 含 "This reverts commit"（用 `git -C <repo> log --since='24 hours ago' --grep='This reverts commit' --pretty=format:'%H%x1f%s%x1f%b'` 補抓）→ 對每個命中用 `git -C <repo> log -1 --pretty=format:'%cI%x1f%s' <被revert的sha>` 查原 commit 日期與 subject。原 commit 是近 14 天內產出 → 報告末尾加「↩️ commit 被 revert」段、每筆一行：`<repo>: <原 subject>（原 commit <日期>）`。目的：把「先前 session 產出、後來被打掉」的結局回饋進 recap，讓後續工作看得到失敗訊號。amend 不追（偵測依賴 reflog、噪音高）。沒有命中 → 完全不列。
 
 **輸出報告前的最後動作（必做）**：把本輪全部存活的規則糾正事件 append 進 `rule-adherence-ledger.jsonl`，並把 codebase-aliases 候選 append 進 `codebase-aliases-candidate-ledger.jsonl`（兩個 ledger 都先 grep 去重）。先寫兩個 ledger、再輸出報告——順序顛倒就會忘。
 
