@@ -15,7 +15,7 @@ cat <<'EOF'
 ## Step 1 — 更新 ledger（確定性，照跑不要改）
 
 ```bash
-bash /Users/linhancheng/code/social-info/scripts/local-analysis/recurring-errors-extract.sh
+python3 /Users/linhancheng/code/social-info/scripts/local-analysis/recurring-errors-extract.py
 ```
 
 ## Step 2 — 聚合簽名表（只讀這個，不讀 raw session）
@@ -80,6 +80,8 @@ bash /Users/linhancheng/code/social-info/scripts/local-analysis/recurring-errors
 逐條列 `env` 表：`<N>x 跨 <M> sessions、最近 <date>｜<簽名>`
 空表時：「本輪無過門檻的環境失敗」
 ```
+
+⚠️ **2026-08-01 ledger 已全量重建，與 07-28 之前的報告不可比**：舊版把多行錯誤按行拆成多個簽名（一則 dcg 攔截訊息佔掉 44 次×7 個簽名），且日期記的是掃描日不是發生日。重建後 ledger 18,684 → 3,369 行、unique 簽名 11,512 → 2,026、過門檻候選 543 → 93、不重複日期 4 → 131。**首次跑到本段時：不要拿本輪數字跟任何 07-28 之前的報告比**，該輪報告請明寫「ledger 已重建、本輪為新基期」。
 
 **跨輪計數不可比（2026-07-25 trial review 加，治已犯過的錯）**：每輪掃的 session 檔數不同（07-14 掃 41 檔、07-21 掃 127 檔），且 07-11 首跑是 180 天回看 baseline——**原始次數跨輪比較無效**。要講趨勢只能報**每 100 session 發生率**（`次數 ÷ 本次掃描檔數 × 100`，兩位小數）並同句附兩輪的檔數；算不出來就明寫「本輪 Nx（跨輪計數不可比、僅本輪內排序用）」。**禁用措辭**：「規模縮小 / 明顯改善 / 遵循率提升 / 逐漸生效」等任何基於原始次數跨輪對比的因果推論。
 
