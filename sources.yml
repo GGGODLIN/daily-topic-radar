@@ -279,6 +279,43 @@ sources:
     per_handle_limit: 10
     time_window_hours: 36
 
+  # === Matt Pocock 獨立追蹤軸 ===
+  # 2026-08-03 加。拆成獨立 source id（而非塞進 twitter_tier1）是為了讓 digest agent
+  # 靠 source id 路由到「🎓 Matt Pocock 動態」獨立 section — 跟 twitter_anthropic
+  # 同一個模式、同一個理由。代價：X fetcher 一個 source id = 一次 Apify actor 呼叫
+  # （該 actor 每次呼叫有最低收費，見上面 twitter_tier1 註解）。
+  # ⚠️ handle 是 mattpocockuk 不是 mattpocock — GitHub profile 的 twitter_username
+  # 欄位確認（2026-08-03）。同名陷阱見下面 youtube_matt 註解。
+  # per_handle_limit 給 50（不是照 tier1 的 10）：fetcher 的 maxItems 算法是
+  # max(20, per_handle_limit * len(handles))，單 handle 用 10 會被夾在 20。
+  # 2026-08-03 實跑：20 則全部落在 08-02 15:52–17:43 不到 2 小時內，36h 窗口
+  # 明顯被截斷 —— 他回覆量極大。50 則 ≈ $0.0125/天（$0.25/1K tweets）可忽略。
+  # ⚠️ 待觀察：若 raw md 每天都剛好 50 則，代表仍在撞上限、要再往上調。
+  - id: twitter_matt
+    type: twitter
+    enabled: true
+    tier: 1
+    handles:
+      - mattpocockuk
+    per_handle_limit: 50
+    time_window_hours: 36
+
+  # YouTube 官方 Atom feed。channel_id 從 youtube.com/@mattpocockuk 頁面的
+  # externalId 解出。走現成 rss fetcher、零新程式碼：feedparser 同時吃 RSS 與 Atom，
+  # 2026-08-03 實測 bozo=False / 15 entries / title+link+published_parsed+author 齊全。
+  # ⚠️ 同名陷阱：youtube.com/@mattpocock（無 uk）是他 2020 年當口音教練時的舊頻道
+  # （UCU7pKYhvlPKc9AgGGDI5mRQ，2020-05 停更），不要接錯。
+  # 分流訊號：短片 link 是 /shorts/、長片是 /watch?v= — digest 階段靠 URL 判斷即可，
+  # 不必額外查時長。
+  # 停更中的舊品牌 totaltypescript.com/rss.xml（最新 2023-11-30）刻意不接。
+  - id: youtube_matt
+    type: rss
+    enabled: true
+    tier: 1
+    url: https://www.youtube.com/feeds/videos.xml?channel_id=UCswG6FSbgZjbWtdf_hMLaow
+    language: en
+    limit: 15
+
   # === Threads (Meta API) ===
   # ⚠️ Threads keyword/tag search returns ONLY the test user's own posts
   # while the Meta app is in Development mode. To search the full public
