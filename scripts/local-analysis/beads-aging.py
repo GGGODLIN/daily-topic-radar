@@ -14,7 +14,7 @@ DEFAULT_ROOTS = (
   Path.home() / "Desktop" / "work",
   Path.home() / "Desktop" / "projects",
 )
-SKIP_DIRS = {".git", "node_modules", "dist", "build", "out", ".shopify"}
+SKIP_DIRS = {".git", "node_modules", "dist", "build", "out", ".shopify", ".stryker-tmp", ".worktrees"}
 ACTIVE_STATUSES = "open,in_progress,blocked,deferred"
 DEFAULT_TIMEZONE = "Asia/Taipei"
 
