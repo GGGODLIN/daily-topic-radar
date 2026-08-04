@@ -11,7 +11,7 @@ else
 fi
 END="${RBA_END:-$(date -u '+%Y-%m-%dT%H:%M:%S.999Z')}"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 REVIEWED="$TMP/reviewed"
 CANDIDATES="$TMP/candidates"
 

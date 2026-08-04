@@ -188,7 +188,7 @@ fi
 #     兩者都值得一次主動打斷）
 if [ "$BIN_BEHIND" = "1" ]; then
   log "ALERT: binary behind — installed $BIN_VERSION < upstream $LATEST_RELEASE"
-  osascript -e "display notification \"本機 $BIN_VERSION、upstream $LATEST_RELEASE（pin 已 ${PIN_DAYS} 天）— 升級補掃描器，並驗 schema 0.2.0 可否解 pin\" with title \"🔔 Bumblebee binary 落後\" sound name \"Ping\"" 2>/dev/null || true
+  osascript -e "display notification \"本機 ${BIN_VERSION}、upstream ${LATEST_RELEASE}（pin 已 ${PIN_DAYS} 天）— 升級補掃描器，並驗 schema 0.2.0 可否解 pin\" with title \"🔔 Bumblebee binary 落後\" sound name \"Ping\"" 2>/dev/null || true
 fi
 
 # 7. Prune archive findings.ndjson > 30 days

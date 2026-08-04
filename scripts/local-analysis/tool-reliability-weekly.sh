@@ -9,5 +9,8 @@
 set -uo pipefail
 S="$(cd "$(dirname "$0")" && pwd)"
 
+DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
+OUT="/Users/linhancheng/code/social-info/reports/local-analysis/$DATE-tool-reliability.md"
+
 python3 "$S/tool-reliability-extract.py" >/dev/null 2>&1
-python3 "$S/tool-reliability-extract.py" --report
+python3 "$S/tool-reliability-extract.py" --report > "$OUT"

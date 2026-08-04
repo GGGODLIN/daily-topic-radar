@@ -4,7 +4,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$SCRIPT_DIR/run-shell-channel.sh"
 FIX="$(mktemp -d)"
-trap 'rm -rf "$FIX"' EXIT
+trap 'rc=$?; rm -rf "$FIX"; exit $rc' EXIT
 WRAPPER="$FIX/wrapper.sh"
 OUT="$FIX/report.md"
 COUNT="$FIX/count"

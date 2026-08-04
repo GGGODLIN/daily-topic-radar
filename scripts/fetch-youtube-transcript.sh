@@ -25,7 +25,7 @@ if [ -z "$URL" ]; then
 fi
 
 TMPDIR_LOCAL=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_LOCAL"' EXIT
+trap 'rc=$?; rm -rf "$TMPDIR_LOCAL"; exit $rc' EXIT
 
 if ! yt-dlp --no-update --skip-download --write-auto-sub --sub-lang en \
      --sub-format vtt -o "$TMPDIR_LOCAL/sub.%(ext)s" "$URL" >"$TMPDIR_LOCAL/log" 2>&1; then

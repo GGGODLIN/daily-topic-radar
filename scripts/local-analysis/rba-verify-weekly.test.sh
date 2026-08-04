@@ -6,7 +6,7 @@ HELPER="$DIR/rba-verify-sample.sh"
 WRAPPER="$DIR/rba-verify-weekly.sh"
 WORKFLOW="/Users/linhancheng/.claude/workflows/local-analysis.js"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 PROJECTS="$TMP/projects"
 LEDGER="$TMP/ledger.jsonl"
 

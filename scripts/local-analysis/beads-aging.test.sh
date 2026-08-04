@@ -4,7 +4,7 @@ set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$DIR/beads-aging.py"
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 ROOT="$TMP/root"
 DATA="$TMP/data"
 FAKE="$TMP/bd"

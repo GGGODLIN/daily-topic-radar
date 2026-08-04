@@ -24,7 +24,7 @@ mkdir -p "$(dirname "$OUT")" "$(dirname "$LOG")" "$(dirname "$BASELINE")"
   RAW=$(mktemp)
   CURRENT=$(mktemp)
   ERROR=$(mktemp)
-  trap 'rm -f "$RAW" "$CURRENT" "$ERROR"' EXIT
+  trap 'rc=$?; rm -f "$RAW" "$CURRENT" "$ERROR"; exit $rc' EXIT
 
   AGNIX_RC=0
   if [ -n "${AGNIX_JSON_INPUT:-}" ]; then
@@ -74,7 +74,7 @@ PYEOF
       echo ""
       echo "## 🚨 掃描器輸出不是合法 JSON"
       echo ""
-      echo "詳見 $LOG。baseline 未更新。"
+      echo "詳見 ${LOG}。baseline 未更新。"
     } > "$OUT"
     echo "agnix JSON parse failed"
     exit 0

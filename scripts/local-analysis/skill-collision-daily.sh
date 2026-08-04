@@ -22,7 +22,7 @@ LOG="${SKILL_COLLISION_LOG:-$LOG_DIR/local-analysis-skill-collision-$DATE.log}"
   CURRENT=$(mktemp)
   CURRENT_KEYS=$(mktemp)
   BASELINE_KEYS=$(mktemp)
-  trap 'rm -f "$CURRENT" "$CURRENT_KEYS" "$BASELINE_KEYS"' EXIT
+  trap 'rc=$?; rm -f "$CURRENT" "$CURRENT_KEYS" "$BASELINE_KEYS"; exit $rc' EXIT
   if [ -n "${SKILL_COLLISION_CURRENT_INPUT:-}" ]; then
     sort "$SKILL_COLLISION_CURRENT_INPUT" > "$CURRENT"
   else

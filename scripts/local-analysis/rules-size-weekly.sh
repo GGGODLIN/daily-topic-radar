@@ -28,7 +28,7 @@ TOTAL_CAP="${RULES_SIZE_TOTAL_CAP:-46080}"     # 45KB
   echo "=== rules-size weekly started: $(date) ==="
 
   VIOLATIONS=$(mktemp)
-  trap 'rm -f "$VIOLATIONS"' EXIT
+  trap 'rc=$?; rm -f "$VIOLATIONS"; exit $rc' EXIT
   TOTAL=0
 
   check_file() {
@@ -49,7 +49,7 @@ TOTAL_CAP="${RULES_SIZE_TOTAL_CAP:-46080}"     # 45KB
 
   TOTAL_LINE=""
   if [ "$TOTAL" -gt "$TOTAL_CAP" ]; then
-    TOTAL_LINE="⚠️ scope 總和 $TOTAL bytes 超過 cap $TOTAL_CAP（45KB）"
+    TOTAL_LINE="⚠️ scope 總和 ${TOTAL} bytes 超過 cap ${TOTAL_CAP}（45KB）"
   fi
 
   HIT_COUNT=$(wc -l < "$VIOLATIONS" | tr -d ' ')
@@ -65,7 +65,7 @@ TOTAL_CAP="${RULES_SIZE_TOTAL_CAP:-46080}"     # 45KB
       echo "**Scope**：~/.claude/CLAUDE.md + rules/common/*.md + rules/external/*.md（不含 MEMORY.md、project CLAUDE.md）"
       echo ""
       if [ "$HIT_COUNT" -gt 0 ]; then
-        echo "## 超標檔案（$HIT_COUNT）"
+        echo "## 超標檔案（${HIT_COUNT}）"
         echo ""
         echo "| 檔案 | 現況 bytes | Cap | 超標量 |"
         echo "|---|---|---|---|"

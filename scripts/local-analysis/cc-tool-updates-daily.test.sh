@@ -4,7 +4,7 @@
 set -uo pipefail
 HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cc-tool-updates-daily.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 fail(){ echo "❌ FAIL: $1"; exit 1; }
 
 [ -x "$HELPER" ] || fail "helper 不存在或不可執行: $HELPER"

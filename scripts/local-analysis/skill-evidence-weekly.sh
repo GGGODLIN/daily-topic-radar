@@ -7,4 +7,8 @@
 
 set -uo pipefail
 S="$(cd "$(dirname "$0")" && pwd)"
-python3 "$S/skill-evidence-audit.py"
+
+DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
+OUT="/Users/linhancheng/code/social-info/reports/local-analysis/$DATE-skill-evidence.md"
+
+python3 "$S/skill-evidence-audit.py" > "$OUT"

@@ -20,7 +20,7 @@ LOG="$LOG_DIR/local-analysis-codex-violation-$DATE.log"
 
   TMP_SESSIONS=$(mktemp)
   CANDIDATES=$(mktemp)
-  trap 'rm -f "$TMP_SESSIONS" "$CANDIDATES"' EXIT
+  trap 'rc=$?; rm -f "$TMP_SESSIONS" "$CANDIDATES"; exit $rc' EXIT
 
   find "$PROJECTS_DIR" -name "*.jsonl" -mtime -7 -type f 2>/dev/null > "$TMP_SESSIONS"
   TOTAL_SESSIONS=$(wc -l < "$TMP_SESSIONS" | tr -d ' ')

@@ -17,7 +17,7 @@ if [ -z "$latest" ] || [ -z "$latest_parent" ]; then
 fi
 
 FIX=$(mktemp -d)
-trap 'rm -rf "$FIX"' EXIT
+trap 'rc=$?; rm -rf "$FIX"; exit $rc' EXIT
 mkdir -p "$FIX/skills" "$FIX/logs"
 
 mk() {

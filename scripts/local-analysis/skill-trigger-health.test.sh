@@ -5,7 +5,7 @@
 set -euo pipefail
 
 T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
+trap 'rc=$?; rm -rf "$T"; exit $rc' EXIT
 mkdir -p "$T/skills/good-skill" "$T/skills/bad-skill" "$T/skills/dual-skill" "$T/commands" "$T/projects/proj-a"
 
 printf -- '---\nname: good-skill\ndescription: Use when testing good.\n---\n' > "$T/skills/good-skill/SKILL.md"

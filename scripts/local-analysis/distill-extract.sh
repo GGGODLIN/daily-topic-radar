@@ -26,7 +26,7 @@ else
 fi
 
 TMP_NEW=$(mktemp)
-trap 'rm -f "$TMP_NEW"' EXIT
+trap 'rc=$?; rm -f "$TMP_NEW"; exit $rc' EXIT
 
 scanned=0
 extracted=0

@@ -6,7 +6,7 @@
 
 set -uo pipefail
 SCRIPT="$(dirname "$0")/recurring-errors-envclass.sh"
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 pass=0; fail=0
 
 mk() {
