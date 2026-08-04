@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>每日話題分析 — 2026-08-04</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #161922;
+    --bg-soft: #1c2030;
+    --fg: #e6e8ef;
+    --fg-muted: #9aa0b4;
+    --fg-dim: #6e7388;
+    --accent-purple: #b591ff;
+    --accent-blue: #7aa8ff;
+    --accent-green: #6ed79c;
+    --accent-orange: #ffb46b;
+    --accent-red: #ff8585;
+    --border: #2a2f43;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.page {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 28px;
+  }
+  header.page h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+  header.page .meta { color: var(--fg-muted); font-size: 13px; }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 32px; }
+  .stat-card {
+    flex: 1 1 140px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat-card .label { color: var(--fg-dim); font-size: 12px; }
+  .stat-card .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .stat-card.green .value { color: var(--accent-green); }
+  .stat-card.blue .value { color: var(--accent-blue); }
+  .stat-card.purple .value { color: var(--accent-purple); }
+  .stat-card.red .value { color: var(--accent-red); }
+  section.fixed {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 24px 0;
+  }
+  section.fixed.purple { border-left: 3px solid var(--accent-purple); }
+  section.fixed.repo { border-left: 3px solid var(--accent-orange); }
+  section.fixed.system { border-left: 3px solid var(--accent-green); }
+  section.fixed.alert { border-left: 3px solid var(--accent-red); }
+  section.theme {
+    margin: 26px 0;
+    padding-bottom: 22px;
+    border-bottom: 1px dashed var(--border);
+  }
+  h2 { font-size: 20px; margin: 0 0 12px; font-weight: 600; }
+  h2 .tag {
+    font-size: 11px;
+    background: var(--bg-soft);
+    color: var(--fg-muted);
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    font-weight: normal;
+  }
+  h3 {
+    font-size: 15px;
+    margin: 16px 0 8px;
+    color: var(--accent-purple);
+    font-weight: 600;
+  }
+  .summary { color: var(--fg-muted); margin: 0 0 10px; font-size: 14px; }
+  .empty { color: var(--fg-dim); font-style: italic; font-size: 13px; padding: 4px 0 8px; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin: 6px 0; }
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .pill {
+    background: var(--bg-soft);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .pill { font-family: inherit; font-size: 11px; color: var(--fg-muted); }
+  .star { color: var(--accent-orange); font-weight: 600; }
+  .star-low { color: var(--fg-dim); }
+  .verdict { color: var(--accent-green); font-weight: 600; }
+  .verdict-skip { color: var(--fg-dim); }
+  .verdict-watch { color: var(--accent-blue); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--fg-dim); font-weight: 500; }
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0 32px;
+  }
+  .chart-row > * { min-width: 0; }
+  @media (max-width: 720px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px 18px;
+  }
+  .chart-card h3 {
+    margin: 0 0 4px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .chart-card .sub {
+    color: var(--fg-dim);
+    font-size: 11.5px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .chart-card code { word-break: break-all; }
+  .chart-box { height: 280px; position: relative; }
+  footer.page {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+  .voice { color: var(--fg); }
+  .voice::before { content: "💭 "; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; color: var(--fg-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>每日話題分析 — 2026-08-04（週二）</h1>
+  <div class="meta">8 主軸抽出 · 112 URL fact-checked（2 chrome + 110 parallel，覆蓋率 100%：<code>chrome_total_seen=chrome_fetched=2</code>、<code>parallel_total_seen=parallel_fetched=110</code>，未撞 <code>hard_safety_cap=500</code>）· verify gate 全綠：<code>chrome_a_flagged=0</code> / <code>parallel_a_flagged=0</code> / <code>parallel_b_sampled=8</code> / <code>parallel_b_misaligned=0</code>（抽查全綠）· fact_check：<code>chrome_ok_count=0/2</code>（0%，樣本數小、單日波動本來就大）、<code>parallel_ok_count=104/110</code>（94.5%）——合計 104/112＝92.9%，未撞安全上限。<strong>KNOWN_ISSUES.md 現況全綠（0 🚨），但今天的乾淨版本是「補跑後」的結果，不是今晨 daily run 一次到位</strong>：06:00:04 起跑，這次<em>沒有</em>撞上 CLAUDE.md 記載的 pipeline hang bug（看門狗未觸發），06:01:18 就跑完、僅耗時 74 秒；但當時定版的 <code>reports/2026-08-04.md</code>（commit <code>3830894</code>）其實是 <code>total_items=245 / sources_active=40 / sources_failed=6</code>，帶 6 個失敗 source。介於 06:01 與 09:55:57（目前 raw md 的 <code>generated_at</code>）之間，raw md 又被補到 <code>total_items=289 / sources_active=43 / sources_failed=0</code>——6 個失敗全部復原、多了 44 個 items，但<strong>沒有獨立 log 能確認這次補跑的觸發者</strong>（`logs/cron-2026-08-04.log` 只到 06:01:18 就結束，之後沒有第二筆 daily-run log），且<strong>這批補跑目前未 git commit</strong>：`git status` 顯示 <code>reports/2026-08-04.md</code>／<code>KNOWN_ISSUES.md</code>／<code>PROBES.md</code>／<code>state.db</code> 均為 modified，需 main session 收尾（詳見下方系統當天動態段）。WATCH.md 空、無新來源待驗 · PROBES 2 條追蹤、今日 <strong>1 條變動</strong>：<code>anthropics/claude-code release watcher</code> 命中新版——連續 9 天空窗（07-26 至 08-03，07-25 那版 <code>v2.1.220</code> 是基準日不計入）後，<code>v2.1.221</code> 於 08-04 00:14:23Z 發布，修掉 zsh <code>[[ ]]</code> regex conditional 可繞過 Bash tool 權限檢查的漏洞（本人 shell 正是 zsh，直接命中），詳見下方 🟣 段。今天訊號主線：<strong>中國開源模型同週撞車——Qwen3.8-27B／Max、DeepSeek V4-Flash-0731、MiniMax-H3、GLM 5.3 同一天擠上 r/LocalLLaMA 前排</strong>（見主軸 [0]；四則同日上榜為真、但非同日發布：DeepSeek V4-Flash-0731 為 7/31 發布，GLM 5.3 僅被 spotted、尚未發布）· <strong>Matt Pocock 追蹤軸首日回填：15 支 YouTube 影片＋16 則 X 貼文一次進 raw md，完整攤開 wayfinder／prototype／grill-me 分批提問／Kill your MEMORY.md 等方法論</strong>（見 🎓 段，此軸 2026-08-03 之前皆為 0 筆、非「他今天發了 15 支」）· <strong>prompt injection 首度打進 CI/CD 出現 agent 互打真實案例，npm／AUR／HuggingFace Diffusers 供應鏈同日連環中招</strong>（見主軸 [3]）· <strong>OpenAI 未發布模型 Astra 解掉 10 道十年數學難題，GPT-Live 即時語音架構工程紀錄同日發布</strong>（見主軸 [4]）· <strong>Amazon 市值破 3 兆、Alphabet 升全球市值第二，摩根士丹利上修雲端資本支出至 2027 年 1.2 兆美元</strong>（見主軸 [6]）· <strong>Cursor 於 7/31 移除逐筆美元用量引發透明度爭議（iThome 08-03 報導），同批 raw md 另有兩篇 08-03 的 V2EX 灰色 GPT 中轉促銷</strong>（見主軸 [7]；兩者非同日、raw md 亦無來源將其關聯）· <strong>GitHub 側 AI 新血集中在 code-graph-rag／MCP 官方 Swift SDK／kimi-k3-in-c 等少數幾個，Trending 主體仍是老牌工具</strong>（見主軸 [5] + 下方 🛠 段）。</div>
+</header>
+
+<div class="stat-row">
+  <div class="stat-card green">
+    <div class="label">KNOWN_ISSUES</div>
+    <div class="value">✅ 全綠（補跑未 commit）</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="label">主軸抽出</div>
+    <div class="value">8</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="label">URL fact-checked</div>
+    <div class="value">112（104/112 ok）</div>
+  </div>
+  <div class="stat-card green">
+    <div class="label">PROBES writeback</div>
+    <div class="value">1 條變動</div>
+  </div>
+</div>
+
+<div class="chart-row">
+  <div class="chart-card">
+    <h3>各 source 訊號量（raw md items）</h3>
+    <div class="sub">中文/中國 93 ｜ Reddit 50 ｜ EN Media 36 ｜ GH Trending 30 ｜ 中文/台灣 25 ｜ V2EX 20 ｜ X 19 ｜ HN 8 ｜ GH Rising 4 ｜ HuggingFace 2 ｜ Product Hunt 1 ｜ Lab Blogs 1 — 共 289 items / 43 active source / 0 failure（現況，即 09:55:57 補跑後版本）。今晨 06:01:18 commit <code>3830894</code> 時定版的是 245 items / 40 source / 6 failure，之後經一次沒有獨立 log 的補跑帶到現況，補跑尚未 commit，詳見下方系統當天動態段。EN Media 36 items 中有 <strong>15 則是今天首次出現的 <code>rss:youtube_matt</code></strong>（Matt Pocock YouTube 頻道回填，見下方 🎓 段），其餘 21 則是 <code>techcrunch_ai</code>(5)／<code>thehackernews</code>(10)／<code>theregister_security</code>(6)。</div>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>本日 8 主軸熱度（related_items_count，workflow 給出）</h3>
+    <div class="sub">OSS榜單/HF/PH 38 ｜ Matt Pocock方法論 25 ｜ 供應鏈/Agent安全 22 ｜ 中國開源模型 16 ｜ AI基建資本 14 ｜ Anthropic/Claude生態 12 ｜ OpenAI Astra 9 ｜ 開發者工具成本 8 — 共 144 關聯 items（⚠️ 不同主軸間可能重疊計數，非嚴格去重值）</div>
+    <div class="chart-box"><canvas id="themeChart"></canvas></div>
+  </div>
+</div>
+
+<!-- ============================================== -->
+<!-- 🟣 Anthropic / Claude 動態（固定獨立段、按鐵律） -->
+<!-- ============================================== -->
+<section class="fixed purple">
+<h2>🟣 Anthropic / Claude 動態 <span class="tag">固定段</span></h2>
+<p class="summary">今天官方頻道側完全沒有 <code>anthropic_blog</code>／<code>claude_blog</code>／<code>anthropic_engineering</code> 進 raw md（實查全文 <code>grep</code>，三個頻道 tag 一次都沒出現），公司官方帳號 <code>AnthropicAI</code>／<code>DarioAmodei</code>／<code>jackclarkSF</code> 同樣掛零；唯一的官方版本動態是 CC CLI release watcher 命中的 <code>v2.1.221</code>。X 側只有兩位 Anthropic <strong>員工個人帳號</strong>進 raw md：<code>AmandaAskell</code> 1 則、<code>trq212</code>（Thariq）2 則，合計 3 則。</p>
+
+<h3>🆕 CC CLI release</h3>
+<p class="summary"><code>anthropics/claude-code release watcher</code> 今天以 <code>gh release list</code> + <code>gh release view</code> 雙重即時查證命中新版：<strong><code>v2.1.221</code>（2026-08-04T00:14:23Z）</strong>，打破 07-26 至 08-03 連續 9 天的無新版空窗（07-25 那版 <code>v2.1.220</code> 是基準日、不計入空窗天數）。changelog 重點：<strong>修復 zsh <code>[[ ]]</code> regex conditional 可繞過 Bash tool 權限檢查的漏洞</strong>（本人 shell 正是 zsh，直接命中——受影響指令現在會正確跳出權限提示）；background session 行為改為預設 commit+push 保留工作，只在任務需要時才開 draft PR、且遵循 CLAUDE.md 的 git 指示（需留意背景任務是否誤觸公司 repo「push/PR 一律先問」規則）；<code>claude-api</code> skill 新增 <code>prompt-audit</code> subcommand，稽核 prompt／tool description 是否寫給舊代模型；修復 MCP servers 透過 <code>--mcp-config</code> 載入時，print mode（<code>-p</code>）首輪未連線導致 model 把 tool call 吐成純文字的 bug；<code>/fork</code> 改為建立獨立 worktree、不再共用原 session 的 checkout；其餘為 VSCode Focus view、sandbox credential mask（Linux/WSL）、PowerShell 權限檢查、Vim mode、Windows 啟動等修復與優化。<code>probes_writeback</code> 本次 <code>attempted=1 / succeeded=1</code>，PROBES.md 已寫回新 baseline。</p>
+
+<h3>📢 公司公告 / 政策</h3>
+<p class="summary"><code>anthropic_blog</code> 今天完全沒有進 raw md，沒有任何官方部落格發文可報告。</p>
+<p class="empty">（今日無新訊號）</p>
+
+<h3>🛠 產品 / 工程動態</h3>
+<p class="summary">今天沒有 <code>claude_blog</code>／<code>anthropic_engineering</code> 官方發文，也沒有 <code>claudeai</code>／<code>ClaudeDevs</code>／<code>AlexAlbert__</code>／<code>ch402</code> 進 raw md。僅有的訊號是兩位 Anthropic 員工個人帳號的 3 則推文：<strong><code>trq212</code>（Thariq）：「I think a lot of people don't realize- if you connect a Claude Connector (e.g. your gmail, calendar, slack, etc), Claude Code will also be able to use them, including in Artifacts.」</strong>（♥746、💬91）— <a href="https://x.com/trq212/status/2084387303959740449">X</a>，指出接上 Claude Connector（Gmail／Calendar／Slack 等）後，Claude Code 與 Artifacts 也能直接使用這些連結；他隨後又發了一則「do it here」附連結（♥18、💬7）— <a href="https://x.com/trq212/status/2084387305436164162">X</a>，內容過短不做延伸解讀。<strong><code>AmandaAskell</code>：「I don't agree with this part. I think the takeaway should be that models (like humans) can behave in aligned ways while still causing harm, e.g. because they're given false information about their sit[uation]...」</strong>（♥791、💬76，本日 Anthropic 員工帳號互動量最高）— <a href="https://x.com/AmandaAskell/status/2084369056765989224">X</a>，主張「對齊」與「造成傷害」並不互斥——模型（像人一樣）可以在行為對齊的同時仍造成傷害，例如是因為被餵了關於情境的錯誤資訊。</p>
+<p class="voice"><strong>官方三大部落格頻道今天同時零進 raw md 對本人是純觀察</strong>——昨天（08-03）做過的 14 天計數（07-20～08-02，判定為第 3 次）計的對象是<strong>「Lab Blogs 區塊整段缺席」</strong>、涵蓋 6 個官方頻道，不是「Anthropic 三頻道零進 raw md」這個較窄的判準；而今天 raw md <strong>有</strong> Lab Blogs 區塊（<code>rss:openai_blog</code> 的 GPT-Live 一則，見主軸 [4]），所以今天不接續昨天那個序列，兩者不是同一個計數。Anthropic 三頻道這個窄判準本身沒有既有的跨天基準。<strong>Thariq 的 Connector 跨 surface 說明對本人是 ★★</strong>——本人 <code>~/.claude.json</code> 的 <code>mcpServers</code> 只有 chrome-devtools／context7／semble／semble-docs 四個本地 MCP，但 session 工具清單內另有整組 <code>mcp__claude_ai_Google_Drive__*</code>（<code>claude_ai_</code> 命名空間 = 帳號層 Claude Connector、不落 <code>mcpServers</code>），也就是 <strong>Google Drive Connector 已經掛著</strong>、Gmail／Calendar／Slack 尚未掛。所以 Thariq 這則其實是在解釋本機已經在發生的現象（Connector 工具會流進 CC 與 Artifacts），不是一條全新的整合路徑；可行動的部分是「要不要把 Gmail／Calendar 也掛上」。<strong>AmandaAskell 這則對齊行為論對本人「宣稱與證據層級對位」紀律是 ★</strong>——純研究觀點記錄，跟本人日常工作流無直接交集。<strong>CC CLI 打破 9 天空窗、修掉 zsh 權限繞過漏洞對本人 ★★★ 直接命中</strong>——這正是本人日常 Bash tool 高頻呼叫會撞到的安全面修復，屬於「該升級」訊號而非純觀察。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [0] 中國開源模型密集發布 -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>🇨🇳 中國開源模型密集發布：Qwen3.8 / DeepSeek V4 Flash / MiniMax-H3 / GLM 5.3 同週撞車 <span class="tag">16 items</span></h2>
+<p class="summary">r/LocalLLaMA 前排幾乎被中國模型佔滿：Qwen3.8-27B 與 Qwen3.8-Max 同日發表（Unsloth 的 Daniel Han 驗證 27B 只需 17GB VRAM，Max 對標 Kimi K3 與 DeepSeek V4 Flash、定價 $2/$6 per Mtok），DeepSeek V4-Flash-0731 被回報可在家用 PC 跑，MiniMax-H3 上架 HuggingFace 並霸佔 trending 前兩名（見下方主軸 [5]），GLM 5.3 被提前 spotted。伴隨「中國各實驗室其實押四種不同賭注」的內部人視角、量化對知識損傷非線性的研究，以及「美國對中國的 AI 領先已幾乎消失」的 CNBC 報導與討論。</p>
+<ul>
+  <li><strong>Reddit（r/LocalLLaMA）：「Qwen3.8-27B announced alongside Qwen3.8-Max」</strong>（▲2616、💬605，本主軸互動量最高）— <a href="https://www.reddit.com/r/LocalLLaMA/comments/1ve0psn/qwen3827b_announced_alongside_qwen38max/">帖子</a></li>
+  <li><strong>Reddit（r/LocalLLaMA）：「Daniel Han of Unsloth validates Qwen3.8-27B will run only 17GB VRAM」</strong>（▲1561、💬259）— <a href="https://www.reddit.com/r/LocalLLaMA/comments/1ve4uoe/daniel_han_of_unsloth_validates_qwen3827b_will/">帖子</a></li>
+  <li><strong>Reddit（r/LocalLLaMA）：「I CANNOT believe I've got DeepSeek-V4-Flash-0731, a frontier model, running on my home PC. Insane!」</strong>（▲571、💬420）— <a href="https://www.reddit.com/r/LocalLLaMA/comments/1vehn87/i_cannot_believe_ive_got_deepseekv4flash0731_a/">帖子</a></li>
+  <li><strong>Reddit（r/LocalLLaMA）：「The Chinese labs everyone lumps together are making four pretty different bets. I work at one of them.」</strong>（▲561、💬102，內部人視角）— <a href="https://www.reddit.com/r/LocalLLaMA/comments/1veipya/the_chinese_labs_everyone_lumps_together_are/">帖子</a></li>
+  <li><strong>HuggingFace：<code>MiniMaxAI/MiniMax-H3</code></strong>（trending models，♥1394）— <a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">HuggingFace</a></li>
+  <li><strong>Reddit（r/LocalLLaMA）：「Quantization hurts knowledge nonlinearly - Qwen3.6 27B case study」</strong>（▲265、💬70）— <a href="https://www.reddit.com/r/LocalLLaMA/comments/1vef79c/quantization_hurts_knowledge_nonlinearly_qwen36/">帖子</a>（src <a href="https://quesma.com/blog/quantization-hurts-knowledge/">quesma.com</a>）</li>
+  <li><strong>Reddit（r/singularity）：「The U.S. lead over China in AI is all but gone.」</strong>（▲378、💬176）— <a href="https://www.reddit.com/r/singularity/comments/1veoeho/the_us_lead_over_china_in_ai_is_all_but_gone/">帖子</a>（src <a href="https://www.cnbc.com/2026/08/02/ai-model-competition-us-china.html">CNBC</a>）</li>
+</ul>
+<p class="voice"><strong>Qwen3.8-27B「只需 17GB VRAM」對 <code>[[apple-silicon-local-llm-serving]]</code> 是 ★★★ 值得追、但先不採信</strong>——這句話本身沒說是哪種量化位元，而同一天 raw md 剛好也有「量化對知識損傷是非線性」的研究貼在旁邊，兩則放在一起看，17GB 這個數字背後付出的品質代價未知，先記觀察不下判斷，跟既有結論（本地 ≤4B、27–35B 當 daily-driver 死路）暫不動。<strong>「中國各實驗室押四種不同賭注」與 CNBC「美國對中國 AI 領先已幾乎消失」對 <code>[[llm-model-landscape]]</code> 是 ★★</strong>——持續追蹤的分域研究框架要記入這批素材，特別是內部人視角這則提供了外部評論少見的分類角度。<strong>MiniMax-H3（image-text-to-video）對本人是 ★</strong>——視訊生成模型，跟本人既有 <code>~/Desktop/projects/comfyui-local/</code> 本地生圖 pipeline 不同軸（本人做的是靜態圖生成），記存在。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [1] Anthropic / Claude 生態（pointer to 🟣） -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>🟣 Anthropic / Claude 生態：官方動態詳見上方固定段，這裡只記社群端迴響 <span class="tag">12 items</span></h2>
+<p class="summary">官方版本／公告／員工動態已全部收在上方「🟣 Anthropic / Claude 動態」固定段，這裡不重複。本段記錄的是<strong>社群端（非官方）</strong>迴響：r/ClaudeAI 同日出現兩篇 Opus 5 抱怨文（「回 4.8」▲148／「快被逼瘋」▲39）與一則撞 90% 額度的梗圖（▲750）；另有 GTA6 harness 復刻與 One Piece 1189 章伏筆百科兩則純程式碼生成內容展示；HN 首頁則出現一個 0 星的小型 Show HN 專案 <code>leclaude</code>（詳見下方 🛠 表格）。</p>
+<ul>
+  <li><strong>Reddit（r/ClaudeAI）：「Opus 5 is just annoying to work with. Back to Opus 4.8 for me.」</strong>（▲148、💬94）— <a href="https://www.reddit.com/r/ClaudeAI/comments/1vephjv/opus_5_is_just_annoying_to_work_with_back_to_opus/">帖子</a></li>
+  <li><strong>Reddit（r/ClaudeAI）：「Opus 5 is driving me crazy」</strong>（▲39、💬60）— <a href="https://www.reddit.com/r/ClaudeAI/comments/1velwq3/opus_5_is_driving_me_crazy/">帖子</a></li>
+  <li><strong>Reddit（r/ClaudeAI）：「As soon as I hit 90% of the limit」</strong>（▲750、💬42，本主軸第 2 高，額度梗圖）— <a href="https://www.reddit.com/r/ClaudeAI/comments/1veoqdk/as_soon_as_i_hit_90_of_the_limit/">帖子</a></li>
+  <li><strong>Reddit（r/ClaudeAI）：「GTA 6 first attempt. Far from perfect, but it's impressive what the right harness and agentic loops can build.」</strong>（▲1063、💬352，本主軸互動量最高）— <a href="https://www.reddit.com/r/ClaudeAI/comments/1ve7u9r/gta_6_first_attempt_far_from_perfect_but_its/">帖子</a></li>
+  <li><strong>Reddit（r/ClaudeAI）：「I had Claude read all 1,189 chapters of One Piece and build a foreshadowing encyclopedia.」</strong>（▲90、💬16）— <a href="https://www.reddit.com/r/ClaudeAI/comments/1vehxv8/i_had_claude_read_all_1189_chapters_of_one_piece/">帖子</a></li>
+  <li><strong>HN：「Show HN: Leclaude – A little badge for your Claude Code projects」</strong>（▲1）— 專案本體見下方 🛠 表格 <code>robinduckett/leclaude</code></li>
+</ul>
+<p class="voice"><strong>兩篇獨立的 Opus 5 抱怨文對 <code>[[user_workflow_mission_critical_infra]]</code> 是 ★★</strong>——都是對主力模型本身可用性的質疑，而本人主 session 目前正跑在 Opus 5（1M context 模式，同見下方 🎓 段），所以這兩篇是對「當前在用模型」的直接回報，不是未來升級與否的預警；raw md 原文（兩篇 r/ClaudeAI 貼文）本身不含任何關於本人跑哪個模型的資訊，此處對照僅來自個人 stack 現況。<strong>90% 額度梗圖對本人是 ★</strong>——額度焦慮是通用體驗，跟本人雙帳號 quota 分流習慣無直接交集，記存在。<strong>GTA6 與 One Piece 伏筆百科這兩則純程式碼／純文本生成內容展示對本人是 ★</strong>——agentic loop 能力秀，記存在不做行動。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [2] Matt Pocock 方法論（pointer to 🎓） -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>🎓 Matt Pocock 的 agent 工作流方法論：完整內容詳見下方獨立段 <span class="tag">25 items</span></h2>
+<p class="summary">今天是本 pipeline 「Matt Pocock 追蹤軸」<strong>首日回填</strong>：15 支 YouTube 影片＋16 則 X 貼文一次進 raw md（<code>rss:youtube_matt</code>／<code>x:@mattpocockuk</code> 在 2026-08-03.md 均為 0 筆，實查 <code>grep -c</code> 確認，這是首次收到這批訊號，不是「他今天發了 15 支影片」——影片實際發布日橫跨 2026-07-16 至 07-30）。完整的影片逐支解讀＋推文分層展開，全部收在下方「🎓 Matt Pocock 動態」固定段，這裡只做指路、不重複展開。X 上今天唯一一則<strong>原創</strong>推文是「I've done all the wayfinding, I just haven't built it」（♥479、💬48）— <a href="https://x.com/mattpocockuk/status/2083891713932755390">X</a>，其餘 15 則都是 @ 回覆，但不全是回覆粉絲提問——含 2 則對 @unclebobmartin 的主動合作邀約、1 則是他自己在提問。</p>
+<p class="voice">詳見下方 🎓 段的完整 voice 分析（逐支影片都有對應本人 <code>~/.claude/skills/</code> fork 的 stack_relevance 判斷）。這裡只記一句總評：<strong>對本人 🔬 matt-pipeline A/B trial 是 ★★★ 直接命中</strong>——這批素材是 trial 目前唯一的第一手上游作者教材，值得完整讀完再回頭核對本人 fork 是否跟上游行為漂移（例如 grill-me 分批提問那支明確揭露版本落差，見下方 🎓 段）。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [3] 供應鏈與 agent 安全 -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>🛡️ 供應鏈與 agent 安全：prompt injection 打進 CI/CD，npm 與 AUR 連環中招 <span class="tag">22 items</span></h2>
+<p class="summary">The Register 報導 Google dev kit 引發首例「agent 打 agent」——被下毒的 pull request 內嵌 prompt injection，讓一個 agent 控制另一個。同日 18 個惡意 npm 套件對阿里開發工具使用者投放跨平台 RAT；AsyncAPI 供應鏈事故坦承源自長期未處理的 GitHub Actions 錯誤配置（攻擊者疑似使用 Miasma 變種）；Arch Linux AUR 再度遭供應鏈攻擊而暫停該功能；NPM 收緊可免 2FA 的細粒度權杖並預告 2027/01 取消直接發布；HuggingFace Diffusers 三個高風險漏洞可讓模型倉庫執行任意程式碼；另有 AI 生成假漏洞灌爆 CVE pipeline，以及中國駭客結合 DeepSeek 與 Hermes agent 對 400+ 組織發動半自主攻擊。</p>
+<ul>
+  <li><strong>The Register：「Google dev kit spurs first-ever agent-on-agent violence」</strong>（poisoned pull request 內嵌 prompt injection、一個 agent 控制另一個）— <a href="https://www.theregister.com/security/2026/08/03/google-dev-kit-spurs-first-ever-agent-on-agent-violence/5282496">The Register</a></li>
+  <li><strong>The Hacker News：「18 Malicious npm Packages Deliver Cross-Platform RAT to Alibaba Tool Users」</strong>— <a href="https://thehackernews.com/2026/08/18-malicious-npm-packages-deliver-cross.html">The Hacker News</a></li>
+  <li><strong>iThome：「AsyncAPI開發團隊承認是未處理的GitHub Actions配置不當問題引發供應鏈攻擊」</strong>（承認 CI/CD 架構已知弱點、攻擊者疑似用 Miasma 變種）— <a href="https://www.ithome.com.tw/news/177817">iThome</a></li>
+  <li><strong>iThome：「AUR套件庫遭供應鏈攻擊，Arch Linux暫停採用AUR套件功能」</strong>（繼今年 6 月大量套件被接手竄改建置流程後再度攻擊）— <a href="https://www.ithome.com.tw/news/177810">iThome</a></li>
+  <li><strong>iThome：「NPM限制可免除2FA的權杖管理權限，2027年1月再取消直接發布能力」</strong>— <a href="https://www.ithome.com.tw/news/177814">iThome</a></li>
+  <li><strong>The Hacker News：「Hugging Face Diffusers Flaws Could Let Model Repositories Execute Arbitrary Code」</strong>（三個高風險漏洞）— <a href="https://thehackernews.com/2026/08/hugging-face-diffusers-flaws-could-let.html">The Hacker News</a></li>
+  <li><strong>The Register：「AI slop pollutes the CVE pipeline with fake vulns」</strong>（NIST 積壓下 AI 生成假漏洞報告持續灌入）— <a href="https://www.theregister.com/security/2026/08/03/ai-slop-pollutes-the-cve-pipeline-with-fake-vulns/5282462">The Register</a></li>
+  <li><strong>iThome：「中國駭客鎖定7種應用系統，利用已知漏洞從事手動及AI自主攻擊」</strong>（knaithe／KnYuan 結合 Hermes agent 與 DeepSeek，406+ 組織被鎖定）— <a href="https://www.ithome.com.tw/news/177832">iThome</a></li>
+</ul>
+<p class="voice"><strong>Google dev kit 首例「agent 打 agent」對 <code>[[user_workflow_mission_critical_infra]]</code> 是 ★★★ 直接命中</strong>——本人所有 active 專案都帶生產級限制，這是 prompt injection 從「讀取階段被下毒」升級到「讓一個 agent 直接控制另一個 agent」的具體案例，跟本人既有 <code>critical_injection_defense</code>（chrome 抽回來的 innerText 當 untrusted data）處理原則同源但層級更高——CI/CD 裡的 PR review agent 若沒有把下游 agent 的輸出也當 untrusted data，防線就有缺口。<strong>npm／AUR／HuggingFace Diffusers 三起供應鏈事故對 <code>[[npm-supply-chain-defense-2026]]</code> 是 ★★★</strong>——本人日常防線是 bumblebee daily scan（純 Go binary、不耗 LLM），機制是<strong>本機 package 對帳掃描</strong>：今天實跑拿 1,099 個 catalog entries 對本機 78,101 個 package 做 exact <code>(ecosystem, name, version)</code> 比對、findings=0（見 <code>reports/local-analysis/2026-08-04-bumblebee.md</code>），不是 npm 安裝期攔截（那是 ignore-scripts → cooldown → Socket Firewall 另一套）。這三起要分開看：AUR 生態不在掃描範圍、GitHub Actions 配置不是 package、Diffusers 是 library 漏洞不是被投毒套件，三者都落在 bumblebee 射程外、屬既有防線的已知邊界；但<strong>「18 個惡意 npm 套件投放跨平台 RAT」那條落在射程內</strong>，應實查 bumblebee 的比對清單有沒有涵蓋這 18 個套件、並跑一次 scan 確認本機未中招，這條不能歸類成已知邊界。<strong>中國駭客結合 DeepSeek + Hermes agent 半自主攻擊 400+ 組織對本人是 ★★</strong>——agent 化攻擊規模持續擴大的具體樣本，記入研究群後續追蹤素材。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [4] OpenAI Astra / GPT-Live / 5.6 -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>🧮 OpenAI：Astra 解 10 個開放數學問題、GPT-Live 即時語音架構、5.6 使用回饋 <span class="tag">9 items</span></h2>
+<p class="summary">OpenAI 揭露未發布模型 Astra 的內部版本在高維幾何、編碼理論、群論、量子複雜度與格基密碼學取得 10 項研究成果，並附機器可驗證（Lean）證明，多數題目停滯逾十年，成本約 2000 美元。官方部落格另發表 GPT-Live 的即時語音系統工程紀錄（turnless 語音模型 + 低延遲架構，六個月做出來）。社群側則是 GPT-5.6 Sol 的 oneshot 能力好評、chat limit 調整抱怨，以及 ChatGPT 成為美國國會最愛付費 AI 工具。</p>
+<ul>
+  <li><strong>OpenAI 官方部落格：「How we built a realtime system for responsive voice AI in six months」</strong>（GPT-Live，turnless 語音模型 + 低延遲架構）— <a href="https://openai.com/index/continuous-voice-interaction-with-gpt-live">OpenAI</a></li>
+  <li><strong>iThome（台灣）：「OpenAI新模型Astra取得10項數學突破，橫跨密碼學與量子複雜度」</strong>（涵蓋高維幾何、編碼理論、群論、量子複雜度、格基密碼學，多數問題至少 10 年未有進展）— <a href="https://www.ithome.com.tw/news/177818">iThome</a></li>
+  <li><strong>The Agent Report</strong>（下一條 r/OpenAI 貼文的原始出處；raw md 只以 <code>src</code> 形式收錄連結、未提供該文自有標題）— <a href="https://the-agent-report.com/2026/08/openai-astra-ten-math-problems-lean-proofs-2026/">The Agent Report</a></li>
+  <li><strong>Reddit（r/OpenAI）：「OpenAI's unreleased Astra model solved 10 open math problems...」</strong>（▲17、💬7，轉述同一則 The Agent Report）— <a href="https://www.reddit.com/r/OpenAI/comments/1vec80j/openais_unreleased_astra_model_solved_10_open/">帖子</a></li>
+  <li><strong>Reddit（r/OpenAI）：「GPT 5.6 Sol's oneshotting ability is impressive!」</strong>（▲47、💬10）— <a href="https://www.reddit.com/r/OpenAI/comments/1vehlir/gpt_56_sols_oneshotting_ability_is_impressive/">帖子</a></li>
+  <li><strong>TechCrunch：「Congress' favorite AI tool? ChatGPT」</strong>（美國眾議院支出紀錄顯示 ChatGPT 是國會付費 AI 工具使用量第一）— <a href="https://techcrunch.com/2026/08/03/congresss-favorite-ai-tool-chatgpt/">TechCrunch</a></li>
+</ul>
+<p class="voice"><strong>Astra 解 10 道十年數學難題對本人「宣稱與證據層級對位」紀律是 ★★★ 直接命中</strong>——這仍是<strong>未發布模型</strong>的廠商自述成果。今天多出來的只是二手來源（r/OpenAI ▲17 轉貼 the-agent-report 部落格／iThome 177818 轉述）<strong>宣稱</strong>附有 Lean 機器可驗證證明；證明本身未取得、未經第三方覆核，今天 raw md 仍沒有 <strong>Astra 主題</strong>的第一手 OpenAI 連結（今天唯一的官方連結是 GPT-Live 那篇，與 Astra 無關）——就 Astra 這條而言證據層級與昨天相同，仍是廠商自述，不能因為「宣稱附了機器可驗證證明」就當成拿到了證明。<strong>對 <code>[[llm-model-landscape]]</code> 是 ★★</strong>——若這批 Lean 證明屬實且可公開驗證，會是「哪家實驗室在可驗證形式領域領先」這個分域框架的重要樣本，持續追蹤後續是否有第三方覆核。<strong>GPT-Live 即時語音架構工程紀錄對本人是 ★</strong>——本人目前純文字驅動的 CC 工作模式沒有即時語音需求，記存在。<strong>ChatGPT 是國會最愛付費工具對本人是 ★</strong>——採用度案例記錄，跟日常工作流無交集。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [5] OSS 榜單全景 -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>📊 OSS 榜單：Trending 由老牌工具撐場、Rising 與 HF 幾乎全被 AI 佔滿 <span class="tag">38 items</span></h2>
+<p class="summary">GitHub Trending 30 個名額主體仍是成熟工具（rustlings、calibre、HandBrake、aria2、darkreader、ceph、wgpu、helium 瀏覽器、gluetun、xv6-riscv、OpenRCT2），AI 相關新血集中在少數幾個：code-graph-rag（monorepo 知識圖譜 RAG）、MCP 官方 Swift SDK、whatsapp-mcp、KrillinAI（影片翻譯配音全流程）、ouroboros（自我創造的 agent）、openagent、minecraft-numen（住在 Minecraft 裡的 AI 同伴）。Trendshift Rising 四席有三席是 AI：kimi-k3-in-c（用 C 重寫 Kimi K3，+7620）、genoffice、open-kritt；第四席 byoungd/up（rank-21，+3116）是非 AI 的人生／英語學習指南（<code>gh repo view</code> 實查 description 與 AI 無關）。HuggingFace trending 前兩名都是 MiniMax-H3（本體與 Comfy-Org 版，見主軸 [0]），Product Hunt 當日 AI 榜是 Osaurus（100% 本機跑的開源 agent，macOS）。逐條 stars／release／判斷見下方 🛠 段主表格。</p>
+<ul>
+  <li><strong>GitHub：<code>vitali87/code-graph-rag</code></strong>（The ultimate RAG for your monorepo — 用知識圖譜查詢、理解、編輯多語言 codebase）— <a href="https://github.com/vitali87/code-graph-rag">GitHub</a></li>
+  <li><strong>GitHub：<code>FareedKhan-dev/kimi-k3-in-c</code></strong>（Rising rank-7，+7620：2.78 兆參數 Kimi K3 跑在單顆 CPU、8.24GB RAM，Portable C99）— <a href="https://github.com/FareedKhan-dev/kimi-k3-in-c">GitHub</a></li>
+  <li><strong>GitHub：<code>Kritt-ai/open-kritt</code></strong>（Rising rank-25：Orchestrate AI agents to find real vulnerabilities in code）— <a href="https://github.com/Kritt-ai/open-kritt">GitHub</a></li>
+  <li><strong>GitHub：<code>Dwinovo/minecraft-numen</code></strong>（住在 Minecraft 裡的 AI 同伴——召喚它、跟它說話，它自己規劃並動手挖礦建造）— <a href="https://github.com/Dwinovo/minecraft-numen">GitHub</a></li>
+  <li><strong>HuggingFace：<code>Comfy-Org/MiniMax-H3</code></strong>（trending models，♥429）— <a href="https://huggingface.co/Comfy-Org/MiniMax-H3">HuggingFace</a></li>
+  <li><strong>Product Hunt：「Osaurus — Open source agents that run 100% locally on your Mac」</strong>（💬101）— <a href="https://www.producthunt.com/products/osaurus/launches/osaurus-ai?utm_campaign=producthunt-api&utm_medium=api-v2&utm_source=Application%3A+daily-topic-radar+%28ID%3A+283268%29">Product Hunt</a></li>
+</ul>
+<p class="voice"><strong><code>code-graph-rag</code> 對 <code>[[codebase-exploration-mcp-landscape]]</code> 是 ★★★ 直接命中</strong>——本人現行 semble + sem 雙 KEEP、serena 🔬 trial（LSP 符號層補 grep 枚舉），code-graph-rag 走的是知識圖譜路線，屬同一問題空間的第三種實作，值得試用比較（詳見下方 🛠 表格判斷）。<strong>kimi-k3-in-c「2.78T 參數塞進 8.24GB RAM」對 <code>[[apple-silicon-local-llm-serving]]</code> 是 ★★ 記觀察不採信</strong>——每參數約 0.024 bit，比本人見過的任何極限量化宣稱都更誇張，機制（推測 MoE 稀疏 offload 或磁碟串流）README 未完整載明，先觀察不下判斷，跟主軸 [0] 的 Qwen3.8-27B/17GB 那則同一種「先查機制再採信」心法。<strong>Osaurus（100% 本機跑的開源 agent，macOS）對 <code>[[apple-silicon-local-llm-serving]]</code> 是 ★★</strong>——同樣是本地 agent 部署方向，跟本人 M5 Pro 48GB 既有結論（本地 ≤4B）不同軸，記觀察是否有可借鑑的 packaging 思路。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [6] AI 基礎建設資本與市場結構 -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>💰 AI 基礎建設資本與市場結構：雲支出上修、算力供不應求、CPO 量產 <span class="tag">14 items</span></h2>
+<p class="summary">摩根士丹利預估全球雲端資本支出 2027 年達 1.2 兆美元（年增 30%、較上季估值再上修 1700 億），四大超大規模業者仍受產能限制；Synergy 統計第二季全球雲基礎設施營收 1434 億美元、年增 43% 創八年最快。Amazon 市值破 3 兆創新高、Alphabet 市值超越蘋果升全球第二；中國信通院估 2025 年中國 AI 產業規模逾 1.2 兆人民幣（+40%）；輝達宣告與台積電合作的共同封裝光學 CPO 進入量產；韓國 AI 晶片獨角獸 DeepX 估值翻四倍。應用側則有 AWS 讓 vibe coding 工具 Superblocks 嵌進客戶私有雲（應用與模型解耦），以及 Design Arena 募資 790 萬美元把「品味」帶進模型評測。</p>
+<ul>
+  <li><strong>36氪：「摩根士丹利预计云计算支出将激增至1.2万亿美元」</strong>（2027 年達 1.2 兆美元，年增 30%，四大超大規模業者仍受產能限制）— <a href="https://36kr.com/newsflashes/3923764104460416?f=rss">36氪</a></li>
+  <li><strong>iThome（台灣）：「AI推動全球雲端市場成長43%，創8年最快增速」</strong>（Synergy：Q2 全球雲基礎設施營收 1434 億美元）— <a href="https://www.ithome.com.tw/news/177820">iThome</a></li>
+  <li><strong>IT之家（中國）：「全球最大云厂商亚马逊盘初涨超 4%，市值破 3 万亿美元创历史新高」</strong>— <a href="https://www.ithome.com/0/985/232.htm">IT之家</a></li>
+  <li><strong>IT之家（中國）：「谷歌母公司 Alphabet 市值超过苹果，升至全球第二」</strong>— <a href="https://www.ithome.com/0/985/233.htm">IT之家</a></li>
+  <li><strong>IT之家（中國）：「中国信通院：2025 年我国人工智能产业规模超 1.2 万亿元，同比增长 40%」</strong>— <a href="https://www.ithome.com/0/985/224.htm">IT之家</a></li>
+  <li><strong>動區 BlockTempo：「輝達宣告共同封裝光學 CPO 進入量產，光通訊打強心針」</strong>（與台積電合作）— <a href="https://www.blocktempo.com/nvidia-cpo-mass-production-august-2026/">動區 BlockTempo</a></li>
+  <li><strong>TechCrunch：「AWS is helping vibe-coding startup Superblocks, and the implications are big」</strong>（Superblocks 可嵌進 AWS 客戶私有雲，應用與模型解耦）— <a href="https://techcrunch.com/2026/08/03/aws-is-helping-vibe-coding-startup-superblocks-and-the-implications-are-big/">TechCrunch</a></li>
+  <li><strong>TechCrunch：「Design Arena creators raise $7.9 million to bring taste to AI models」</strong>（5.3 百萬使用者提供人類評測給前沿實驗室）— <a href="https://techcrunch.com/2026/08/03/designarena-creators-raise-7-9-million-to-bring-taste-to-ai-models/">TechCrunch</a></li>
+</ul>
+<p class="voice"><strong>雲端資本支出上修、Amazon/Alphabet 市值刷新對 <code>[[ai-coding-era-engineer-moat]]</code> 研究群是 ★★</strong>——基礎建設資本持續加碼是這條職涯定位研究線要追蹤的總體背景素材，記入後續更新。<strong>中國信通院產業規模數據對 <code>[[llm-model-landscape]]</code> 是 ★</strong>——總體產業規模統計，跟本人分域路由框架（哪個 vendor 哪類任務領先）不同層級，記存在。<strong>AWS + Superblocks「應用與模型解耦」對本人是 ★★</strong>——vibe coding 工具往企業私有雲滲透的具體案例，跟本人 mission-critical infra 立場（不碰 hobby toolkit）方向一致但非本人使用場景，記觀察產業走向。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 主軸 [7] 開發者工具成本透明度與灰色 relay 市場 -->
+<!-- ============================================== -->
+<section class="theme">
+<h2>🔧 開發者工具的成本透明度與灰色 relay 市場 <span class="tag">8 items</span></h2>
+<p class="summary">Cursor 在 7/31 把個人與 Teams 方案用量頁的逐筆美元金額整個拿掉、只留 token 數（且回溯套用到歷史紀錄，CSV 匯出費用欄一度消失），使用者質疑無法再依各模型公開定價比價。這件事由 iThome 於 08-03 報導；同一批 raw md（08-03 抓取窗）內另有兩篇 08-03 的 V2EX promotions 版 GPT 中轉站促銷（其中一篇打 0.2x 價、兩篇都送額度抽獎）衝上留言榜前段，顯示灰色 relay 供給仍旺盛——兩件事非同日發生，raw md 也沒有任何來源把兩者關聯起來，此處僅為同批訊號並陳。工具側另有 JetBrains 開源 KotlinLLM 研究原型（執行中的程式遇到沒處理過的狀況時，即時呼叫 LLM 生成新 Kotlin 程式碼、編譯後熱更新並存回專案），以及 V2EX 自造工具流（Panerelay 讓 agent-browser / Browser Use / Playwright CLI 直接接管日常 Chrome、TrustOSS 產 GitHub 專案健康度報告）。</p>
+<ul>
+  <li><strong>iThome（台灣）：「Cursor移除個人與Teams方案逐筆成本資訊，引發透明度爭議」</strong>（7/31 調整，回溯套用歷史紀錄，CSV 費用欄一度消失）— <a href="https://www.ithome.com.tw/news/177833">iThome</a></li>
+  <li><strong>iThome（台灣）：「JetBrains開源KotlinLLM，執行中程式可按需呼叫LLM補寫邏輯」</strong>（遇到無法處理的新情況即時生成 Kotlin 程式碼、編譯熱更新並存回專案）— <a href="https://www.ithome.com.tw/news/177826">iThome</a></li>
+  <li><strong>V2EX（create）：「[分享创造] Panerelay 0.5.0：让 agent-browser / Browser Use / Playwright CLI 直接使用日常 Chrome」</strong>（0.1.0 起演進，已支援三種自動化工具接管日常登入狀態）— <a href="https://www.v2ex.com/t/1231859">V2EX</a></li>
+  <li><strong>V2EX（create）：「做了个小工具，可以从各个维度评估一个 GitHub 项目」</strong>（TrustOSS，輸入 repo 連結產健康度報告：活躍度、維護、社群、文件成熟度）— <a href="https://www.v2ex.com/t/1231846">V2EX</a></li>
+  <li><strong>V2EX（promotions）：「[Bool 中转站] 满血原生 ChatGPT 0.2x 本贴留言抽奖 66 刀余额」</strong>（💬183，宣稱對比官網省約 97%，不掺水不降智）— <a href="https://www.v2ex.com/t/1231619">V2EX</a></li>
+</ul>
+<p class="voice"><strong>Cursor 拿掉逐筆美元金額對本人「宣稱與證據層級對位」紀律是 ★★</strong>——只留 token 數會讓使用者失去跨模型公開定價比價的能力，方向正好與本人 <code>~/.claude/CLAUDE.md</code> 工作紀律那條「給出任何具體數字→同句附計算方式或出處」相反，記錄一個工具廠商主動降低透明度的具體樣本。<strong>Panerelay／TrustOSS 這兩個 V2EX 自造工具對 <code>[[user_core_mode_skill_crystallization]]</code> 是 ★★</strong>——都是「把重複性操作固化成可復用工具」的獨立開發者樣本，跟本人核心工作模式呼應，記觀察但非直接借用對象（本人沒有 daily Chrome 接管或 repo 健康度稽核的當前需求）。<strong>V2EX 灰色 GPT 中轉促銷對 <code>[[user_publish_personal_tools_preferences]]</code> 是 ★</strong>——灰色 relay 供給端市場觀察，跟本人「灰色 API 寫概念不放 code」既有立場一致，記存在。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 🛠 GitHub 倉庫觀察（固定獨立段、按鐵律）          -->
+<!-- ============================================== -->
+<section class="fixed repo">
+<h2>🛠 GitHub 倉庫觀察 <span class="tag">固定段</span></h2>
+<p class="summary">今日 GitHub Trending（30 items，其中 1 個實際掛 <code>github_search</code> 標籤——<code>the-open-agent/openagent</code>——但被併入這個 section header，比照鐵律一視同仁進主表格）+ Rising/Trendshift（4 items）合計 34 items，另有 HN 首頁 1 個 repo（<code>robinduckett/leclaude</code>，掛 Show HN 前綴）非 Trending/Rising 池、但同樣是 GitHub repo，比照鐵律併入本表格。HuggingFace trending 2 items 皆非 GitHub repo（<code>MiniMaxAI/MiniMax-H3</code>／<code>Comfy-Org/MiniMax-H3</code>，已於主軸 [0]／[5] 提及）。補跑後的 raw md 現況是 <strong>0 個 🔁 resurface 標記</strong>（<code>grep -c 🔁 2026-08-04.md</code> 命中 0 次），但今晨 06:01 定版那份有 <strong>9 個</strong>（cron log 第 2 行「9 resurfaced」＋ <code>git show 3830894:reports/2026-08-04.md | grep -c 🔁</code> = 9）——resurface 標記被那次無獨立 log 的補跑洗掉了，<strong>今天不宜當作「0 筆 resurface」續接到明天</strong>。主表格挑出 10 個直接對位當日主軸或個人 stack 的 repo；stars／release 全部用 <code>gh repo view</code> 即時查補，非硬猜。</p>
+
+<table>
+  <thead>
+    <tr><th>Repo</th><th>★ stars</th><th>簡介</th><th>判斷</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><a href="https://github.com/vitali87/code-graph-rag">vitali87/code-graph-rag</a><br><span class="pill">release v0.0.534（2026-08-02）· Python</span></td>
+      <td>2,499</td>
+      <td>The ultimate RAG for your monorepo — 用知識圖譜查詢、理解、編輯多語言 codebase</td>
+      <td><span class="verdict">📥 試用</span>：對位 <code>[[codebase-exploration-mcp-landscape]]</code>，本人現行 semble + sem 雙 KEEP、serena 🔬 trial（LSP 符號層），這是同問題空間第三種實作（知識圖譜路線），值得試用比較</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Kritt-ai/open-kritt">Kritt-ai/open-kritt</a><br><span class="pill">release v1.2.0（2026-07-23）· JavaScript · Trendshift rank-25</span></td>
+      <td>1,264</td>
+      <td>Orchestrate AI agents to find real vulnerabilities in code</td>
+      <td><span class="verdict">📥 試用</span>：對位 <code>[[npm-supply-chain-defense-2026]]</code> 與 security-review skill，補的是本人既有防線裡「程式碼層漏洞挖掘」這塊</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/FareedKhan-dev/kimi-k3-in-c">FareedKhan-dev/kimi-k3-in-c</a><br><span class="pill">release v0.1.0（2026-08-02）· C · Trendshift rank-7</span></td>
+      <td>1,275</td>
+      <td>A 2.78-trillion-parameter Kimi K3 running inference on a single CPU in 8.24 GB of RAM. Portable C99: no BLAS, no framework, no GPU.</td>
+      <td><span class="verdict-watch">⭐ star 追</span>：每參數約 0.024 bit，機制（推測稀疏 offload／磁碟串流）README 未完整載明，先觀察不採信，對 <code>[[apple-silicon-local-llm-serving]]</code> 記觀察</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/krillinai/KrillinAI">krillinai/KrillinAI</a><br><span class="pill">release v2.1.0（2026-06-17）· Go</span></td>
+      <td>10,636</td>
+      <td>AI video translation & dubbing tool for humans and AI Agents — 下載、轉錄、翻譯、TTS 配音、改版、封面生成全流程，100+ 語言</td>
+      <td><span class="verdict-watch">⭐ star 追</span>：跟本人 <code>[[video-research-toolchain-2026]]</code> 既有工具光譜方向相鄰但焦點不同（本人要摘要研究、這個做配音翻譯），記觀察 pipeline 設計是否有可借鑑之處</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/razzant/ouroboros">razzant/ouroboros</a><br><span class="pill">release v6.87.5（2026-07-31）· Python</span></td>
+      <td>916</td>
+      <td>Ouroboros — self-creating AI agent. Born Feb 16, 2026.</td>
+      <td><span class="verdict-watch">⭐ star 追</span>：novelty 類專案，記觀察 agentic self-modification 這條線的成熟度</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/the-open-agent/openagent">the-open-agent/openagent</a><br><span class="pill">release v2.87.1（2026-08-03）· Go</span></td>
+      <td>5,489</td>
+      <td>next-generation personal AI assistant powered by LLM, RAG and agent loops — computer-use／browser-use／coding agent</td>
+      <td><span class="verdict-skip">⏭ 跳過</span>：通用個人助理 + computer-use/browser-use/coding agent 組合，跟本人既有 CC + skill 生態不同軸、沒有對到獨特缺口，記存在</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/modelcontextprotocol/swift-sdk">modelcontextprotocol/swift-sdk</a><br><span class="pill">release 0.12.1（2026-05-07）· Swift</span></td>
+      <td>1,456</td>
+      <td>The official Swift SDK for Model Context Protocol servers and clients</td>
+      <td><span class="verdict-skip">⏭ 跳過</span>：本人非 Swift 開發者，官方 MCP SDK 跟消費端需求不同軸，記存在</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/lharries/whatsapp-mcp">lharries/whatsapp-mcp</a><br><span class="pill">release v0.0.1（2025-04-06）· Go</span></td>
+      <td>6,055</td>
+      <td>WhatsApp MCP server</td>
+      <td><span class="verdict-skip">⏭ 跳過</span>：本人 IM channel 是 Discord（個人）／Slack（工作），WhatsApp 不在既有使用清單內，記存在</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/robinduckett/leclaude">robinduckett/leclaude</a><br><span class="pill">release v0.1.2（2026-08-04）· C++ · HN Show</span></td>
+      <td>0</td>
+      <td>Shows a robot badge in Explorer on each folder that has Claude Code session history</td>
+      <td><span class="verdict-skip">⏭ 跳過</span>：README 明寫是 Windows Explorer 擴充功能，本人是 macOS（env 顯示 <code>Darwin</code>），用不到；0 星極早期，記存在</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Dwinovo/minecraft-numen">Dwinovo/minecraft-numen</a><br><span class="pill">無正式 release（僅 beta pre-release，最新 v0.1.1-26.1.2-beta / 2026-08-01）· Java</span></td>
+      <td>233</td>
+      <td>住在 Minecraft 里的 AI 同伴——召唤它、跟它说话，它自己规划并动手：挖矿、建造、种地、战斗、合成</td>
+      <td><span class="verdict-skip">⏭ 跳過</span>：novelty 類玩具專案，跟本人日常工作流無交集，記存在</td>
+    </tr>
+  </tbody>
+</table>
+
+<details>
+<summary>其他次要 trending（不展開判斷）</summary>
+<ul>
+  <li><strong>GitHub Trending（主流/非直接對位當日主軸專案例行上榜）</strong>：<a href="https://github.com/rust-lang/rustlings">rust-lang/rustlings</a>、<a href="https://github.com/aria2/aria2">aria2/aria2</a>、<a href="https://github.com/vuetifyjs/vuetify">vuetifyjs/vuetify</a>、<a href="https://github.com/v2fly/v2ray-core">v2fly/v2ray-core</a>、<a href="https://github.com/actualbudget/actual">actualbudget/actual</a>、<a href="https://github.com/invoke-ai/InvokeAI">invoke-ai/InvokeAI</a>、<a href="https://github.com/kovidgoyal/calibre">kovidgoyal/calibre</a>、<a href="https://github.com/HandBrake/HandBrake">HandBrake/HandBrake</a>、<a href="https://github.com/darkreader/darkreader">darkreader/darkreader</a>、<a href="https://github.com/bettercap/bettercap">bettercap/bettercap</a>、<a href="https://github.com/imputnet/helium">imputnet/helium</a>、<a href="https://github.com/gfx-rs/wgpu">gfx-rs/wgpu</a>、<a href="https://github.com/ceph/ceph">ceph/ceph</a>、<a href="https://github.com/OpenRCT2/OpenRCT2">OpenRCT2/OpenRCT2</a>、<a href="https://github.com/passteque/gluetun">passteque/gluetun</a>、<a href="https://github.com/dwarvesf/hidden">dwarvesf/hidden</a>、<a href="https://github.com/apache/druid">apache/druid</a>、<a href="https://github.com/mit-pdos/xv6-riscv">mit-pdos/xv6-riscv</a>、<a href="https://github.com/AntennaPod/AntennaPod">AntennaPod/AntennaPod</a>、<a href="https://github.com/luau-lang/luau">luau-lang/luau</a>、<a href="https://github.com/shmykelsa/AAAD">shmykelsa/AAAD</a>、<a href="https://github.com/MCRcortex/voxy">MCRcortex/voxy</a>、<a href="https://github.com/Crystaelix/Create-Simurail">Crystaelix/Create-Simurail</a></li>
+  <li><strong>Trendshift Rising（未進主表格）</strong>：<a href="https://github.com/genspark-ai/genoffice">genspark-ai/genoffice</a>（rank-20，AI-native office suite）、<a href="https://github.com/byoungd/up">byoungd/up</a>（rank-21，非 AI，人生/英語學習指南）</li>
+</ul>
+</details>
+</section>
+
+<!-- ============================================== -->
+<!-- 🎓 Matt Pocock 動態（固定獨立段、按鐵律，2026-08-03 加）-->
+<!-- ============================================== -->
+<section class="fixed purple">
+<h2>🎓 Matt Pocock 動態 <span class="tag">固定段 · matt-pipeline trial 教材</span></h2>
+<p class="summary">今天是 Matt Pocock 追蹤軸（X + YouTube）自 2026-08-03 上線以來<strong>首日回填</strong>：`rss:youtube_matt` 在 2026-08-04.md 有 15 筆，但 2026-08-03.md 是 0 筆（實查 `grep -c` 確認）；`x:@mattpocockuk` 同樣是 08-03 那天 0 筆、今天 16 筆。15 支影片的實際發布日橫跨 2026-07-16 至 07-30，是 YouTube Atom feed 第一次抓取時把<strong>窗內</strong>既有影片一次帶進來（YouTube <code>/feeds/videos.xml</code> 本身只回最近 15 筆、<code>sources.yml</code> 亦設 <code>limit: 15</code>，07-16 之前的影片不在本批內、<strong>不是他的完整影片庫</strong>），<strong>不是「他今天發了 15 支」</strong>。15 支字幕全部 exit 0、零失敗（依 workflow pre-flight 的 <code>matt_videos</code> 回傳，<code>fetch_failures=[]</code>、15 筆 <code>outline</code> 皆非空；字幕與字元數不落 raw md，另由 <code>scripts/fetch-youtube-transcript.sh</code> 抓取）。他是使用者 CLAUDE.md 內 🔬 matt-pipeline A/B trial（`to-spec` → `to-tickets` → `implement`）的上游作者，這段的定位是「trial 的第一手教材動態」。3 支長片（<a href="https://www.youtube.com/watch?v=F3lL98Pj90o">wayfinder</a> 16,899 字元、<a href="https://www.youtube.com/watch?v=n0VhIVtviC0">prototype</a> 12,212、<a href="https://www.youtube.com/watch?v=M6mYodf0dJM">skills 全鏈路教學</a> 19,261）＋ 12 支短片（各約 1.2K–2.4K 字元）。若只挑 top-2 推薦：<strong>07（grill-me 分批提問定案）</strong>——本人 `~/.claude/skills/grill-me/SKILL.md` 與 `~/.claude/skills/wayfinder/SKILL.md` 兩檔都仍是「一次一題」，而上游作者在該片宣布<strong>下一版打算</strong>改成 rounds（字幕全程為意向式：「in the next version of my skills… I'm going to be changing Grill Me」，他當時只說本地試跑了一週，未證實已發布）；跟進前應先實查 mattpocock/skills 現行 grill-me SKILL.md 是否真的已改，再決定本地兩檔要不要同步。這方向倒是跟本人自己 CLAUDE.md「問題一次收斂」條的 rounds 設計一致；以及 <strong>13（官方全鏈路教學）</strong>——指出本人 trial 條文可能漏掉起點 grill-with-docs、且 to-spec 在上游不是預設步驟（一個 session 做得完就跳過），trial 若每題都寫 spec 會系統性高估 matt 這套的成本。</p>
+
+<h3>🎬 影片</h3>
+
+<article>
+<h3><a href="https://www.youtube.com/watch?v=F3lL98Pj90o">/wayfinder: Nothing is too big to plan anymore</a> <span class="pill">2026-07-30 · 長片</span></h3>
+<ul>
+<li>他說既有的規劃工具（包含他自己做的 grill-me / grill-with-docs）都綁死在單一 session，害他把要蓋的東西縮小去遷就 AI，wayfinder 就是為了拆掉這個上限。</li>
+<li>核心心智模型是「地圖」：起點是模糊想法、終點大概知道、中間全是戰爭迷霧；地圖上每個點是一張 ticket，每張 ticket 需要它自己獨立的一次 agent session，skill 幫你追蹤 frontier（現在就決得了的）與還埋在迷霧裡的。</li>
+<li>四種 ticket type 都被寫進 issue tracker：research（背景 agent 自己跑完回報）、prototype（他說這是防止 wayfinder 變成瀑布式的關鍵）、grilling（討論）、task（現實世界的雜事，例如找廠商）；ticket 之間有 blocking 關係，解掉一張就看 frontier 移到哪。</li>
+<li>落地在 issue tracker——他用 GitHub 的 sub-issue，但 skill 本身 tracker 無關（靠 setup 指令配 Linear / Jira）；決議寫回子票、同時濃縮寫回 parent map。地圖跑完再 /to-spec → /to-tickets → implement → 收尾 code review。</li>
+<li>FAQ 兩題：一是「太重了什麼時候才該用」——單一 session 規劃得完就別用，wayfinder 只給有迷霧的情況；二是「這不就是 SDD 嗎」——他的 spec 是拋棄式的，實作完就把 issue 關掉、spec 從 repo 消失，跟會回頭維護 spec 的 SDD 流派不同。他也拿 wayfinder 規劃非程式的事（在自家花園蓋 office）。</li>
+</ul>
+<p>這支是 wayfinder 的正式介紹片，論證起點是他對自己既有工具的不滿：grill-me / grill-with-docs 他仍稱為「super important primitive」，但它們綁在單一 session 裡，導致他發現自己在「constraining the stuff I was building to fit AI」——為了配合 AI 的容量而把野心縮小，他覺得這不對。舊做法是事前自己把大工作切成小塊、一塊一塊咬，但實際跑起來會撞到兩件事：grilling 到一半遇到答不出來的問題，以及全程都在管理 smart zone、擔心 token 花太多。</p>
+<p>Wayfinder 的替代方案是把規劃本身也視為需要被排程的工作。他畫的圖是一張地圖：左邊是起點（一個模糊的想法），右邊是終點（你大概知道要去哪但不知道怎麼走），中間是迷霧。第一步仍然是 grilling session 讓 AI 訪談你、把基本前提問出來；有些工作到這裡就夠了可以直接衝終點，但很多工作 grilling 完仍然一片霧。這時你需要更多場 session——可能是 prototype session、可能是另一場 grilling、也可能要先去做 research。這些 session 每一場就是地圖上的一張 ticket，全部由 wayfinder 這一個 skill 建立與管理（他特別強調「yeah, this is just a single skill doing all this」，而且任何 coding agent 都能用）。Skill 同時維護兩份東西：frontier（目前已知、現在就可以決的 ticket）與仍在迷霧中的部分；等迷霧全部散開、決策全部做完，就到得了終點。</p>
+<p>四種 ticket type 是這套的骨架，而且 type 本身會被寫進 issue tracker。Research 票是 agent 去找資料再帶回來，通常立刻在 sub agent 裡跑掉、你不用盯。Prototype 票是做一個原型，他說這對「planning 時真正把東西看活過來」貴到不可思議，並直接複用 prototype skill（他為此拍過另一支片）。他在這裡回應了一個常見批評：有人看 wayfinder 覺得「這規劃也太多了吧，這不是瀑布嗎」——他的回答是 prototype 就是防瀑布的機制，瀑布的問題是大量低保真度的前期規劃，而 prototype 是高保真度的回饋管道，wayfinder 鼓勵你做大量原型，所以產出才會好。Grilling 票是針對某個實作細節或計畫某一面的討論。Task 票是現實世界要做的事——agent 自己做不到的、或做得到但排在別的工作後面的。</p>
+<p>追蹤方式是 issue tracker。他打開自己的 public course video manager repo 示範：一張大地圖底下掛 12 張 sub-issue，那些就是 decision ticket；點進其中一張（「close the clips during publish race」）可以看到它是幾週前一次討論解掉的，而那個 resolution 除了寫在子票裡，也會有一個精簡版被寫回 parent map。他強調雖然自己用 GitHub，skill 是 tracker 無關的，跑一下 setup 就能接 Linear、Jira 或任何東西。</p>
+<p>操作面他講得很具體。開新地圖時第一件要決定的是 destination——他示範的那次要的是「a buildable spec」，於是他 invoke wayfinder 並描述想要什麼（在 CVM 裡加 icon picker、能搜尋其他 diagram、能從 diagram 複製東西存起來）。Skill 先探索 repo、再 invoke grilling skill 訪談他，第一個問題是「done 長什麼樣、你要不要一份 spec」，然後才問幾個初始問題、建出第一版地圖與七張票——但其中只有三張當下拿得起來。接著每一張票都開一個新 session 處理，做法就是「呼叫 wayfinder + 那張票的名字或 URL」。所以 wayfinder 這個指令同時負責兩件事：初次繪圖，以及之後逐票推進。（他補充自己還多包了一層 handoff skill 自動寫 prompt 並 spawn sub agent，但本質就是對著特定 ticket 呼叫 wayfinder。）</p>
+<p>地圖跑完之後，因為地圖太密不適合直接當 spec，他直接對著地圖呼叫 to-spec，產出的文件大到超過 GitHub 的字數上限（他自己笑出來），然後照他平常那套 to-spec → to-tickets → implement → code review 走完。他把 wayfinder 定位成「取代 grill-with-docs 的那個位置」：原本是 grill-with-docs 然後 to-spec、to-tickets，現在是花更多時間在 wayfinder 畫出一張大地圖，再把地圖轉成 spec 與 ticket。他認為 wayfinder 產的 spec 特別強的地方在於「所有內容都連回原始的 decision ticket」，agent 困惑時可以回去看第一手來源——這正是 grill-with-docs 一直以來的弱點：你只能依賴 spec 當唯一真相，但 spec 永遠只是那場會議的摘要。</p>
+<p>FAQ 兩題。第一題「這流程對我的工作太重了，什麼時候才該用」——他的判準很直接：如果你覺得這件事在單一 session 內規劃得完，就在單一 session 內規劃，你已經知道路怎麼走就不需要 wayfinder；wayfinder 是給有戰爭迷霧、你根本不知道要往哪走、只能先開始再看走到哪的情況。他也說自己拿 wayfinder 規劃非 coding 的事：在花園蓋 office，委託地界測量、找哪些廠商能蓋、做各種 research。第二題「這不就是 spec-driven development 嗎，我不想花時間堆 spec」——他的 spec 觀是「spec 只是一個多 session 工作的終點文件」，因為工作太大要跨多個 agent session，需要一份文件標示我們最後要走到哪，如此而已。他也澄清 wayfinder 產的是 decision ticket、不是 implementation ticket（很多人初用會搞混）。最關鍵的分歧他放在最後：一般 SDD 的人會把 spec 留著、之後回去編輯修改，而他是「一旦 spec 已經體現在 code 裡，就把裝 spec 的 issue 關掉，spec 從 repo 消失，我幾乎不再回頭看它」——他的 spec 是非持久的。</p>
+<p>收尾他說 wayfinder 讓他覺得「解放」，因為它讓你可以先開始、困難的決策編排交給它；終點完全由你定，要它產一份 spec 再丟給 AFK agent 跑（他自己的做法）或直接讓它把工作實作掉都可以。</p>
+<p class="voice">使用者本地已經有 wayfinder fork（`~/.claude/skills/wayfinder/` 含 SKILL.md + scripts/frontier.sh），四種票型與影片完全對得上，機制沒偏。真正該拍板的是兩個 fork 差異。第一，Matt 這支最強的賣點是「spec 的每一句都連回原始 decision ticket，agent 困惑時回得去看第一手來源」，而本人的 to-tickets fork 在 2026-07-28 刻意刪掉上游的 real-tracker publish 分支（SKILL.md 該行原文寫明「plan 層 ticket 一律 openspec tasks.md 或 .scratch 本地檔」）——本地檔一樣連得回去，但要確認 to-spec 從 wayfinder 地圖生 spec 時真的有把票的路徑帶進去，否則就退化成 grill-with-docs 那個「只剩摘要」的舊弱點。第二，Matt 的 spec 是拋棄式（實作完關 issue、刪 spec），本人的 openspec change dir 是留存的；這是 matt 組與 superpowers 組最核心的哲學分歧之一，A/B 若沒把這件事攤開，等於用留存式 spec 去代表 matt 組跑，比出來的成本會偏高。另外影片明講的觸發門檻可以直接抄進 trial 紀律：單一 session 規劃得完就不要開 wayfinder。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/watch?v=n0VhIVtviC0">Don't waste time on specs: /prototype instead</a> <span class="pill">2026-07-23 · 長片</span></h3>
+<ul>
+<li>他要打的靶是「我得先寫一份極度詳細的 spec，AI 才會照著做」這個直覺——他說大家在這個衝動裡忘記自己其實可以寫 code，prototype 與 spike 從 Agile 時代就有，只是現在沒人做了。</li>
+<li>Prototype 的定義是「回答一個問題的拋棄式 code」；他說「code is cheap」這句他其實討厭，真正變便宜的是「產出 code 的成本」，所以做原型從沒這麼划算過。</li>
+<li>保真度（fidelity）分級是他的判準：cancel/confirm 按鈕這種基本框架用討論就能定；「資料要怎麼呈現、某情況下要怎麼表現」只能靠跑得起來的東西回答，這種就該升到 prototype。</li>
+<li>實際示範：他用 /prototype 幫 TLDraw 圖表 app 的搜尋列一次生 A/B/C 三個結構不同的版本，逐一試用後給回饋（要 A 的搜尋框 + C 的排版），迭代出 D；原型掛在真實 route 上而非 throwaway route、存在拋棄式 branch 上，實作者可以直接複製貼上。</li>
+<li>不只前端：後端與複雜邏輯的「這個 state model 感覺對嗎」用另一條 branch——「做一個可互動的終端機小程式，把 state machine 推過那些在紙上難以推理的 case」；skill 裡兩條 branch 各有自己的 reference doc。他把 Ryan Singer 的 Shape Up 列為對他影響極深的書。</li>
+</ul>
+<p>這支是 prototype skill 的介紹，但真正的主張是「把設計討論的保真度拉高」。他開場說有件事讓他抓狂很久：大家一碰 AI 就想「我要先給 AI 一份 spec、一份 plan」，plan mode、spec-driven development，把全部力氣壓在寫一份極度詳細的 spec 上，期待輸出會長得跟 spec 一樣。而在這個衝動裡他們忘記一件事——你其實可以在往 spec 前進的路上直接寫 code。Prototype 跟 spike 是 Agile 時代就有的東西（他半開玩笑說「現在應該也還是 Agile 時代」），但大家就是不做原型了。</p>
+<p>他給的定義很乾淨：a prototype is throwaway code that answers a question。對「code is cheap」這句流行語他表態說部分同意部分討厭——真正變便宜的是「產出 code 的成本」，而這正好讓做原型、做快速 spike 變成史上最划算、最有效的工具。</p>
+<p>接著是 fidelity 這個概念。設計任何東西時你腦中都有一堆待解的問題，有些非常基本，例如「這個 modal 打開時要有 cancel 跟 confirm 按鈕」——這種基本框架用討論就解決得了，不需要高保真度的東西。但如果這個 modal 在某些情況下要顯示資料呢？資料要怎麼排？在特定情況下要怎麼表現？這些在規劃 spec 時很難憑空想清楚，你需要把想法放進「半可運作的 code」裡實地路測，這就需要更高的保真度。他的結論是：因為產原型現在這麼便宜，他傾向把更多討論放在高保真度上——基本的東西照樣在 grilling session 裡問答解決，但只要碰到「我真的需要看到這東西動起來、需要感受它」的問題，他就要一個原型。</p>
+<p>他也把 prototype 定位進 wayfinder（當時 wayfinder 影片還沒發）：wayfinder 把一大塊工作拆成不同的 planning session、每個 session 一張票，票有 type，其中兩種是 grilling 與 prototype。他直接把 skill 裡那段 ticket type 的文字念出來：預設是 grilling type（跟 agent 對談、把範圍摸清楚），而當你需要拉高討論保真度時就換 prototype——「making a cheap, rough, concrete artifact to react to」，用 prototype skill 對 UI 或邏輯 code 戳一下、把原型當 asset 連上票，使用時機是「how should it look / how should it behave 是關鍵問題」的時候。他強調不管你用不用 wayfinder，這都是一條夠清楚的判準。</p>
+<p>示範這段資訊量最大。他在擴充自己那個建在 TLDraw 上的圖表 app，想加一個搜尋舊 diagram 的功能，而資料模型有點複雜（有 diagram、也有 diagram 隨時間的 snapshot），他不確定搜尋列該長怎樣、該怎麼表現，所以跑了 /prototype。產出是頁面下方一個小切換器，可以在 A、B、C 三個版本間切——每個版本各自編碼了幾個設計決策供他反應與迭代。他當場逐一試：A 是 reflow in place、依 diagram 名稱把 snapshot 分組，他喜歡搜尋框的位置但不喜歡分組；B 左邊有可以再篩的分組，還不錯，但重新搜尋時篩選會 reset；C 沒有篩選、全部排成一列，他很喜歡但頂端那個「search diagrams」很醜，而且「current」那個標示跟 snapshot 混在一起怪怪的。這個 prototype session 花了約 10 萬 token，他選擇 compact 而不是 clear，理由講得很明確：原型的所有資訊、所有進到原型裡的設計決策都要留著，只是要繼續在同一個 codebase 位置給回饋。然後他用聽寫給回饋「我喜歡 A 的搜尋框和 C 的排版」，強調這一場的重點是「迭代這個原型」而不是「選出最好的那個」——迭代過程中會產生新的設計決策，這些決策全部被編碼進原型，而原型會被存在一個拋棄式 branch 上。這樣一來，真正實作的時候拿到的不只是一份 spec，而是可以直接複製貼上的真前端 code。</p>
+<p>他也點出一個容易被忽略的操作選擇：這個原型是接在 live page 上的，不是另開一條 throwaway route。他說你要開也可以，但他偏好接進真實 route，因為彈性更大、而且「it's a more honest representation of how the code is actually going to work」。最後 D 版出來，A 的搜尋框加上他要的行為都到位、原本的重複項也消失了，連點下去都真的能用。他說到這裡原型就算完成，接下來他會交給 AFK agent 去把東西接進去、刪掉舊的原型 code、確保符合原始 spec。他對這種做法的評價是「結果好到不可思議」，因為討論的保真度夠高、你看得到活的版本、回饋是基於那個版本給的，而且回饋已經烤進一條 throwaway branch 讓實作者可以直接參照。他順帶回擊了一種常見抱怨：「我寫了一份又大又漂亮的 spec，結果它做出來的東西超怪」——他的診斷是你的討論保真度根本不夠，你本來就該做原型。</p>
+<p>最後他澄清這不只是 UI / 前端的事。前端確實受益特別多，因為「它該長怎樣」在討論階段特別難回答；但做比較複雜的東西、尤其後端時，「這段邏輯、這個 state model 感覺對嗎」這類問題會一直出現，而回答它們最好的方式往往也是做個原型——只是不必是 UI 原型。他把 skill 裡的原文念出來：「build a tiny interactive terminal app that pushes the state machine through cases that are hard to reason about on paper」，也就是純邏輯原型；他說收到大量回饋說這個小功能很棒。兩條 branch 各自有自己的 reference doc，skill 會依情況去讀對應那份。收尾他重申關鍵論點：從「討論與 spec」跳到「production-ready code」這一步非常大，但從「可運作的原型」跳到 production 就相當簡單。他也預測隨著 agent 越來越會操作畫布與設計工具，wireframe 會回歸。並給 Ryan Singer 的 Shape Up 一個大力推薦，說他大約 2019 年讀完後徹底改變了自己做應用的方式，書是免費線上版。</p>
+<p class="voice">使用者本地 prototype 是 fork（wayfinder SKILL.md 該票型那行註明「/prototype fork 已落地（capture 落點改本地 artifact）」），影片講的兩條 branch——終端機互動式邏輯原型、URL param 切換的 UI 變體——跟本人 fork 的描述一字對得上，機制沒有偏移，不需要重接。可以直接抄進實跑習慣的是三個操作細節，這三個在本地 skill 文字裡看不到：(1) UI 原型一次生三個「結構不同」的版本而不是一個，靠互相比較逼出偏好；(2) 原型掛在真實 route 上、不要開 throwaway route，Matt 的理由是這樣才誠實反映 code 實際怎麼跑；(3) 原型 session 撞到約 10 萬 token 時選 compact 不選 clear，因為設計決策必須留在 context 裡。對 A/B trial 的判斷：這支是 matt 這條線「先做原型、別急著寫 spec」的核心論證，正面對打 superpowers 那條 brainstorming → writing-plans → 先寫測試的順序。如果 trial 期間 matt 組實跑時沒有真的開過 prototype 票，等於只跑了半套，比出來的結論不能代表這套方法——建議把「這輪有沒有用到 /prototype」列進 trial 的記錄欄位。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/0l7zOp260yc">There is no such thing as greenfield</a> <span class="pill">2026-07-21 · 短片</span></h3>
+<ul>
+<li>他被問到最多的問題之一是「你的 skill 只能用在 greenfield 還是 brownfield 也行」，他的答案是這兩者基本上是同一件事。</li>
+<li>理由：你蓋的任何東西都是為真實世界蓋的，而真實世界裡根本沒有 greenfield——你永遠在繞外部限制、跟既有軟體整合、解真實問題。</li>
+<li>唯一的差別是 brownfield 已經有既有的 coding convention、測試套件、coding standard（就算沒寫成文件，也隱含在已經寫出來的 code 裡），而 greenfield 是這些你還可以自己挑。</li>
+<li>但一旦挑完、AI 又吐了一堆 code 進 repo，那些選擇就越來越難改；他問「你的 greenfield 能維持多久綠？」答案是不久，也許幾天、最多一週——我們從全新 codebase 掉到 legacy codebase 的速度史上最快。</li>
+<li>結論：greenfield / brownfield 這個區分沒那麼重要；brownfield 是可以有很多 code，但只要把文件設計好、資料夾結構設計好，一樣可以做到好導航、好做事。</li>
+</ul>
+<p>這是一支純觀點的短片，回應的是他 skill repo 使用者最常問的問題：這套東西只能用在新專案嗎。他的回答是把這個二分法整個否定掉。他的第一個論據是「你蓋的東西都是為真實世界蓋的」，而真實世界裡不存在真正的 greenfield——你永遠在應付外部限制、在跟既有軟體整合、在解真實世界的問題。第二個論據把差異縮到只剩一項：brownfield 與 greenfield 的唯一區別是「你還沒把在這個 codebase 裡工作的體驗定下來」。Brownfield 已經有既有的 coding convention、大概也有既有的測試套件、有 coding standard——就算這些都沒被寫成文件，它們也已經隱含在已經寫出來的 code 裡了。Greenfield 則是這些你一開始都可以自己選。</p>
+<p>但他馬上補上時間軸：一旦你做完那些選擇、AI 又往 repo 裡吐了一大堆 code，這些選擇就開始變得越來越難改。於是他問了一個很銳的問題——「你的 greenfield codebase 能維持多久是綠的？」他自己的答案是不久，可能幾天，最多一週。他的措辭是「我們從全新 codebase 移動到 legacy codebase 的速率比以往任何時候都快」。所以他不認為這個區分還有多少實質意義。</p>
+<p>最後他給 brownfield 一個平反：brownfield codebase 確實可以塞很多 code，但只要你把文件設計好、把資料夾結構設計好，它一樣可以變得相當好導航、相當好做事。字幕到此結束，他沒有在這支裡展開「文件要怎麼設計」的細節。</p>
+<p class="voice">這支回答的是 skill 的適用面而不是流程細節，對本人現行流程沒有任何要改的動作。唯一的用處是消除一個可能的誤解：本人三個公司 repo（akocommerce／retargeting-api／akohub.com）全是 brownfield，如果曾懷疑 matt 那套 to-spec → to-tickets → implement 是給新專案設計的、拿來跑舊 repo 會水土不服，Matt 在這支直接否定該疑慮——他的立場是同一套流程兩邊都跑，差別只在 brownfield 的既有慣例必須先讓 agent 讀得到（也就是他在別支講的 context.md / ADR 那套）。不必調整任何設定，也不影響 A/B 的比較基準。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/5hYsBUMmr-I">Using /grill-me for interviews?!</a> <span class="pill">2026-07-20 · 短片</span></h3>
+<ul>
+<li>有人私訊他，說用 /grill-me 的方式是他從沒想過的：拿來做技術面試。</li>
+<li>做法是把候選人拉上視訊，讓對方在自己的 Claude 裡跑 grill-me、對一個 codebase 加一個功能。</li>
+<li>他認為之所以有效，是因為 grill-me 對使用者要求很高——逼你清楚描述要去哪，還會質問你「你想做的這個東西真的需要存在嗎」。</li>
+<li>而這正好考的是跟 AI 一起工作真正需要的策略性能力：長期視角、把想要的東西講清楚。</li>
+<li>這也呼應他的 skill 設計哲學——他的 skill 是 empower 使用者、而且對使用者的能力要求高才發揮得最好；門檻又夠低，任何人都拿得起來，所以當面試工具剛好。</li>
+</ul>
+<p>這支很短，內容是轉述一個他覺得「有點天才」的第三方用法。有人幾週前私訊告訴他，他們把 grill-me 拿來做技術面試：把候選人拉上視訊，讓對方在自己的 Claude 實例裡跑 grill-me，然後對一個 codebase 加一個功能。</p>
+<p>他解釋為什麼這會有效，論據全部落在「grill-me 對使用者的要求」上——他的原話是 grill-me「asks a lot of you」：它要求你清楚地描述你要去哪裡，它會用問題盤問你、看你的直覺對不對，以及你要蓋的這個東西究竟需不需要存在。他認為這恰好就是跟 AI 工作時需要的那種策略性能力：你需要長期視角（long-term mindset），你需要能夠非常清楚地描述你想要什麼。</p>
+<p>然後他把這件事接回自己的設計哲學：這正符合他想要自己的 skill 被使用的方式——skill 應該賦權給使用者，而且要求使用者本身具備相當程度的能力才能發揮最好。因此 grill-me 是個很好的面試工具，因為你可以藉此實際評估一個人「怎麼跟 AI 一起思考、怎麼跟 AI 一起工作」，同時也評估他的策略思考。他最後補一句：它又夠簡單，任何人都能上手，所以這個用例挺酷的；順帶說如果你想變得更會用 AI，這也是個好練習。</p>
+<p class="voice">這支不含任何流程改動指示，是 grill-me 的側面用途。對本人唯一可轉用的地方是 workshop 選題：本人對 ako 團隊有週期性 internal tech workshop（已講過 superpowers、SDD、本地模型、code-review、模型路由），「拿 grill-me 當評估工程師 AI 素養的量尺」是個還沒講過的角度，而且不需要動任何本地設定就 demo 得出來。流程面明確不建議因為這支去調 grill-me——本地 grill-me 真正該處理的落差在別的地方（見下方「這改變讓 /grill-me 好超多」與「skills 全鏈路教學」兩支）。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/sOd7svdu_1I">What is the dumb zone?</a> <span class="pill">2026-07-20 · 短片</span></h3>
+<ul>
+<li>很多模型現在標稱 100 萬 token 的 context window，但實際能拿來做事的比例少得驚人。</li>
+<li>機制是 attention degradation：每多一個 token，模型不只要追蹤那個 token、還要追蹤它跟其他每一個 token 的關係——5 個 token 是 10 組關係、10,000 個 token 就是 100 萬組，到某個點模型就開始退化、幻覺變多、資訊檢索變差、code 寫得更爛。</li>
+<li>實務上可以把 agent 想成有一個 smart zone 跟一個 dumb zone；不是斷崖式而是緩降，有些任務不太需要智力所以在 dumb zone 做也沒差，但你想讓花掉的 token 值回票價就要花在 smart zone。</li>
+<li>dumb zone 從哪開始眾說紛紜、每個模型每種任務都不一樣，但他的經驗法則是大約 15 萬 token；半年前他認為是 10 萬，這個數字還會繼續往上爬。</li>
+<li>撞到 dumb zone 的處置是 clear、compact、handoff，或者重新設計 workflow 讓任務根本不需要那麼多 context；他說出現幻覺、尤其是 faithfulness hallucination，就是你已經在 dumb zone 的訊號。</li>
+</ul>
+<p>這支是他整套方法論的量化前提，內容雖短但論證完整。開場的反差是：現在很多模型出貨就帶 100 萬 token 的 context window，但「實際可用於真正工作的比例少得令人震驚」。</p>
+<p>他給的機制解釋是 attention degradation——context window 裡 token 越多，agent 表現越差。原因是每當你往 context window 加一個 token，模型需要追蹤的不只是那個 token 本身，還有它與其他每一個 token 之間的關係。他當場算給你看：5 個 token 就是 10 組注意力關係；如果有 10,000 個 token，那就是 100 萬組關係。到某個點模型就開始表現變差、產生更多幻覺、資訊檢索能力下降、寫出更爛的 code。</p>
+<p>由此他導出 smart zone 與 dumb zone 這組詞彙。他特別註明這不是斷崖式的驟降而是慢慢下沉，而且有些任務本來就不需要那麼多智力，所以在 dumb zone 裡做也無妨；但如果你想讓花出去的 token 產生最大價值，你會希望這些 token 花在 smart zone 而不是 dumb zone。</p>
+<p>那 dumb zone 從哪開始？他承認這件事爭議很大、每個模型不同、大概每種任務也不同，但他給出一個他認為有用的經驗法則：大約 15 萬 token。他還給了這個數字的時間變化——大約半年前他認為是 10 萬左右，現在往上調到 15 萬，而且會繼續往上爬。這個「數字會漂移」的註記本身就是有用的資訊：這不是一個常數，是一個要定期重估的參數。</p>
+<p>實務建議有兩層。第一層是設計面：他說要設計出「把任務拆成小塊、然後在新的 context window 裡跑」的 workflow 其實很容易，而他發現這樣做的結果是花更少 token、拿到更好結果——這句話正好是他整套 ticket 化流程的成本論據。第二層是即時處置：當你到達 dumb zone，把這件事當成一個訊號，去做以下四件事之一——clear context、compact context、handoff，或者重新思考怎麼把 workflow 設計成任務根本不需要那麼多 context window。最後他給了一個可觀察的偵測訊號：如果你開始看到幻覺、尤其是 faithfulness hallucination（對已給資訊的忠實度出問題），那你大概已經在 dumb zone 裡了。</p>
+<p class="voice">這支是 matt 整套 pipeline 的量化底盤——to-tickets 之所以「一張票 = 一個全新的 context window」、implement 之所以票與票之間 clear，全建立在這個 15 萬 token 門檻上。對本人有兩個具體的張力點。第一，本人跑的是 Opus 5 的 1M context 模式，而 `~/.claude/rules/common/performance.md` 現行寫法是「Context 尾端避免大型 refactoring／跨多檔實作／複雜互動 debug（門檻依當前模型的 context window 換算，1M 模式下較少觸發）」——這條規則假設窗越大受限越少，Matt 的論證方向正好相反：標稱窗變大不代表智力區同比放大。但要注意他自己把 15 萬三重限定死了（原話「this is hotly debated, and it's different per model, and probably different per task」「a useful rule of thumb」「it will continue to creep up」），他從沒說任何特定模型的 1M 模式一樣是 15 萬——所以這個數字不能直接套到 Opus 5 的 1M 上。這條規則要不要從「依窗換算」改成固定門檻，是使用者的決定；真要改，門檻得本機自己量一次，不能拿他的經驗法則當定值。第二，本人的 to-tickets fork 只寫「Each slice is sized to fit in a single fresh context window」（枚舉：`grep -niE "token|context window|smart zone" ~/.claude/skills/to-tickets/SKILL.md` 命中 2 行——第 33 行的切片粒度、第 50 行 best-of-N 的 token 成本敘述，兩行都沒有 token 預算數字），也就是切票粒度目前沒有可對照的 token 預算。要不要把 15 萬這個數字（並註明它會隨模型漂移、需定期重估）寫進 fork，是一個成本很低、可立刻執行的改動。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/Yn8h5Ip-L9c">Do you even need human review?</a> <span class="pill">2026-07-20 · 短片</span></h3>
+<ul>
+<li>他說大家都著迷於「把工程師的工作自動化」，而做這件事最好的方法是先搞清楚「你在哪裡需要人來審」。</li>
+<li>前 AI 時代的流程是 plan → ship → review，三個 checkpoint 全是人；很多人的夢想是把三個一次全換成 AI，他覺得不合理。</li>
+<li>大工作要把 checkpoint 左移：一開始就跟 AI 對齊（他說 grill-me、grill-with-docs、wayfinder 就是幹這個），然後上 production 前再人審一次。</li>
+<li>但有些情況結尾不需要人審：純 refactor、內部文件改名——人在前面對齊完就讓 AI 一路推到 prod；反過來也有一句 prompt 講得完的小改（改按鈕顏色、改標題、兩行的小 bug），根本不用前期對齊，做完再審就好，這叫 checkpoint 右移。</li>
+<li>判準是 diff 大小：diff 越小越容易整個重生、越容易整包塞進 context，所以小工作 review 右移；大工作到後期才修非常貴，所以 review 左移。</li>
+</ul>
+<p>這支處理的是「人在什麼時候該介入」，而他的答案是一組可操作的位移規則。他從一個他不同意的願景開始：大家都著迷於把工程師的工作自動化，而他認為做這件事最好的方式是先想清楚「你在哪裡需要人類審查」。他畫的是一個純前 AI 時代的流程：你先規劃工作、然後交付工作、然後審查工作，而這三個檢查點——所有你檢查工作成果的時刻——全都是人在做。他說很多人的夢想大概是把這三個一次全部翻譯成 AI 來做，但對他來說這不太合理。</p>
+<p>他的分層是這樣的。對非常大的工作，你大概會想先跟 AI 對齊，也就是你要參與最初的規劃階段——他直接點名這正是 grill-me、grill-with-docs、wayfinder 這些 skill 在做的事——然後在上 production 前你大概也會想要一次人工審查。這是預設。</p>
+<p>但他馬上給例外。有些情況你不需要在結尾投入那麼多人工審查，比方說這只是一次 refactor、只是內部文件的改名；這種時候人可以只在前期對齊，把「計畫已定案」當成結論，然後讓 AI 一路交付到 prod。反過來也有另一種情況：有些工作你可以用單一個 prompt 就把要做的事講完，那就不必花力氣跟 AI 對齊、不必 grilling，直接讓它一路跑完流程，只在上線前審一下。他說這對非常簡單的變更、非常小的 diff、不會造成大影響的東西非常有效——像是改按鈕顏色、改標題名稱。他還特別把小 bug 也算進來：「修一個只改幾行的小 bug」，這種你大概也該把 checkpoint 往右移。</p>
+<p>他強調「shift」是這裡正確的語彙：大工作、需要先對齊的東西，checkpoint 左移；小工作，checkpoint 右移。理由他也講清楚了——diff 越小，就越容易把 code 整個重新生成、也越容易把它整包握在 context 裡；反過來如果工作量非常大，你會想在事前就對齊，因為到後期才修非常昂貴。他用一句話收尾：大工作 review 左移，小工作 review 右移。</p>
+<p class="voice">這支給的是「什麼時候不該跑完整 pipeline」的判準，正好對到 A/B trial 最容易被質疑的地方——matt 這套會不會對小事過度工程。可以直接接進本人現行規則：CLAUDE.md 的 🔬 matt-pipeline trial 條目現在寫的是「工作型任務起手、要進 spec／plan／實作流程之前，先問一句『這次走 matt 還是 superpowers？』」，是個二選一；但 Matt 自己的立場是還有第三條路——小 diff 不做前期對齊、直接做完再審。若不把這條豁免寫進 trial 紀律，trial 樣本會被一堆本來就不該進流程的小任務稀釋，兩組的成本數字都會被拉高、比較失真。這支沒有講到任何 skill 的用法變更，唯一的行動項就是 trial 條文那句要不要加豁免，屬使用者拍板。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/tLyfDIt9wHg">This change makes /grill-me SO MUCH BETTER</a> <span class="pill">2026-07-17 · 短片</span></h3>
+<ul>
+<li>他宣布下一版 skill 裡 grill-me 會有大改：從「一次問一題」改成「分批一輪一輪問」。</li>
+<li>舊行為的失敗模式他講得很具體——grilling session 到尾聲時它會連續問一串答案全是 yes 的問題（同意、同意、同意），每一題都要往返一次 model provider，很浪費時間；他自己全程用聽寫，看得到全部題目就能一口氣講完。</li>
+<li>但「全部一次問完」也不行：問題之間有相依性，某題的答案可能取決於另一題的答案；一次一題就是靠序列性繞開這件事。</li>
+<li>他找到的折衷是 rounds：第一輪 Q1-Q4 一起問、你一次答完，第二輪拿前一輪的答案再問 Q5-Q6，如此推進——他說這是他能做到的最高並行度。</li>
+<li>代價是答題時要多讀一點才能理解每一題，但比較快，而且如果你同時跑多場 grilling，context switching 也比較少；不喜歡的人可以改自己的 global claude.md 或直接改 skill 回舊版。</li>
+</ul>
+<p>這支是他宣布對 grill-me 做出改動的定案片（前一天那支 U832hShMVnc 是徵詢意見）。他開頭說「我很確定下一版 skill 裡 grill-me 會有顯著改變」——從一次盤問一題，改成分批盤問。</p>
+<p>他先把舊行為的失敗模式講得很清楚：grill-me 有個很怪的失敗模式，就是當你走到 grilling session 的尾聲時，它基本上會連續問你一串答案全是「是」的問題——「是，我同意你的建議」、同意、同意、同意。他說這在時間上非常浪費，因為你必須等：送一個請求上去給模型供應商、等它回來，然後才能問下一題。他補充這對他來說特別蠢，因為他全程用聽寫，只要問題全部顯示在畫面上，他就可以一口氣把一堆答案講完。他也提到很多人早就自己在改 grill-me，把它改成「一次把所有問題問完」來繞開這件事。</p>
+<p>但他馬上指出「全部一次問完」自帶一個問題：問題之間有相依性，某一題的答案可能取決於另一題的答案；而一次一題之所以能繞過這個問題，正是因為它是按順序問的、你就是在進行一場對話。</p>
+<p>所以他說自己找到了一個完美的中間點：它會問你「一輪一輪的問題」。他把結構念出來——第一輪的 Q1、Q2、Q3、Q4 一起出現，你可以一次回覆全部四題；然後第二輪拿你在前一輪給的答案，接著問下一批後續問題，也就是第二輪的 Q4、Q5、Q6。他說「這大概是我能做到的最高並行度了」。</p>
+<p>代價他也誠實列出：這確實表示你在回答一場 grilling 時要多讀一點東西，才能逐一理解每個問題；但它比較快，而且如果你同時平行跑好幾場 grilling，context switching 會比較少。他最後說如果你不喜歡這個新行為，當然可以直接改你的 global claude.md，或是直接改 skill 本身用回舊版；但他自己試了一整週、非常喜歡，所以決定推給大家。</p>
+<p class="voice"><strong>這支是本批 15 支裡最直接可行動的一支。</strong>本人本地 `~/.claude/skills/grill-me/SKILL.md` 第 11 行仍是被上游否定掉的舊版行為，原文是「Ask the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering.」；而且同一句已經被 inline 進 `~/.claude/skills/wayfinder/SKILL.md` 第 88 行的 grilling 票型描述（「interview the user — one question at a time... asking several at once is bewildering」）。也就是說上游作者在 2026-07-17 這支片裡判定這句描述的行為是失敗模式、並宣布<strong>下一版打算</strong>改成 rounds——注意字幕全程是意向式（「in the next version of my skills, uh Grill Me is going to change significantly」「I'm going to be changing Grill Me to do this」），他當時只說自己本地試了一週（「I've been trying this all week」），字幕裡沒有任何一句證實上游 skill 已經發布這個改動。所以本地兩檔是「停在舊行為」、不是「停在已被淘汰的版本」；跟進前應先實查 mattpocock/skills 現行 grill-me SKILL.md 是否已改。真要改，兩個檔必須一起改，只改 grill-me 會讓 wayfinder 的 grilling 票繼續跑舊行為。更值得注意的是本人自己的規則裡已經有這個張力：CLAUDE.md「問題一次收斂」那條寫的是「要問就一輪問完……不要一輪問一題分好幾輪來回；答案依賴本輪另一未決問題的題目歸下一輪、不硬擠同輪」——最後那句正是 Matt 這支講的 rounds 機制、本人等於獨立想到同一個設計；但 CLAUDE.md 的「訪談模式」條又寫「一次只問一題、等答案才問下一題」。所以本地現在同時存在三種口徑（grill-me 一次一題、問題一次收斂的 rounds、訪談模式的一次一題），跟不跟進上游是使用者的決定，但這個不一致本身就該被拍板。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/32LyZyFQhCQ">Framework Hell, Tutorial Hell... now Skill Hell</a> <span class="pill">2026-07-17 · 短片</span></h3>
+<ul>
+<li>他說開發者很會發明各種「地獄」——framework hell、tutorial hell，現在是 skill hell。</li>
+<li>Skill hell 的定義：你把 GSD、spec kit、BMAD 之類一堆不同框架與 skill 全部硬湊在一起想弄出能動的東西，結果動不了；他承認自己也貢獻了一份。</li>
+<li>他畫的分界線是：他的 skill 是賦權給<strong>使用者</strong>、不是賦權給 agent；他認為現在很多人在做的是把軟體開發流程直接編碼進 agent 裡。</li>
+<li>Skill hell 的具體症狀是「把一堆不同 skill 一次砸進同一個 context window，甚至沒讀過內容、只想看它會不會動」，結果讓模型過載、context 負擔巨大。</li>
+<li>反過來，由使用者驅動 skill 你就有掌控感、看得懂流程的每一階段、能引導 agent；你還是可以交給 AFK agent 跑，但迴圈由你控制。</li>
+</ul>
+<p>這支很短但表態很重，是他對整個 skill 生態的立場宣言。他先玩了一下梗：開發者好像很擅長找出各種不同類型的地獄——我們有過 framework hell，有過 tutorial hell，現在有了 skill hell。</p>
+<p>他給 skill hell 下的定義是：你去試各種不同的框架，像是 GSD、spec kit、還有 BMAD 這些東西，然後你就想把它們全部硬拼湊成一個能動的東西，結果它不能動。他很坦白地承認自己也對 skill hell 有一份貢獻，因為他自己也放了一整套 skill 出去。</p>
+<p>但接著他劃出他認為關鍵的那條界線：他把自己的 skill 想成是「賦權給使用者，而不是賦權給 agent」。他說他覺得現在大家在做的事情是——把軟體開發流程直接編碼進 agent 裡面。而他認為應該是你這個使用者要在控制位置上，你的手應該放在方向盤上；skill 應該是幫助你的，不見得是幫助 agent 的。他把這件事重述成一句更具體的話：你是在把你自己的流程編碼成可以一再重複執行的東西。</p>
+<p>所以他認為 skill hell 就是「你只是把一堆東西砸進同一個 context window、一次一堆不同的 skill，甚至根本沒讀過它們，只是想試試看會不會動」，結果就是模型過載、進入巨大的 context 負擔。而如果是你這個使用者在駕駛這些 skill，你就會有掌控感，你理解流程中的每一個階段，你可以引導 agent，而且你不必全程待在迴圈裡——你仍然可以委派給 AFK（離開鍵盤）的 agent，但流程與迴圈是你在控制。最後他自嘲式地丟了一句雙關收尾（from skill hell to skill hala）。</p>
+<p class="voice">這支是這次 A/B trial 的元層論證，值得直接寫進 trial 的評估框架。Matt 明白把 BMAD 那類「把軟體開發流程編碼進 agent」的做法列為反模式，而本人的對照組 obra/superpowers 正是「SDD + TDD 強制流程」型——靠 skill 讓 agent 自動照走。所以這個 trial 比的其實不只是兩套 skill 誰好用，而是兩種哲學：user-invoked（matt，人在方向盤上、skill 是可重複執行的個人流程）對 agent-enforced（superpowers，流程寫進 agent 強制執行）。這個框架一旦講明，trial 的驗收標準就不該只看「做得快不快」，還要看「本人對每階段的掌控感與可預測性」——而後者目前沒有被記錄。另外他給了一個可量化的指標：他的 skill 因為 description 短、幾乎不自動 leech 進 context，38 個全裝只吃 660 token（這個數字出自同批影片 13 的實測畫面）。本人本地有 76 個 skill 目錄（`ls -d ~/.claude/skills/*/ | wc -l` = 76；`ls | wc -l` 的 77 多算了 INVENTORY.md 這個非目錄檔），照這個角度量一次自己的 skill description 常駐佔用是個成本很低的稽核，不需要改任何流程就能做。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/A0scuiiGBC4">Kill your MEMORY.md</a> <span class="pill">2026-07-17 · 短片</span></h3>
+<ul>
+<li>他完全不建議用 agent 自己存的記憶，甚至建議幾乎把 agent 存進記憶庫的東西全刪掉；在 Claude Code 裡進 memory 設定把 auto memory 關掉，他自己是完全關閉。</li>
+<li>開著的時候它會存進一個叫大寫 MEMORY.md 的本地檔、用來記住你的偏好，但他說它「太他媽急著記」。</li>
+<li>他的具體反對理由：你對某個特定 feature 該怎麼做的偏好會被寫進記憶庫，然後跑到所有地方去、影響你之後跟 agent 的每一場對話。</li>
+<li>他偏好 agent 完全 stateless——不記得前一場任何事，行為才可預測，因為你每次都從一致的基準出發；有記憶累積就會越用越不一樣、越來越不可預測。</li>
+<li>他的替代做法是：方向盤要在你手上，有偏好要表達就自己去編輯 claude.md 或在 repo 裡寫個小 doc；他說大家太執著於「agent 應該隨時間記住事情」這個想法，但他發現整個把記憶砍掉反而運作得更好。</li>
+</ul>
+<p>這支是他對 agent 記憶功能的全面否定，語氣相當強。開場他說「我其實完全不建議那樣做」，並建議幾乎把 agent 存進自己記憶庫的所有東西都刪掉。操作方式他也講了：在 Claude Code 裡你可以進 memory 設定、把 auto memory 關掉；他自己是完全關閉。</p>
+<p>他描述這個功能開著時的行為：它會把東西存進一個叫做大寫 MEMORY.md 的本地檔案，並用這個檔案來記住你的偏好。而他的批評是「它就是太他媽急著記住你的偏好、急著把它們存下來」。</p>
+<p>他給的具體傷害模式只有一個，但很精準：你會有某個關於「某個特定 feature、以及那個 feature 該怎麼被建造」的偏好，然後那個偏好會進到你的記憶庫裡，接著就跑到所有地方去，影響你之後跟這個 agent 進行的每一場對話。也就是說，一個本來只在某個局部情境成立的偏好，被無差別地帶進了所有情境。</p>
+<p>他的正面主張是 stateless：他更偏好自己的 agent 完全無狀態，因為當它無狀態、不記得前面任何 session 的任何事情時，它就可預測得多——他知道它會怎麼行為，因為每一次都是從一致的基準出發。反過來，如果你有這種記憶堆積、這種隨時間累積起來的雜物，那你每次用它的時候行為都會稍微不一樣、稍微更不可預測一點。</p>
+<p>最後他把控制權的論點再說一次：你應該掌握方向盤、應該掌握選擇要去哪裡的權力，這意味著如果你有某個想被表達的偏好，你就應該自己去做——去編輯你的 claude.md，或是在 repo 裡做一個小 doc 之類的。他的收尾是：大家太執著於「agent 應該隨著時間記住東西」這個想法，但他實際發現把記憶完全砍掉，運作得更好。</p>
+<p class="voice">這支跟本人的做法正面衝突，而且不是小分歧：本人跑的是 604 個 memory 檔（`ls ~/.claude/memory/*.md | wc -l` = 604）＋ 79 行 MEMORY.md 兩層 cluster index 的重度 auto-memory 架構，還配了一整套維護紀律（cluster check、AI 類結論 90 天時效重查、promote 到 wiki）。但<strong>不建議照他的結論去關 auto-memory</strong>，因為他的論據只有一條——「局部偏好會洩漏到所有對話」——而本人的體系恰好已經對這條有解：分域路由 + on-demand drill + `_index_*` 只在需要時才 drill，設計上就是為了不讓所有東西每場都進 context。真正值得拿走的是他那個判準：記憶帶來的不可預測性，要用「每次從一致基準出發」這個代價去衡量。可執行的動作是稽核而不是砍掉——量一次 always-on 注入（MEMORY.md 本體 + `~/.claude/rules/common/*`）實際吃多少 token，其中有多少是與當前任務無關卻每場都進 context 的；那個比例才是 Matt 這條批評在本人身上真正對得到的部分。順帶一提，他在同批的第 10 支（software fundamentals）說「agent 沒有記憶所以會在同一個地方一錯再錯」，跟這支的主張看似矛盾，他的解法是把知識放進 code 與 doc 而不是 agent memory——那正是本人 CLAUDE.md / rules 那套的做法。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/eEjBhVI9Qok">Do software fundamentals still matter?</a> <span class="pill">2026-07-16 · 短片</span></h3>
+<ul>
+<li>他的核心命題：code 是 agent 運作的環境，而環境的品質會影響 agent 在這個 codebase 裡工作的產出——垃圾 codebase 就產出垃圾。</li>
+<li>垃圾 codebase 是偷偷長出來的：有個概念叫 software entropy，除非你很小心地組織 codebase、策略性思考、抱持長期視角、套用軟體基本功，否則它會隨時間越來越亂、越來越難做事。</li>
+<li>他觀察到人類比 AI 更能在爛 codebase 裡存活，因為人有記憶、會慢慢養出對這個 codebase 哪些做法可行的直覺。</li>
+<li>Agent 沒有記憶（除非硬接一個很爛的記憶系統，而那是個很未解的問題），像《記憶拼圖》主角一樣每次醒來什麼都不記得，所以會在你的 codebase 裡一錯再錯——笨模型如此、聰明模型也如此，問題不在推理能力而在環境難探索、難做修改。</li>
+<li>結論：現在最有價值的人是能在自己 codebase 裡蓋出好 agent 體驗的人，而那來自好探索的 code、切在好接縫（seam）上的測試、好的模組設計與介面設計；所以軟體基本功比以往更重要。</li>
+</ul>
+<p>這支處理的是「程式設計師這個職業是不是死了、我們是不是該無視 code 只看 AI 的產出、把它當黑盒就好」。他的回答建立在一個他反覆使用的框架上：code 是 agent 運作的環境，而環境的品質會影響在這個 codebase 裡工作的 agent 的產出。他的推論很直接——如果你有一個垃圾 codebase，那 agent 就會產出垃圾。</p>
+<p>接著他解釋垃圾 codebase 的成因。他說垃圾 codebase 的特點是「它會偷偷靠近你」，並點名 software entropy 這個概念：除非你非常小心地組織 codebase、策略性地思考你在做什麼、對 codebase 抱持長期視角、套用軟體基本功，否則 codebase 會隨時間慢慢變得越來越糟、越來越無組織、越來越難在裡面工作。</p>
+<p>然後是這支最有意思的比較。他說從他目前看到的 AI 表現來看，人類遠比 AI 更擅長在爛 codebase 裡工作。理由是人類有記憶，所以他們可以記住在這個 codebase 裡什麼做法有效、什麼無效；這當然不完美，但這代表人可以隨時間養出對一個爛 codebase 的手感，並在裡面維持相對的生產力。而 agent 沒有記憶——除非你硬接一個很爛的記憶系統上去，而他說那是個非常未解的問題。他用《記憶拼圖》的主角來比喻：agent 在 codebase 裡醒來，說「好，我醒了，我記得什麼？什麼都沒有。」所以每一次你都得把這個爛 codebase 的一切重新教它一遍。</p>
+<p>這導出他的關鍵論斷：AI 會在你的 codebase 裡一再犯同樣的錯，除非你在那裡策略性地思考、用護欄工作、把它們帶到該去的地方、預防它們犯錯。而他特別強調這對笨模型成立、對聰明模型也一樣成立——問題不在推理能力，而在於這些 codebase 難以探索、難以在裡面工作、難以做出修改，對 AI 來說就是一個棘手的環境。</p>
+<p>最後他給出價值判斷：現在最有價值的人，是那些能在自己 codebase 裡打造出優秀 agent 體驗的人。而那來自於——容易探索的 code、切在真正好的接縫（seam）上的測試、好的模組設計與介面設計。所以他的答案是：是的，軟體基本功比以往任何時候都更重要，因為好的 codebase 比以往任何時候都更重要。</p>
+<p class="voice">這支是他那套 skill 的世界觀底盤，也解釋了他為什麼推 tdd 與 domain-modeling（測試要切在好 seam 上、術語要收斂），但對本人既有流程沒有任何具體改動指示。有一點值得記下來：他在這支說「agent 沒有記憶所以會一錯再錯」，卻在同批的 09（Kill your MEMORY.md）主張把 agent 記憶整個關掉——兩者不矛盾，因為他的解法是把知識放進 code 與 doc、而不是放進 agent 的自動記憶；這正好可以拿來替本人現行「規則寫進 CLAUDE.md / rules 而不是靠 agent 自己記」的設計背書。無需調整流程，唯一可選的動作是把這個論證收進 09 那支的拍板材料裡（它是理解 Matt 反 auto-memory 立場的另一半）。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/glaIO6OYh74">My /teach skill is still insane</a> <span class="pill">2026-07-16 · 短片</span></h3>
+<ul>
+<li>他推薦自己的 /teach skill，說它一直在關鍵時刻派上用場、對很多不同的事都好用。</li>
+<li>實例：他想在花園蓋一間 office，但那塊地形狀有點不規則；找專業做地界測量很貴，所以他想有沒有便宜一點、自己來的量法。</li>
+<li>他先叫 AI 印一份指南給他，但讀不進去，這時他意識到自己需要的是「學會」這件事，而不是拿到一份答案。</li>
+<li>他開了一個 teach workspace，說它解釋得非常好：把地塊每一邊量出來、切成三角形，再量每個三角形的對角線，就能確定這塊地究竟是什麼形狀。</li>
+<li>他說這件事他 Google 得到，但 teach 是完全為他這次任務量身裁切的；它還會出小測驗、能接住後續提問、知道他現在理解到哪。他也用它學魔術方塊與資深開發技巧。</li>
+</ul>
+<p>這支是他對自己 /teach skill 的推薦，論證方式是一個完整的真實案例。他開場說 teach skill 一直在關鍵時刻派上用場，對非常多不同的事情都還是很有用，建議你試試。</p>
+<p>案例是他一直在想在自家花園蓋一間 office，而他想蓋的那塊地有點奇怪、不太規則。他原本考慮找人做地界測量（site survey）看看能怎麼處理，結果發現那滿貴的，所以他想找個便宜一點的方法、也許自己來量這塊地。</p>
+<p>他的第一次嘗試是叫 AI 印一份指南給他，但他說「就是讀不進去」。就是在這個時候他意識到一件事：他需要的是「學會這件事」，而不是拿到一份說明。於是他打開一個 teach workspace，而他形容它解釋得非常出色。他把學到的方法講出來：有一個很聰明的做法是把這塊地的所有邊都量出來、把它切成一個個三角形，然後只要你再量出每個三角形的對角線，你就能確切知道這塊地是什麼形狀。</p>
+<p>他承認這件事他其實 Google 得到，但重點是 teach 給的內容「完美地為我這次的任務量身裁切」。他還提到兩個具體功能：它會附上小測驗題，而且如果他有後續問題或對任何地方感到困惑，它知道他現在在哪個理解位置，他可以直接繼續用 teach 往下問。最後他說自己用這個 skill 學過各種東西，包括魔術方塊，也包括資深開發技巧；結語是「如果你有什麼不懂的，就用 teach」。</p>
+<p class="voice">本人本地<strong>沒有</strong>這個 skill（枚舉：`ls -d ~/.claude/skills/*/ | xargs -n1 basename | grep -i teach` 回 0 筆，本地共 76 個 skill 目錄）。這支不涉及既有 pipeline、與 to-spec → to-tickets → implement 鏈完全無關，所以不影響 A/B trial 的評測，純粹是一個未安裝的獨立 skill 的宣傳。要不要試是使用者的決定；判斷素材是：本人現行的學習路徑走 NotebookLM 網頁版（memory `user_video_research_notebooklm_default`）＋ deep-research skill，而 teach 的定位（互動式、逐段推進、附測驗、知道你卡在哪）跟這兩者都不重疊——NotebookLM 是把素材壓成摘要、deep-research 是產報告，兩者都不做「診斷你哪裡沒懂」。若要試，照本人既有紀律走 safe-trial（會動 `~/.claude/skills/`）。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/oLx4yCbeklQ">Claude Code's system tools are SO BLOATED</a> <span class="pill">2026-07-16 · 短片</span></h3>
+<ul>
+<li>他說多數 harness、尤其 Claude Code，system prompt 裡塞了大量你根本沒在用的東西，很可能是好幾千個 token。</li>
+<li>他自己查的時候發現有 workflow、design sync、monitor 這些他完全沒在用的東西，換算下來每一次請求約 8,000 到 10,000 個 token。</li>
+<li>好消息是 Claude Code 允許你在 global settings.json 裡關掉這些，工具一旦被 disable，工具定義就會從 system prompt 裡被移除。</li>
+<li>他關掉的清單：控制進出 plan mode 的工具、ask user question 工具（他說他很討厭這個）、排 cron、bundled skills（內建的 code review skill）、dynamic workflows、remote control、Claude AI connectors（他說這個燒掉大量 token 而他本來完全沒發現）、artifacts。</li>
+<li>結果是他的起始 system tools 從 25K 降到大約 8K；他寫了一篇文章教你怎麼用 proxy 看自己實際送出去的是什麼，再據此調參。他的收尾理由是：送過線的東西越少，輸出就越好，因為 agent 少了一堆東西分心。</li>
+</ul>
+<p>這支是一個很具體的 token 優化操作指南。他開場的斷言是：多數 harness、但特別是 Claude Code，出貨時 system prompt 裡就塞了一大堆膨脹的東西；你的 system prompt 裡非常可能有好幾千、好幾千個 token 是你根本沒在用的。</p>
+<p>他講自己實測的結果：他查自己的時候發現有一整批東西——workflow、design sync、monitor——他根本就沒在用。而這些換算下來大約是每次請求 8,000 到 10,000 個 token。</p>
+<p>然後是解法。他說幸運的是 Claude Code 允許你自訂這些東西，你可以把設定放進 global settings.json 檔案，把各式各樣沒用的東西關掉。他描述機制時講得很明確：他不想要它來控制自己什麼時候進入與離開 plan mode，所以他把那些工具 disable 掉，「工具定義就從 system prompt 裡被移除了」。</p>
+<p>他關掉的清單依序是：進出 plan mode 的控制工具；ask user question 工具（他說「我個人真的很討厭這個工具，所以我從不用它、也不想看到它」，於是直接把工具定義從 Claude 的 system prompt 移掉）；排 cron 的功能（「我不想要它幫我排 cron，所以那些也刪了」）；bundled skills，因為他不用 Claude Code 內建的 custom code review skill；所有跟 dynamic workflows 有關的東西，他也不用；甚至連 remote control 都關掉了，因為他說那個在 system prompt 裡佔的份量其實不少；Claude AI connectors，他說這個在燒掉大量 token 而他本來根本沒察覺；以及 artifacts 功能。</p>
+<p>成果是他把起始的 system prompt、或者說 system tools，從 25K 降到大約 8K。他說他把這件事寫成一篇文章，讓你可以用一個 proxy 去看自己實際送出去的到底是什麼——他強調這非常非常有用——然後你就能調整設定、只挑你真正需要的那些 system prompt 片段。他的收尾理由是：你送過線的東西越少，你的輸出就會越好，因為 agent 少了一堆東西讓它分心。</p>
+<p class="voice">這支可以直接對照本人現況，但<strong>清單不能照抄</strong>。已經對上的部分：本人 `~/.claude/settings.json` 的 `permissions.deny` 段有 `AskUserQuestion`（第 20 行）與 `Agent(Explore)`（第 18 行），加上 env 的 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1`，方向跟 Matt 一致。不能抄的是他關掉的 dynamic workflows 與 cron——本人整條 social-info daily 產線就跑在 Workflow 上（`~/.claude/workflows/` 下有 daily-topic-analysis.js、local-analysis.js、deep-research-paced.js、deep-research-paced-zai.js、best-of-n-implement.js 五支），關掉等於拆掉主力產線；bundled skills 也一樣，本人大量使用內建與 plugin skill。真正可行動的是他的<strong>方法</strong>而不是他的清單：用 proxy 實量一次自己的 system prompt 大小，再逐項判斷哪些是真的沒用到。有一個技術差異需要先查證再行動：`permissions.deny` 是否等同於把工具定義從 system prompt 移除，本次未實測過，這是未驗證的推測——deny 有可能只是攔截呼叫、token 照樣送；Matt 講的是「工具定義被移除」，若兩者機制不同，本人現在其實沒拿到他說的那份 token 節省。這件事值得在做任何調整前先用 proxy 量出來。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/watch?v=M6mYodf0dJM">mattpocock/skills: A complete AI Coding workflow, end-to-end</a> <span class="pill">2026-07-16 · 長片</span></h3>
+<ul>
+<li>安裝：`npx skills@latest add mattpocock/skills`（Vercel 出的 skills.sh 安裝器，需要 Node）；38 個 skill 分兩組——mattpocock/skills 是他認證過的公開版、other skills 是他還在實驗、未來可能刪掉的；scope 選 project（團隊）或 global（單人），安裝方式選 symlink。他當場抱怨 Vercel 這個 CLI 的多選介面「有點壞掉」，說之後可能自己出一個。</li>
+<li>裝完跑 setup：設 issue tracker（GitHub / 本地 markdown / 任何都行——他強調想接 Jira、Linear、Beads 只要跟 agent 講就好，「它已經支援了」）；triage labels 用預設即可；domain documentation 選 single context（除非是大 monorepo 才選 multi-context）。setup 會在 claude.md 加三條連結：issue tracker docs、triage labels、domain docs。</li>
+<li>主流程：grill-with-docs（在 repo 裡是 stateful 的，把學到的寫進 context.md 與 ADR）→ 判斷這件事一個 session 做不做得完 → 做得完就直接 /implement；做不完才走 to-spec → to-tickets，每張票的大小等於一個 context window、票與票之間 clear。</li>
+<li>他自己的參數全都講出來了：Opus 4.8、medium effort、不用 plan mode 而是用 auto mode、smart zone 抓 140K；示範那場 grilling 只問了 6 題（他說平常大約 20 題）；to-tickets 切出 3 張他嫌太細，直接叫它併成 1 張。他也示範了 ask matt skill——「基本上就是我本人做成 skill」，可以直接問流程該怎麼走。</li>
+<li>implement 收尾會自己跑 code review，兩個軸：對照原始 spec 的驗收條件、對照 repo 自己的 coding standard（沒有就退回 Martin Fowler 那套 code smell）。他強調 review <strong>一定要開 sub agent</strong>，因為 agent 很不擅長改自己剛寫的 code——「因為是它寫的，所以它就覺得那很棒、沒問題」。</li>
+</ul>
+<p>這是他第一次替自己的 skills repo 做完整教學（raw md 該影片 description 寫的是 <strong>170,000 stars</strong>；digest 原稿的「16.2 萬顆星／750 萬次下載」出自字幕口述、字幕不落 raw md 無法對位，此處改採 raw md 可查證的數字，下載數因無任何可查證出處已移除），刻意只講主流程、不碰進階與新東西。示範對象是他自己的工作 repo AI Hero CLI，一個從沒設定過他 skill 的既有專案——他特別說新專案就是同樣步驟但在空目錄跑，brownfield 跟 greenfield 用法一樣。</p>
+<p>安裝這段：`npx skills@latest add mattpocock/skills`，前提是裝了 Node.js，npx 會去跑 Vercel 出的 skills.sh 安裝器。跑起來會列出 38 個 skill、分兩群——mattpocock/skills 是他「祝福過、覺得夠好可以公開面向大眾」的那些，other skills 是他當下正在實驗、未來可能刪掉的。他建議全選官方那組（並當場抱怨這個多選介面「有點壞掉」、說自己不太滿意 Vercel 的 CLI、之後可能自己出一個）。接著選要支援哪些 agent（Cursor、Codex、Claude 等通用的預設都支援，但像 Claude Code 這種用 Claude skills 的要自己選）。再來是 installation scope：team 用 project（全隊同一套 skill、可以一起貢獻、一起做決定），單人用 global 就好，他自己選 global 裝在 home directory。最後選 symlink 而不是 copy，他說 copy 那種做法不好、symlink 是簡單好用的方式，「這裡不用想，直接選 symlink」。</p>
+<p>裝完他點出一個關鍵設計：他的 skill 跟外面很多 skill repo 最大的差別是<strong>幾乎都是 user invoked</strong>。他當場跑 `context` 給你看——即使裝了全部 38 個，skill 只佔 660 個 token，因為他的 skill 大多不會把自己的描述硬塞進 context，而且描述寫得又短又精確。他形容這是「context 負擔非常非常輕」。</p>
+<p>然後是 setup 步驟（跑 setup mattpocock skills），會問幾件事。第一是 issue tracker：因為要存 spec、存 ticket，總得有地方放，選擇無限多——GitHub、本地 markdown、或任何東西。他在這裡特別加重語氣澄清一件他一直被問的事：「大家一直問我怎麼讓你的 skill 支援 Jira、支援 Beads、支援 Linear？它已經支援了。你只要跑 setup 然後說『幫我接 Jira』就好。」他自己示範時選本地 markdown。第二是 triage labels，skill 靠一組標籤傳遞 ticket 資訊，他說不重要、用預設就好。第三是 domain documentation：他的 skill 喜歡 repo 裡有一點文件——一個 context.md 檔加上 ADR；它會問要 single context 還是 multi-context，他說 single 就好，multi 是給那種需要多個 bounded context 的大型 monorepo，99% 的人用 single 就夠。跑完之後 claude.md 裡會多三條連結：issue tracker docs、triage labels、domain docs，各自指向 docs/agents/ 底下。</p>
+<p>開始工作前他先示範一個叫 ask matt 的 skill，說「基本上就是我本人做成一個 skill」，它知道 skills repo 的一切以及你該先做什麼。他問「我要改 code，主流程該怎麼走」，它回答的內容本身就是流程摘要：既然你已經有 codebase，就從主流程頂端開始、在一個不中斷的 context window 裡往下走。他順口評論這個回答「defensible 這種詞真的很 LLM」，但也肯定它「很清楚地告訴你該怎麼使用你的 session」，並補一句他的信念：對自己用掉的 context window 與 token 保持自覺，是用好 AI 的關鍵。</p>
+<p>主流程實跑：他先下 grill with docs，並丟一個很粗的想法——「我想把這個 CLI 上大部分的內部工具移掉、讓它只剩對外的部分，這裡有很多雜物，我想把這個 repo 降一個檔次」。他強調「真的就可以這麼含糊，你不用在這裡做太多事，grill with docs 會用一堆後續問題幫你扛重活」。它先探索 code、畫出整個 repo 地圖、找到內部 namespace 底下 11 個子指令，然後開始問。他順帶交代自己的環境參數：用 Claude Code、Opus 4.8、medium effort，但強調「你完全不必跟我一樣，用我 skill 的人各種 harness、各種模型、各種 effort 都有」。他也提到自己用 Whisper flow 做語音輸入。這場 grilling 只花了 6 題（他說自己平常大約 20 題，看規模），最後產出一個計畫：刪 10 個指令檔、刪 3 個測試、重接共用模組。他特別註明「注意我沒有用 plan mode，我是在 Claude Code 的 auto mode，也就是預設模式」。</p>
+<p>接下來是他所謂「路口」：如果你覺得這件事大到需要多個 agent session，才走 to-spec 與 to-tickets；否則直接 /implement。他當場說這個案子他其實就會直接 implement——他評估自己的 context window「大概在 140k 左右開始變得明顯變笨」，他把那當成 LLM 的 smart zone，超過 140k 會出現注意力退化、變笨、產生奇怪的幻覺；而現在還有約 100k 預算、要刪 10 個指令，「超級簡單」。但為了教學他假裝這件事跨 session，改下 to spec：把整場 46.1k token 的討論壓縮成一份文件存進 issue tracker（他這裡是本地 markdown）。他解釋 spec 的定位是「我們這趟多票衝刺要抵達的終點、最後長什麼樣的描述」，而 ticket 是「我們怎麼走到那裡的描述」。產出的 spec 有 problem statement、solution、user stories、implementation decisions、testing decisions，他說這在最後能拿來對照實作有沒有符合 spec。</p>
+<p>然後在<strong>同一個 session</strong>（他特別說不換 session）下 to tickets，它切出 3 張；他嫌太細，直接說「我覺得這三片有點多，其實一片就做得完，改成一片」。他坦承這個示範不好，因為內容基本上在複製需求文件，所以另外開一個真實案例給你看：一份他幾天前實作的 spec，底下掛 11 張 sub issue，每一張就是一個 context window 的 session；點進去看單張票其實很短，因為驗收條件大多已經在主 spec 裡，票只寫「這一場你要蓋什麼」。</p>
+<p>實作階段他 clear context，然後只說「implement this @tickets」——因為 spec 定義去哪、ticket 定義怎麼去，agent 需要的東西都有了。他強調手動跑時是一張一張做，不是叫它「把所有票都做完」：做完一張看有沒有撞到 smart zone，沒撞到也許可以再擠一張，但他建議每張票之間都 clear。全部票做完後才去 code review、對照 spec 做最終檢查。</p>
+<p>最後是 implement 內建的收尾。他示範時 implement 自己跑了 type check、build、更多驗證（檢查 AI Hero internal help 只剩該有的指令），然後載入 code review skill。這個 review 有兩個軸：第一軸把做出來的東西對照原始 spec，他說這在做完一大塊工作時特別有用，因為 agent 可能在某些票裡忘了東西、或票本身沒寫清楚，最後這一遍能把東西補齊；第二軸對照你自己 repo 裡的 coding standard 文件，如果偵測不到任何標準，就退回用 Martin Fowler 那套經典的 code smell 來看有沒有壞味道。而他花最多力氣強調的是<strong>這些一定要在 sub agent 裡做</strong>：「如果你在主 agent 裡做，主 agent 已經寫了那些 code，而 agent 通常很不擅長編輯或改進自己剛寫的 code——因為是它們寫的，所以它們就覺得『很棒啊，這樣就好』。而如果你 spawn 幾個 agent，它們有乾淨的 context window，review 起來會好得多。」兩個 review agent 都回報通過後，它把工作 commit 到當前 branch，流程結束。他總結整條主流程：先對齊，再產 spec 與 ticket 讓它能跨多個 session，然後實作，而 implement 本身會用 code review 收尾。</p>
+<p class="voice">這支是官方全鏈路教學，正好對到本人 trial 的那條 to-spec → to-tickets → implement 鏈，有四個對帳點值得逐一處理。(1) <strong>本人的 trial 定義可能少寫了起點。</strong>Matt 的鏈起點是 grill-with-docs（在 repo 裡是 stateful 的，把學到的寫進 context.md 與 ADR），不是直接 to-spec；本人本地有 grill-with-docs，也有 domain-modeling fork（wayfinder SKILL.md 註明落點統一為 openspec/glossary.md + openspec/decisions/），等於同一件事已在本地換皮落地——但 CLAUDE.md 的 trial 條文寫的是「改走 to-spec → to-tickets → implement 鏈」，沒帶起點；實跑時若真的跳過 grilling 直接 to-spec，比出來的就不是 Matt 這套。(2) <strong>to-spec 不是預設步驟。</strong>Matt 明說一個 session 做得完就跳過 spec 直接 implement，spec 的存在理由只有「跨 session」；trial 若每題都寫 spec，會系統性高估 matt 這套的成本。(3) <strong>implement 的 code review 這一關本人已經保留、但形狀不同，值得留意。</strong>本地 implement fork 有第 3 步「Review the work with /code-review, or with a reviewer subagent whose model you pin explicitly」，而且刻意規定 controller <strong>不做</strong> per-ticket review 迴圈（fork 註記寫明理由是 superpowers SDD 單任務 5 輪 3h59m 拖沓的根因、附 obra/superpowers#1988），品質 gate 固定在收尾 /code-review 加 PR 層——與 Matt「review 一定要開 sub agent、乾淨 context 才審得動」的原則同向，但 Matt 是在 implement 尾端內建跑，本人是把 gate 往後推到 PR 層，這個差異在 A/B 記錄裡應該註明。(4) <strong>issue tracker 這段直接點名 Beads</strong>，而本人正在跑 beads (bd) trial；上游宣稱只要跟 agent 說一聲就接得上，但本人的 to-tickets fork 在 2026-07-28 已刻意刪掉上游的 real-tracker publish 分支、改落 openspec tasks.md 或 .scratch 本地檔。這兩者其實不在同一層、目前沒有衝突：bd trial 的範圍 CLAUDE.md 寫死在跨 session follow-up 捕捉（state-update Step 9 單一 writer、save-session 驗收 <code>BD_CAPTURE</code> 收據、resume-session 合併 ready＋defer；接線實查也只落在這三個 command，<code>to-tickets</code> 與 <code>implement</code> 的 SKILL.md 對 beads 皆 0 命中），而 to-tickets 管的是 plan 層 ticket 落點。卡層（Asana）／plan 層（openspec tasks.md、.scratch）／follow-up 層（bd）三者已各有歸屬，無待拍板項。另外一個可立刻做的稽核：他實測 38 個 skill 全裝只吃 660 token（因為幾乎都是 user-invoked、description 短），本人本地有 76 個 skill 目錄，值得用同樣方式量一次自己的常駐 description 佔用。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/U832hShMVnc">I'm thinking about changing my most popular skill</a> <span class="pill">2026-07-16 · 短片</span></h3>
+<ul>
+<li>他公開徵詢意見：正在考慮改自己最有名、最多人用的 skill 之一，想知道該不該動。</li>
+<li>grill-me 的預設行為是拿來取代 plan mode，而且一次問你一題。</li>
+<li>他本地已經改成一次把手上所有問題全部丟出來，配合聽寫就能一口氣「blah blah blah 全部答完」。</li>
+<li>好處是避開 grill-me 那種「問一題答一題、感覺要花好久才走到共識」的煩躁；一次給你整個問題 frontier，你一次答完，它再推進到下一層設計決策。</li>
+<li>但他也承認一次一題感覺比較自然、有可測量的節奏感，而全部一起問「感覺很緊繃、要做很多事」，只是確實比較快。他問觀眾：該直接改預設，還是另出一個 skill 叫 Batch Me 之類的？</li>
+</ul>
+<p>這支是一則公開徵詢，時間點在他定案改成 rounds 的前一天。他開場說自己一直在辯論要不要修改一個他最有名、最多人使用的 skill，並說「我需要你們的建議、看我該不該這麼做」。</p>
+<p>他先描述現狀：grill-me 的預設運作方式是「你拿它來取代 plan mode」，而且它一次問你一個問題。然後說他自己在本地已經把它改掉了，改成一次把它手上有的所有問題全部問出來。他給的理由是這讓他可以非常快地打掉一大段內容，因為他用聽寫——他直接模仿自己的操作：「就 blah blah blah blah blah，把所有問題都答完，然後就可以走了。」</p>
+<p>他描述舊行為的痛點時用了很情緒的字眼：這樣可以避開 grill-me 裡那件很煩的事，就是「感覺要花超久才真的走到共識」，因為 agent 問你一題、你答一題，再問一題、再答一題。而新做法是它直接給你「問題的 frontier」，也就是它目前知道的那些問題，你一口氣把它們轟完，然後它繼續往前推、把 frontier 推開，給你下一層的設計決策。</p>
+<p>但他很誠實地把反方也講出來：大家喜歡（而且他以前自己也喜歡）grill-me 一次只問一題這件事，那感覺很自然，感覺就像你在用一個可測量的節奏把事情逐步想清楚；相較之下新做法「確實感覺很緊繃，好像你得做很多事」，不過它確實快很多，而「速度是我們這年頭最在意的」。</p>
+<p>最後他把問題丟回給觀眾：你們覺得呢？我該直接改這個 skill 來符合我自己的建議，還是我該另外出一個新 skill，叫 Batch Me 之類的？</p>
+<p class="voice">這支要跟同批的第 07 支（隔天 2026-07-17）一起看：這裡是徵詢，隔天那支是定案，而且定案的不是他這裡說的「全部一次問完」，是折衷的 rounds（分輪問、後一輪吃前一輪答案）。對本人的意義在於確認版本落差的方向：本地 grill-me 與 wayfinder fork 都停在「一次一題」，上游已經往批次走，而且作者本人的動機很明確——他覺得舊行為煩、浪費往返。另外這支點出一個定位問題：Matt 說 grill-me 是「拿來取代 plan mode」的，而本人本地同時有獨立的 `/plan` command 與 superpowers 對照組；若 A/B 要比得公平，matt 組不應該同時用 `/plan`，否則等於在 matt 組裡混進對照組的機制。這支本身沒有需要現在改的檔，行動項全部收在第 07 支。</p>
+</article>
+
+<article>
+<h3><a href="https://www.youtube.com/shorts/t34UuBxB2YQ">My #1 book recommendation for strategic programming</a> <span class="pill">2026-07-16 · 短片</span></h3>
+<ul>
+<li>他的前提：AI 已經吃掉日常 coding 與那種戰術性的 programming，所以很多人問他怎麼學「策略性 programming」、怎麼養長期視角、怎麼預先看清 codebase 好讓 AI 在裡面有效工作。</li>
+<li>他的建議是回頭讀老書，這支講的是《The Pragmatic Programmer》（David Thomas、Andrew Hunt）——他還在鏡頭前尷尬地把書舉起來。</li>
+<li>他說這可能是他讀過排版最好的技術書，關於「programming 時怎麼策略性思考」的洞見多得驚人。</li>
+<li>他把書裡很多東西直接插進 system prompt 用，效果很好；點名的兩個概念是 tracer bullets 與 don't outrun your headlights。</li>
+<li>他說開發者常用的很多詞（例如 programming by coincidence）都源自這本書；而幾個月前重讀它，正是讓他確信「軟體基本功在 AI 時代仍然重要」的原因——書裡每一段都像是為 AI 時代寫的。</li>
+</ul>
+<p>這支是一則書籍推薦，但推薦的理由跟他整套方法論綁在一起。他的開場設定是：AI 已經吃掉了日常的 coding、吃掉了那種戰術性的 programming。所以很多人問他——你要怎麼學會策略性的 programming？怎麼學會長期視角？怎麼學會在 codebase 裡預先看清楚路，好讓 AI 能在你的 codebase 裡有效工作？</p>
+<p>他的答案是回頭去讀那些老書，而今天他要講的是《The Pragmatic Programmer》。他在這裡有一段自嘲的鏡頭語言（「我就這樣尷尬地把它舉在畫面裡，這樣可以嗎？好，這樣」）。他說這本書就是他永遠會推薦的那一本，可能是他讀過排版做得最好的技術書，裡面關於「programming 時要怎麼策略性思考」的洞見多到不行。</p>
+<p>他給的實用證據是：他從這本書裡拿了大量東西，直接插進 system prompt 裡用，而且效果很好。他點名兩個概念——tracer bullets（曳光彈）與 don't outrun your headlights（不要開得比你的頭燈照得到的還遠）。他也指出開發者日常在用的很多詞彙，例如 programming by coincidence，全都源自這本書。</p>
+<p>最後他把這本書接回他反覆講的那個主張：事實上，正是幾個月前回頭重讀這本書，讓他確信「真正的軟體基本功仍然重要」——因為這本書裡的每一件事，感覺都像是為 AI 時代寫的。收尾是把作者名字念一遍：Pragmatic Programmer，David Thomas、Andrew Hunt，去買。</p>
+<p class="voice">對既有流程沒有改動需求，但它解釋了本人已經在跑的東西的來源：本人本地 to-tickets skill 的核心概念就是 <strong>tracer-bullet tickets</strong>（該 skill description 原文：「Break a plan, spec, or the current conversation into tracer-bullet tickets, each declaring its blocking edges」），而 tracer bullets 正是這本書的術語、也正是 Matt 在這支點名說自己直接塞進 system prompt 的兩個概念之一。知道出處對 fork 維護有實際價值：切票粒度該怎麼判，可以回去對照 tracer bullet 的原始定義（先打一發薄薄的、但貫穿整條鏈路的實彈），而不是只照 skill 現有措辭去推——尤其本人的 to-tickets fork 目前對切片大小只寫「fit in a single fresh context window」、沒有其他判準。可選動作：把這個出處註記進 to-tickets fork 的維護註解段（該檔已有 2026-07-28 那類註記慣例）。不必調整流程。</p>
+</article>
+
+<h3>𝕏 推文</h3>
+<p class="summary">今天 <code>x:@mattpocockuk</code> 共 16 則，全部落在 2026-08-02 UTC 這一天。他的推文絕大多數是 @ 回覆別人（16 則裡 15 則是回覆；此軸 08-03 之前 raw md 皆為 0 筆，無跨天回覆比例可比較。<code>sources.yml</code> 註記的 08-03 手動試跑觀察是「20 則全部落在不到 2 小時的窗內、36h 窗口被截斷」——那是抓取窗口指標、不是回覆比例，今天 16 則未撞 <code>maxItems=50</code> 上限，但<strong>時間窗那一側仍被切</strong>：06:00:04 CST 起跑 = 08-03 22:00:04 UTC，減 36h 窗口 = 08-02 10:00:04 UTC，而最早一則正好是 08-02 10:00——貼齊窗口下緣是截斷的標準特徵。所以 15/16 這個回覆比例只是窗口內比例、不是他當日產出的完整比例），照單全列會變成一堆讀者看不到原文的對話碎片，所以分兩層寫。</p>
+
+<p><strong>原創推文</strong>（不以 @ 開頭，今天只有 1 則）：</p>
+<ul>
+  <li>「I just used the phrase "I've done all the wayfinding, I just haven't built it" I.e. I've done all the preparatory work and I know it's possible, I just haven't executed it "Wayfinding" - I like it」（♥479、💬48）— <a href="https://x.com/mattpocockuk/status/2083891713932755390">X</a></li>
+</ul>
+
+<p><strong>@ 回覆</strong>（依 ♥ 排序，只展開有實質內容的）：</p>
+<ul>
+  <li>回覆 @unclebobmartin，邀請對方上他的 YouTube 聊「跟 agent 打交道時品質仍然重要」的共識話題：「@unclebobmartin Want to have a chinwag about this (and other things) for my YouTube? Seems like we're pretty aligned in a few places on how to work with agents (quality still matters etc)」（♥163、💬9）— <a href="https://x.com/mattpocockuk/status/2083881819359854871">X</a>，對方確認後他再回一句「@unclebobmartin Wonderful, I'll be in touch」（♥65、💬6）— <a href="https://x.com/mattpocockuk/status/2083891272930992366">X</a></li>
+  <li>回覆 @Princedany96 談 wayfinder 的設計動機：「@Princedany96 So good! That's why I built /wayfinder around it」（♥97、💬1）— <a href="https://x.com/mattpocockuk/status/2083946151737262098">X</a></li>
+  <li>回覆 @jdxcode 討論某人列出的三點主張時，表態「skill 真的就是你全部需要的，尤其是使用者手動叫的小 skill」：「@jdxcode Agree with 1, 3 but not 2. Skills are really all you need, especially tiny user-invoked ones.」（♥28、💬2）— <a href="https://x.com/mattpocockuk/status/2083971013063086308">X</a>，直接呼應同一批影片「Framework Hell, Tutorial Hell... now Skill Hell」的立場</li>
+  <li>回覆 @JamesHurburgh，把「積極做原型＋拿真實回饋」直接定位為 wayfinding 流程的一部分：「@JamesHurburgh Aggressive prototyping and real-world feedback is a part of wayfinding」（♥7、💬1）— <a href="https://x.com/mattpocockuk/status/2083934425083986119">X</a></li>
+  <li>回覆 @iamzakarea，主張如果你不懂領域語言本身，輸出就會變成沒有意義的廢話：「@iamzakarea TBH if you don't understand the domain language itself, it becomes meaningless drivel」（♥5）— <a href="https://x.com/mattpocockuk/status/2083944119085285519">X</a>，呼應 domain-modeling 立場</li>
+  <li>回覆 @photonclock，澄清自己不是在貶低 SDD，只是主張自己的做法不是 SDD：「@photonclock I'm not disparaging it, I'm just saying that my approach isn't SDD」（♥2、💬1）— <a href="https://x.com/mattpocockuk/status/2083862208795050365">X</a>，直接對應 matt-pipeline vs superpowers 的核心分歧</li>
+  <li>回覆 @Maverick4407／@JamesHurburgh，主張「做原型」跟「瀑布式開發」互相矛盾：「@Maverick4407 @JamesHurburgh Prototyping is anathema to waterfall」（♥2）— <a href="https://x.com/mattpocockuk/status/2083971949995213243">X</a></li>
+  <li>回覆 @lyh9708171／@asidorenko_，主張不管模型多好都有溝通障礙，它沒辦法在你沒講清楚的情況下讀出你腦中的東西：「@lyh9708171 @asidorenko_ However good a model is, it's always going to have a communication barrier. It can't infer things from your brain without you communicating them, just like your wife can't rea[d your mind]」（♥2、💬1）— <a href="https://x.com/mattpocockuk/status/2083968515388678255">X</a></li>
+</ul>
+<p>另有 6 則低互動回覆未展開：@ramonpiano_「"Good enough to be dangerous"」（♥32）、@MarvDominguez「My /teach skill」（♥15）、@nlvogel「Definitely not, treat it as a subject matter expert」（♥12）、@AnotherSpanish「100%, learn enough to be dangerous」（♥9）、@Lecstor／@burkeholland／@github「Yo what app is that, I have some work that needs scanning」（💬2，純好奇提問）、@bum_py「That too, but you need to understand it to wield it effectively」（♥1）。</p>
+
+<p class="voice"><strong>今天這批推文整體對本人 🔬 matt-pipeline A/B trial 是 ★★★</strong>——@photonclock 那則「我的做法不是 SDD」與 @jdxcode 那則「skills 就是你全部需要的」是本批最直接對應 trial 哲學分歧的兩則，值得跟上方 🎬 影片段第 09 支（Skill Hell）與第 13 支（skills 全鏈路教學）voice 段一起讀。<strong>@unclebobmartin 的合作邀約對 <code>[[user_internal_tech_workshop_cadence]]</code> 是 ★</strong>——若這場對談真的錄成影片並發布，屆時可能是另一批值得研究的素材，記觀察後續。</p>
+</section>
+
+<!-- ============================================== -->
+<!-- 系統當天動態                                    -->
+<!-- ============================================== -->
+<section class="fixed system">
+<h2>📦 系統當天動態 <span class="tag">workflow + 自家</span></h2>
+<ul>
+  <li><strong>今晨 daily run 沒有撞上 CLAUDE.md 記載的 pipeline hang bug，74 秒就跑完</strong>：06:00:04 起跑，06:01:18 結束，看門狗（600s 上限）全程未觸發。但 06:01:09 commit <code>3830894</code> 時定版的 <code>reports/2026-08-04.md</code> 其實帶著 6 個失敗 source（<code>total_items=245 / sources_active=40 / sources_failed=6</code>，`git show 3830894:reports/2026-08-04.md` 實測），KNOWN_ISSUES.md 當時也寫著「6 known issue(s)」——只是這個版本的 KNOWN_ISSUES.md 沒被那次 commit 帶走（`run-daily.sh` 只 `git add state.db reports/`，KNOWN_ISSUES.md 不在這條路徑內，是既有記載行為、非新異常）</li>
+  <li><strong>介於 06:01 與 09:55:57 之間，raw md 被補到現況（<code>total_items=289 / sources_active=43 / sources_failed=0</code>），但這批補跑沒有獨立 log、也尚未 commit</strong>：`logs/cron-2026-08-04.log` 只到 06:01:18 就結束，沒有第二筆 daily-run log 能證明是誰觸發了這次補跑（推測是某個 `--retry-failures` 執行，但無法確認是 workflow 自身的 <code>input_precheck</code> fail-fast guard 還是手動介入，記觀察不虛構機制）。`git diff --numstat` 顯示 <code>reports/2026-08-04.md</code>（346 insertions/99 deletions）、<code>KNOWN_ISSUES.md</code>（1/1）、<code>PROBES.md</code>（1/1）與 <code>state.db</code> 均為 modified 未 commit（<code>scripts/local-analysis/*.sh</code> 那批已於 commit <code>5610868</code> 進版、不在待收尾清單）。<strong>需要 main session 收尾</strong>：<code>git add state.db reports/2026-08-04.md KNOWN_ISSUES.md PROBES.md && commit && push</code></li>
+  <li><strong>KNOWN_ISSUES.md 現況全綠</strong>：`cat KNOWN_ISSUES.md` 顯示「✅ 所有 source 上次 fetch 都成功，沒有需要處理的 issue」，`Last updated: 2026-08-04 09:55`。WATCH.md <code>surface=[]</code>；<code>new_watch_sources=[]</code>，今天無新加入來源需標記「⚠️ 新來源待驗」</li>
+  <li><strong>PROBES 2 條追蹤、今日 1 條變動</strong>：<code>anthropics/claude-code release watcher</code> 命中 <code>v2.1.221</code>（詳見上方 🟣 段），<code>probes_writeback attempted=1 / succeeded=1 / failed=[]</code>，PROBES.md 已寫回新 baseline（`git diff PROBES.md` 實測確認該行已更新）。<code>ruanyf/weekly</code> 以 <code>gh api repos/ruanyf/weekly/contents/README.md</code> 複查，仍指向 <code>docs/issue-406.md</code>，尚無第 407 期，判 <code>no_change</code></li>
+  <li><strong>Matt Pocock 追蹤軸首日回填、零失敗</strong>：15 支 YouTube 影片全部 exit 0（`fetch_failures` 為空陣列），16 則 X 貼文全部抓到。詳見上方 🎓 段</li>
+  <li><strong>stage-2 daily-topic-analysis workflow 一輪完成，verify gate 全綠</strong>：<code>chrome_a_flagged=0</code> / <code>parallel_a_flagged=0</code> / <code>parallel_b_sampled=8</code> / <code>parallel_b_misaligned=0</code>（抽查全綠）。112 URL fact-checked（2 chrome + 110 parallel），覆蓋率 100%。<code>chrome_ok_count=0/2</code>（0%，樣本數小、單日波動本來就大）、<code>parallel_ok_count=104/110</code>（94.5%）。合計 104/112＝92.9%，未撞 <code>hard_safety_cap=500</code></li>
+  <li><strong>外部視角 backstop（follow-builders feed）</strong>：Blogs feed 72 小時回顧視窗內<strong>抓到 0 篇文章</strong>（<code>seen_check.stdout</code>：「blogs feed has 0 items, nothing to check」），今天無可判定新舊、不做任何補漏／漏抓宣稱。X feed 24 小時回顧 12 個帳號、24,183 bytes（HTTP 200）：跟主 pipeline 目前追蹤的 29 個 X handle 相比，<code>overlap_count=4</code>（karpathy、steipete、swyx、trq212）、<code>new_count=8</code>（amasad、danshipper、garrytan、levie、nikunj、petergyang、rauchg、ryolu_），<code>X_HANDLE_OVERLAP=OK</code>。今天 feed 內互動量最高的是 <code>@rauchg</code>「AI alone is cool. But mastery + creativity + AI hits on a whole different level」（♥3662）與 <code>@rauchg</code>「We built an agent that powers our company's internal operations」（♥1233），其次是 <code>@trq212</code>（♥1191）；先前點名的 <code>@karpathy</code> pelican 那則實為第 5（♥392）、<code>@garrytan</code>「Growth is good」第 9（♥302）（排序實跑 <code>follow-builders-x-2026-08-04.json</code> 全 26 則 likes 得出）；此 feed 純比對 handle 名單，本份 digest 今天沒有採用任何一則 backstop 訊號作為主軸素材</li>
+</ul>
+<p class="voice">今天系統面比昨天（07-28 recovery run 後、08-03 撞看門狗）都乾淨很多——<strong>看門狗完全沒觸發，daily run 74 秒就跑完</strong>——實算 <code>logs/cron-*.log</code> 全量 99 個檔，其中 85 個檔有完整起訖時戳、共 89 次 run；74 秒在這 89 次裡排第 4 快（前三為 08-01 的 48 秒、05-02 的 60 秒、04-29 的 66 秒），非 hang 日落在 48–166 秒；若只看 2026-07-01 以來的 24 次，則為第 2 快。真正值得記的不是穩定，而是<strong>「定版」跟「commit」之間出現了一個時間差＋資訊落差</strong>：06:01 commit 那個版本其實是帶著 6 個失敗 source 的初版，乾淨版本是之後某個時間點補上的，但補跑本身沒有留下可查證的軌跡——這跟 07-28／08-03 那兩次事故的「補跑有明確 commit 或至少有 log 可查」不一樣，今天是「補跑存在、但連觸發者都查不到」。這件事本身不影響今天 digest 的資料品質（raw md 現況確實是乾淨的 289 items / 0 failure），但代表本人「pipeline 一次到位」的假設今天並不成立，只是失敗模式比 06-05／06-07／06-29／06-30／07-28／08-03 那幾次的 hang bug 溫和很多——沒有卡死、沒有看門狗介入，只是多了一次沒人看見的手動或半自動補跑。<strong>Matt Pocock 軸零失敗</strong>值得記一句：這是新加的追蹤軸，第一天就零失敗（15/15 支影片字幕全部抓到），比 CLAUDE.md 記載的其他 fetcher（Reddit、Threads）首次上線時的踩坑經驗乾淨很多，記存在、繼續觀察。</p>
+</section>
+
+<footer class="page">
+  Generated by <code>~/.claude/workflows/daily-topic-analysis.js</code> + sonnet subagent 彙整 · raw md 現況（289 items / 43 active source / 0 failure；06:01:09 commit <code>3830894</code> 時定版是 245 items / 40 source / 6 failure，之後經一次無獨立 log 的補跑帶到現況，<strong>該補跑尚未 git commit</strong>，需 main session 收尾）· 今晨 daily run 未撞 pipeline hang bug、74 秒完成 · workflow verify gate 全綠（chrome_a_flagged=0 / parallel_a_flagged=0 / parallel_b_sampled=8 / parallel_b_misaligned=0），未撞 <code>hard_safety_cap</code> · fact_check：chrome_ok 0/2（0%）、parallel_ok 104/110（94.5%），合計 104/112＝92.9% · 112 URL fact-checked（2 chrome + 110 parallel）/ 8 themes / KNOWN_ISSUES 現況全綠（0 🚨）/ WATCH.md 空 / 無新來源待驗 / PROBES 2 條追蹤、今日 1 條變動（CC CLI v2.1.221，打破 07-26 至 08-03 連續 9 天空窗；ruanyf/weekly 仍第 406 期）/ Matt Pocock 追蹤軸首日回填 15 支 YouTube 影片 + 16 則 X 貼文、零失敗（見 🎓 段）/ backstop：blogs feed 0 篇（無可判定）、X feed 12 handle 中 4 個與主 pipeline 重疊、8 個為新帳號（今天 0 筆被採用為主軸素材）
+</footer>
+
+</div>
+
+<script>
+const barOpts = {
+  indexAxis: 'y',
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { ticks: { color: '#9aa0b4' }, grid: { color: '#2a2f43' } },
+    y: { ticks: { color: '#e6e8ef' }, grid: { color: '#2a2f43' } }
+  },
+  maintainAspectRatio: false
+};
+
+const sourceCtx = document.getElementById('sourceChart').getContext('2d');
+new Chart(sourceCtx, {
+  type: 'bar',
+  data: {
+    labels: ['中文/中國', 'Reddit', 'EN Media', 'GH Trending', '中文/台灣', 'V2EX', 'X', 'HN', 'GH Rising', 'HuggingFace', 'Product Hunt', 'Lab Blogs'],
+    datasets: [{
+      label: 'items',
+      data: [93, 50, 36, 30, 25, 20, 19, 8, 4, 2, 1, 1],
+      backgroundColor: ['#ff8585', '#6ed79c', '#b591ff', '#ffb46b', '#9aa0b4', '#9aa0b4', '#9aa0b4', '#9aa0b4', '#9aa0b4', '#9aa0b4', '#9aa0b4', '#9aa0b4']
+    }]
+  },
+  options: barOpts
+});
+
+const themeCtx = document.getElementById('themeChart').getContext('2d');
+new Chart(themeCtx, {
+  type: 'bar',
+  data: {
+    labels: ['OSS榜單/HF/PH', 'Matt Pocock方法論', '供應鏈/Agent安全', '中國開源模型', 'AI基建資本', 'Anthropic/Claude生態', 'OpenAI Astra', '開發者工具成本'],
+    datasets: [{
+      label: 'related items',
+      data: [38, 25, 22, 16, 14, 12, 9, 8],
+      backgroundColor: ['#6ed79c', '#b591ff', '#ff8585', '#9aa0b4', '#9aa0b4', '#9aa0b4', '#9aa0b4', '#9aa0b4']
+    }]
+  },
+  options: barOpts
+});
+</script>
+
+</body>
+</html>
