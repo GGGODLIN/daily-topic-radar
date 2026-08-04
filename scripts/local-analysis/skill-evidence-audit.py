@@ -208,12 +208,24 @@ def main():
         print("（無）")
     print()
 
+    name_only = set()
+    for sp in ("~/.claude/settings.json", "~/.claude-max/settings.json", "~/.claude-team/settings.json"):
+        try:
+            ov = json.loads(Path(sp).expanduser().read_text()).get("skillOverrides", {})
+            name_only.update(k for k, v in ov.items() if v == "name-only")
+        except (OSError, json.JSONDecodeError):
+            continue
+
     print(f"### ⚪ 外部 skill 零使用（共 {len(other)} 個外部/未知 origin）")
     print("判準只看使用量——外部 skill 的證據訊號不適用。零使用代表庫存成本（context 注入 + 上游追蹤）沒回報。")
-    cold = sorted([r for r in other if r["invokes"] == 0], key=lambda x: x["skill"])
+    cold_all = sorted([r for r in other if r["invokes"] == 0], key=lambda x: x["skill"])
+    cold = [r for r in cold_all if r["skill"] not in name_only]
+    excluded = len(cold_all) - len(cold)
     print(f"零使用 {len(cold)} 個：" + "、".join(f"`{r['skill']}`" for r in cold[:20]))
     if len(cold) > 20:
         print(f"…另 {len(cold) - 20} 個")
+    if excluded:
+        print(f"（另 {excluded} 個零使用但為 name-only——listing 只注入名字、由 router/手動叫用，零 invoke 屬設計預期，不列退役候選；2026-08-04 拍板）")
     print()
 
     strong_used = [r for r in rows if r["invokes"] > 0 and r["evidence"] == "strong"]

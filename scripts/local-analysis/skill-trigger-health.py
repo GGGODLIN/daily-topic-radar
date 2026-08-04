@@ -12,6 +12,9 @@
 
 範圍宣告（no silent caps）：只掃自有 ~/.claude/skills + ~/.claude/commands；
 plugin 前綴（含冒號）的 Skill invoke 不對映；死庫存軸是 90 天窗、非真 lifetime。
+死庫存軸排除 settings.json skillOverrides 設 name-only 的 skill（2026-08-04 拍板）：
+name-only 只注入名字一行（~5 tok）、無 description 誤觸發面、由 router/手動叫用，
+零 invoke 是設計預期而非死庫存訊號；排除數在報告標題註記、不靜默。
 計數紀律：auto 按 distinct tool_use id、manual 按 distinct message uuid 去重
 （resume/fork 會複製訊息，原始命中數灌水 3-13 倍，前案見 memory adhd extract 洞察 2）。
 """
@@ -196,7 +199,17 @@ def main():
     args.projects_dir, set(inventory), args.alert_window_days, args.dead_window_days, now
   )
 
+  name_only = set()
+  for sp in (os.path.expanduser("~/.claude/settings.json"), os.path.expanduser("~/.claude-max/settings.json"), os.path.expanduser("~/.claude-team/settings.json")):
+    try:
+      with open(sp) as fh:
+        ov = json.load(fh).get("skillOverrides", {})
+      name_only.update(k for k, v in ov.items() if v == "name-only")
+    except (OSError, json.JSONDecodeError):
+      continue
+
   alerts, rows, dead, undecided = [], [], [], []
+  dead_name_only_excluded = 0
   for name, meta in sorted(inventory.items()):
     mode = registry.get(name, {}).get("mode", meta["guess"])
     decided = registry.get(name, {}).get("decided", False)
@@ -211,6 +224,9 @@ def main():
     if a["recent"] or m["recent"]:
       rows.append(f"| `{name}` | {mode}{'' if decided else ' (未拍板)'} | {a['recent']} | {m['recent']} | {a['window'] + m['window']} |")
     if a["window"] + m["window"] == 0:
+      if name in name_only:
+        dead_name_only_excluded += 1
+        continue
       rel = os.path.relpath(meta["path"], args.claude_git_dir) if args.claude_git_dir else meta["path"]
       inst = install_date(args.claude_git_dir, rel)
       if inst and (now - inst) >= args.dead_min_age_days * 86400:
@@ -228,7 +244,7 @@ def main():
   lines += alerts if alerts else ["無。"]
   lines += ["", f"## 統計儀表（{args.alert_window_days} 天窗、僅列有活動者，共 {len(rows)}/{len(inventory)}）", "", "| skill | mode | auto | manual | 90d 合計 |", "|---|---|---|---|---|"]
   lines += rows if rows else []
-  lines += ["", f"## 死庫存候選（安裝 ≥ {args.dead_min_age_days} 天且 {args.dead_window_days} 天零 invoke；本輪列 {min(len(dead), args.dead_cap)}/{len(dead)}）", ""]
+  lines += ["", f"## 死庫存候選（安裝 ≥ {args.dead_min_age_days} 天且 {args.dead_window_days} 天零 invoke；本輪列 {min(len(dead), args.dead_cap)}/{len(dead)}；另排除 name-only {dead_name_only_excluded} 個——router 選單成員、零 invoke 屬設計預期）", ""]
   for inst, name, mode in dead[: args.dead_cap]:
     age = int((now - inst) / 86400)
     lines.append(f"- `{name}`（{mode}、安裝 {age} 天、{args.dead_window_days} 天零 invoke）→ 留/殺候選")
