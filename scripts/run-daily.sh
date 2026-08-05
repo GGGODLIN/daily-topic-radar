@@ -22,6 +22,45 @@ LOG_FILE="logs/cron-$DATE.log"
     set +a
   fi
 
+  # ── VPN_PRECHECK_START ─────────────────────────────────────────────────────
+  # 出口雲端 ASN 偵測（2026-08-05 事故：WireGuard 開著、出口 AWS Tokyo AS16509，
+  # reddit 5 個 sub 全 403，06:00 帶著 6 個 failure 定版，到 09:00 跑 digest 才發現）。
+  # 刻意「偵測不擋跑」——擋下等於當天零資料，比殘缺更糟；目的只是讓問題在 06:00 就可見。
+  # exit 10 = 命中（不是錯誤），故 `|| true` 吞掉，不讓 set -e 弄死整個 daily run。
+  # 契約測試：bash scripts/vpn-precheck.test.sh（會 sed 抽出本段 START/END 之間 eval）
+  VPN_PRECHECK_OUT=$(bash "$REPO_DIR/scripts/vpn-precheck.sh" 2>&1) || true
+  case "$VPN_PRECHECK_OUT" in
+    CLOUD:*)
+      echo "=== ⚠️ VPN-PRECHECK 命中: $VPN_PRECHECK_OUT ==="
+      echo "=== ⚠️ 出口是雲端 IP，reddit 5 個 sub 大機率整域 403。本次仍照跑；事後關掉 VPN 再跑 uv run python -m social_info --retry-failures 可補回 ==="
+      cat > "$REPO_DIR/ALERT-vpn-precheck.md" <<ALERTEOF
+# ⚠️ VPN pre-check 命中 — $(date '+%Y-%m-%d %H:%M:%S')
+
+今晨 daily run 起跑時，對外出口是**雲端 ASN**，reddit 5 個 sub 大機率整域 403。
+
+\`\`\`
+$VPN_PRECHECK_OUT
+\`\`\`
+
+reddit 對雲端 IP（AWS / GCP / Azure …）擋得比消費級 VPN exit 更死；住宅 IP 打 old.reddit HTML 仍 200。
+
+**補救**：關掉 VPN 後在 $REPO_DIR 跑
+
+\`\`\`bash
+uv run python -m social_info --retry-failures
+\`\`\`
+
+本檔每次 daily run 覆寫；出口恢復正常那天會自動刪除。
+ALERTEOF
+      [ -z "\${VPN_PRECHECK_NO_NOTIFY:-}" ] && osascript -e "display notification \"出口是雲端 IP，reddit 大機率整域 403 — 關掉 VPN 後跑 --retry-failures 可補回\" with title \"⚠️ social-info VPN pre-check\" sound name \"Sosumi\"" 2>/dev/null || true
+      ;;
+    *)
+      echo "=== VPN-PRECHECK: $VPN_PRECHECK_OUT ==="
+      rm -f "$REPO_DIR/ALERT-vpn-precheck.md"
+      ;;
+  esac
+  # ── VPN_PRECHECK_END ───────────────────────────────────────────────────────
+
   # hard-timeout 看門狗（2026-06-05 事故：aggregator 卡死 6h 零進展、無人察覺）。
   # 正常 10s–4min 完成；給 10min hard cap。timeout → 砍 process tree（pkill -f social_info，
   # 底線 marker 不誤殺本 wrapper 的 social-info 連字號路徑）+ log，不阻後續 commit 已產出 raw md。

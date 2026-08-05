@@ -11,8 +11,10 @@
 - **Label**: `com.gggodlin.social-info-daily`
 - **Plist**: `~/Library/LaunchAgents/com.gggodlin.social-info-daily.plist`
 - **Schedule**: 每天 06:00 Asia/Taipei（launchd `StartCalendarInterval`）
-- **Wrapper**: `scripts/run-daily.sh` — `uv run python -m social_info` + `git add state.db reports/` + `commit` + `push`
+- **Wrapper**: `scripts/run-daily.sh` — VPN pre-check + `uv run python -m social_info` + `git add state.db reports/` + `commit` + `push`
 - **Log**: `logs/cron-{date}.log`（gitignored）
+
+**VPN / 雲端出口 pre-check（2026-08-05 加）**：`run-daily.sh` 起跑前先跑 [`scripts/vpn-precheck.sh`](/scripts/vpn-precheck.sh) 查對外出口 ASN。**刻意「偵測不擋跑」**——擋下等於當天零資料、比殘缺更糟；命中只做三件事：cron log 印 `⚠️ VPN-PRECHECK 命中`、寫 `ALERT-vpn-precheck.md` 到 repo root（gitignored、出口恢復正常那天自動刪）、跳桌面通知。判準是**出口 ASN 不是「有沒有 utun 介面」**（Tailscale 這類 split-tunnel 走 utun 但不影響出口、用介面判會誤殺）。查不到 / 逾時 / 無網路一律放行（exit 20），這道 gate 絕不自己弄垮 daily run。改它或改 `run-daily.sh` 的 `VPN_PRECHECK_START/END` 段後**必跑** `bash scripts/vpn-precheck.test.sh`（25 項，含 set -e 下不中斷、ALERT 檔生成與清除）。
 
 電腦睡眠時 launchd 會在喚醒時補跑一次；整夜關機那天就 miss、不追補。
 
@@ -64,7 +66,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `.github/workflows/daily.yml` 只剩 `workflow_dispatch:`（手動 trigger backup），原本的 cron `schedule:` 已拿掉——cloud IP 跑 Reddit 被擋。Reddit 抓法細節見「已知 fetcher gap」段（該段是 SSOT）。
 
-**操作注意**：06:00 launchd 觸發前 VPN 應該關著（消費級 VPN exit IP 連 old.reddit HTML 都可能整個被 ban），或設 split-tunnel 把 reddit.com 排除走真實出口。
+**操作注意**：06:00 launchd 觸發前 VPN 應該關著（消費級 VPN exit IP 連 old.reddit HTML 都可能整個被 ban；**雲端 ASN 出口更死**——2026-08-05 實測 WireGuard 走 AWS Tokyo AS16509 時 5 個 sub 全 403，關掉後同樣 5 個全 200），或設 split-tunnel 把 reddit.com 排除走真實出口。忘了關不會靜默失敗：「自動排程」段的 VPN pre-check 會在 06:00 當下就發桌面通知 + 寫 `ALERT-vpn-precheck.md`。
 
 ## 「今日分析」入口語意
 
