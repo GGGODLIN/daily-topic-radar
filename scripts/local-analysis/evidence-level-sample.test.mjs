@@ -77,8 +77,10 @@ const runAsync = (options) => new Promise((resolve, reject) => {
 })
 
 const repeat = (value, length) => value.repeat(length)
-const samplesFrom = (packet) => JSON.parse(Buffer.from(packet.samples_b64, 'base64').toString('utf8'))
 const manifestPathFor = (fixture, date = '2026-08-06') => path.join(fixture.reports, `${date}-evidence-level-manifest.json`)
+const samplesFor = (fixture, date = '2026-08-06') =>
+  JSON.parse(fs.readFileSync(manifestPathFor(fixture, date), 'utf8')).samples
+const samplesTextPathFor = (fixture, date = '2026-08-06') => path.join(fixture.reports, `${date}-evidence-level-samples.txt`)
 const reportPathFor = (fixture, date = '2026-08-06') => path.join(fixture.reports, `${date}-evidence-level.md`)
 const receiptPathFor = (fixture, date = '2026-08-06') => path.join(fixture.reports, `${date}-evidence-level.verified.json`)
 const publicationPathFor = (fixture, date = '2026-08-06') => path.join(fixture.reports, `${date}-evidence-level.publish.json`)
@@ -106,11 +108,20 @@ test('filters known-good and includes known-bad and 200-character boundary', () 
   ])
 
   const packet = run(fixture)
-  const samples = samplesFrom(packet)
+  const samples = samplesFor(fixture)
   assert.equal(packet.eligible, 2)
   assert.equal(packet.sample_count, 2)
   assert.deepEqual(samples.map((sample) => sample.session), ['boundary-200', 'known-bad'])
   assert.equal(samples[0].answer.includes('```js'), true)
+  assert.equal(packet.samples_sha256, sha256(JSON.stringify(samples)))
+  assert.equal(Object.hasOwn(packet, 'samples_b64'), false)
+  const samplesTextPath = samplesTextPathFor(fixture)
+  const samplesText = fs.readFileSync(samplesTextPath, 'utf8')
+  assert.equal(modeFor(samplesTextPath), 0o600)
+  assert.equal(samplesText.includes(`=== BEGIN SAMPLE 1/2 [${packet.challenge.slice(0, 16)}] ===`), true)
+  assert.equal(samplesText.includes(`=== END SAMPLE 2/2 [${packet.challenge.slice(0, 16)}] ===`), true)
+  assert.equal(samplesText.includes(samples[0].answer), true)
+  assert.equal(samplesText.includes(samples[1].answer), true)
 })
 
 test('samples at most 20 answers in deterministic total order', () => {
@@ -124,7 +135,7 @@ test('samples at most 20 answers in deterministic total order', () => {
   writeRows(file, rows)
 
   const packet = run(fixture)
-  const samples = samplesFrom(packet)
+  const samples = samplesFor(fixture)
   assert.equal(packet.eligible, 41)
   assert.equal(packet.sample_count, 20)
   assert.equal(samples.length, 20)
@@ -152,7 +163,7 @@ test('uses timestamp path and row index as a locale-independent total order', ()
   })])
 
   const packet = run(fixture)
-  assert.deepEqual(samplesFrom(packet).map((sample) => sample.session), ['z-session', 'accent-session'])
+  assert.deepEqual(samplesFor(fixture).map((sample) => sample.session), ['z-session', 'accent-session'])
 })
 
 test('persists full redacted answers in private artifacts', () => {
@@ -191,7 +202,7 @@ test('persists full redacted answers in private artifacts', () => {
   })])
 
   const packet = run(fixture)
-  const samples = samplesFrom(packet)
+  const samples = samplesFor(fixture)
   const manifestPath = manifestPathFor(fixture)
   const persisted = fs.readFileSync(manifestPath, 'utf8')
 
@@ -213,10 +224,13 @@ test('persists full redacted answers in private artifacts', () => {
   assert.equal(samples[0].answer.includes('https://example.test/unquoted-set-header'), true)
   assert.equal(samples[0].answer.includes('https://example.test/curl-b'), true)
   assert.equal(samples[0].answer.includes('https://example.test/curl-cookie'), true)
+  const samplesText = fs.readFileSync(samplesTextPathFor(fixture), 'utf8')
   for (const [index, secret] of secretValues.entries()) {
     assert.equal(persisted.includes(secret), false, `persisted secret index ${index}`)
     assert.equal(samples[0].answer.includes(secret), false, `packet secret index ${index}`)
+    assert.equal(samplesText.includes(secret), false, `samples text secret index ${index}`)
   }
+  assert.equal(samplesText.includes(trailingClaim), true)
   assert.equal(persisted.includes('[REDACTED]'), true)
   assert.equal(modeFor(fixture.reports), 0o700)
   assert.equal(modeFor(manifestPath), 0o600)
@@ -234,7 +248,7 @@ test('redacts quoted sensitive assignments through escaped quotes while preservi
   })])
 
   const packet = run(fixture)
-  const answer = samplesFrom(packet)[0].answer
+  const answer = samplesFor(fixture)[0].answer
   const persisted = fs.readFileSync(manifestPathFor(fixture), 'utf8')
 
   assert.equal(answer.includes(secretTail), false)
@@ -256,7 +270,7 @@ test('redacts cookie pair values while preserving same-line unsupported claims',
   })])
 
   const packet = run(fixture)
-  const answer = samplesFrom(packet)[0].answer
+  const answer = samplesFor(fixture)[0].answer
   const persisted = fs.readFileSync(manifestPathFor(fixture), 'utf8')
 
   assert.equal(answer.includes(cookieSecret), false)
@@ -294,7 +308,7 @@ test('finalizer rejects an audit bound to different sampled answer content', () 
     sessionId: 'digest-bound-session',
   })])
   const sampled = run(fixture)
-  const samples = samplesFrom(sampled)
+  const samples = samplesFor(fixture)
   const audit = auditFor(samples)
   const oldSamplesSha256 = sha256(JSON.stringify(samples))
   const manifestPath = manifestPathFor(fixture)
@@ -330,7 +344,7 @@ test('finalize validates structured rows and generates the complete report', () 
     sessionId: 'second-session',
   })])
   const sampled = run(fixture)
-  const samples = samplesFrom(sampled)
+  const samples = samplesFor(fixture)
   const manifestPath = manifestPathFor(fixture)
   const reportPath = reportPathFor(fixture)
   const manifestBefore = fs.readFileSync(manifestPath, 'utf8')
@@ -403,7 +417,7 @@ test('concurrent finalizers are idempotent and return one verified challenge', a
     sessionId: 'finalize-session',
   })])
   const sampled = run(fixture)
-  const audit = auditFor(samplesFrom(sampled))
+  const audit = auditFor(samplesFor(fixture))
 
   const packets = await Promise.all(Array.from({ length: 12 }, () => runAsync({ ...fixture, mode: 'finalize', audit })))
   assert.equal(packets.every((packet) => packet.ok), true)
@@ -433,7 +447,7 @@ test('conflicting concurrent finalizers publish one atomic first-wins report wit
     sessionId: 'conflicting-finalizer-session',
   })])
   const sampled = run(fixture)
-  const samples = samplesFrom(sampled)
+  const samples = samplesFor(fixture)
   const passAudit = auditFor(samples)
   const failAudit = auditFor(samples, [[{ type: 'unsourced-completion', quote: 'rrrrr' }]])
   const staleLock = path.join(fixture.reports, '2026-08-06-evidence-level.finalize.lock')
@@ -460,8 +474,8 @@ test('uses report filename dates for the seven-day due boundary', () => {
   const fixture = makeFixture()
   fs.writeFileSync(path.join(fixture.reports, '2026-07-30-evidence-level.md'), 'partial report')
   fs.writeFileSync(path.join(fixture.reports, '2026-08-01-evidence-level.md'), 'unverified report')
-  const sampled = run({ ...fixture, date: '2026-07-31', mode: 'sample' })
-  const finalized = run({ ...fixture, date: '2026-07-31', mode: 'finalize', audit: auditFor(samplesFrom(sampled)) })
+  run({ ...fixture, date: '2026-07-31', mode: 'sample' })
+  const finalized = run({ ...fixture, date: '2026-07-31', mode: 'finalize', audit: auditFor(samplesFor(fixture, '2026-07-31')) })
   assert.equal(finalized.ok, true)
   fs.utimesSync(path.join(fixture.reports, '2026-07-31-evidence-level.md'), new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'))
 

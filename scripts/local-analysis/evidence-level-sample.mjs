@@ -35,6 +35,7 @@ const VIOLATION_ORDER = new Map([...VIOLATION_TYPES].map((type, index) => [type,
 const digestText = (value) => crypto.createHash('sha256').update(value).digest('hex')
 const digestFile = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 const manifestPathFor = (reports, date) => path.join(reports, `${date}-evidence-level-manifest.json`)
+const samplesTextPathFor = (reports, date) => path.join(reports, `${date}-evidence-level-samples.txt`)
 const publicationPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.publish.json`)
 const reportPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.md`)
 const receiptPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.verified.json`)
@@ -565,6 +566,18 @@ const finalizeReport = (reports, date, auditB64, samplesSha256) => {
     : materializePublication(reports, date, winner)
 }
 
+const sampleMarker = (manifest, index, position) =>
+  `=== ${position} SAMPLE ${index + 1}/${manifest.samples.length} [${manifest.challenge.slice(0, 16)}] ===`
+const renderSamplesText = (manifest) => `${manifest.samples.map((sample, index) => [
+  sampleMarker(manifest, index, 'BEGIN'),
+  `timestamp: ${sample.timestamp}`,
+  `session: ${sample.session}`,
+  `path: ${sample.path}`,
+  'answer:',
+  sample.answer,
+  sampleMarker(manifest, index, 'END'),
+].join('\n')).join('\n\n')}\n`
+
 const main = () => {
   const options = parseArgs(process.argv.slice(2))
   const date = options.date
@@ -586,11 +599,12 @@ const main = () => {
   }
 
   const { manifest } = loadOrCreateManifest(root, reports, date)
+  replaceFile(samplesTextPathFor(reports, date), renderSamplesText(manifest))
   process.stdout.write(`${JSON.stringify({
     ...duePacket,
     eligible: manifest.eligible,
     sample_count: manifest.samples.length,
-    samples_b64: Buffer.from(JSON.stringify(manifest.samples)).toString('base64'),
+    samples_sha256: digestText(JSON.stringify(manifest.samples)),
     manifest_hash: manifest.manifest_hash,
     challenge: manifest.challenge,
   })}\n`)
