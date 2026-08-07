@@ -56,6 +56,7 @@ grep -nE '^#+ .*[Cc]hangelog' <file>
 **C3 的日期怎麼取（2026-07-31 補，兩條都是當日實撞）**：
 1. **取全部 entry 日期的最大值、不是「區塊最後一行」**——changelog entry 有的 entity 新到舊倒序排列（實例：`codebase-exploration-mcp-landscape` 倒序，按最後一行取會把 6 天前誤判成 84 天前而錯誤給過 C3）。
 2. **日期格式至少涵蓋三種**：裸 `YYYY-MM-DD`、backtick 包裹、粗體 `**YYYY-MM-DD**:`——只抓前兩種會漏粗體格式、拿到更舊的日期（wiki-stale channel 同日實撞同 bug）。
+3. **只抓 entry 行首的日期、不掃 bullet 內文散文（2026-08-07 補，`openspec-on-akocommerce` 實撞）**——bullet 內文引用非 entry 本身的日期（如「對應 next_review 2026-08-23」這類敘述性未來日期）會被字面掃描誤抓成最大日期、算出負天數。每個 bullet 只認行首 `- YYYY-MM-DD:`（含上條的 backtick / 粗體變體）位置的日期。
 
 **C3 碼錶被 refresh 重置 = by-design、不是 finding（2026-07-17 使用者定調）**：維護 refresh 寫 changelog → 30 天計時歸零 → 達標日後移，正是 C3 本意——內容還在演化就不該畢業（唯一真實畢業案 fact-check-protocol 即內容凍結後才達標）。「達標日因 refresh 推遲」不列 finding、不進推薦 actions、不逐日追蹤；只報真的 4/4 達標的畢業候選。
 
