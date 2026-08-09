@@ -25,8 +25,11 @@ PROMPT=$(cat <<'EOF'
 ## 4 線 source（用 Bash + Read + Glob 自己 walk）
 
 1. **session_prompt** — `~/.claude/projects/**/*.jsonl`（skip `subagents/`）
-   - 找過去 24h mtime 的 jsonl：
+   - 找過去 24h mtime 的 jsonl（**只當候選預篩**）：
      `find ~/.claude/projects -name '*.jsonl' -not -path '*/subagents/*' -newermt "$(date -v-24H '+%Y-%m-%d %H:%M:%S')"`
+   - **⚠ 新鮮度以 jsonl 內最後一筆訊息 timestamp 為準、不是 mtime（2026-08-09 加）**：CC 會在對話結束數天後仍補寫 permission-mode / away_summary 等 metadata 行，mtime 因此假新鮮（2026-08-09 實測 35 個候選檔中 3 個、8.6%）。對每個候選 jsonl 跑
+     `grep '"type":"\(user\|assistant\)"' <file> | grep -o '"timestamp":"[^"]*"' | tail -1`
+     取最後一筆訊息 timestamp，早於 24h 窗 → 整檔跳過、不列入 session 計數、不進 narrative
    - 對每個 jsonl 用 `head -200` 配合 grep `"type":"user"` 找第一個非 noise user prompt
    - NOISE_REGEX（跳過）：`^(<(local-command|command-name|command-message|command-args|system-reminder)|Caveat:|Shell cwd|Stop hook feedback|AUTO-SAVE)`
    - 每筆 prompt content truncate 到 500 chars 再評估，不要一次 dump 整個 jsonl
