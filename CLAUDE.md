@@ -76,6 +76,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 2. **今日本機分析 = 本機分析 multi-channel workflow**：`reports/local-analysis/{date}-{channel}.md`，2026-05-26 起走 on-demand workflow（[`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js)），原 launchd 排程已停用。詳「本機分析 routine」。
 
 - 使用者說「今日話題分析」/「daily 分析」/「跑日報」/「產 digest」→ **跑 stage-2 digest workflow**（[`~/.claude/workflows/daily-topic-analysis.js`](file:///Users/linhancheng/.claude/workflows/daily-topic-analysis.js)，2026-05-26 起）：pre-flight（KNOWN_ISSUES.md + WATCH.md + PROBES.md stage-2 fetch + external-feeds）→ 主軸抽取 → URL fact-check → 吐 JSON 給 main session 接寫 HTML。**不掃 `reports/local-analysis/`、digest「系統當天動態」段只寫 digest pipeline 自身（不寫本機 channel 跑了沒 / 失敗沒 / drift proposal）**。
+- **兩個版本（2026-08-10 使用者拍板）**：預設 = 原 lean 變體收編（`daily-topic-analysis.js`，成本約完整版 1/3）；使用者說**「完整版」**才走 [`daily-topic-analysis-full.js`](file:///Users/linhancheng/.claude/workflows/daily-topic-analysis-full.js)。分派由 hook 自動判斷、main 不用選。差異只有四處瘦身（FactCheck 批次化 / DigestAudit 6 lens→2 lens 留 F+E / Verify B 抽樣 8→4 / matt_videos effort 降 / fact-check 回傳 snippet），**pipeline 結構與 digest 鐵律完全同構**。走預設版時 A/B/C/D 推論層 lens 不跑，那四類 inference_error 不會被自動抓 → 回報時列為覆蓋缺口。
 - 使用者說「今日本機分析」/「跑本機分析」/「跑一下本機分析」/「每日本機分析」→ 走 hook 觸發 [`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js) workflow，按 weekday 篩 channel 後 fan-out + 合成 digest 給使用者。
 - 兩條都是「daily 分析」家族、都住這個 repo，但 digest session 不代管本機那條。
 
@@ -95,7 +96,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `reports/{date}.md` 是 raw aggregator 輸出（06:00 launchd 自動產生）。`reports/digest-{date}.html` 是 Claude 個人化整理（**手動 trigger**，使用者叫我產才做）。
 
-**執行主體是 [`~/.claude/workflows/daily-topic-analysis.js`](file:///Users/linhancheng/.claude/workflows/daily-topic-analysis.js) workflow（2026-05-26 起、HTML 撰寫 2026-07-04 起派 sonnet subagent）。Pre-flight 攔截 protocol（KNOWN_ISSUES / WATCH / PROBES stage-2 fetch / external-feeds backstop）、主軸抽取、URL fact-check 分流、digest HTML 鐵律（🛠 GitHub 倉庫觀察獨立段 / 🟣 Anthropic·Claude 動態獨立段 / v3 範本 / resurface marker）——細節全部以 workflow script 內嵌 prompt 為 SSOT，改規則改那裡、不改本檔。**
+**執行主體是 [`~/.claude/workflows/daily-topic-analysis.js`](file:///Users/linhancheng/.claude/workflows/daily-topic-analysis.js) workflow（2026-05-26 起、HTML 撰寫 2026-07-04 起派 sonnet subagent、2026-08-10 起本檔內容 = 原 lean 變體收編為預設，完整版移到 `daily-topic-analysis-full.js`）。Pre-flight 攔截 protocol（KNOWN_ISSUES / WATCH / PROBES stage-2 fetch / external-feeds backstop）、主軸抽取、URL fact-check 分流、digest HTML 鐵律（🛠 GitHub 倉庫觀察獨立段 / 🟣 Anthropic·Claude 動態獨立段 / v3 範本 / resurface marker）——細節全部以 workflow script 內嵌 prompt 為 SSOT，改規則改那裡、不改本檔。**
 
 Main session 需要知道的：
 
