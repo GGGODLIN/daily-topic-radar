@@ -38,7 +38,7 @@ const samplesShaFor = (reports, date) => {
   const manifest = JSON.parse(fs.readFileSync(path.join(reports, `${date}-evidence-level-manifest.json`), 'utf8'))
   return sha256(JSON.stringify(manifest.samples))
 }
-const argsFor = ({ date = '2026-08-06', root, reports, mode = 'sample', audit = null, samplesSha256 = null }) => [
+const argsFor = ({ date = '2026-08-06', root, reports, mode = 'sample', audit = null, auditTranscripts = null, samplesSha256 = null }) => [
   script,
   '--date',
   date,
@@ -49,6 +49,7 @@ const argsFor = ({ date = '2026-08-06', root, reports, mode = 'sample', audit = 
   '--mode',
   mode,
   ...(audit == null ? [] : ['--audit-b64', Buffer.from(JSON.stringify(audit)).toString('base64')]),
+  ...(auditTranscripts == null ? [] : ['--audit-from-transcripts', auditTranscripts]),
   ...(mode !== 'finalize' ? [] : ['--samples-sha256', samplesSha256 ?? samplesShaFor(reports, date)]),
 ]
 
@@ -501,4 +502,35 @@ test('uses report filename dates for the seven-day due boundary', () => {
     last_success_date: null,
     days_since: null,
   })
+})
+
+test('finalize extracts the audit packet from workflow agent transcripts', () => {
+  const fixture = makeFixture()
+  writeRows(path.join(fixture.project, 'first.jsonl'), [assistant({
+    text: repeat('v', 220),
+    timestamp: '2026-08-06T01:00:00.000Z',
+    sessionId: 'first-session',
+  })])
+  run(fixture)
+  const samples = samplesFor(fixture)
+  const validAudit = auditFor(samples, [[{ type: 'unsourced-number', quote: 'vvvvv' }]])
+  const wfDir = path.join(fixture.reports, 'wf-transcripts')
+  fs.mkdirSync(wfDir, { recursive: true })
+  fs.writeFileSync(path.join(wfDir, 'agent-scan.jsonl'), `${JSON.stringify({
+    message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: { ok: true, silent: false } }] },
+  })}\n`)
+  fs.writeFileSync(path.join(wfDir, 'agent-audit.jsonl'), `${JSON.stringify({
+    message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: validAudit }] },
+  })}\n`)
+  const finalized = run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir })
+  assert.equal(finalized.ok, true)
+  assert.equal(finalized.tp_style_violation_count, 1)
+
+  const conflicting = spawnSync(process.execPath, argsFor({
+    ...fixture,
+    mode: 'finalize',
+    auditTranscripts: wfDir,
+    audit: validAudit,
+  }), { encoding: 'utf8' })
+  assert.notEqual(conflicting.status, 0)
 })

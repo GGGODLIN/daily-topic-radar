@@ -359,7 +359,37 @@ if grep -E '[⚠🚨]' "$INJECTION_CASE/report.md" >/dev/null; then
   exit 1
 fi
 
+# --packets-from-transcripts：packet 不經 LLM 手抄（2026-08-11 finalizer b64 掉字實錯），從 agent transcripts 抽取
+TRANSCRIPTS_CASE="$TMP/transcripts-case"
+mkdir -p "$TRANSCRIPTS_CASE/wf"
+TRANSCRIPTS_PROJECTS="$TRANSCRIPTS_CASE/projects"
+PROJECTS="$TRANSCRIPTS_PROJECTS"
+add_session trans s1 research-before-answer 2026-08-01T12:00:00.000Z
+add_session trans s2 research-before-answer 2026-08-02T12:00:00.000Z
+add_session trans s3 research-before-answer 2026-08-03T12:00:00.000Z
+jq -cn \
+  --arg p1 "$TRANSCRIPTS_PROJECTS/trans/s1.jsonl" \
+  --arg p2 "$TRANSCRIPTS_PROJECTS/trans/s2.jsonl" \
+  --arg p3 "$TRANSCRIPTS_PROJECTS/trans/s3.jsonl" \
+  '{eligible:3,samples:[
+    {session:"s1",invoke:"2026-08-01T12:00:00.000Z",path:$p1,topic:"one",claims:[{quote:"q1",source_pointer:"u1",evidence:"e1"}],R1:"PASS",R2:"PASS",R3:"PASS",note:"n1"},
+    {session:"s2",invoke:"2026-08-02T12:00:00.000Z",path:$p2,topic:"two",claims:[{quote:"q2",source_pointer:"u2",evidence:"e2"}],R1:"PASS",R2:"PASS",R3:"PASS",note:"n2"},
+    {session:"s3",invoke:"2026-08-03T12:00:00.000Z",path:$p3,topic:"three",claims:[{quote:"q3",source_pointer:"u3",evidence:"e3"}],R1:"PASS",R2:"PASS",R3:"PASS",note:"n3"}
+  ]}' > "$TRANSCRIPTS_CASE/primary.json"
+jq -cn --slurpfile packet "$TRANSCRIPTS_CASE/primary.json" \
+  '{message:{content:[{type:"tool_use",name:"StructuredOutput",input:$packet[0]}]}}' > "$TRANSCRIPTS_CASE/wf/agent-primary.jsonl"
+jq -cn '{message:{content:[{type:"tool_use",name:"StructuredOutput",input:{missed_claims:[],false_greens:[]}}]}}' > "$TRANSCRIPTS_CASE/wf/agent-verifier.jsonl"
+python3 "$FINALIZER" --sampler "$HELPER" --projects "$TRANSCRIPTS_PROJECTS" --date 2026-08-05 --packets-from-transcripts "$TRANSCRIPTS_CASE/wf" --ledger "$TRANSCRIPTS_CASE/ledger.jsonl" --report "$TRANSCRIPTS_CASE/report.md" | grep -F '"ok":true' >/dev/null
+test -f "$TRANSCRIPTS_CASE/report.md"
+test "$(jq -s '[.[] | select(.date == "2026-08-05")] | length' "$TRANSCRIPTS_CASE/ledger.jsonl")" = "3"
+if python3 "$FINALIZER" --sampler "$HELPER" --projects "$TRANSCRIPTS_PROJECTS" --date 2026-08-05 --packets-from-transcripts "$TRANSCRIPTS_CASE/wf" --primary-b64 x --ledger "$TRANSCRIPTS_CASE/ledger.jsonl" --report "$TRANSCRIPTS_CASE/report.md" >/dev/null 2>&1; then
+  printf 'packets-from-transcripts must exclude b64 args\n' >&2
+  exit 1
+fi
+
 grep -F "{ key: 'rba-verify', freq: 'weekly-tue', kind: 'llm', src: \`\${W}/rba-verify-weekly.sh\`, model: 'opus', effort: 'medium' }," "$WORKFLOW" >/dev/null
+grep -F -- '--packets-from-transcripts' "$WORKFLOW" >/dev/null
+grep -F -- '--audit-from-transcripts' "$WORKFLOW" >/dev/null
 grep -F 'const channelAgentOptions = (c) =>' "$WORKFLOW" >/dev/null
 grep -F '...channelAgentOptions(c),' "$WORKFLOW" >/dev/null
 grep -F "c.channel === 'rba-verify'" "$WORKFLOW" >/dev/null

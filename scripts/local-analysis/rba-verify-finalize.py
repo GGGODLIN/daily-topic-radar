@@ -18,6 +18,34 @@ def decode_packet(value):
   return json.loads(base64.b64decode(value).decode("utf-8"))
 
 
+def extract_packets_from_transcripts(transcripts_dir):
+  primary = None
+  verifier = None
+  files = sorted(Path(transcripts_dir).glob("agent-*.jsonl"), key=lambda p: p.stat().st_mtime)
+  require(files, f"no agent transcripts in {transcripts_dir}")
+  for path in files:
+    with path.open(encoding="utf-8") as handle:
+      for raw_line in handle:
+        try:
+          row = json.loads(raw_line)
+        except json.JSONDecodeError:
+          continue
+        content = row.get("message", {}).get("content") if isinstance(row, dict) else None
+        if not isinstance(content, list):
+          continue
+        for item in content:
+          if not (isinstance(item, dict) and item.get("type") == "tool_use" and item.get("name") == "StructuredOutput"):
+            continue
+          packet = item.get("input")
+          if exact_keys(packet, {"eligible", "samples"}):
+            primary = packet
+          elif exact_keys(packet, {"missed_claims", "false_greens"}):
+            verifier = packet
+  require(primary is not None, "primary packet not found in transcripts")
+  require(verifier is not None, "verifier packet not found in transcripts")
+  return primary, verifier
+
+
 def require(condition, message):
   if not condition:
     raise ValueError(message)
@@ -87,7 +115,7 @@ def run_sampler(sampler, projects, ledger, manifest, report_date):
     capture_output=True,
     text=True,
     env=environment,
-    timeout=30,
+    timeout=120,
   )
   packet = json.loads(completed.stdout)
   require(exact_keys(packet, {"eligible", "samples"}), "invalid sampler packet")
@@ -306,16 +334,22 @@ def replace_file(path, content):
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--date", required=True)
-  parser.add_argument("--primary-b64", required=True)
-  parser.add_argument("--verifier-b64", required=True)
+  parser.add_argument("--primary-b64")
+  parser.add_argument("--verifier-b64")
+  parser.add_argument("--packets-from-transcripts")
   parser.add_argument("--ledger", required=True)
   parser.add_argument("--report", required=True)
   parser.add_argument("--sampler", default="/Users/linhancheng/code/social-info/scripts/local-analysis/rba-verify-sample.sh")
   parser.add_argument("--projects", default=str(Path.home() / ".claude/projects"))
   options = parser.parse_args()
 
-  primary = decode_packet(options.primary_b64)
-  verifier = decode_packet(options.verifier_b64)
+  if options.packets_from_transcripts:
+    require(not options.primary_b64 and not options.verifier_b64, "--packets-from-transcripts excludes --primary-b64/--verifier-b64")
+    primary, verifier = extract_packets_from_transcripts(options.packets_from_transcripts)
+  else:
+    require(bool(options.primary_b64) and bool(options.verifier_b64), "need --primary-b64 and --verifier-b64, or --packets-from-transcripts")
+    primary = decode_packet(options.primary_b64)
+    verifier = decode_packet(options.verifier_b64)
   validate_packets(primary, verifier)
   ledger_path = Path(options.ledger)
   report_path = Path(options.report)

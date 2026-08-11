@@ -527,6 +527,30 @@ const materializePublication = (reports, date, publication) => {
   })}\n`)
   return verifiedPacket(reports, date) ?? packetFor(date, reportPath, manifestPath, null, null, false)
 }
+const auditB64FromTranscripts = (dir) => {
+  const files = fs.readdirSync(dir)
+    .filter((name) => /^agent-.*\.jsonl$/.test(name))
+    .map((name) => path.join(dir, name))
+    .sort((left, right) => fs.statSync(left).mtimeMs - fs.statSync(right).mtimeMs)
+  let found = null
+  for (const file of files) {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (line === '') continue
+      let row
+      try {
+        row = JSON.parse(line)
+      } catch {
+        continue
+      }
+      const content = row?.message?.content
+      if (!Array.isArray(content)) continue
+      for (const item of content) {
+        if (item?.type === 'tool_use' && item?.name === 'StructuredOutput' && sameKeys(item.input, ['rows'])) found = item.input
+      }
+    }
+  }
+  return found == null ? null : Buffer.from(JSON.stringify(found), 'utf8').toString('base64')
+}
 const finalizeReport = (reports, date, auditB64, samplesSha256) => {
   ensurePrivateDirectory(reports)
   const existing = verifiedPacket(reports, date)
@@ -588,7 +612,10 @@ const main = () => {
   if (typeof root !== 'string' || typeof reports !== 'string') throw new Error('root and reports are required')
   if (!['due', 'sample', 'finalize'].includes(mode)) throw new Error('mode must be due, sample, or finalize')
   if (mode === 'finalize') {
-    process.stdout.write(`${JSON.stringify(finalizeReport(reports, date, options['audit-b64'], options['samples-sha256']))}\n`)
+    const transcriptsDir = options['audit-from-transcripts']
+    if (transcriptsDir != null && options['audit-b64'] != null) throw new Error('audit-from-transcripts excludes audit-b64')
+    const auditB64 = transcriptsDir != null ? auditB64FromTranscripts(transcriptsDir) : options['audit-b64']
+    process.stdout.write(`${JSON.stringify(finalizeReport(reports, date, auditB64, options['samples-sha256']))}\n`)
     return
   }
 
