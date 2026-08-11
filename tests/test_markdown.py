@@ -127,6 +127,40 @@ def test_render_file_no_stale_line_when_none():
     assert "stale" not in out.lower()
 
 
+def test_render_file_surfaces_empty_source_that_fetched_nothing():
+    """HTTP ok but 0 items parsed — the silent-failure mode reddit hit on 2026-08-11.
+
+    Such a source lands in neither failures (no exception) nor stale (stale
+    requires fetched>0), and contributes 0 to sources_active, so without this
+    block it disappears from the report with no trace.
+    """
+    out = render_file(
+        date="2026-08-11",
+        generated_at=datetime(2026, 8, 11, 6, 0, 0),
+        items=[_item()],
+        failures=[],
+        empty=[
+            FetchResult(source_id="reddit_localllama", items=[], ok=True, net_new=0),
+            FetchResult(source_id="reddit_claudeai", items=[], ok=True, net_new=0),
+        ],
+    )
+    assert "sources_empty: 2" in out
+    assert "empty (HTTP ok but 0 items parsed" in out
+    assert "reddit_localllama: fetched=0" in out
+    assert "reddit_claudeai: fetched=0" in out
+
+
+def test_render_file_no_empty_line_when_none():
+    out = render_file(
+        date="2026-05-18",
+        generated_at=datetime(2026, 5, 18, 6, 0, 0),
+        items=[_item()],
+        failures=[],
+    )
+    assert "sources_empty" not in out
+    assert "0 items parsed" not in out
+
+
 def test_github_search_items_render_in_github_trending_group():
     """github_search source should bucket into github_trending group per _group_key_for_source."""
     from social_info.markdown import _group_key_for_source, render_file

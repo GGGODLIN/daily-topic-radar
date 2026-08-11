@@ -100,6 +100,7 @@ def render_file(
     failures: list[FetchResult],
     stale: list[FetchResult] | None = None,
     resurface_items: list[Item] | None = None,
+    empty: list[FetchResult] | None = None,
 ) -> str:
     resurface_items = resurface_items or []
     resurface_object_ids = {id(it) for it in resurface_items}
@@ -114,16 +115,28 @@ def render_file(
 
     sources_active = len({(i.source, i.source_handle) for i in all_items})
 
+    empty = empty or []
+    summary = (
+        f"> total_items: {len(all_items)}  |  sources_active: {sources_active}"
+        f"  |  sources_failed: {len(failures)}"
+    )
+    if empty:
+        summary += f"  |  sources_empty: {len(empty)}"
+
     lines = [
         f"# AI Daily Digest — {date}",
         "",
         f"> generated_at: {generated_at.isoformat()} (Asia/Taipei)",
-        f"> total_items: {len(all_items)}  |  sources_active: {sources_active}  |  sources_failed: {len(failures)}",
+        summary,
     ]
     if failures:
         lines.append("> failures:")
         for f in failures:
             lines.append(f">   - {f.source_id}: {f.error}")
+    if empty:
+        lines.append("> empty (HTTP ok but 0 items parsed — source may be silently broken):")
+        for e in empty:
+            lines.append(f">   - {e.source_id}: fetched=0")
     if stale:
         lines.append("> stale (fetched ok but 0 net-new after dedup):")
         for s in stale:

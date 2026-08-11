@@ -124,9 +124,10 @@ async def _main() -> int:
         r for r in results
         if r.ok and r.items_count() > 0 and r.net_new == 0
     ]
+    empty = [r for r in results if r.ok and r.items_count() == 0]
     out = write_report(
         all_items_today, failures, args.reports, date, now_tw,
-        stale=stale, resurface_items=resurface_items,
+        stale=stale, resurface_items=resurface_items, empty=empty,
     )
     db.update_last_surfaced_at(resurface_ids)
 

@@ -48,9 +48,9 @@ RESURFACE_DAYS = 30
 
 def classify_error(exc: BaseException) -> str:
     """Classify a fetch exception into one of:
-    - transient: network glitch / 5xx / DNS race; retry-able
+    - transient: network glitch / 5xx / 429 throttling / DNS race; retry-able
     - user_action_required: 401/403; auth/VPN problem only the user can resolve
-    - persistent_error: 4xx other than 401/403, unknown source type, etc.
+    - persistent_error: 4xx other than 401/403/429, unknown source type, etc.
     """
     if isinstance(
         exc,
@@ -69,7 +69,7 @@ def classify_error(exc: BaseException) -> str:
         return "transient"
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
-        if code >= 500:
+        if code >= 500 or code == 429:
             return "transient"
         if code in (401, 403):
             return "user_action_required"
@@ -257,6 +257,7 @@ def write_report(
     generated_at: datetime,
     stale: list[FetchResult] | None = None,
     resurface_items: list[Item] | None = None,
+    empty: list[FetchResult] | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md = render_file(
@@ -266,6 +267,7 @@ def write_report(
         failures=failures,
         stale=stale,
         resurface_items=resurface_items,
+        empty=empty,
     )
     out_path = out_dir / f"{date}.md"
     out_path.write_text(md, encoding="utf-8")

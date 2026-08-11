@@ -143,7 +143,11 @@ digest 階段展開原文（解讀 / 摘要 / 引用）時**按來源分流**。
 
 ## 已知 fetcher gap
 
-- Reddit 5 個 sub：**2026-05-29 起 fetcher 改抓 `old.reddit.com/r/X/top/` 列表 HTML**（`reddit.py`）。原因：Reddit 收緊未認證 `.json` API，任何 IP（含住宅）打 `top.json` 都回 403「blocked by network security / log in」，但 HTML 頁仍 200。**舊認知「住宅 IP OK」只對 HTML 成立、對 `.json` 已失效**。old.reddit HTML 用一般 UA 即 200、含 `data-score`/`data-permalink`/`data-author`/`data-comments-count`/`data-timestamp`，但**拿不到 selftext**（列表頁無內文，外連貼文只存 src link 進 excerpt）。VPN 開著時 exit IP 仍可能被整個擋（HTML 也擋）；若 old.reddit 哪天也 403 → 改接 Reddit OAuth API（註冊 app + client credentials）。`known_issues.py` 的 reddit hint 已同步更正（不再寫「VPN 開著必擋」）。
+- Reddit 5 個 sub：**2026-08-11 起 fetcher 改抓 `www.reddit.com/r/X/top.rss`**（`reddit.py`）。沿革：`.json` 未認證早已 403；`old.reddit.com/r/X/top/` 列表 HTML 撐到 2026-08-11 當天開始對未認證請求回 **302 → `/login?reason=lor2`**（5 個 sub 全中、與 VPN / IP 無關，出口是中華電信住宅 IP 一樣擋）。因為 httpx 設 `follow_redirects=True`，跟過去拿到的是**登入頁的 200**，解析 0 篇 → 不拋錯、`fetched=0` → 三個統計位置（`sources_active` / failures / stale）全部隱形，靜默失效整整一天才被 digest 撰寫時的跨天數字比對抓到。
+  - **官方 API 不是退路**：Reddit 於 **2025-11-11 關閉自助申請**（Responsible Builder Policy），新 token 需人工審核；2026-08-05 CTO 另宣布會逐步限縮所有新請求。既有 app 不受影響，但本 repo 沒有舊 app。
+  - **RSS 的取捨**：拿得到 title / permalink / author / timestamp / **selftext**（比舊列表頁更好，舊的沒有內文），但**拿不到 `score` 與 `num_comments`** —— `engagement={}`，熱度只剩 feed 順序（`top?t=day` 決定）。想要絕對數字只有官方 API 一條路。arctic-shift 補不了：它是快照存檔，當天貼文的 score 全是 1，約 2 天後才成熟。
+  - **節流是這條路的主要風險**：Reddit 對 RSS 擋很兇，pipeline 又是 `asyncio.gather` 全並行。`reddit.py` 因此用 module-level lock 把請求序列化（`MIN_REQUEST_GAP_SECONDS=45`）＋ 429 退避重試一次（`THROTTLED_RETRY_DELAY_SECONDS=90`），並用 `TOTAL_BUDGET_SECONDS=300` 封頂避免撞 `run-daily.sh` 的 600s 看門狗。**調這三個常數前先讀 `reddit.py` 檔頭**。2026-08-11 實測：3 個 sub 全數成功、總耗時 183 秒。
+  - **靜默失效偵測（同日補上）**：`__main__.py` 計算 `empty = [r for r in results if r.ok and r.items_count() == 0]` 傳進 `render_file`，raw md header 會多出 `sources_empty: N` 與 `> empty (HTTP ok but 0 items parsed…)` 區塊。另 `classify_error` 把 **429 從 `persistent_error` 改判 `transient`**（節流可重試，原分類等於「重試也沒用」）。
 - Threads `D15iJFBNZ9wgeWAhw` Apify actor 持續 400（payload schema 不合）
 - HN 抓 front_page link + 每則 story 的 top 5 comments（Firebase API，2026-05-11 之後）；不抓巢狀回覆
 - X 只抓 KOL handle、不抓 reply / quote tweet / search query

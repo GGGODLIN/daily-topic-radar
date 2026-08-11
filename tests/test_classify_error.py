@@ -29,7 +29,7 @@ def _http_status_error(code: int) -> httpx.HTTPStatusError:
         (_http_status_error(403), "user_action_required"),
         (_http_status_error(400), "persistent_error"),
         (_http_status_error(404), "persistent_error"),
-        (_http_status_error(429), "persistent_error"),
+        (_http_status_error(429), "transient"),
         (ValueError("random non-http exception"), "persistent_error"),
     ],
 )
