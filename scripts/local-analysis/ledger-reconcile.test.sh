@@ -96,7 +96,7 @@ cat > "$TMP/f1.json" <<'EOF'
  {"title":"y","match":"seen-today","channel":"memory"},
  {"title":"z","match":"terminal","channel":"memory"},
  {"title":"w","match":"due-future","channel":"memory"},
- {"title":"brand-new-item","match":null,"channel":"wiki-lint"},
+ {"title":"brand-new-item","match":null,"channel":"wiki-lint","source_key":"wiki-lint:brand-new-item"},
  {"title":"bad","match":"no-such-title","channel":"memory"}]
 EOF
 run "$TMP/count.jsonl" 2026-07-30 "$TMP/f1.json" --apply > "$TMP/c.json"
@@ -107,6 +107,7 @@ check "next_due 未到 count 不累加"          1 "$(field_of "$TMP/c.json" due
 check "next_due 未到 last_seen 仍更新" 2026-07-30 "$(field_of "$TMP/c.json" due-future last_seen)"
 check "match=null -> 新增 entry"            1 "$(field_of "$TMP/c.json" brand-new-item count)"
 check "新 entry status=pending"       pending "$(field_of "$TMP/c.json" brand-new-item status)"
+check "新 entry 保留 source_key" wiki-lint:brand-new-item "$(field_of "$TMP/c.json" brand-new-item source_key)"
 check "match 指向不存在 -> 進 unmatched" 1 \
   "$(python3 -c "import json;print(len(json.load(open('$TMP/c.json'))['unmatched_findings']))")"
 
@@ -157,6 +158,16 @@ python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/dec.jsonl" --decide <(echo '[
 check "match 指不到 -> 非 0 退出"       1 "$?"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/dec.jsonl" --decide <(echo '[{"match":"to-done","verdict":"pending","next_due":"8/6"}]') --apply --no-health >/dev/null 2>&1
 check "next_due 格式錯 -> 非 0 退出"    1 "$?"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/dec.jsonl" --decide <(echo '[{"match":"to-done","verdict":"pending","next_due":"2026-02-31"}]') --apply --no-health >/dev/null 2>&1
+check "next_due 日曆日期錯 -> 非 0 退出" 1 "$?"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/dec.jsonl" --decide <(echo '[{"match":"to-done","verdict":"pending","next_due":"20260818"}]') --apply --no-health >/dev/null 2>&1
+check "next_due 非標準日期 -> 非 0 退出" 1 "$?"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/dec.jsonl" --decide <(echo '[{"match":"to-done","verdict":"pending","next_due":""}]') --apply --no-health >/dev/null 2>&1
+check "next_due 空字串 -> 非 0 退出" 1 "$?"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/dec.jsonl" --decide <(echo '[{"match":"to-done","verdict":"pending","next_due":0}]') --apply --no-health >/dev/null 2>&1
+check "next_due 數字 -> 非 0 退出" 1 "$?"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/dec.jsonl" --decide <(echo '[{"match":"to-done","verdict":"pending","next_due":"   "}]') --apply --no-health >/dev/null 2>&1
+check "next_due 空白 -> 非 0 退出" 1 "$?"
 
 echo "== 沒有 --apply 不得改動 ledger =="
 cp "$TMP/gates.jsonl" "$TMP/untouched.jsonl"
@@ -191,6 +202,13 @@ python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/broken.jsonl" --no-health >/d
 check "壞 jsonl -> 非 0 退出" 1 "$?"
 python3 "$SCRIPT" --date 2026-7-3 --ledger "$TMP/gates.jsonl" --no-health >/dev/null 2>&1
 check "壞日期格式 -> 非 0 退出" 1 "$?"
+python3 "$SCRIPT" --date 2026-02-31 --ledger "$TMP/gates.jsonl" --no-health >/dev/null 2>&1
+check "壞日曆日期 -> 非 0 退出" 1 "$?"
+python3 "$SCRIPT" --date 20260730 --ledger "$TMP/gates.jsonl" --no-health >/dev/null 2>&1
+check "非標準日期 -> 非 0 退出" 1 "$?"
+printf '%s\n' '{"title":"bad-due","first_seen":"2026-07-01","last_seen":"2026-07-01","count":1,"status":"pending","next_due":"","note":""}' > "$TMP/bad-due.jsonl"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/bad-due.jsonl" --no-health >/dev/null 2>&1
+check "ledger 空 next_due -> 非 0 退出" 1 "$?"
 
 echo
 echo "pass=$PASS fail=$FAIL"

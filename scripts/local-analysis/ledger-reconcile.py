@@ -27,7 +27,8 @@ Usage:
   ledger-reconcile.py --date 2026-07-30 --json               # 機器可讀
 
 findings.json schema（LLM 產出，只含語意判斷）:
-  [{"title": "<標題>", "match": "<既有 ledger title 或 null>", "channel": "<channel key>"}]
+  [{"title": "<標題>", "match": "<既有 ledger title 或 null>", "channel": "<channel key>",
+    "source_key": "<確定性來源識別，選填>"}]
 
 decide.json schema（使用者拍板的轉寫，status 轉換的唯一機械路徑）:
   [{"match": "<既有 ledger title>", "verdict": "done|killed|kept|observing|pending",
@@ -45,6 +46,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import date as calendar_date
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LEDGER = os.path.join(DIR, "..", "..", "reports", "local-analysis", "pending-actions.jsonl")
@@ -61,11 +63,24 @@ ALLOWED_FINDING_CHANNELS = frozenset({
 })
 PATH_RE = re.compile(r"(~?/[\w./@-]+\.\w{1,6}|[\w-]+\.(?:md|sh|py|js|mjs|json|jsonl|txt|toml))")
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+SOURCE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9:._-]{2,127}$")
 
 FAMILY_KEYS = (
     "plain-language", "evidence-level", "self-research-first", "ask-vs-decide",
     "scope-discipline", "process-completeness", "output-delivery", "tooling-routing",
 )
+
+
+def parse_calendar_date(value, label):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        sys.exit(f"{label} must use YYYY-MM-DD and be a valid calendar date")
+    try:
+        parsed = calendar_date.fromisoformat(value)
+    except ValueError:
+        sys.exit(f"{label} must use YYYY-MM-DD and be a valid calendar date")
+    if parsed.isoformat() != value:
+        sys.exit(f"{label} must use YYYY-MM-DD and be a valid calendar date")
+    return parsed
 
 
 def load_ledger(path):
@@ -174,13 +189,28 @@ def validate_findings(findings):
             sys.exit(f"finding {index} must include a non-empty channel")
         if channel not in ALLOWED_FINDING_CHANNELS:
             sys.exit(f"finding {index} channel {channel!r} is not allowed to write the ledger")
+        source_key = finding.get("source_key")
+        if source_key is not None and (not isinstance(source_key, str) or not SOURCE_KEY_RE.fullmatch(source_key)):
+            sys.exit(f"finding {index} has invalid source_key {source_key!r}")
 
 
 def apply_findings(rows, findings, date):
+    run_date = parse_calendar_date(date, "date")
     by_title = {r.get("title"): r for r in rows}
+    by_source_key = {}
+    for row in rows:
+        source_key = row.get("source_key")
+        if source_key is None:
+            continue
+        if not isinstance(source_key, str) or not SOURCE_KEY_RE.fullmatch(source_key):
+            sys.exit(f"ledger has invalid source_key {source_key!r}")
+        if source_key in by_source_key:
+            sys.exit(f"ledger has duplicate source_key {source_key!r}")
+        by_source_key[source_key] = row
     touched, added, unmatched = set(), [], []
     for f in findings:
         m = f.get("match")
+        source_key = f.get("source_key")
         if m:
             row = by_title.get(m)
             if row is None:
@@ -188,8 +218,17 @@ def apply_findings(rows, findings, date):
                 continue
             if row.get("status") in TERMINAL:
                 continue
+            existing_source_key = row.get("source_key")
+            if source_key is not None and existing_source_key not in (None, source_key):
+                sys.exit(f"finding source_key {source_key!r} conflicts with ledger row {m!r}")
+            if source_key is not None and existing_source_key is None:
+                if source_key in by_source_key:
+                    sys.exit(f"finding source_key {source_key!r} already belongs to another ledger row")
+                row["source_key"] = source_key
+                by_source_key[source_key] = row
             due = row.get("next_due")
-            muted = bool(due) and date < due
+            due_date = parse_calendar_date(due, f"next_due {due!r}") if due is not None else None
+            muted = due_date is not None and run_date < due_date
             if row.get("last_seen") != date and not muted:
                 row["count"] = int(row.get("count", 0)) + 1
             row["last_seen"] = date
@@ -199,10 +238,16 @@ def apply_findings(rows, findings, date):
             if not title or title in by_title:
                 unmatched.append(f)
                 continue
+            if source_key is not None and source_key in by_source_key:
+                sys.exit(f"finding source_key {source_key!r} already exists; match must name its ledger title")
             row = {"title": title, "first_seen": date, "last_seen": date,
                    "count": 1, "status": "pending", "note": f.get("note", "")}
+            if source_key is not None:
+                row["source_key"] = source_key
             rows.append(row)
             by_title[title] = row
+            if source_key is not None:
+                by_source_key[source_key] = row
             added.append(title)
             touched.add(title)
     return touched, added, unmatched
@@ -228,9 +273,8 @@ def apply_decisions(rows, decisions, date):
             row["note"] = (row.get("note", "") + " ｜ " if row.get("note") else "") + d["note"]
         if d.get("escalate_at") is not None:
             row["escalate_at"] = int(d["escalate_at"])
-        if d.get("next_due"):
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d["next_due"]):
-                sys.exit(f"next_due {d['next_due']!r} must be YYYY-MM-DD")
+        if "next_due" in d:
+            parse_calendar_date(d["next_due"], f"next_due {d['next_due']!r}")
             row["next_due"] = d["next_due"]
         applied.append({"title": m, "verdict": v})
     return applied
@@ -241,10 +285,12 @@ def gate(entry, date, has_signal_today):
     count = int(entry.get("count", 0))
     esc = entry.get("escalate_at")
     due = entry.get("next_due")
+    run_date = parse_calendar_date(date, "date")
+    due_date = parse_calendar_date(due, f"next_due {due!r}") if due is not None else None
 
     if status in TERMINAL:
         return {"bucket": "excluded", "reason": f"status={status}"}
-    if due and date < due:
+    if due_date is not None and run_date < due_date:
         return {"bucket": "silent", "reason": f"next_due {due} 未到（count 不累加）"}
     if status in ("observing", "kept"):
         if esc is None:
@@ -368,17 +414,24 @@ def main():
     ap.add_argument("--no-health", action="store_true")
     a = ap.parse_args()
 
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.date):
-        sys.exit("--date must be YYYY-MM-DD")
+    parse_calendar_date(a.date, "--date")
 
     ledger = os.path.abspath(a.ledger)
     rows = load_ledger(ledger)
-    findings = json.load(open(a.findings)) if a.findings else []
+    if a.findings:
+        with open(a.findings) as handle:
+            findings = json.load(handle)
+    else:
+        findings = []
     if not isinstance(findings, list):
         sys.exit("findings must be a JSON array")
     validate_findings(findings)
 
-    decisions = json.load(open(a.decide)) if a.decide else []
+    if a.decide:
+        with open(a.decide) as handle:
+            decisions = json.load(handle)
+    else:
+        decisions = []
     if not isinstance(decisions, list):
         sys.exit("decide must be a JSON array")
 
