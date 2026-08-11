@@ -150,6 +150,39 @@ def test_render_file_surfaces_empty_source_that_fetched_nothing():
     assert "reddit_claudeai: fetched=0" in out
 
 
+def test_reddit_items_keep_feed_order_without_engagement():
+    """Reddit rss carries no score/comments, so feed order IS the ranking.
+
+    render_file sorts on (tier, -sum(engagement)); with an empty engagement map
+    every reddit item ties, and Python's stable sort is what preserves the
+    top-listing order. Pin it — changing the sort key would silently reshuffle
+    reddit into arbitrary order with no other test noticing.
+    """
+    titles = ["first from feed", "second from feed", "third from feed"]
+    items = [
+        _item(
+            title=t,
+            url=f"https://www.reddit.com/r/LocalLLaMA/comments/{i}/x/",
+            canonical_url=f"https://www.reddit.com/r/LocalLLaMA/comments/{i}/x/",
+            source="reddit",
+            source_handle="r/LocalLLaMA",
+            engagement={},
+        )
+        for i, t in enumerate(titles)
+    ]
+
+    out = render_file(
+        date="2026-08-12",
+        generated_at=datetime(2026, 8, 12, 6, 0, 0),
+        items=items,
+        failures=[],
+    )
+
+    assert "## Reddit (3 items)" in out
+    positions = [out.index(t) for t in titles]
+    assert positions == sorted(positions)
+
+
 def test_render_file_no_empty_line_when_none():
     out = render_file(
         date="2026-05-18",
