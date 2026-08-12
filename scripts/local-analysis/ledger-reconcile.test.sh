@@ -210,6 +210,26 @@ printf '%s\n' '{"title":"bad-due","first_seen":"2026-07-01","last_seen":"2026-07
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/bad-due.jsonl" --no-health >/dev/null 2>&1
 check "ledger 空 next_due -> 非 0 退出" 1 "$?"
 
+echo "== 漏收週報偵測（late_unconsumed_reports）=="
+late_count() {
+  python3 - "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(len(d.get("late_unconsumed_reports", [])))
+PY
+}
+printf '%s\n' '{"title":"seed","first_seen":"2026-07-01","last_seen":"2026-07-01","count":1,"status":"pending","note":""}' > "$TMP/late.jsonl"
+printf '## 判讀\n🚨 本週抽驗 3 個 session，共 3 個 rubric FAIL。\n' > "$TMP/2026-07-29-rba-verify.md"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/late.jsonl" --no-health --json > "$TMP/late-out.json" 2>/dev/null
+check "警告報告無收據 -> 列入漏收" 1 "$(late_count "$TMP/late-out.json")"
+printf '%s\n' '{"title":"seed","first_seen":"2026-07-01","last_seen":"2026-07-01","count":1,"status":"pending","note":"","source_key":"rba-verify:2026-07-29"}' > "$TMP/late.jsonl"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/late.jsonl" --no-health --json > "$TMP/late-out.json" 2>/dev/null
+check "收據存在 -> 不列漏收" 0 "$(late_count "$TMP/late-out.json")"
+printf '## 判讀\n本週抽驗 3 個 session，0 FAIL。\n' > "$TMP/2026-07-29-rba-verify.md"
+printf '%s\n' '{"title":"seed","first_seen":"2026-07-01","last_seen":"2026-07-01","count":1,"status":"pending","note":""}' > "$TMP/late.jsonl"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/late.jsonl" --no-health --json > "$TMP/late-out.json" 2>/dev/null
+check "報告無警告 -> 不列漏收" 0 "$(late_count "$TMP/late-out.json")"
+
 echo
 echo "pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

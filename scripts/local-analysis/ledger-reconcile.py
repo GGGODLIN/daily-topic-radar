@@ -46,7 +46,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date as calendar_date
+from datetime import date as calendar_date, timedelta
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LEDGER = os.path.join(DIR, "..", "..", "reports", "local-analysis", "pending-actions.jsonl")
@@ -323,6 +323,40 @@ def family_hint(entry, fam):
     return {}
 
 
+LATE_REPORT_CHANNELS = ("rba-verify", "evidence-level")
+WARNING_MARKS = ("🚨", "⚠️")
+
+
+def late_unconsumed(rows, date, report_dir):
+    run_date = parse_calendar_date(date, "date")
+    items = []
+    for channel in LATE_REPORT_CHANNELS:
+        for delta in range(1, 8):
+            d = (run_date - timedelta(days=delta)).isoformat()
+            path = os.path.join(report_dir, f"{d}-{channel}.md")
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    content = handle.read()
+            except OSError:
+                break
+            if not any(m in content for m in WARNING_MARKS):
+                break
+            receipt = f"{channel}:{d}"
+            if any(r.get("source_key") == receipt for r in rows):
+                break
+            items.append({
+                "channel": channel,
+                "report_date": d,
+                "report_path": path,
+                "receipt_needed": receipt,
+                "action": f"digest 從未消費此報告：讀 {path}，把其 🚨/⚠️ 判讀寫成 finding（source_key={receipt}）並走 --findings --apply",
+            })
+            break
+    return items
+
+
 def build_packet(rows, date, touched, added, unmatched, fam):
     buckets = {"forced_high": [], "min_medium": [], "open": [], "bottom_only": [], "silent": []}
     for r in rows:
@@ -376,6 +410,10 @@ def render(packet):
         A(f"⚠️ 無法併入的 finding {len(packet['unmatched_findings'])}（match 指向不存在的 title 或標題重複）")
         for f in packet["unmatched_findings"]:
             A(f"    - {f.get('title', '')[:70]}  match={f.get('match')!r}")
+    if packet.get("late_unconsumed_reports"):
+        A(f"🚨 漏收週報 {len(packet['late_unconsumed_reports'])}（產出晚於當日 digest、至今無消費收據）")
+        for it in packet["late_unconsumed_reports"]:
+            A(f"    - {it['channel']} {it['report_date']} → 讀 {it['report_path']}，finding 需帶 source_key={it['receipt_needed']}")
     for key, label in (("forced_high", "🔴 強制高檔"), ("min_medium", "🟡 至少中檔"),
                        ("open", "待排檔（你決定檔位）"), ("bottom_only", "只列沉底行")):
         items = packet[key]
@@ -440,6 +478,7 @@ def main():
     fam = {} if a.no_health else family_counts()
     packet = build_packet(rows, a.date, touched, added, unmatched, fam)
     packet["decisions_applied"] = decided
+    packet["late_unconsumed_reports"] = late_unconsumed(rows, a.date, os.path.dirname(ledger))
 
     if a.apply:
         write_ledger(ledger, rows)
