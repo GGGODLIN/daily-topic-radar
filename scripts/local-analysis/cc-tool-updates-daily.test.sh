@@ -30,6 +30,16 @@ print('✅ 測 1 三名單分類：白(sem)追蹤、黑(cargo-bundle)忽略、�
 print('✅ 測 2 JSON 結構：updates/discovered/errors 三 list 齊全')
 " || fail "JSON 斷言失敗"
 
+# Homebrew revision：實際 helper 不得把已安裝 python@3.12 revision 誤報成降級
+printf '[{"name":"python@3.12","manager":"brew","source":"python@3.12"}]' > "$TMP/m-brew.json"
+out_brew=$(CCTOOL_MANIFEST="$TMP/m-brew.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+echo "$out_brew" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert not any(u['name']=='python@3.12' for u in d['updates']), 'python@3.12 revision 被誤報為版本更新'
+print('✅ 測 3 Homebrew revision：已安裝 revision 不誤報降級')
+" || fail "Homebrew revision 斷言失敗"
+
 # graceful：fixture manifest 含不存在的 manager → 進 errors 不崩
 printf '[{"name":"nonexistent-xyz","manager":"cargo-git","source":"no/such-repo"}]' > "$TMP/m2.json"
 out2=$(CCTOOL_MANIFEST="$TMP/m2.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
@@ -39,7 +49,7 @@ echo "$out2" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 assert any(e['name']=='nonexistent-xyz' for e in d['errors']), '不存在工具未進 errors'
-print('✅ 測 3 graceful：不存在工具進 errors、exit 0、不崩')
+print('✅ 測 4 graceful：不存在工具進 errors、exit 0、不崩')
 " || fail "graceful 斷言失敗"
 
 echo "🎉 ALL PASS"

@@ -203,7 +203,10 @@ def brew_latest(formula):
     if not s:
         return None
     try:
-        return (json.loads(s).get("formulae") or [{}])[0].get("versions", {}).get("stable")
+        info = (json.loads(s).get("formulae") or [{}])[0]
+        stable = info.get("versions", {}).get("stable")
+        revision = info.get("revision") or 0
+        return f"{stable}_{revision}" if stable and revision else stable
     except Exception:
         return None
 
