@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fixture regression for the frontmatter 對賬 leg of skill-upstream-check-weekly.sh
-# 四件：known-good（該報 ✅）/ known-bad（該報 ⬆️）/ 邊界 path-404（該報 🪦）/ 邊界 known-orphan（該報 ℹ️）
+# 九件：legacy / block metadata / inline quoted metadata / branch override / behind / path-404 / orphan / API error / incomplete
 # pinned 值執行時從上游現值計算，known-good 不會隨上游演進而腐壞
 set -uo pipefail
 
@@ -27,6 +27,16 @@ mk() {
 mk fx-good "upstream: $WATCH_REPO
 upstream-path: $WATCH_PATH
 upstream-pinned: ${latest:0:7}"
+mk fx-metadata-good "metadata:
+  upstream: $WATCH_REPO
+  upstream-path: $WATCH_PATH
+  upstream-pinned: ${latest:0:7}"
+mk fx-inline-quoted "metadata: {upstream: \"$WATCH_REPO\", upstream-path: '$WATCH_PATH', upstream-pinned: \"${latest:0:7}\"}"
+mk fx-master-branch "metadata:
+  upstream: $WATCH_REPO
+  upstream-path: $WATCH_PATH
+  upstream-pinned: ${latest:0:7}
+  upstream-branch: master"
 mk fx-behind "upstream: $WATCH_REPO
 upstream-path: $WATCH_PATH
 upstream-pinned: ${latest_parent:0:7}"
@@ -47,6 +57,10 @@ if [[ "\$*" == *api-flap* ]]; then
   printf 'gh: service unavailable (HTTP 500)\n' >&2
   exit 1
 fi
+if [[ "\$*" == *"?ref=master"* || "\$*" == *"...master"* ]]; then
+  printf '%s\n' "\$*" >> "$FIX/master-gh-calls"
+  exec "$REAL_GH" "\${@//master/main}"
+fi
 exec "$REAL_GH" "\$@"
 EOF
 chmod +x "$FIX/bin/gh"
@@ -62,13 +76,21 @@ check() {
     echo "FAIL: $1 — 預期 pattern 未出現: $2"; fail=$((fail+1))
   fi
 }
-check "known-good 報 ✅"        "✅ fx-good"
+check "legacy known-good 報 ✅" "✅ fx-good"
+check "metadata known-good 報 ✅" "✅ fx-metadata-good"
+check "inline quoted metadata 報 ✅" "✅ fx-inline-quoted"
+check "master branch override 報 ✅" "✅ fx-master-branch"
+if [ "$(grep -c 'ref=master' "$FIX/master-gh-calls" 2>/dev/null || true)" -ge 1 ] && [ "$(grep -c '\.\.\.master' "$FIX/master-gh-calls" 2>/dev/null || true)" -ge 1 ]; then
+  echo "PASS: master branch 傳入 contents 與 compare API"; pass=$((pass+1))
+else
+  echo "FAIL: master branch 未傳入 contents 與 compare API"; fail=$((fail+1))
+fi
 check "known-bad 報 ⬆️"         "⬆️ \*\*fx-behind\*\*"
 check "path-404 報 🪦"          "🪦 \*\*fx-orphan-path\*\*"
 check "known-orphan 報 ℹ️ 跳過" "ℹ️ fx-known-orphan"
 check "非 404 API 錯誤不冒充 path 消失" "⚠️ \*\*fx-api-error\*\* — upstream API 查詢失敗（非 404）"
 check "線索不完整列待確認" "⚠️ \*\*fx-incomplete\*\* — frontmatter 線索不完整"
-check "summary 計數 6 支 / 4 待確認" "6 支散檔 fork 對賬巡過（4 支待對賬 / 待確認）"
+check "summary 計數 9 支 / 4 待確認" "9 支散檔 fork 對賬巡過（4 支待對賬 / 待確認）"
 
 echo "----"
 echo "${pass} PASS / ${fail} FAIL（report: ${report}）"

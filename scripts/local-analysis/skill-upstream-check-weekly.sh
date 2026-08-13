@@ -10,9 +10,9 @@
 #
 # 兩種被巡邏的 skill 形態（2026-07-28 起）：
 # 1. git clone 型（帶 .git 目錄）→ fetch + HEAD 比對（下方第一段迴圈）
-# 2. 散檔 fork 型（無 .git）→ SKILL.md frontmatter 自帶線索：
-#      upstream: <owner/repo> / upstream-path: <path> / upstream-pinned: <sha>
-#      選配 upstream-branch:（預設 main）、upstream-status: orphaned（已知上游移除、不巡）
+# 2. 散檔 fork 型（無 .git）→ SKILL.md frontmatter 自帶線索；新檔放在 validator 接受的 metadata 下，舊頂層格式仍相容：
+#      metadata: { upstream: <owner/repo>, upstream-path: <path>, upstream-pinned: <sha> }
+#      選配 upstream-branch（預設 main）、upstream-status: orphaned（已知上游移除、不巡）
 #    upstream-pinned 語意 =「已對賬到此 commit」：只在看過 diff、拍板吸收與否之後推進；
 #    不得為了讓報告閉嘴而推進——推進本身是對賬 ritual 的最後一步
 
@@ -86,7 +86,7 @@ for skill_git in "$SKILLS_DIR"/*/.git; do
 done
 
 # --- 散檔 fork frontmatter 對賬巡邏（2026-07-28 加）---
-# 散檔複製型 fork 無 .git、上面迴圈照不到；線索由 SKILL.md frontmatter 自帶（欄位語意見檔頭）。
+# 散檔複製型 fork 無 .git、上面迴圈照不到；線索由 SKILL.md frontmatter 自帶（新檔放 metadata、歷史頂層格式仍相容）。
 # 與 marker 型段落（下方 skill-creator / debugging）不同：behind 會每週持續報，直到對賬推進 pinned。
 # 已知限制：compare API 的 files 上限 300 檔，超大 delta 可能漏列 path（本用例 delta 極小、可接受）。
 fm_watched=0
@@ -101,18 +101,32 @@ else
   for sk_md in "$SKILLS_DIR"/*/SKILL.md; do
     [ -f "$sk_md" ] || continue
     sk_name=$(basename "$(dirname "$sk_md")")
-    fm=$(awk '/^---[[:space:]]*$/{c++; next} c==1{print} c>=2{exit}' "$sk_md")
-    up_repo=$(printf '%s\n' "$fm" | sed -n 's/^upstream:[[:space:]]*//p' | head -1)
+    fm_values=$(python3 - "$sk_md" <<'PY'
+import sys
+import yaml
+
+text = open(sys.argv[1], encoding="utf-8").read()
+parts = text.split("---", 2)
+frontmatter = yaml.safe_load(parts[1]) if len(parts) == 3 else {}
+frontmatter = frontmatter if isinstance(frontmatter, dict) else {}
+metadata = frontmatter.get("metadata")
+metadata = metadata if isinstance(metadata, dict) else {}
+for key in ("upstream", "upstream-path", "upstream-pinned", "upstream-branch", "upstream-status"):
+    value = frontmatter.get(key, metadata.get(key, ""))
+    print("" if value is None else value)
+PY
+) || fm_values=""
+    up_repo=$(printf '%s\n' "$fm_values" | sed -n '1p')
     [ -n "$up_repo" ] || continue
     fm_watched=$((fm_watched + 1))
-    up_status=$(printf '%s\n' "$fm" | sed -n 's/^upstream-status:[[:space:]]*//p' | head -1)
+    up_path=$(printf '%s\n' "$fm_values" | sed -n '2p')
+    up_pin=$(printf '%s\n' "$fm_values" | sed -n '3p')
+    up_branch=$(printf '%s\n' "$fm_values" | sed -n '4p')
+    up_status=$(printf '%s\n' "$fm_values" | sed -n '5p')
     if [ "$up_status" = "orphaned" ]; then
       echo "- ℹ️ ${sk_name} — 已知 orphaned（上游已移除、不巡；provenance 留檔用）" >> "$LOG_FILE"
       continue
     fi
-    up_path=$(printf '%s\n' "$fm" | sed -n 's/^upstream-path:[[:space:]]*//p' | head -1)
-    up_pin=$(printf '%s\n' "$fm" | sed -n 's/^upstream-pinned:[[:space:]]*//p' | head -1)
-    up_branch=$(printf '%s\n' "$fm" | sed -n 's/^upstream-branch:[[:space:]]*//p' | head -1)
     up_branch="${up_branch:-main}"
     if [ -z "$up_path" ] || [ -z "$up_pin" ]; then
       echo "- ⚠️ **${sk_name}** — frontmatter 線索不完整（缺 upstream-path 或 upstream-pinned）" >> "$LOG_FILE"
@@ -141,6 +155,7 @@ else
     else
       echo "- ✅ ${sk_name} — 對賬點後上游未動該檔（pinned \`${up_pin}\`）" >> "$LOG_FILE"
     fi
+    unset -f fm_value
   done
   if [ "$fm_watched" -eq 0 ]; then
     echo "- ⚠️ 掃到 0 支帶 upstream 線索的 skill——散檔 fork 全部脫離雷達，確認 frontmatter 欄位還在" >> "$LOG_FILE"
