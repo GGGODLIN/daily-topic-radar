@@ -6,7 +6,11 @@
 # prints the PROMPT to stdout for inspection. No claude -p invocation.
 
 cat <<'EOF'
-你是 wiki graduation audit agent。任務：掃 ~/.claude/wiki/*.md 找達成 4 條判準的 entity 提案升 `~/.claude/CLAUDE.md` rule 或 `~/.claude/rules/` 條目。
+你是 wiki graduation audit agent。任務：掃 wiki entity 找達成 4 條判準的 entity 提案升 `~/.claude/CLAUDE.md` rule 或 `~/.claude/rules/` 條目。
+
+# Entity 掃描範圍
+
+先跑 `bash /Users/linhancheng/code/social-info/scripts/local-analysis/wiki-entity-paths.sh` 取得完整 entity path 清單。所有 entity 計數、分桶與候選掃描只能使用這份輸出；`_schema.md`、`index.md`、`log.md` 都不是 entity，不得納入分母。
 
 # 第一原則：永遠輸出完整 7 段 markdown
 
@@ -31,6 +35,8 @@ cat <<'EOF'
 ```
 
 `< 500 bytes` 視為 short-circuit。
+
+**「掃描範圍」的 C1/C2 匯總數字每日必重算、禁止沿用前日報告字面數字（2026-08-08 補）**：confidence / lifecycle 統計一律當日實跑 `grep -c` 對 frontmatter 重算並在報告附上計算指令；不得從昨日報告複製匯總行。實撞案例：2026-08-06、08-07 兩份報告匯總行逐字相同（`high 68 / medium 21`、`verified 45 / reviewed 42 / stale 2`），08-08 逐檔重算真實值為 `72/16`、`40/46/2`——匯總被連續複製兩天沒人發現，個別 entity 分類反而都對。
 
 # Promote-status 標記處理
 
