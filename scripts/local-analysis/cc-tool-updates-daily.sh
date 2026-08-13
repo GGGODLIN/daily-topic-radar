@@ -93,7 +93,8 @@ def brew_leaves():
 
 def _vkey(v):
     base, _, revision = norm(v).partition("_")
-    parts = tuple(int(x) if x.isdigit() else 0 for x in re.split(r'[.\-+]', base)[:4])
+    values = [int(x) if x.isdigit() else 0 for x in re.split(r'[.\-+]', base)[:4]]
+    parts = tuple((values + [0] * 4)[:4])
     return parts + (int(revision) if revision.isdigit() else 0,)
 
 def npm_global_roots():
