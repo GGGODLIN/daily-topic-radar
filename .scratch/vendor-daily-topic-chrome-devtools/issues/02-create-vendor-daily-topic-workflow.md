@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — 新增最小權限 Chrome DevTools fetch agent
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Needs:** Ticket 01 的 agent 已可被 Workflow 依名稱派用。
 

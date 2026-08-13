@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Needs:** 本機 Chrome DevTools MCP 已連線，且 Workflow subagent 可經預載工具使用它。
 
