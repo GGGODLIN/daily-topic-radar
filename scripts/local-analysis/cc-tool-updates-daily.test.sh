@@ -30,15 +30,38 @@ print('✅ 測 1 三名單分類：白(sem)追蹤、黑(cargo-bundle)忽略、�
 print('✅ 測 2 JSON 結構：updates/discovered/errors 三 list 齊全')
 " || fail "JSON 斷言失敗"
 
-# Homebrew revision：實際 helper 不得把已安裝 python@3.12 revision 誤報成降級
+# Homebrew revision：用固定 stub 驗相同 revision、舊 revision、多 keg 順序與 revision=0
+BREW_BIN="$TMP/bin"
+mkdir -p "$BREW_BIN"
+cat > "$BREW_BIN/brew" <<'EOF'
+#!/bin/bash
+case "$BREW_SCENARIO:$*" in
+  same:"list --versions --formula") printf 'python@3.12 3.12.13_4 3.12.12_5\n' ;;
+  older:"list --versions --formula") printf 'python@3.12 3.12.13_3 3.12.12_5\n' ;;
+  zero:"list --versions --formula") printf 'ast-grep 0.45.1\n' ;;
+  *:"leaves") printf 'python@3.12\nast-grep\n' ;;
+  same:"info --json=v2 python@3.12"|older:"info --json=v2 python@3.12") printf '{"formulae":[{"versions":{"stable":"3.12.13"},"revision":4}]}' ;;
+  zero:"info --json=v2 ast-grep") printf '{"formulae":[{"versions":{"stable":"0.45.1"},"revision":0}]}' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$BREW_BIN/brew"
 printf '[{"name":"python@3.12","manager":"brew","source":"python@3.12"}]' > "$TMP/m-brew.json"
-out_brew=$(CCTOOL_MANIFEST="$TMP/m-brew.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
-echo "$out_brew" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-assert not any(u['name']=='python@3.12' for u in d['updates']), 'python@3.12 revision 被誤報為版本更新'
-print('✅ 測 3 Homebrew revision：已安裝 revision 不誤報降級')
-" || fail "Homebrew revision 斷言失敗"
+printf '[{"name":"ast-grep","manager":"brew","source":"ast-grep"}]' > "$TMP/m-brew-zero.json"
+out_same=$(PATH="$BREW_BIN:/usr/bin:/bin" BREW_SCENARIO=same CCTOOL_MANIFEST="$TMP/m-brew.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+out_older=$(PATH="$BREW_BIN:/usr/bin:/bin" BREW_SCENARIO=older CCTOOL_MANIFEST="$TMP/m-brew.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+out_zero=$(PATH="$BREW_BIN:/usr/bin:/bin" BREW_SCENARIO=zero CCTOOL_MANIFEST="$TMP/m-brew-zero.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_same" "$out_older" "$out_zero" <<'PY'
+import json, sys
+same, older, zero = (json.loads(value) for value in sys.argv[1:])
+assert same['errors'] == [], same['errors']
+assert same['updates'] == [], same['updates']
+assert older['errors'] == [], older['errors']
+assert older['updates'] == [{'name': 'python@3.12', 'manager': 'brew', 'current': '3.12.13_3', 'latest': '3.12.13_4', 'source': 'python@3.12', 'notes': ''}], older['updates']
+assert zero['errors'] == [], zero['errors']
+assert zero['updates'] == [], zero['updates']
+print('✅ 測 3 Homebrew revision：多 keg 取新版、舊 revision 正確升級、revision=0 無後綴')
+PY
 
 # graceful：fixture manifest 含不存在的 manager → 進 errors 不崩
 printf '[{"name":"nonexistent-xyz","manager":"cargo-git","source":"no/such-repo"}]' > "$TMP/m2.json"

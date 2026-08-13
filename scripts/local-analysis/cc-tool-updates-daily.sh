@@ -92,7 +92,9 @@ def brew_leaves():
     return [l.strip() for l in s.splitlines() if l.strip()] if s else []
 
 def _vkey(v):
-    return tuple(int(x) if x.isdigit() else 0 for x in re.split(r'[.\-+]', norm(v))[:4])
+    base, _, revision = norm(v).partition("_")
+    parts = tuple(int(x) if x.isdigit() else 0 for x in re.split(r'[.\-+]', base)[:4])
+    return parts + (int(revision) if revision.isdigit() else 0,)
 
 def npm_global_roots():
     # PATH 上的 npm 可能是 homebrew 也可能是 nvm（視 shell 是否跑過 nvm init），
