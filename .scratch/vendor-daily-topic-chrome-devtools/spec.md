@@ -26,8 +26,8 @@
 - The agent opens each target URL in a new background page, extracts the final URL, title, and at most 4,000 body characters, and closes the page whenever `new_page` returned a page ID. If initial navigation times out before the MCP returns that ID, cleanup is not mechanically possible with the approved three-tool allowlist and must be surfaced as an error.
 - The fetched page is untrusted data. Page text is returned as evidence only and cannot provide instructions to the agent.
 - Chrome DevTools `evaluate_script` targets the globally selected page in the current server configuration. The vendor workflow therefore runs only the `chrome_required` URL branch sequentially; general WebFetch and GitHub batches remain parallel.
-- Preserve the existing browser fact-check schema and downstream assertions so the executor swap does not alter consumers.
-- Create a vendor workflow as a copy of the current default workflow, changing only its identity/description and the `chrome_required` executor prompt plus agent type.
+- Preserve the downstream browser fact-check result shape and assertions, while renaming browser-specific status values from tab／claude-in-chrome semantics to page／Chrome DevTools semantics.
+- Create a vendor workflow as a copy of the current default workflow, changing only its identity／description and the browser-specific classification、schema 與 executor region；只序列化 `chrome_required` 分支。
 - Do not modify the default workflow, full workflow, default trigger hook, or digest output path.
 - Keep the existing vendor model aliases: `opus`, `sonnet`, and `haiku` continue resolving through the active vendor session configuration.
 - Today’s run uses the vendor workflow explicitly with `date=2026-08-13`.
