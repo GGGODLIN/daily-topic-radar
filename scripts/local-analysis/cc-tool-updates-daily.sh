@@ -17,7 +17,7 @@ case " $* " in
   ;;
 esac
 python3 - "$@" <<'PY'
-import sys, os, json, re, subprocess, urllib.request
+import sys, os, json, re, shutil, subprocess, urllib.request
 
 DIR = os.environ["CCTOOL_DIR"]
 JSON_OUT = "--json" in sys.argv[1:]
@@ -98,9 +98,9 @@ def _vkey(v):
     return parts + (int(revision) if revision.isdigit() else 0,)
 
 def npm_global_roots():
-    # PATH 上的 npm 可能是 homebrew 也可能是 nvm（視 shell 是否跑過 nvm init），
-    # `npm ls -g` 因此非確定性。改直接掃兩個 prefix：homebrew + nvm 最新版
-    # （舊 nvm 版本是殘留、不掃，否則 discovered 會湧出殭屍套件）。
+    override = os.environ.get("CCTOOL_NPM_ROOTS")
+    if override is not None:
+        return [r for r in override.split(os.pathsep) if os.path.isdir(r)]
     import glob
     roots = ["/opt/homebrew/lib/node_modules", "/usr/local/lib/node_modules"]
     nvm = glob.glob(os.path.expanduser("~/.nvm/versions/node/v*"))
@@ -110,16 +110,27 @@ def npm_global_roots():
     return [r for r in roots if os.path.isdir(r)]
 
 def npm_g_installed():
-    out = {}
-    def take(name, ver):
-        if not name or not ver:
-            return
-        if name not in out or _vkey(ver) > _vkey(out[name]):
-            out[name] = ver
-    def read_pkg(d):
+    found = {}
+    def read_pkg(package_dir, root):
         try:
-            j = json.load(open(os.path.join(d, "package.json")))
-            take(j.get("name"), j.get("version"))
+            package = json.load(open(os.path.join(package_dir, "package.json")))
+            name = package.get("name")
+            version = package.get("version")
+            if not name or not version:
+                return
+            raw_bins = package.get("bin")
+            if isinstance(raw_bins, str):
+                bins = {name.rsplit("/", 1)[-1]: raw_bins}
+            elif isinstance(raw_bins, dict):
+                bins = {key: value for key, value in raw_bins.items() if isinstance(key, str) and isinstance(value, str)}
+            else:
+                bins = {}
+            found.setdefault(name, []).append({
+                "version": version,
+                "root": root,
+                "package_dir": package_dir,
+                "bins": bins,
+            })
         except Exception:
             pass
     for root in npm_global_roots():
@@ -129,9 +140,28 @@ def npm_g_installed():
                 continue
             if entry.startswith("@"):
                 for sub in os.listdir(path):
-                    read_pkg(os.path.join(path, sub))
+                    read_pkg(os.path.join(path, sub), root)
             else:
-                read_pkg(path)
+                read_pkg(path, root)
+    out = {}
+    for name, installs in found.items():
+        active = next((
+            install for install in installs
+            if any(
+                shutil.which(bin_name)
+                and os.path.realpath(shutil.which(bin_name)) == os.path.realpath(os.path.join(install["package_dir"], target))
+                for bin_name, target in install["bins"].items()
+            )
+        ), None)
+        others = sorted(
+            ({"version": install["version"], "root": install["root"]} for install in installs if install is not active),
+            key=lambda item: (_vkey(item["version"]), item["root"]),
+            reverse=True,
+        )
+        out[name] = {
+            "active": {"version": active["version"], "root": active["root"]} if active else None,
+            "others": others,
+        }
     return out
 
 def uv_installed():
@@ -218,9 +248,11 @@ ignore = load_ignore()
 cargo, brew, npm, uv = cargo_git_installed(), brew_installed(), npm_g_installed(), uv_installed()
 updates, errors = [], []
 
-def add_update(name, mgr, cur, latest, src, notes=""):
+def add_update(name, mgr, cur, latest, src, notes="", **details):
     if latest and norm(latest) != norm(cur):
-        updates.append({"name": name, "manager": mgr, "current": cur, "latest": latest, "source": src, "notes": notes})
+        update = {"name": name, "manager": mgr, "current": cur, "latest": latest, "source": src, "notes": notes}
+        update.update(details)
+        updates.append(update)
 
 for e in manifest:
     name, mgr, src = e.get("name"), e.get("manager"), e.get("source")
@@ -245,10 +277,22 @@ for e in manifest:
                 errors.append({"name": name, "reason": "not brew-installed"}); continue
             add_update(name, mgr, cur, brew_latest(src or name), src or name)
         elif mgr == "npm-g":
-            cur = npm.get(src or name)
-            if not cur:
+            info = npm.get(src or name)
+            if not info:
                 errors.append({"name": name, "reason": "not npm-g-installed"}); continue
-            add_update(name, mgr, cur, npm_latest(src or name), src or name)
+            active = info.get("active")
+            if not active:
+                installed = ", ".join(f"{item['version']} @ {item['root']}" for item in info.get("others", []))
+                errors.append({"name": name, "reason": f"installed but no executable on PATH: {installed}"}); continue
+            add_update(
+                name,
+                mgr,
+                active["version"],
+                npm_latest(src or name),
+                src or name,
+                active_install=active["root"],
+                other_installs=info.get("others", []),
+            )
         elif mgr == "uv-tool":
             cur = uv.get(src or name)
             if not cur:
@@ -291,7 +335,12 @@ if updates:
     out.append("### 有更新")
     for u in updates:
         note = f" — release notes: {u['notes']}" if u.get("notes") else ""
-        out.append(f"- {u['name']} {u['current']}→{u['latest']}（{u['manager']}）{note}")
+        active = f"；PATH 作用中：{u['active_install']}" if u.get("active_install") else ""
+        others = ""
+        if u.get("other_installs"):
+            values = "、".join(f"{item['version']} @ {item['root']}" for item in u["other_installs"])
+            others = f"；其他安裝：{values}"
+        out.append(f"- {u['name']} {u['current']}→{u['latest']}（{u['manager']}{active}{others}）{note}")
 if discovered:
     out.append("### 待分類（新發現，不在白/黑名單；歸白名單追蹤 or 黑名單忽略）")
     for d in discovered:

@@ -69,6 +69,43 @@ assert segments['updates'] == [], segments['updates']
 print('✅ 測 3 Homebrew revision：多 keg 取新版、舊 revision 正確升級、revision=0 無後綴、基礎版本段落優先')
 PY
 
+NPM_HIGH="$TMP/npm-high"
+NPM_ACTIVE="$TMP/npm-active"
+NPM_BIN="$TMP/npm-bin"
+mkdir -p "$NPM_HIGH/@qwen-code/qwen-code" "$NPM_ACTIVE/@qwen-code/qwen-code" "$NPM_BIN"
+printf '{"name":"@qwen-code/qwen-code","version":"0.21.10","bin":{"qwen":"cli-entry.js"}}' > "$NPM_HIGH/@qwen-code/qwen-code/package.json"
+printf '{"name":"@qwen-code/qwen-code","version":"0.21.6","bin":{"qwen":"cli-entry.js"}}' > "$NPM_ACTIVE/@qwen-code/qwen-code/package.json"
+printf '#!/usr/bin/env node\n' > "$NPM_HIGH/@qwen-code/qwen-code/cli-entry.js"
+printf '#!/usr/bin/env node\n' > "$NPM_ACTIVE/@qwen-code/qwen-code/cli-entry.js"
+ln -s "$NPM_ACTIVE/@qwen-code/qwen-code/cli-entry.js" "$NPM_BIN/qwen"
+cat > "$NPM_BIN/npm" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "view @qwen-code/qwen-code version") printf '0.21.11\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$NPM_BIN/npm" "$NPM_BIN/qwen"
+printf '[{"name":"@qwen-code/qwen-code","manager":"npm-g","source":"@qwen-code/qwen-code"}]' > "$TMP/m-npm.json"
+out_npm=$(PATH="$NPM_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_npm" "$NPM_ACTIVE" "$NPM_HIGH" <<'PY' || fail "npm 多 prefix 斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+active_root, other_root = sys.argv[2:]
+assert packet['errors'] == [], packet['errors']
+assert packet['updates'] == [{
+  'name': '@qwen-code/qwen-code',
+  'manager': 'npm-g',
+  'current': '0.21.6',
+  'latest': '0.21.11',
+  'source': '@qwen-code/qwen-code',
+  'notes': '',
+  'active_install': active_root,
+  'other_installs': [{'version': '0.21.10', 'root': other_root}],
+}], packet['updates']
+print('✅ 測 4 npm 多 prefix：current 採 PATH 作用中安裝，其他版本分欄保留')
+PY
+
 # graceful：fixture manifest 含不存在的 manager → 進 errors 不崩
 printf '[{"name":"nonexistent-xyz","manager":"cargo-git","source":"no/such-repo"}]' > "$TMP/m2.json"
 out2=$(CCTOOL_MANIFEST="$TMP/m2.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
