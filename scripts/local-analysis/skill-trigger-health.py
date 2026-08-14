@@ -78,12 +78,13 @@ def load_registry(path, inventory):
       registry = json.load(open(path))
     except (OSError, json.JSONDecodeError):
       registry = {}
+  new_names = {name for name in inventory if name not in registry}
   for name, meta in inventory.items():
     entry = registry.get(name)
     if entry and entry.get("decided"):
       continue
     registry[name] = {"mode": meta["guess"], "decided": False}
-  return registry
+  return registry, new_names
 
 
 def save_registry(path, registry):
@@ -193,7 +194,7 @@ def main():
 
   now = time.time()
   inventory = build_inventory(args.skills_dir, args.commands_dir)
-  registry = load_registry(args.registry, inventory)
+  registry, new_names = load_registry(args.registry, inventory)
   save_registry(args.registry, registry)
   auto, manual, files = scan(
     args.projects_dir, set(inventory), args.alert_window_days, args.dead_window_days, now
@@ -208,7 +209,7 @@ def main():
     except (OSError, json.JSONDecodeError):
       continue
 
-  alerts, rows, dead, undecided = [], [], [], []
+  alerts, rows, dead, undecided, new_undecided = [], [], [], [], []
   dead_name_only_excluded = 0
   for name, meta in sorted(inventory.items()):
     mode = registry.get(name, {}).get("mode", meta["guess"])
@@ -217,6 +218,8 @@ def main():
     m = manual.get(name, {"recent": 0, "window": 0})
     if not decided:
       undecided.append(f"{name}（自動猜 {mode}、source {meta['source']}）")
+      if name in new_names:
+        new_undecided.append(f"{name}（自動猜 {mode}、source {meta['source']}）")
     if mode == "auto-only" and m["recent"] > 0:
       alerts.append(
         f"- ⚠️ `{name}`（auto-only）{args.alert_window_days} 天內被手動 slash **{m['recent']} 次**（同窗 auto {a['recent']} 次）——該自動觸發卻要人手打"
@@ -252,13 +255,14 @@ def main():
     lines.append(f"- ……另 {len(dead) - args.dead_cap} 個候選排隊（下輪輪替）")
   if not dead:
     lines.append("無。")
-  lines += ["", f"## 待拍板分類（registry decided=false，共 {len(undecided)}）", ""]
-  if undecided:
-    lines += [f"- {u}" for u in undecided]
+  lines += ["", f"## 待拍板分類（registry decided=false 共 {len(undecided)}；漸進制——只在警報／死庫存／skill 結案時逐項拍，不做全量批次，2026-08-07 拍板）", ""]
+  if new_undecided:
+    lines.append(f"本輪新增 {len(new_undecided)} 項：")
+    lines += [f"- {u}" for u in new_undecided]
     lines.append("")
     lines.append(f"拍板方式：改 {args.registry} 對應 entry 的 mode 並設 decided=true（main session 代改、使用者只拍板）。")
   else:
-    lines.append("無。")
+    lines.append("本輪無新增；既有未拍板項留在 registry、遇事件才逐項拍。")
 
   tmp = args.out + ".tmp"
   with open(tmp, "w") as fh:
