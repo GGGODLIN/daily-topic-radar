@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -247,6 +248,60 @@ def resolve_resurface_items(db: Database, resurface_ids: list[str]) -> list[Item
     """
     rows = db.get_items_by_ids(resurface_ids)
     return [_row_to_item(r) for r in rows]
+
+
+@dataclass(frozen=True)
+class SourceStat:
+    """Per-source counts for the stale/empty diagnostic blocks.
+
+    render_file only reads .source_id and .items_count() off those lists, so this
+    carries just enough to render without rebuilding whole FetchResult objects
+    (whose items are no longer in memory on a re-render).
+    """
+
+    source_id: str
+    fetched: int
+
+    def items_count(self) -> int:
+        return self.fetched
+
+
+def resolve_stale_and_empty(
+    db: Database, date: str, results: list[FetchResult]
+) -> tuple[list[SourceStat], list[SourceStat]]:
+    """Build the stale/empty diagnostics from stored fetch_runs plus this run.
+
+    Deriving these from one run's results alone silently drops both blocks on a
+    partial re-run such as --retry-failures, which only re-fetches the failed
+    sources: the other ~66 sources are absent from that run, so every stale/empty
+    signal — including the sources_empty line that flags a silently broken feed —
+    vanishes from the report even though nothing about them changed.
+
+    The db side alone is not enough either: it keys off fetch_runs.started_at,
+    which is real wall-clock time, so a --date backfill of an earlier day finds
+    nothing. Merging both keeps each one's blind spot covered, with this run
+    winning on conflict since it is the fresher observation.
+    """
+    stale: dict[str, SourceStat] = {}
+    empty: dict[str, SourceStat] = {}
+    for row in db.source_stats_for_date(date):
+        if row["status"] != "ok":
+            continue
+        fetched = row["items_fetched"] or 0
+        if fetched == 0:
+            empty[row["source"]] = SourceStat(row["source"], 0)
+        elif row["net_new"] == 0:
+            stale[row["source"]] = SourceStat(row["source"], fetched)
+    for r in results:
+        if not r.ok:
+            continue
+        stale.pop(r.source_id, None)
+        empty.pop(r.source_id, None)
+        if r.items_count() == 0:
+            empty[r.source_id] = SourceStat(r.source_id, 0)
+        elif r.net_new == 0:
+            stale[r.source_id] = SourceStat(r.source_id, r.items_count())
+    return list(stale.values()), list(empty.values())
 
 
 def write_report(

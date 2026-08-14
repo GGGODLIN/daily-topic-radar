@@ -159,14 +159,14 @@ class Database:
         )
         self.conn.commit()
 
-    def items_for_date(self, date: str) -> list[dict[str, Any]]:
-        """Return items fetched during the given Asia/Taipei date (YYYY-MM-DD).
+    @staticmethod
+    def _utc_range_for_date(date: str) -> tuple[str, str]:
+        """Translate an Asia/Taipei date (YYYY-MM-DD) to a naive-UTC half-open range.
 
-        fetched_at is stored as naive UTC, so we translate the Taipei date to
-        a UTC half-open range. Without this, same-day re-runs at different wall
-        clock times yield different batches: launchd at 06:05 CST writes rows
-        with UTC date = previous day; a manual re-run after 08:00 CST queries
-        UTC = today and gets nothing.
+        Timestamps are stored as naive UTC. Without this translation, same-day
+        re-runs at different wall clock times yield different batches: launchd at
+        06:05 CST writes rows with UTC date = previous day; a manual re-run after
+        08:00 CST queries UTC = today and gets nothing.
         """
         day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=TAIPEI)
         start_utc = day_start.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
@@ -176,9 +176,50 @@ class Database:
             .replace(tzinfo=None)
             .isoformat()
         )
+        return start_utc, end_utc
+
+    def items_for_date(self, date: str) -> list[dict[str, Any]]:
+        """Return items fetched during the given Asia/Taipei date (YYYY-MM-DD)."""
+        start_utc, end_utc = self._utc_range_for_date(date)
         cur = self.conn.execute(
             "SELECT * FROM items WHERE fetched_at >= ? AND fetched_at < ? "
             "ORDER BY posted_at DESC",
+            (start_utc, end_utc),
+        )
+        return [dict(r) for r in cur]
+
+    def resurfaced_item_ids_for_date(self, date: str) -> list[str]:
+        """Return IDs of items surfaced on the given date that were fetched earlier.
+
+        Recomputed from stored state rather than from one run's in-memory result,
+        so a partial re-run (e.g. --retry-failures, which only re-fetches failed
+        sources) still renders the full 🔁 set. Deriving this from run scope drops
+        every resurfaced entry on the second render of the same day, because
+        update_last_surfaced_at() already ran during the first one.
+        """
+        start_utc, end_utc = self._utc_range_for_date(date)
+        cur = self.conn.execute(
+            "SELECT id FROM items "
+            "WHERE last_surfaced_at >= ? AND last_surfaced_at < ? AND fetched_at < ? "
+            "ORDER BY posted_at DESC",
+            (start_utc, end_utc, start_utc),
+        )
+        return [r["id"] for r in cur]
+
+    def source_stats_for_date(self, date: str) -> list[dict[str, Any]]:
+        """Return each source's latest fetch_run of the given date.
+
+        Same motivation as resurfaced_item_ids_for_date: the stale/empty
+        diagnostics must reflect every source seen that day, not just the subset
+        a partial re-run happened to touch.
+        """
+        start_utc, end_utc = self._utc_range_for_date(date)
+        cur = self.conn.execute(
+            "SELECT source, status, items_fetched, net_new FROM fetch_runs "
+            "WHERE id IN ("
+            "  SELECT MAX(id) FROM fetch_runs "
+            "  WHERE started_at >= ? AND started_at < ? GROUP BY source"
+            ")",
             (start_utc, end_utc),
         )
         return [dict(r) for r in cur]

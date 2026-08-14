@@ -208,6 +208,76 @@ async def test_main_wires_resurface_end_to_end(tmp_path, monkeypatch):
     assert (utcnow() - datetime.fromisoformat(row["last_surfaced_at"])).total_seconds() < 5
 
 
+async def test_partial_rerun_keeps_resurface_and_diagnostics(tmp_path, monkeypatch):
+    """A --source-limited re-run must not wipe the day's 🔁 / stale / empty blocks.
+
+    Regression for 2026-08-14: `--retry-failures` re-fetches only the failed
+    sources, and resurface/stale/empty were derived from that run's results. The
+    second render of the day therefore dropped all 53 resurfaced entries plus both
+    diagnostic blocks — including the sources_empty line that flags a silently
+    broken feed — while looking entirely self-consistent.
+    """
+    import social_info.__main__ as main_mod
+
+    db_path = tmp_path / "state.db"
+    setup_db = Database(db_path)
+    setup_db.init_schema()
+    item = _make_item("https://github.com/mattpocock/skills", "mattpocock/skills")
+    _insert_with_last_surfaced(setup_db, item, (utcnow() - timedelta(days=40)).isoformat())
+    setup_db.close()
+
+    async def fetch_resurfacing(source, http):
+        return [item]
+
+    async def fetch_nothing(source, http):
+        return []
+
+    monkeypatch.setitem(pipeline.FETCHER_REGISTRY, "faketest_partial_a", fetch_resurfacing)
+    monkeypatch.setitem(pipeline.FETCHER_REGISTRY, "faketest_partial_b", fetch_nothing)
+
+    sources_yml = tmp_path / "sources.yml"
+    sources_yml.write_text(
+        "sources:\n"
+        "  - id: a1\n"
+        "    type: faketest_partial_a\n"
+        "    enabled: true\n"
+        "    tier: 1\n"
+        "  - id: b1\n"
+        "    type: faketest_partial_b\n"
+        "    enabled: true\n"
+        "    tier: 1\n",
+        encoding="utf-8",
+    )
+    reports_dir = tmp_path / "reports"
+    monkeypatch.chdir(tmp_path)
+
+    base_argv = [
+        "social_info",
+        "--config", str(sources_yml),
+        "--db", str(db_path),
+        "--reports", str(reports_dir),
+    ]
+
+    monkeypatch.setattr("sys.argv", base_argv)
+    assert await main_mod._main() == 0
+
+    date = datetime.now(main_mod.TAIPEI).strftime("%Y-%m-%d")
+    out_path = reports_dir / f"{date}.md"
+    first = out_path.read_text(encoding="utf-8")
+    assert "🔁 [mattpocock/skills]" in first
+    assert "a1: fetched=1 net_new=0" in first
+    assert "b1: fetched=0" in first
+
+    # Re-run touching only b1, the shape of a --retry-failures pass.
+    monkeypatch.setattr("sys.argv", base_argv + ["--source", "b1"])
+    assert await main_mod._main() == 0
+
+    second = out_path.read_text(encoding="utf-8")
+    assert "🔁 [mattpocock/skills]" in second, "resurfaced entry lost on partial re-run"
+    assert "a1: fetched=1 net_new=0" in second, "stale block lost for untouched source"
+    assert "b1: fetched=0" in second, "empty block lost on partial re-run"
+
+
 async def test_main_dry_run_does_not_bump_last_surfaced_at(tmp_path, monkeypatch):
     import social_info.__main__ as main_mod
 

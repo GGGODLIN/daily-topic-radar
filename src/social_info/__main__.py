@@ -14,7 +14,12 @@ from social_info.db import Database  # noqa: E402
 from social_info.fetchers.base import Item  # noqa: E402
 from social_info import known_issues  # noqa: E402
 from social_info.markdown import render_item  # noqa: E402
-from social_info.pipeline import resolve_resurface_items, run_pipeline, write_report  # noqa: E402
+from social_info.pipeline import (  # noqa: E402
+    resolve_resurface_items,
+    resolve_stale_and_empty,
+    run_pipeline,
+    write_report,
+)
 
 TAIPEI = timezone(timedelta(hours=8))
 
@@ -119,12 +124,21 @@ async def _main() -> int:
     date = args.date or now_tw.strftime("%Y-%m-%d")
     rows = db.items_for_date(date)
     all_items_today = [_row_to_item(r) for r in rows]
-    resurface_items = resolve_resurface_items(db, resurface_ids)
-    stale = [
-        r for r in results
-        if r.ok and r.items_count() > 0 and r.net_new == 0
-    ]
-    empty = [r for r in results if r.ok and r.items_count() == 0]
+    # Rendering reads the whole day back out of the db rather than from this run's
+    # results, so re-rendering a date is idempotent regardless of which sources the
+    # run touched. --retry-failures only re-fetches the failed sources; deriving
+    # these three from run scope made the second render of a day drop every 🔁
+    # entry and both diagnostic blocks. failures stays run-scoped on purpose: a
+    # source that just succeeded on retry is genuinely no longer failing.
+    #
+    # Both sides are merged rather than swapped: the db recomputation covers what a
+    # partial re-run no longer sees, and this run's own ids cover the first render
+    # of the day (last_surfaced_at is only stamped further down) and --date
+    # backfills (where the db side keys off wall-clock time and finds nothing).
+    resurface_items = resolve_resurface_items(
+        db, sorted(set(resurface_ids) | set(db.resurfaced_item_ids_for_date(date)))
+    )
+    stale, empty = resolve_stale_and_empty(db, date, results)
     out = write_report(
         all_items_today, failures, args.reports, date, now_tw,
         stale=stale, resurface_items=resurface_items, empty=empty,
