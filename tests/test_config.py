@@ -62,3 +62,16 @@ def test_enabled_sources_only_returns_enabled():
     assert len(enabled) == 2
     assert all(s.enabled for s in enabled)
     assert "wechat_qbitai" not in {s.id for s in enabled}
+
+
+def test_36kr_does_not_use_the_challenged_direct_feed():
+    # Regression guard for the 2026-08-15 silent failure: 36kr.com/feed answers
+    # HTTP 200 with a VolcEngine JS challenge page, so a `type: rss` source there
+    # parses 0 entries and lands in sources_empty instead of failing loudly.
+    # See the sources.yml comment above 36kr_feed for the revert condition.
+    cfg = load_config(Path("sources.yml"))
+    src = next(s for s in cfg.sources if s.id == "36kr_feed")
+
+    assert src.type == "rsshub"
+    assert src.params["path"].startswith("/36kr/")
+    assert "36kr.com/feed" not in str(src.params.get("url", ""))
