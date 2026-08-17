@@ -20,7 +20,7 @@
 - [誤報預算與推送門檻](tickets/004-notification-budget-threshold.md) — 「具體可行動內容」才推；每輪 ≤3 則＋more；沉底一律存 SQLite（count≥3 升級）；供給鏈全滅一輪即告警
 - [Runtime 與輪詢節奏](tickets/006-runtime-and-cadence.md) — 實作歸 `~/Desktop/projects/watchdogs` 第 2 隻 watcher（首隻 T2＝帶 LLM 判讀）、沿用其 launchd／Keychain／notify 慣例；24 小時每小時一輪
 - [B 類 digest 補強形狀](tickets/007-btype-digest-scan-expansion.md) — 只加 WATCH.md Watched Topics 一條 entry、零改碼；兩產線獨立跑一個月再議
-- [盯梢清單 schema 與生命週期](tickets/003-watchlist-schema-lifecycle.md) — WATCH.md 新 section＋CC 一句話入口；7 天到期＋Discord 續盯詢問；互動升級雙向（bot 收指令：續／停／暫停，最慢 1 小時生效）；種子僅 grok heavy 一條
+- [盯梢清單 schema 與生命週期](tickets/003-watchlist-schema-lifecycle.md) — WATCH.md 新 section＋CC 一句話入口；7 天到期＋Discord 續盯詢問；互動升級雙向（bot 收指令：續／停／暫停，最慢 1 小時生效）；種子僅 grok heavy 一條 ⚠️ 2026-08-17 yagni 審後修訂：v1 降單向 webhook、bot 列 v2；清單改住 SQLite、WATCH.md 不設 Active section（詳見 watchdogs spec＋yagni review）
 - [Token 與搜尋預算](tickets/002-token-and-search-budget.md) — 免費池崩（relay 舊案作廢）；Haiku 判讀 ≈$11/月；搜尋引擎比推理貴 2–5 倍（Brave 最便宜 $24/月）→ 成本結構偏向「來源 API 直抓＋LLM 判讀」、搜尋引擎僅低頻補充；增補 002b＋使用者拍板：硬約束「只用訂閱或免費、不用 API credit」；判讀＝relay 訂閱腿 `gemini-3.7-flash-high`（ToS 風險使用者知情自擔）、備援 Zen 免費兩顆；spec 必帶「prompt 注入當前日期」P0；antigravity-credits 已關
 
 ## Not yet specified
