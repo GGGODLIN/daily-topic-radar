@@ -12,7 +12,12 @@ _(空 — #55938 已於 2026-06-12 CLOSED 移至 ## Resolved)_
 
 ## Watched Topics
 
-_(空 — 使用者之後 append 感興趣的議題 / 動向 entry)_
+### AI 工具限時優惠／名額
+
+- **Why I care**: 使用者自費訂 AI 開發工具，限時降價 / 促銷波 / 名額釋出的可複製窗口常只有幾小時——2026-08-17 SuperGrok Heavy $300→$99 那波就是隔天早上才在 Threads 看到（晚約 10 小時）、已無法複製，而當天 digest 對這題**零命中**（不是晚報，是根本沒掃）。這條 entry 補的就是那個零命中：第一次見到的優惠靠 digest 被動掃出來，不必先為它維護 watchlist entry（已知標的的每小時輪詢是另一條產線的事）。
+- **Match keywords**: `(\$[0-9]+[[:space:]]*(->|→|to)[[:space:]]*\$[0-9]+|[0-9]{1,3}% ?(off|discount)|(price|pricing)[ -](drop|cut|slash(ed)?)|half[ -]price|promo (code|wave)|discount code|coupon|limited[ -]time|for a limited time|(free|bonus|promo)[ -](credits?|month|tier|trial)|(waitlist|invite[ -]?code|early access)[ -]?(open|opened|available)|(seats?|spots?|slots?|quota)[ -]?(available|left|remaining|open|bump|increase)|限時|優惠|折扣|特價|降價|半價|早鳥|免費(額度|方案|試用|升級)|(名額|額度)(開放|釋出|限量)|(邀請|折扣|優惠|兌換)碼)`（**全域** grep raw md、不套 CC scope — 訊號散在各家 AI 工具社群，限縮 Claude Code / claude-code 會全漏）
+- **Action on hit**: surface 進 digest「興趣命中」段，按「具體可行動內容」門檻分級 — 有操作步驟 / 連結 / 成功回報的排前面，並標可複製窗口（生效期限、名額數、代碼、原文連結）；只有提及、沒有做法的壓一行帶過。這是給使用者判斷用的浮現機制，agent 不代為註冊 / 兌換 / 下單，要細節由使用者點名再展開原文。
+- **Added**: 2026-08-17
 
 ### Entry 範本
 
