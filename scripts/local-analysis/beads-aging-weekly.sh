@@ -1,4 +1,6 @@
 #!/bin/bash
+# 2026-08-18 拍板：harbor-3arm / akocommerce 兩 db schema v65 > binary v53（bd 1.2.2＝上游最新）——等 bd 新 release 再解；
+# akocommerce 接受不修（離職交接）。掃描失敗已改列報告不炸 channel（beads-aging.py failures 段）。v65 來源未定論。
 cd /
 set -euo pipefail
 

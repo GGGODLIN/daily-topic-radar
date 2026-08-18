@@ -91,7 +91,7 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 
 收集「使用者糾正 Claude 行為」的時刻——上面 retrieval miss 之外的廣義糾正：
 
-- **掃描範圍與 session_prompt 線不同：讀每個 jsonl 的全部 user prompt，不只第一個**。校準實測：24h 內全部糾正事件都發生在 session 中段，只讀第一個 prompt recall = 0。抽取：jq 過濾 `type=="user"` 的 text content（跳過 tool_result、「Base directory for this skill」開頭與 command markdown 注入體、noise regex），每則截 400 字；24h 全量約 100-200 行，直接全部讀
+- **掃描範圍與 session_prompt 線不同：讀每個 jsonl 的全部 user prompt，不只第一個**。校準實測：24h 內全部糾正事件都發生在 session 中段，只讀第一個 prompt recall = 0。抽取：jq 過濾 `type=="user"` 的 text content（跳過 tool_result、「Base directory for this skill」開頭與 command markdown 注入體、noise regex；**例外**：command 注入不整則靜默丟——先看 `<command-name>` 行，糾正類 command（`/wait-what`、`/wait-what-plus`）本身就是一次「使用者說我跟丟了」糾正事件、必須記入，注入本體仍不讀。2026-08-18 實錯：24h 內 7 次 /wait-what 全被此濾除規則吃掉、plain-language 家族被系統性低估），每則截 400 字；24h 全量約 100-200 行，直接全部讀
 - **不要用關鍵字 grep 當過濾器**。校準實測：窄關鍵字（不對 / 我說過 / 又來了 / 你怎麼又 / 跟你講過）recall 0/6；「不要」13 命中僅 1 真糾正。關鍵字只是提示，必須語意讀全部訊息
 - 使用者的糾正大多是**溫和重導向句式**，不是爆氣詞：「先 X 再 Y」（跳步驟被導回）、「先不急著跑，我叫你跑再跑」（越權執行）、「有證據嗎」「不要靠猜測」（無證據推論）、「真的有實作嗎」「跟原文講的是一樣的東西嗎」（宣稱質疑）、「改一下措詞」（定性修正）
 - **Skeptic 自審先過再算數**：使用者改需求 / 改主意 / 追加範圍 ≠ 糾正，不收；使用者自己語意模糊後的澄清（「抱歉我是說 X」）、環境問題（vpn / 網路）、單純意圖澄清也不收。模稜兩可的不收（寧漏勿誤報）
