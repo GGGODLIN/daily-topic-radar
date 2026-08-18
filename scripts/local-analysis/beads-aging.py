@@ -134,8 +134,14 @@ def classify(issue, analysis_day, tz):
 
 def collect_candidates(repos, bd_bin, analysis_day, tz, timeout):
   candidates = []
+  failures = []
   for repo in repos:
-    for issue in load_issues(repo, bd_bin, timeout):
+    try:
+      issues = load_issues(repo, bd_bin, timeout)
+    except RuntimeError as error:
+      failures.append({"repo": repo, "error": str(error)})
+      continue
+    for issue in issues:
       classified = classify(issue, analysis_day, tz)
       if classified is None:
         continue
@@ -152,15 +158,15 @@ def collect_candidates(repos, bd_bin, analysis_day, tz, timeout):
         "defer": deferred,
         "sort": (category, urgency, priority, updated, repo, str(issue.get("id", ""))),
       })
-  return sorted(candidates, key=lambda item: item["sort"])
+  return sorted(candidates, key=lambda item: item["sort"]), failures
 
 
 def display_day(value):
   return value.isoformat() if value else "—"
 
 
-def render(candidates, analysis_day, repo_count, limit):
-  if not candidates:
+def render(candidates, analysis_day, repo_count, limit, failures):
+  if not candidates and not failures:
     return "__SILENT__"
   shown = candidates[:limit]
   lines = [
@@ -171,6 +177,10 @@ def render(candidates, analysis_day, repo_count, limit):
     f"shown: {len(shown)}",
     f"remaining: {max(0, len(candidates) - len(shown))}",
   ]
+  if failures:
+    lines.extend(["", f"## ⚠️ 掃描失敗 repo（{len(failures)}，本輪不在候選分母內）"])
+    for item in failures:
+      lines.append(f"- `{item['repo']}`：{item['error']}")
   for index, item in enumerate(shown, 1):
     lines.extend([
       "",
@@ -220,8 +230,8 @@ def main():
 
   analysis_day = date.fromisoformat(args.date)
   repos = discover_repos(args.root or DEFAULT_ROOTS)
-  candidates = collect_candidates(repos, args.bd_bin, analysis_day, analysis_tz, args.bd_timeout)
-  write_output(args.out, render(candidates, analysis_day, len(repos), args.limit))
+  candidates, failures = collect_candidates(repos, args.bd_bin, analysis_day, analysis_tz, args.bd_timeout)
+  write_output(args.out, render(candidates, analysis_day, len(repos), args.limit, failures))
 
 
 if __name__ == "__main__":
