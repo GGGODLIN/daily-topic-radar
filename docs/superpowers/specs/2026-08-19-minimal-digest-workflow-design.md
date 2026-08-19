@@ -1,7 +1,7 @@
 # 極簡版 daily-topic-analysis — 第四支 workflow 變體
 
 **Date**: 2026-08-19
-**Status**: Design v1 (pending user review)
+**Status**: v1.1 — 已實作並落地（2026-08-19）。v1.1 修正實作時發現的兩處 v1 錯誤：Verify A 不能保留（它驗的就是 FactCheck 的產出）、detector H4 不是既有 bug 而是訊息精確度問題。使用者選擇跳過 review-spec 直接實作。
 **Driver**: 成本（a）＋額度撐不住時仍要有 digest（c）——使用者 2026-08-19 拍板
 
 **Affected paths**:
@@ -75,7 +75,7 @@
 | | | ~~`external_feeds`~~ | ~~抓 follow-builders feed 當 backstop~~ | haiku | **砍** |
 | 3 | Themes | `themes` ×1 | 掃 raw md 抽主軸（title / summary / related_items_count / key_urls）。**不再做 URL 分類** | opus + xhigh | opus + xhigh |
 | 4 | ~~FactCheck~~ | ~~chrome / fetch-batch~~ | ~~逐 URL 抓真實性~~ | haiku / sonnet | **整段砍** |
-| 5 | Verify | 無 agent | Verify A（純 JS 硬斷言、零 token）保留；Verify B 砍 | sonnet ×4 | **無 LLM** |
+| 5 | ~~Verify~~ | — | **整段消失**（v1 原寫「Verify A 保留」，實作時發現錯誤：Verify A 的 `assertChrome` / `assertParallel` 驗的就是 fetch agent 自己的產出，沒有 FactCheck 就沒有可驗的對象） | sonnet ×4 + JS | **整段砍** |
 | 6 | WriteBack | `writeback-{n}` ×0.9 | probes 有新 baseline 時寫回 PROBES.md 的 Last seen | sonnet | sonnet |
 | 7 | WriteDigest | `write-digest` ×1 | 讀 raw md + payload，寫 digest HTML | sonnet | sonnet |
 | 8 | DigestAudit | `audit:A` ×1、`audit:D` ×1 | 兩個零 prior lens 並行二審 | opus + xhigh ×4 | **sonnet ×2** |
@@ -148,7 +148,6 @@ Sonnet 降價換算用 ×0.6（牌價 $3/$15 對 Opus $5/$25）。注意 Sonnet 
 
 | 防線 | 抓得到 | 抓不到 |
 |---|---|---|
-| Verify A（workflow 內 JS） | 結構性斷言違規，會把條目降級 `ok=false` | 語意問題 |
 | `verify-daily-digest.sh` | digest 每個 href 必須在 raw md 找得到，否則 exit 1 | 連結對但敘述錯 |
 | `verify-digest-mechanical.py` | 計數、圖表分項加總、跨天數字序列、指標符號、比例算術 | 因果腦補、跨條目焊接 |
 
@@ -170,7 +169,7 @@ Sonnet 降價換算用 ×0.6（牌價 $3/$15 對 Opus $5/$25）。注意 Sonnet 
 | `workflows/daily-topic-analysis-minimal.js` | 新增 | 需一併加 |
 | `hooks/daily-topic-analysis-trigger.sh` | 加「極簡版」關鍵字分支，**放在 model id 判斷之前**（與「完整版」同層）；該分支 `lens_desc` 明寫只跑 A/D 兩軸、且不派額外輪次 | 24 條斷言不會紅（不動既有優先序與關鍵字） |
 | `hooks/daily-topic-analysis-trigger.test.sh` | 補約 6 條：極簡版無 model → minimal、極簡版 + claude id → minimal、極簡版 + gpt id → minimal、「完整版」與「極簡版」同句的優先序、`lens_desc` 含「只跑 A/D」、`lens_desc` 含「不派額外輪次」 | — |
-| `scripts/verify-digest-mechanical.py` | 修 H4：容忍 digest 沒有 `chrome_ok_count` / `parallel_ok_count`。**這是既有 bug**，最近 9 份 digest 有 4 份（08-13/14/15/16）已經沒有這欄位 | 有回歸測試 |
+| `scripts/verify-digest-mechanical.py` | H4 的 ok_count 分支：找不到來源欄位時，若該日 digest 是極簡版產出就給對應訊息（「該日整個 FactCheck 未執行、沒有這個數字可引用」）。**v1 把這寫成「既有 bug」是過度定性**——detector 行為本來就對（引用不存在的數字該擋），改的是訊息精確度，HARD 仍為 HARD、不放行編造的數字 | 有回歸測試 19/19 |
 | `workflows/tests/daily-topic-vendor.test.mjs` | 硬編兩個路徑做全檔 byte 等價比對。極簡版無 vendor 對應，只需確認識別正則不誤抓 `-minimal.js` | — |
 | `commands/daily-topic.md` | line 8-10 現在寫「兩個版本」，磁碟上已有三支。改成「版本分派由 hook 決定」、不列檔名與 lens 數 | 無測試 |
 | [CLAUDE.md](/CLAUDE.md) | line 78 / 79 / 80 / 100 需改；整份 0 次提到 vendor 版。同樣改成指向 hook | 無測試 |
