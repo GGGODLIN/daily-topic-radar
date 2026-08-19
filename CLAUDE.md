@@ -75,9 +75,9 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 1. **今日話題分析 = Stage-2 daily digest**：`reports/digest-{date}.html`，手動 trigger 產出 ecosystem 個人化整理。詳「Stage-2 digest」。
 2. **今日本機分析 = 本機分析 multi-channel workflow**：`reports/local-analysis/{date}-{channel}.md`，2026-05-26 起走 on-demand workflow（[`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js)），原 launchd 排程已停用。詳「本機分析 routine」。
 
-- 使用者說「今日話題分析」/「daily 分析」/「跑日報」/「產 digest」→ **跑 stage-2 digest workflow**（[`~/.claude/workflows/daily-topic-analysis.js`](file:///Users/linhancheng/.claude/workflows/daily-topic-analysis.js)，2026-05-26 起）：pre-flight（KNOWN_ISSUES.md + WATCH.md + PROBES.md stage-2 fetch + external-feeds）→ 主軸抽取 → URL fact-check → 吐 JSON 給 main session 接寫 HTML。**不掃 `reports/local-analysis/`、digest「系統當天動態」段只寫 digest pipeline 自身（不寫本機 channel 跑了沒 / 失敗沒 / drift proposal）**。
-- **兩個版本（2026-08-10 使用者拍板）**：預設 = 原 lean 變體收編（`daily-topic-analysis.js`，成本約完整版 1/3）；使用者說**「完整版」**才走 [`daily-topic-analysis-full.js`](file:///Users/linhancheng/.claude/workflows/daily-topic-analysis-full.js)。分派由 hook 自動判斷、main 不用選。差異只有四處瘦身（FactCheck 批次化 / DigestAudit 6 lens→**4 lens**（F+A+D+E）/ Verify B 抽樣 8→4 / matt_videos effort 降 / fact-check 回傳 snippet），**pipeline 結構與 digest 鐵律完全同構**。走預設版時 **B（焊接與內部一致）/ C（基準宣稱）兩個 lens 不跑** → 回報時列為覆蓋缺口。
-- **lens 沿革**：08-07 lean 原砍 A/B/C/D 四個推論層 lens；08-10 收編當天第一跑實測到代價（只跑 F+E 的第 1 輪抓 6 material，main 補派兩輪覆蓋 A/B/C/D 又抓出 15 material，全是 F+E 結構上看不到的類型），同日使用者拍板把命中率最高的 **A、D 加回**。
+- 使用者說「今日話題分析」/「daily 分析」/「跑日報」/「產 digest」→ **跑 stage-2 digest workflow**（2026-05-26 起）：pre-flight（KNOWN_ISSUES.md + WATCH.md + PROBES.md stage-2 fetch）→ 主軸抽取 →（視版本）URL fact-check → 吐 JSON 給 main session 接寫 HTML。**不掃 `reports/local-analysis/`、digest「系統當天動態」段只寫 digest pipeline 自身（不寫本機 channel 跑了沒 / 失敗沒 / drift proposal）**。
+- **版本分派的唯一來源是 [`~/.claude/hooks/daily-topic-analysis-trigger.sh`](file:///Users/linhancheng/.claude/hooks/daily-topic-analysis-trigger.sh) 的 `if / elif` case 表**，本檔刻意不列版本清單、不寫檔名、不寫 lens 數——列舉式維護必然落後（2026-08-19 之前本檔寫「兩個版本」，磁碟上已經有三支，且整份 0 次提到 vendor 版）。分派由 hook 自動判斷、main 不用選；每個版本的 lens 組成、覆蓋缺口、audit 續輪規則都由 hook 的 `lens_desc` / `audit_policy` 注入。要查現有哪幾支就 `ls ~/.claude/workflows/daily-topic-analysis*.js`。
+- **版本沿革（只記為什麼，不記清單）**：08-07 起試跑 lean 變體，原砍 A/B/C/D 四個推論層 lens；08-10 收編為預設當天第一跑實測到代價（只跑 F+E 的第 1 輪抓 6 material，main 補派兩輪覆蓋 A/B/C/D 又抓出 15 material，全是 F+E 結構上看不到的類型），同日使用者拍板把命中率最高的 **A、D 加回**。2026-08-19 新增極簡版（省錢＋額度緊時仍要跑得完）：砍 FactCheck / Verify / external-feeds、matt_videos 條件派工、audit 減為 A+D 兩軸並降 sonnet、只跑 1 輪不補派——8 agent、估 $14.45 一跑（預設版 30.3 agent / $30.93）。設計與量測依據見 [docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md](/docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md)。
 - 使用者說「今日本機分析」/「跑本機分析」/「跑一下本機分析」/「每日本機分析」→ 走 hook 觸發 [`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js) workflow，按 weekday 篩 channel 後 fan-out + 合成 digest 給使用者。
 - 兩條都是「daily 分析」家族、都住這個 repo，但 digest session 不代管本機那條。
 
@@ -97,7 +97,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `reports/{date}.md` 是 raw aggregator 輸出（06:00 launchd 自動產生）。`reports/digest-{date}.html` 是 Claude 個人化整理（**手動 trigger**，使用者叫我產才做）。
 
-**執行主體是 [`~/.claude/workflows/daily-topic-analysis.js`](file:///Users/linhancheng/.claude/workflows/daily-topic-analysis.js) workflow（2026-05-26 起、HTML 撰寫 2026-07-04 起派 sonnet subagent、2026-08-10 起本檔內容 = 原 lean 變體收編為預設，完整版移到 `daily-topic-analysis-full.js`）。Pre-flight 攔截 protocol（KNOWN_ISSUES / WATCH / PROBES stage-2 fetch / external-feeds backstop）、主軸抽取、URL fact-check 分流、digest HTML 鐵律（🛠 GitHub 倉庫觀察獨立段 / 🟣 Anthropic·Claude 動態獨立段 / v3 範本 / resurface marker）——細節全部以 workflow script 內嵌 prompt 為 SSOT，改規則改那裡、不改本檔。**
+**執行主體是 `~/.claude/workflows/daily-topic-analysis*.js` 其中一支（2026-05-26 起走 workflow、HTML 撰寫 2026-07-04 起派 sonnet subagent）；哪一支由 hook 分派，見上面「今日分析入口語意」段。Pre-flight 攔截 protocol（KNOWN_ISSUES / WATCH / PROBES stage-2 fetch）、主軸抽取、URL fact-check 分流、digest HTML 鐵律（🛠 GitHub 倉庫觀察獨立段 / 🟣 Anthropic·Claude 動態獨立段 / v3 範本 / resurface marker）——細節全部以該 workflow script 內嵌 prompt 為 SSOT，改規則改那裡、不改本檔。各版本砍掉哪些 phase 也以 script 為準（例：極簡版無 FactCheck / Verify / external-feeds）。**
 
 Main session 需要知道的：
 
