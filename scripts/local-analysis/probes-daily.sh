@@ -7,10 +7,19 @@ export PATH
 # headless channel run: 走 hook Defense 0 跳過 nudge 類 Stop hook（checkpoint-judge 曾把最後一則訊息蓋成「skip」、claude -p stdout 只印最後一則，2026-07-15 查因）
 export CC_VENDOR=headless-channel
 
-CLAUDE="/Users/linhancheng/.local/bin/claude"
-REPO_DIR="/Users/linhancheng/code/social-info"
+CLAUDE="${SOCIAL_INFO_CLAUDE:-/Users/linhancheng/.local/bin/claude}"
+REPO_DIR="${SOCIAL_INFO_REPO_DIR:-/Users/linhancheng/code/social-info}"
 OUT_DIR="$REPO_DIR/reports/local-analysis"
 LOG_DIR="$REPO_DIR/logs"
+PROBES_LOCK="$REPO_DIR/PROBES.md.lock"
+LOCK_HELD=0
+cleanup_probes_lock() {
+  if [ "$LOCK_HELD" -eq 1 ] && [ -d "$PROBES_LOCK" ]; then
+    rmdir "$PROBES_LOCK"
+    LOCK_HELD=0
+  fi
+}
+trap cleanup_probes_lock EXIT
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 DATE=$(date +%Y-%m-%d)
@@ -18,6 +27,12 @@ OUT="$OUT_DIR/$DATE-probes.md"
 LOG="$LOG_DIR/local-analysis-probes-$DATE.log"
 
 cd "$REPO_DIR"
+
+if ! mkdir "$PROBES_LOCK" 2>/dev/null; then
+  printf '%s\n' "PROBES writer lock already held: $PROBES_LOCK" >&2
+  exit 1
+fi
+LOCK_HELD=1
 
 PROMPT=$(cat <<'EOF'
 你是 social-info repo 的 daily probes runner。讀 `PROBES.md` 的 `## Active` 段對每個 probe 跑 fetch，產出繁中 probe report markdown 到 stdout。
