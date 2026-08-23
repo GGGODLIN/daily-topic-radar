@@ -58,7 +58,7 @@ ALLOWED_FINDING_CHANNELS = frozenset({
     "memory", "wiki-candidates", "wiki-cross-link", "wiki-graduation", "wiki-lint",
     "wiki-stale", "deep-research-pending", "skill-desc-quality", "recap", "codemap",
     "distill", "recurring-errors", "rba-verify", "bumblebee", "symlink", "skill-upstream",
-    "skill-doctor", "tool-updates", "codex-violation", "rules-size", "skill-collision",
+    "skill-doctor", "tool-updates", "codex-violation", "rules-size", "ledger-lifecycle", "skill-collision",
     "agnix", "skill-trigger", "evidence-level",
 })
 PATH_RE = re.compile(r"(~?/[\w./@-]+\.\w{1,6}|[\w-]+\.(?:md|sh|py|js|mjs|json|jsonl|txt|toml))")
