@@ -41,11 +41,13 @@ decide.json schema（使用者拍板的轉寫，status 轉換的唯一機械路�
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import date as calendar_date, timedelta
 
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,11 +100,21 @@ def load_ledger(path):
 
 
 def write_ledger(path, rows):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    os.replace(tmp, path)
+    directory = os.path.dirname(path) or "."
+    prefix = f".{os.path.basename(path)}."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
 
 
 def family_counts():
@@ -441,6 +453,16 @@ def render(packet):
     return "\n".join(L)
 
 
+def reconcile(rows, findings, decisions, date, no_health, report_dir):
+    touched, added, unmatched = apply_findings(rows, findings, date)
+    decided = apply_decisions(rows, decisions, date)
+    fam = {} if no_health else family_counts()
+    packet = build_packet(rows, date, touched, added, unmatched, fam)
+    packet["decisions_applied"] = decided
+    packet["late_unconsumed_reports"] = late_unconsumed(rows, date, report_dir)
+    return packet
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", required=True)
@@ -455,7 +477,6 @@ def main():
     parse_calendar_date(a.date, "--date")
 
     ledger = os.path.abspath(a.ledger)
-    rows = load_ledger(ledger)
     if a.findings:
         with open(a.findings) as handle:
             findings = json.load(handle)
@@ -473,17 +494,21 @@ def main():
     if not isinstance(decisions, list):
         sys.exit("decide must be a JSON array")
 
-    touched, added, unmatched = apply_findings(rows, findings, a.date)
-    decided = apply_decisions(rows, decisions, a.date)
-    fam = {} if a.no_health else family_counts()
-    packet = build_packet(rows, a.date, touched, added, unmatched, fam)
-    packet["decisions_applied"] = decided
-    packet["late_unconsumed_reports"] = late_unconsumed(rows, a.date, os.path.dirname(ledger))
-
     if a.apply:
-        write_ledger(ledger, rows)
+        with open(f"{ledger}.lock", "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            rows = load_ledger(ledger)
+            packet = reconcile(
+                rows, findings, decisions, a.date, a.no_health, os.path.dirname(ledger)
+            )
+            write_ledger(ledger, rows)
         packet["applied"] = True
         packet["ledger"] = ledger
+    else:
+        rows = load_ledger(ledger)
+        packet = reconcile(
+            rows, findings, decisions, a.date, a.no_health, os.path.dirname(ledger)
+        )
 
     print(json.dumps(packet, ensure_ascii=False, indent=2) if a.json else render(packet))
     if not a.apply:
