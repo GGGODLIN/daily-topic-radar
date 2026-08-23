@@ -196,6 +196,14 @@ for case_name in missing-channel unknown-channel beads-channel; do
   check "$case_name -> ledger 位元不變" "$BEFORE" "$AFTER"
 done
 
+cat > "$TMP/ledger-lifecycle-channel.json" <<'EOF'
+[{"title":"ledger-lifecycle-item","match":null,"channel":"ledger-lifecycle","source_key":"ledger-lifecycle:test-item"}]
+EOF
+cp "$TMP/gates.jsonl" "$TMP/ledger-lifecycle-channel.jsonl"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/ledger-lifecycle-channel.jsonl" --findings "$TMP/ledger-lifecycle-channel.json" --apply --no-health >/dev/null 2>&1
+check "ledger-lifecycle -> 白名單接受" 0 "$?"
+check "ledger-lifecycle -> 新 entry 寫入" 1 "$(grep -c 'ledger-lifecycle-item' "$TMP/ledger-lifecycle-channel.jsonl")"
+
 echo "== 壞輸入要明確失敗、不得靜默 =="
 printf '{"title":"ok","status":"pending","count":1,"first_seen":"2026-07-01","last_seen":"2026-07-01","note":""}\nNOT JSON\n' > "$TMP/broken.jsonl"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/broken.jsonl" --no-health >/dev/null 2>&1
@@ -229,6 +237,49 @@ printf '## 判讀\n本週抽驗 3 個 session，0 FAIL。\n' > "$TMP/2026-07-29-
 printf '%s\n' '{"title":"seed","first_seen":"2026-07-01","last_seen":"2026-07-01","count":1,"status":"pending","note":""}' > "$TMP/late.jsonl"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/late.jsonl" --no-health --json > "$TMP/late-out.json" 2>/dev/null
 check "報告無警告 -> 不列漏收" 0 "$(late_count "$TMP/late-out.json")"
+
+echo "== ledger-lifecycle 報告到 pending-actions 端到端接線 =="
+LIFE_ROOT="$TMP/lifecycle-home"
+LIFE_REGISTRY="$TMP/lifecycle-registry.json"
+LIFE_LEDGER="$TMP/lifecycle-ledger.jsonl"
+LIFE_REPORT1="$TMP/2026-08-23-ledger-lifecycle.md"
+LIFE_REPORT2="$TMP/2026-08-24-ledger-lifecycle.md"
+LIFE_FINDING1="$TMP/2026-08-23-ledger-lifecycle-findings.json"
+LIFE_FINDING2="$TMP/2026-08-24-ledger-lifecycle-findings.json"
+LIFE_TITLE="超過門檻：~/code/demo/docs/philip/STATE.md"
+LIFE_KEY="ledger-lifecycle:code-demo-docs-philip-state-md"
+mkdir -p "$LIFE_ROOT/code/demo/docs/philip"
+python3 - "$LIFE_ROOT/code/demo/docs/philip/STATE.md" "$LIFE_REGISTRY" <<'PY'
+import json, sys
+from pathlib import Path
+state, registry = map(Path, sys.argv[1:])
+state.write_bytes(b'x' * 2048)
+registry.write_text(json.dumps({
+    "schema_version": 1,
+    "scan_roots": ["~/code/*"],
+    "entries": [{
+        "path": "~/code/*/docs/philip/STATE.md",
+        "kind": "state",
+        "threshold": [{"metric": "size", "unit": "KB", "operator": ">", "value": 1}],
+        "action": "提醒",
+    }],
+}, ensure_ascii=False), encoding="utf-8")
+PY
+: > "$LIFE_LEDGER"
+printf '%s\n' "[{\"title\":\"$LIFE_TITLE\",\"match\":null,\"channel\":\"ledger-lifecycle\",\"source_key\":\"$LIFE_KEY\"}]" > "$LIFE_FINDING1"
+printf '%s\n' "[{\"title\":\"$LIFE_TITLE\",\"match\":\"$LIFE_TITLE\",\"channel\":\"ledger-lifecycle\",\"source_key\":\"$LIFE_KEY\"}]" > "$LIFE_FINDING2"
+bash "$DIR/ledger-lifecycle-daily.sh" --root "$LIFE_ROOT" --registry "$LIFE_REGISTRY" --date 2026-08-23 --out "$LIFE_REPORT1"
+bash "$DIR/ledger-lifecycle-daily.sh" --root "$LIFE_ROOT" --registry "$LIFE_REGISTRY" --date 2026-08-24 --out "$LIFE_REPORT2"
+run "$LIFE_LEDGER" 2026-08-23 "$LIFE_FINDING1" --apply > "$TMP/life-packet1.json"
+run "$LIFE_LEDGER" 2026-08-24 "$LIFE_FINDING2" --apply > "$TMP/life-packet2.json"
+check "day1 報告存在" 1 "$([ -f "$LIFE_REPORT1" ] && printf 1 || printf 0)"
+check "day2 報告存在" 1 "$([ -f "$LIFE_REPORT2" ] && printf 1 || printf 0)"
+check "day1 report 帶 source_key" 1 "$(grep -F -c "$LIFE_KEY" "$LIFE_REPORT1")"
+check "day2 report 帶同一 source_key" 1 "$(grep -F -c "$LIFE_KEY" "$LIFE_REPORT2")"
+check "finding 進 pending row" pending "$(field_of "$TMP/life-packet2.json" "$LIFE_TITLE" status)"
+check "source_key 原樣保留" "$LIFE_KEY" "$(field_of "$TMP/life-packet2.json" "$LIFE_TITLE" source_key)"
+check "次日同帳本 count=2" 2 "$(field_of "$TMP/life-packet2.json" "$LIFE_TITLE" count)"
+check "次日 count=2 -> 至少中檔" min_medium "$(bucket_of "$TMP/life-packet2.json" "$LIFE_TITLE")"
 
 echo
 echo "pass=$PASS fail=$FAIL"
