@@ -54,7 +54,7 @@ bash ~/.claude/scripts/skill-inventory-paths.sh --counts
 
 1. state file 路徑：`~/.claude/state/skill-desc-quality.last_run`
 2. seen snapshot 路徑：`~/.claude/state/skill-desc-quality.paths`；每行一個目前 audit-eligible absolute path
-3. `mkdir -p ~/.claude/state` （目錄可能不存在）
+3. `mkdir -p ~/.claude/state` （目錄可能不存在）。在讀 path list 前先用 `mktemp` 建立本輪 `SCAN_CUTOFF`；它的 mtime 是掃描開始時間，成功前不得移動到 state file
 4. 先跑 canonical parser 取得完整 path list，保存為本輪的 `PATHS_FILE`；不要用手寫總數或 filesystem glob 取代它
 5. 依下列 deterministic selection recipe 產生 `CHANGED_FILE`。`PATHS_FILE`、`SEEN_PATHS`、`LAST_RUN`、`CHANGED_FILE` 必須先指向本輪實際 state／暫存檔：
 
@@ -72,9 +72,21 @@ SELECTION_FIXTURE_END
 `changed = path mtime newer than LAST_RUN OR path not present in SEEN_PATHS`。因此即使新 row 的 SKILL.md mtime 早於既有 `last_run`，只要它不在 seen snapshot，仍然必須進 changed；`delegate-browser-e2e` 是這條規則的驗收樣本。若 `SEEN_PATHS` 或 `LAST_RUN` 不存在，照上述條件自然視為首跑。
 
 6. 逐一完成 changed paths 的 frontmatter extract、判準評估與報告寫出；任何一個 path 尚未完成，不得更新 state
-7. audit 成功完成後，才把本輪完整 `PATHS_FILE` 去重排序寫入同一個 state directory 的暫存檔，再用 `mv -f <temp> ~/.claude/state/skill-desc-quality.paths` 原子替換；`mv` 成功後才 `touch ~/.claude/state/skill-desc-quality.last_run`。audit 失敗時保留舊 seen snapshot 與 last_run，不得先更新其中任何一個
+7. audit 成功後才提交 state。`STATE_DIR`、`SEEN_NEXT`、`LAST_RUN_NEXT` 都必須位於 `~/.claude/state`，兩個 `*_NEXT` 都用唯一 `mktemp` 路徑。依下列固定順序執行：
+
+```bash
+STATE_COMMIT_FIXTURE_BEGIN
+set -euo pipefail
+sort -u "$PATHS_FILE" > "$SEEN_NEXT"
+touch -r "$SCAN_CUTOFF" "$LAST_RUN_NEXT"
+mv -f "$LAST_RUN_NEXT" "$LAST_RUN"
+mv -f "$SEEN_NEXT" "$SEEN_PATHS"
+STATE_COMMIT_FIXTURE_END
+```
+
+`LAST_RUN` 必須先原子替換成掃描開始 cutoff，再替換 seen snapshot。若第二個 `mv` 失敗，舊 snapshot 仍不含 unseen path，下一輪會再次選取；若 path 在 audit 途中改動，它的 mtime 會晚於 cutoff，下一輪也會再次選取。不得用 audit 完成時間 `touch "$LAST_RUN"`，否則會吞掉 audit 途中發生的修改。audit 失敗時不得執行 state commit recipe
 8. ## 掃描範圍 段必寫：
-   - state file: <old_timestamp> → <now>
+   - state file: <old_timestamp> → <scan_start_cutoff>
    - seen snapshot: <old path count> → <new path count>
    - audit-eligible: global <G> / project <P> / total <N>（INVENTORY 抽出的 path 總數）
    - Changed SKILL.md: <M>
@@ -94,7 +106,7 @@ SELECTION_FIXTURE_END
 ## 無 description 變動
 自上次檢查點以來 no user-managed SKILL.md modified、跳過。
 
-這仍算 audit 成功完成：先原子更新完整 seen snapshot，再 touch last_run；不需要列空的 fail / pass / actions 段。
+這仍算 audit 成功完成：照 state commit recipe 先提交 scan-start cutoff，再原子更新完整 seen snapshot；不需要列空的 fail / pass / actions 段。
 
 # Discriminative 判準（reuse hook-llm-bench T3 spec）
 
@@ -179,7 +191,7 @@ discriminative=True（有具體 trigger + 反向排除）：
 # 紀律
 
 - 嚴格 read-only：絕對不修任何 SKILL.md、不寫任何 memory、不修現役 hook、不改 INVENTORY
-- 唯一允許的寫操作 = audit 成功後原子替換 `~/.claude/state/skill-desc-quality.paths`，再 `touch ~/.claude/state/skill-desc-quality.last_run`
+- 唯一允許的持久寫入 = audit 成功後照 state commit recipe 先提交 scan-start cutoff，再原子替換 `~/.claude/state/skill-desc-quality.paths`
 - 只產 markdown 到 stdout
 - 第一個 byte 永遠是 `## 掃描範圍`
 
