@@ -175,6 +175,7 @@ BEFORE=$(shasum -a 256 < "$TMP/untouched.jsonl")
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/untouched.jsonl" --findings "$TMP/f1.json" --no-health >/dev/null 2>&1
 AFTER=$(shasum -a 256 < "$TMP/untouched.jsonl")
 check "dry-run ledger 位元不變" "$BEFORE" "$AFTER"
+check "dry-run 不建立 sibling lock" 0 "$([ ! -e "$TMP/untouched.jsonl.lock" ] && printf 0 || printf 1)"
 
 echo "== findings channel 白名單：旁路要 fail-closed =="
 cat > "$TMP/missing-channel.json" <<'EOF'
@@ -195,6 +196,14 @@ for case_name in missing-channel unknown-channel beads-channel; do
   check "$case_name -> 非 0 退出" 1 "$STATUS"
   check "$case_name -> ledger 位元不變" "$BEFORE" "$AFTER"
 done
+
+cat > "$TMP/ledger-lifecycle-channel.json" <<'EOF'
+[{"title":"ledger-lifecycle-item","match":null,"channel":"ledger-lifecycle","source_key":"ledger-lifecycle:test-item"}]
+EOF
+cp "$TMP/gates.jsonl" "$TMP/ledger-lifecycle-channel.jsonl"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/ledger-lifecycle-channel.jsonl" --findings "$TMP/ledger-lifecycle-channel.json" --apply --no-health >/dev/null 2>&1
+check "ledger-lifecycle -> 白名單接受" 0 "$?"
+check "ledger-lifecycle -> 新 entry 寫入" 1 "$(grep -c 'ledger-lifecycle-item' "$TMP/ledger-lifecycle-channel.jsonl")"
 
 echo "== 壞輸入要明確失敗、不得靜默 =="
 printf '{"title":"ok","status":"pending","count":1,"first_seen":"2026-07-01","last_seen":"2026-07-01","note":""}\nNOT JSON\n' > "$TMP/broken.jsonl"
@@ -229,6 +238,174 @@ printf '## 判讀\n本週抽驗 3 個 session，0 FAIL。\n' > "$TMP/2026-07-29-
 printf '%s\n' '{"title":"seed","first_seen":"2026-07-01","last_seen":"2026-07-01","count":1,"status":"pending","note":""}' > "$TMP/late.jsonl"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/late.jsonl" --no-health --json > "$TMP/late-out.json" 2>/dev/null
 check "報告無警告 -> 不列漏收" 0 "$(late_count "$TMP/late-out.json")"
+
+echo "== ledger-lifecycle 報告到 pending-actions 端到端接線 =="
+LIFE_ROOT="$TMP/lifecycle-home"
+LIFE_REGISTRY="$TMP/lifecycle-registry.json"
+LIFE_LEDGER="$TMP/lifecycle-ledger.jsonl"
+LIFE_REPORT1="$TMP/2026-08-23-ledger-lifecycle.md"
+LIFE_REPORT2="$TMP/2026-08-24-ledger-lifecycle.md"
+LIFE_FINDING1="$TMP/2026-08-23-ledger-lifecycle-findings.json"
+LIFE_FINDING2="$TMP/2026-08-24-ledger-lifecycle-findings.json"
+LIFE_TITLE="超過門檻：~/code/demo/docs/philip/STATE.md"
+mkdir -p "$LIFE_ROOT/code/demo/docs/philip"
+python3 - "$LIFE_ROOT/code/demo/docs/philip/STATE.md" "$LIFE_REGISTRY" <<'PY'
+import json, sys
+from pathlib import Path
+state, registry = map(Path, sys.argv[1:])
+state.write_bytes(b'x' * 2048)
+registry.write_text(json.dumps({
+    "schema_version": 1,
+    "scan_roots": ["~/code/*"],
+    "entries": [{
+        "path": "~/code/*/docs/philip/STATE.md",
+        "kind": "state",
+        "threshold": [{"metric": "size", "unit": "KB", "operator": ">", "value": 1}],
+        "action": "提醒",
+    }],
+}, ensure_ascii=False), encoding="utf-8")
+PY
+: > "$LIFE_LEDGER"
+bash "$DIR/ledger-lifecycle-daily.sh" --root "$LIFE_ROOT" --registry "$LIFE_REGISTRY" --date 2026-08-23 --out "$LIFE_REPORT1"
+bash "$DIR/ledger-lifecycle-daily.sh" --root "$LIFE_ROOT" --registry "$LIFE_REGISTRY" --date 2026-08-24 --out "$LIFE_REPORT2"
+LIFE_KEY="$(grep -o 'ledger-lifecycle:[^` ]*' "$LIFE_REPORT1")"
+LIFE_KEY2="$(grep -o 'ledger-lifecycle:[^` ]*' "$LIFE_REPORT2")"
+printf '%s\n' "[{\"title\":\"$LIFE_TITLE\",\"match\":null,\"channel\":\"ledger-lifecycle\",\"source_key\":\"$LIFE_KEY\"}]" > "$LIFE_FINDING1"
+printf '%s\n' "[{\"title\":\"$LIFE_TITLE\",\"match\":\"$LIFE_TITLE\",\"channel\":\"ledger-lifecycle\",\"source_key\":\"$LIFE_KEY2\"}]" > "$LIFE_FINDING2"
+run "$LIFE_LEDGER" 2026-08-23 "$LIFE_FINDING1" --apply > "$TMP/life-packet1.json"
+run "$LIFE_LEDGER" 2026-08-24 "$LIFE_FINDING2" --apply > "$TMP/life-packet2.json"
+check "day1 報告存在" 1 "$([ -f "$LIFE_REPORT1" ] && printf 1 || printf 0)"
+check "day2 報告存在" 1 "$([ -f "$LIFE_REPORT2" ] && printf 1 || printf 0)"
+check "day1 report 帶 source_key" 1 "$(grep -F -c "\`$LIFE_KEY\`" "$LIFE_REPORT1")"
+check "day2 report 帶同一 source_key" "$LIFE_KEY" "$LIFE_KEY2"
+check "finding 進 pending row" pending "$(field_of "$TMP/life-packet2.json" "$LIFE_TITLE" status)"
+check "source_key 原樣保留" "$LIFE_KEY" "$(field_of "$TMP/life-packet2.json" "$LIFE_TITLE" source_key)"
+check "次日同帳本 count=2" 2 "$(field_of "$TMP/life-packet2.json" "$LIFE_TITLE" count)"
+check "次日 count=2 -> 至少中檔" min_medium "$(bucket_of "$TMP/life-packet2.json" "$LIFE_TITLE")"
+
+echo "== 雙 process 並行寫入 =="
+CONC_LEDGER="$TMP/concurrency.jsonl"
+CONC_FINDING1="$TMP/concurrency-finding-1.json"
+CONC_FINDING2="$TMP/concurrency-finding-2.json"
+CONC_BARRIER="$TMP/concurrency-barrier"
+printf '%s\n' '{"title":"seed","first_seen":"2026-07-01","last_seen":"2026-07-01","count":1,"status":"pending","note":""}' > "$CONC_LEDGER"
+printf '%s\n' '[{"title":"parallel-one","match":null,"channel":"memory"}]' > "$CONC_FINDING1"
+printf '%s\n' '[{"title":"parallel-two","match":null,"channel":"memory"}]' > "$CONC_FINDING2"
+mkdir -p "$CONC_BARRIER"
+cat > "$CONC_BARRIER/sitecustomize.py" <<'PY'
+import builtins
+import os
+import time
+
+_original_open = builtins.open
+_target = os.path.abspath(os.environ["LEDGER_RECONCILE_BARRIER_LEDGER"])
+_barrier = os.environ["LEDGER_RECONCILE_BARRIER_DIR"]
+_role = os.environ["LEDGER_RECONCILE_BARRIER_ROLE"]
+
+
+class BarrierReader:
+    def __init__(self, handle):
+        self.handle = handle
+        self.signaled = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return self.handle.__exit__(*args)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self.handle)
+        except StopIteration:
+            if not self.signaled:
+                self.signaled = True
+                _original_open(os.path.join(_barrier, _role), "w").close()
+                while not os.path.exists(os.path.join(_barrier, "release-" + _role)):
+                    time.sleep(0.001)
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self.handle, name)
+
+
+def open_with_barrier(file, mode="r", *args, **kwargs):
+    handle = _original_open(file, mode, *args, **kwargs)
+    if os.path.abspath(os.fspath(file)) == _target and "r" in mode:
+        return BarrierReader(handle)
+    return handle
+
+
+builtins.open = open_with_barrier
+PY
+run_concurrent() {
+  local role="$1" findings="$2" output="$3"
+  PYTHONPATH="$CONC_BARRIER${PYTHONPATH:+:$PYTHONPATH}" \
+  LEDGER_RECONCILE_BARRIER_LEDGER="$CONC_LEDGER" \
+  LEDGER_RECONCILE_BARRIER_DIR="$CONC_BARRIER" \
+  LEDGER_RECONCILE_BARRIER_ROLE="$role" \
+  python3 "$SCRIPT" --date 2026-08-24 --ledger "$CONC_LEDGER" --findings "$findings" --apply --json --no-health > "$output" 2> "$output.err"
+}
+run_concurrent one "$CONC_FINDING1" "$TMP/concurrency-one.json" &
+PID1=$!
+run_concurrent two "$CONC_FINDING2" "$TMP/concurrency-two.json" &
+PID2=$!
+FIRST=""
+for _ in $(seq 1 200); do
+  if [ -f "$CONC_BARRIER/one" ]; then
+    FIRST=one
+    break
+  fi
+  if [ -f "$CONC_BARRIER/two" ]; then
+    FIRST=two
+    break
+  fi
+  sleep 0.01
+done
+if [ -n "$FIRST" ]; then
+  if [ "$FIRST" = one ]; then
+    FIRST_PID=$PID1
+    SECOND=two
+    SECOND_PID=$PID2
+  else
+    FIRST_PID=$PID2
+    SECOND=one
+    SECOND_PID=$PID1
+  fi
+  for _ in $(seq 1 200); do
+    if [ -f "$CONC_BARRIER/one" ] && [ -f "$CONC_BARRIER/two" ]; then
+      break
+    fi
+    sleep 0.01
+  done
+  touch "$CONC_BARRIER/release-$FIRST"
+  wait "$FIRST_PID"; FIRST_RC=$?
+  if [ "$FIRST" = one ]; then
+    RC1=$FIRST_RC
+  else
+    RC2=$FIRST_RC
+  fi
+  while [ ! -f "$CONC_BARRIER/$SECOND" ]; do
+    sleep 0.01
+  done
+  touch "$CONC_BARRIER/release-$SECOND"
+  wait "$SECOND_PID"; SECOND_RC=$?
+  if [ "$SECOND" = one ]; then
+    RC1=$SECOND_RC
+  else
+    RC2=$SECOND_RC
+  fi
+else
+  touch "$CONC_BARRIER/release-one" "$CONC_BARRIER/release-two"
+  wait "$PID1"; RC1=$?
+  wait "$PID2"; RC2=$?
+fi
+check "並行 process 1 rc=0" 0 "$RC1"
+check "並行 process 2 rc=0" 0 "$RC2"
+check "並行 finding 不遺失" 3 "$(grep -c '"title"' "$CONC_LEDGER")"
 
 echo
 echo "pass=$PASS fail=$FAIL"
