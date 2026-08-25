@@ -23,6 +23,7 @@ python3 - <<'PY' >> "$CCP_FREE_WATCH_LOG" 2>&1
 import datetime
 import decimal
 import hashlib
+import html
 import json
 import math
 import os
@@ -101,6 +102,14 @@ def request(url, token=None):
     headers["Authorization"] = f"Bearer {token}"
   with opener.open(urllib.request.Request(url, headers=headers), timeout=20) as response:
     return response.read()
+
+
+def normalize_terms(raw):
+  text = raw.decode("utf-8", "replace")
+  text = re.sub(r"<(script|style)\b.*?</\1>", " ", text, flags=re.S | re.I)
+  text = re.sub(r"<[^>]+>", " ", text)
+  text = html.unescape(text)
+  return re.sub(r"\s+", " ", text).strip().encode("utf-8")
 
 
 def request_json(url, token=None):
@@ -441,7 +450,7 @@ try:
         "- 建議：建立新的限額 key並重新驗證 route。",
         "- 拍板：處理／忽略／延後",
       ]
-  terms_hash = hashlib.sha256(request(terms_url).strip()).hexdigest()
+  terms_hash = hashlib.sha256(normalize_terms(request(terms_url))).hexdigest()
   qualified = []
   candidate_diagnostics = []
   for model in models:
