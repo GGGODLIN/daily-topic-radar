@@ -71,7 +71,19 @@ PROMPT=$(cat <<'EOF'
 
 ## Step 4 — 更新 PROBES.md `Last seen` 欄
 
-對每個達標 entry，Edit `PROBES.md` 把該 entry 的 `Last seen` 欄更新為新 baseline 值。
+**不要自己 Edit `PROBES.md`**——寫回一律走 helper，它會做 CAS 比對並把舊 baseline 自動降級進 `Baseline history`，你直接 Edit 會讓歷史鏈斷掉（2026-08-25 起的 prepend 格式，見 PROBES.md「維護規則」）。
+
+對每個達標 entry，組一個 target：`title`（entry 的 `###` 標題原文）、`new_baseline`（**只寫這一輪新增的那一段**、不含 `- **Last seen**: ` prefix、不要抄任何歷史鏈）、`expected_old_prefix`（當下 `Last seen` 的識別值前綴，如 `v2.1.243` 或期號 `409`）。全部 target 放進同一個 JSON 一次送出：
+
+```bash
+PROBES_WRITEBACK_LOCK_HELD=1 node ~/.claude/scripts/daily-topic-probes-writeback.mjs <<'JSON'
+{"path":"/Users/linhancheng/code/social-info/PROBES.md","targets":[{"title":"...","expected_old_prefix":"...","new_baseline":"..."}]}
+JSON
+```
+
+`PROBES_WRITEBACK_LOCK_HELD=1` 不可省略——這支 wrapper 在整個 run 期間已經持有 `PROBES.md.lock`，不帶這個變數 helper 會等自己的鎖等到逾時。
+
+helper 回一行 JSON（`succeeded` / `failed` / `evidence`），exit 1 時 stdout 仍是合法 JSON。把它的結果原樣寫進 report，不要自行改寫 counts 或假裝寫回成功。
 
 不寫任何其他檔案、不 commit、不修改 `WATCH.md`。
 
