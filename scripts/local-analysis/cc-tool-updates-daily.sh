@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # cc-tool-updates-daily.sh — local-analysis shell channel
-# 枚舉 5 manager + 三名單分類 + 比對 upstream → 預設 markdown report（無更新+無新發現 → __SILENT__）。
+# 枚舉 6 manager（含 mcp-npx：~/.claude.json 裡 npx 釘版的 MCP server，2026-08-25 加）+ 三名單分類 + 比對 upstream → 預設 markdown report（無更新+無新發現 → __SILENT__）。
 # --json：結構化輸出給測試。graceful：任何查詢失敗進 errors、不中斷、exit 0。
 # 名單同目錄：cc-tool-manifest.json（白）/ cc-tool-ignore.txt（黑）。
 # 重要性判斷（該升/可緩）交給 workflow digest LLM 階段，本 script 只附 release notes 摘要當素材。
@@ -70,6 +70,29 @@ def cargo_git_installed():
         repo = re.sub(r'https?://github.com/|\.git$', '', url)
         for b in (v.get("bins") or [pkg]):
             out[b] = {"repo": repo, "tag": ref, "commit": commit}
+    return out
+
+def mcp_npx_installed():
+    paths = os.environ.get("CCTOOL_CLAUDE_JSON")
+    paths = paths.split(os.pathsep) if paths is not None else [
+        os.path.expanduser("~/.claude.json"), os.path.expanduser("~/.claude-max/.claude.json")]
+    out = {}
+    for path in paths:
+        try:
+            servers = json.load(open(path)).get("mcpServers", {})
+        except Exception:
+            continue
+        for name, cfg in servers.items():
+            if not isinstance(cfg, dict) or cfg.get("command") not in ("npx", "bunx"):
+                continue
+            for arg in cfg.get("args") or []:
+                m = re.match(r'^(-y|--yes)$', str(arg))
+                if m:
+                    continue
+                m = re.match(r'^((?:@[^/@]+/)?[^@\s]+)(?:@([^\s]+))?$', str(arg))
+                if m and not str(arg).startswith("-"):
+                    out.setdefault(name, []).append({"package": m.group(1), "pin": m.group(2), "config": path})
+                    break
     return out
 
 def brew_installed():
@@ -245,7 +268,7 @@ def brew_latest(formula):
 
 manifest = load_manifest()
 ignore = load_ignore()
-cargo, brew, npm, uv = cargo_git_installed(), brew_installed(), npm_g_installed(), uv_installed()
+cargo, brew, npm, uv, mcpnpx = cargo_git_installed(), brew_installed(), npm_g_installed(), uv_installed(), mcp_npx_installed()
 updates, errors = [], []
 
 def add_update(name, mgr, cur, latest, src, notes="", **details):
@@ -298,6 +321,19 @@ for e in manifest:
             if not cur:
                 errors.append({"name": name, "reason": "not uv-installed"}); continue
             add_update(name, mgr, cur, pypi_latest(src or name), src or name)
+        elif mgr == "mcp-npx":
+            entries = mcpnpx.get(name)
+            if not entries:
+                errors.append({"name": name, "reason": "not an npx mcpServer in ~/.claude.json"}); continue
+            pkg = src or entries[0]["package"]
+            pins = sorted({e["pin"] or "latest" for e in entries})
+            if pins != ["latest"] and "latest" in pins:
+                errors.append({"name": name, "reason": f"config mismatch: pins {pins} across " + ", ".join(e["config"] for e in entries)}); continue
+            if pins == ["latest"]:
+                errors.append({"name": name, "reason": f"unpinned (@latest) — npx re-resolves on every session start; pin {pkg}@<version> to track"}); continue
+            if len(pins) > 1:
+                errors.append({"name": name, "reason": f"config mismatch: pins {pins} across " + ", ".join(e["config"] for e in entries)}); continue
+            add_update(name, mgr, pins[0], npm_latest(pkg), pkg, configs=[e["config"] for e in entries])
         else:
             errors.append({"name": name, "reason": f"unknown manager {mgr}"})
     except Exception as ex:
@@ -306,7 +342,8 @@ for e in manifest:
 tracked = set(e.get("name") for e in manifest)
 discovered = []
 for names, mgr in [(cargo.keys(), "cargo-git"), (brew_leaves(), "brew"),
-                   (npm.keys(), "npm-g"), (uv.keys(), "uv-tool"), (mcp_list(), "mcp")]:
+                   (npm.keys(), "npm-g"), (uv.keys(), "uv-tool"), (mcpnpx.keys(), "mcp-npx"),
+                   ([n for n in mcp_list() if n not in mcpnpx], "mcp")]:
     for n in names:
         if n not in tracked and n not in ignore:
             discovered.append({"name": n, "manager": mgr})

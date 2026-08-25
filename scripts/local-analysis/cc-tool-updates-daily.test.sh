@@ -118,4 +118,42 @@ assert any(e['name']=='nonexistent-xyz' for e in d['errors']), '不存在工具�
 print('✅ 測 4 graceful：不存在工具進 errors、exit 0、不崩')
 " || fail "graceful 斷言失敗"
 
+# mcp-npx：釘版 MCP server 從 ~/.claude.json 讀版本、比 npm latest；未釘版與雙檔不一致進 errors
+NPM_BIN="$TMP/npmbin"
+mkdir -p "$NPM_BIN"
+cat > "$NPM_BIN/npm" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "view chrome-devtools-mcp version") printf '1.8.0\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$NPM_BIN/npm"
+printf '%s' '{"mcpServers":{"chrome-devtools":{"command":"npx","args":["chrome-devtools-mcp@1.6.0","--autoConnect"]},"ctx":{"command":"npx","args":["-y","@upstash/context7-mcp@latest"]},"local-stdio":{"command":"python3","args":["server.py"]}}}' > "$TMP/c1.json"
+printf '%s' '{"mcpServers":{"chrome-devtools":{"command":"npx","args":["chrome-devtools-mcp@1.6.0","--autoConnect"]}}}' > "$TMP/c2.json"
+printf '%s' '{"mcpServers":{"chrome-devtools":{"command":"npx","args":["chrome-devtools-mcp@1.7.0","--autoConnect"]}}}' > "$TMP/c3.json"
+printf '[{"name":"chrome-devtools","manager":"mcp-npx","source":"chrome-devtools-mcp"},{"name":"ctx","manager":"mcp-npx"}]' > "$TMP/m5.json"
+out5=$(PATH="$NPM_BIN:$PATH" CCTOOL_CLAUDE_JSON="$TMP/c1.json:$TMP/c2.json" CCTOOL_MANIFEST="$TMP/m5.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+[ $? -eq 0 ] || fail "mcp-npx: exit code != 0"
+echo "$out5" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+u = [x for x in d['updates'] if x['name']=='chrome-devtools']
+assert u and u[0]['manager']=='mcp-npx' and u[0]['current']=='1.6.0' and u[0]['latest']=='1.8.0', 'mcp-npx 釘版比對錯: '+str(u)
+assert len(u[0]['configs'])==2, 'configs 應列出兩份 .claude.json: '+str(u[0])
+e = [x for x in d['errors'] if x['name']=='ctx']
+assert e and 'unpinned' in e[0]['reason'], '未釘版 (@latest) 應進 errors: '+str(d['errors'])
+assert not any(x['name']=='local-stdio' for x in d['discovered']+d['errors']+d['updates']), '非 npx 的 stdio server 不該被 mcp-npx 撿到'
+print('✅ 測 5 mcp-npx：釘版 1.6.0 vs npm 1.8.0 進 updates、兩份 config 並列；@latest 進 errors(unpinned)；非 npx server 不撿')
+" || fail "mcp-npx 斷言失敗"
+out6=$(PATH="$NPM_BIN:$PATH" CCTOOL_CLAUDE_JSON="$TMP/c1.json:$TMP/c3.json" CCTOOL_MANIFEST="$TMP/m5.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+echo "$out6" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+e = [x for x in d['errors'] if x['name']=='chrome-devtools']
+assert e and 'mismatch' in e[0]['reason'], '兩份 config 釘不同版應進 errors(mismatch): '+str(d['errors'])
+assert not any(x['name']=='chrome-devtools' for x in d['updates']), 'mismatch 時不該進 updates'
+print('✅ 測 6 mcp-npx：兩份 config 釘版不一致 → errors(config mismatch)、不比對')
+" || fail "mcp-npx mismatch 斷言失敗"
+
 echo "🎉 ALL PASS"
