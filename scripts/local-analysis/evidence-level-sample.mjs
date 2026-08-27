@@ -1054,13 +1054,12 @@ const batchAuditsFromSnapshot = (snapshots, manifest, attemptNonce) => {
     .flatMap(({ packet }) => packet.rows)
   return parseAuditObject({ audit_nonce: manifest.audit_nonce, rows }, manifest.samples)
 }
-const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce = null, reauditSamplesPath = null) => {
+const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce = null) => {
   ensurePrivateDirectory(reports)
   const manifest = parseManifest(manifestPathFor(reports, date), date)
   const batched = isBatchedManifest(manifest)
   if (batched && !isNonce(attemptNonce)) return null
   const expectedReauditPath = reauditSamplesTextPathFor(reports, date, batched ? attemptNonce : null)
-  if (reauditSamplesPath != null && reauditSamplesPath !== expectedReauditPath) return null
   const existingPath = expectedReauditPath
   if (fs.existsSync(existingPath)) {
     const existingText = fs.readFileSync(existingPath, 'utf8')
@@ -1088,8 +1087,8 @@ const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFi
   if (passSamples.length === 0) return null
   const reauditNonce = crypto.randomBytes(32).toString('hex')
   const reauditText = renderSampleRowsText(passSamples, reauditNonce)
-  const reauditSamplesTextPath = reauditSamplesPath ?? expectedReauditPath
-  if (!publishFirstWins(reauditSamplesTextPath, reauditText)) return prepareReaudit(reports, date, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce, reauditSamplesPath)
+  const reauditSamplesTextPath = expectedReauditPath
+  if (!publishFirstWins(reauditSamplesTextPath, reauditText)) return prepareReaudit(reports, date, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce)
   publishFirstWins(`${reauditSamplesTextPath}.nonce`, `${reauditNonce}\n`)
   return {
     date,
@@ -1098,7 +1097,7 @@ const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFi
     reaudit_nonce: reauditNonce,
   }
 }
-const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce, reauditSamplesFileSha256, reauditNonce, reauditSamplesPath = null) => {
+const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce, reauditSamplesFileSha256, reauditNonce) => {
   ensurePrivateDirectory(reports)
   const existing = verifiedPacket(reports, date, attemptNonce)
   if (existing != null) return existing
@@ -1109,7 +1108,6 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
   if (manifest == null) return packetFor(date, reportPath, manifestPath, null, null, [], false)
   const batched = isBatchedManifest(manifest)
   const expectedReauditPath = reauditSamplesTextPathFor(reports, date, batched ? attemptNonce : null)
-  if (reauditSamplesPath != null && reauditSamplesPath !== expectedReauditPath) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   if (batched && !batchArtifactsValid(reports, date, manifest)) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
 
   const published = parsePublication(publicationPath, date, manifestPath, manifest)
@@ -1141,7 +1139,7 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
   let reauditAuditNonce = null
   if (primaryPassSamples.length > 0 && Object.hasOwn(manifest, 'schema_version') && !reauditDeclared) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   if (primaryPassSamples.length > 0 && reauditDeclared) {
-    const reauditSamplesTextPath = reauditSamplesPath ?? expectedReauditPath
+    const reauditSamplesTextPath = expectedReauditPath
     if (transcriptsRoot == null || !/^[a-f0-9]{64}$/.test(reauditNonce ?? '') || reauditNonce === auditNonce || !fs.existsSync(reauditSamplesTextPath) || reauditSamplesFileSha256 !== digestFile(reauditSamplesTextPath)) {
       return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
     }
@@ -1243,14 +1241,14 @@ const main = () => {
   if (typeof root !== 'string' || typeof reports !== 'string') throw new Error('root and reports are required')
   if (!['due', 'sample', 'prepare-reaudit', 'finalize'].includes(mode)) throw new Error('mode must be due, sample, prepare-reaudit, or finalize')
   if (mode === 'prepare-reaudit') {
-    const packet = prepareReaudit(reports, date, options['audit-from-transcripts'], options['samples-sha256'], options['samples-file-sha256'], options['audit-nonce'], options['attempt-nonce'], options['reaudit-samples-path'])
+    const packet = prepareReaudit(reports, date, options['audit-from-transcripts'], options['samples-sha256'], options['samples-file-sha256'], options['audit-nonce'], options['attempt-nonce'])
     process.stdout.write(`${JSON.stringify(packet ?? { date, reaudit_sample_count: 0, reaudit_samples_file_sha256: null, reaudit_nonce: null })}\n`)
     return
   }
   if (mode === 'finalize') {
     const transcriptsRoot = options['audit-from-transcripts']
     if (transcriptsRoot != null && options['audit-b64'] != null) throw new Error('audit-from-transcripts excludes audit-b64')
-    process.stdout.write(`${JSON.stringify(finalizeReport(reports, date, options['audit-b64'], transcriptsRoot, options['samples-sha256'], options['samples-file-sha256'], options['audit-nonce'], options['attempt-nonce'], options['reaudit-samples-file-sha256'], options['reaudit-nonce'], options['reaudit-samples-path']))}\n`)
+    process.stdout.write(`${JSON.stringify(finalizeReport(reports, date, options['audit-b64'], transcriptsRoot, options['samples-sha256'], options['samples-file-sha256'], options['audit-nonce'], options['attempt-nonce'], options['reaudit-samples-file-sha256'], options['reaudit-nonce']))}\n`)
     return
   }
 
