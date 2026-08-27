@@ -120,6 +120,7 @@ class Handler(BaseHTTPRequestHandler):
         "authorization_present": bool(self.headers.get("Authorization")),
         "model": payload.get("model"),
         "messages": payload.get("messages"),
+        "tools": payload.get("tools"),
         "tool_choice": payload.get("tool_choice"),
         "provider": payload.get("provider"),
         "max_tokens": payload.get("max_tokens"),
@@ -473,6 +474,9 @@ rows = [json.loads(line) for line in open(sys.argv[1])]
 assert all(row["authorization_present"] for row in rows)
 assert all(row["model"] == "stealth/new-alpha" for row in rows)
 assert rows[0]["messages"] == [{"role": "user", "content": "Reply with exactly CCP_FREE_WATCH_PROMPT_OK"}]
+assert rows[1]["messages"] == [{"role": "user", "content": "Call the required marker tool once with marker exactly CCP_FREE_WATCH_TOOL_OK."}]
+assert rows[1]["tools"][0]["function"]["description"] == "Return the fixed health marker CCP_FREE_WATCH_TOOL_OK"
+assert rows[1]["tools"][0]["function"]["parameters"]["properties"]["marker"]["enum"] == ["CCP_FREE_WATCH_TOOL_OK"]
 assert rows[1]["tool_choice"] == {"type": "function", "function": {"name": "ccp_free_watch_marker"}}
 expected_provider = {"allow_fallbacks": False, "require_parameters": True, "max_price": {"prompt": "0", "completion": "0"}}
 assert all(row["provider"] == expected_provider for row in rows)

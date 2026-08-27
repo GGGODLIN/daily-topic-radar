@@ -246,16 +246,16 @@ def synthetic_gate(model_id, token):
   tool_payload = {
     "model": model_id,
     "provider": provider_policy,
-    "messages": [{"role": "user", "content": "Call the required marker tool once."}],
+    "messages": [{"role": "user", "content": "Call the required marker tool once with marker exactly CCP_FREE_WATCH_TOOL_OK."}],
     "max_tokens": 1024,
     "tools": [{
       "type": "function",
       "function": {
         "name": "ccp_free_watch_marker",
-        "description": "Return the fixed health marker",
+        "description": "Return the fixed health marker CCP_FREE_WATCH_TOOL_OK",
         "parameters": {
           "type": "object",
-          "properties": {"marker": {"type": "string"}},
+          "properties": {"marker": {"type": "string", "enum": ["CCP_FREE_WATCH_TOOL_OK"]}},
           "required": ["marker"],
           "additionalProperties": False,
         },
