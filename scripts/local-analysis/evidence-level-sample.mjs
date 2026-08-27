@@ -696,8 +696,9 @@ const auditB64FromTranscripts = (root, samplesTextPath, expectedText, auditNonce
             }
           }
           if (restored.size === 0) return null
+          const firstLine = Math.min(...restored.keys())
           const lastLine = Math.max(...restored.keys())
-          const complete = Array.from({ length: lastLine }, (_, index) => restored.get(index + 1))
+          const complete = Array.from({ length: lastLine - firstLine + 1 }, (_, index) => restored.get(firstLine + index))
           if (complete.some((line) => line == null)) return null
           if (complete.join('\n') === expectedText) return Buffer.from(JSON.stringify(item.input), 'utf8').toString('base64')
           return null

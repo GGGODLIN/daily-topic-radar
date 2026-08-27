@@ -792,6 +792,29 @@ test('prepare-reaudit writes only primary PASS samples with a distinct nonce', (
   assert.equal(subsetText.includes('fail-session'), false)
 })
 
+test('prepare-reaudit accepts zero-based Read results', () => {
+  const fixture = makeFixture()
+  writeRows(path.join(fixture.project, 'answers.jsonl'), [assistant({
+    text: repeat('z', 220),
+    timestamp: '2026-08-14T01:00:00.000Z',
+    sessionId: 'zero-based-read-session',
+  })])
+  const sampled = run(fixture)
+  const wfDir = path.join(fixture.reports, 'wf-transcripts')
+  fs.mkdirSync(wfDir, { recursive: true })
+  const samplesText = fs.readFileSync(samplesTextPathFor(fixture), 'utf8')
+  writeAuditTranscript({
+    directory: wfDir,
+    samplesPath: samplesTextPathFor(fixture),
+    samplesText,
+    audit: auditFor(samplesFor(fixture), [], sampled.audit_nonce),
+    chunks: [{ offset: 0, text: samplesText }],
+  })
+
+  const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce })
+  assert.equal(prepared.reaudit_sample_count, 1)
+})
+
 test('v2 finalize rejects primary PASS rows when reaudit is omitted', () => {
   for (const source of ['transcript', 'base64']) {
     const fixture = makeFixture()
