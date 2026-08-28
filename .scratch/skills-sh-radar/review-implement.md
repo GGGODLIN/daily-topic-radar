@@ -6,7 +6,8 @@
 
 - target: skills.sh Trending and Hot radar source
 - base_sha: `a18a142f2483686085b83bc7cac7c32ece081653`
-- head_sha: `11b6b9a53266139f27f3b31ad2f38c47e1e1ee0a`
+- initial_head_sha: `11b6b9a53266139f27f3b31ad2f38c47e1e1ee0a`
+- head_sha: `9b8506c0e56b143dd91e748282e1aa33a06b6da0`
 - spec: `.scratch/skills-sh-radar/spec.md`
 - tickets: `.scratch/skills-sh-radar/issues/01-skills-sh-source.md`, `.scratch/skills-sh-radar/issues/02-live-verification.md`
 - raw_session_paths: `/Users/linhancheng/.claude/projects/-Users-linhancheng-code-social-info/07fdd3f2-7a1d-4b5c-b656-63c1987d025a.jsonl`
@@ -16,8 +17,8 @@
 - started_at: `2026-08-28T06:23:35Z`
 - session_count: 1
 - total_raw_bytes: 7401294
-- elapsed_time: pending
-- token_use: pending
+- elapsed_time: `00:54:13`
+- token_use: unavailable after session compaction
 
 ### Axis status
 
@@ -32,6 +33,9 @@
 - Scope reviewer completed with one PLAUSIBLE finding.
 - YAGNI reviewer completed with two findings.
 - `2026-08-28` Top-level user selected option `a`: localize Trending／Hot duplicate merging inside the skills.sh fetcher and remove the shared dedup behavior change.
+- `2026-08-28T07:17:48Z` Repair committed as `9b8506c0e56b143dd91e748282e1aa33a06b6da0` after focused verification passed.
+- Targeted rechecks passed for S1, Y1, and Y2.
+- Final suite passed against the repair head: `167 passed in 2.22s`.
 
 ### Findings
 
@@ -46,14 +50,17 @@
 
 ### Repair obligations
 
-- **Y2:** simplify skills_sh limit handling and run the focused limit test.
-- **S1/Y1 conditional:** if user accepts localization, merge duplicate canonical URLs inside skills_sh fetcher and remove the shared dedup changes/tests; recheck A6 through fetcher and renderer evidence.
+- **Y2: completed.** skills_sh now reads the plain shared limit; the focused fetcher test passed.
+- **S1/Y1: completed.** skills.sh merges duplicate canonical URLs before shared dedup; shared `dedup.py` and its tests match the feature base.
 
 ### Targeted rechecks
 
-None yet.
+- **S1: PASS.** `git diff a18a142f2483686085b83bc7cac7c32ece081653..9b8506c0e56b143dd91e748282e1aa33a06b6da0 -- src/social_info/dedup.py tests/test_dedup.py` returned no diff, so non-skills sources retain their prior behavior.
+- **Y1: PASS.** The shared stale-map code and its two added tests are absent from the final feature diff.
+- **Y2: PASS.** `skills_sh.py` uses `source.params.get("limit", 25)`; focused tests reported `29 passed` and targeted Ruff reported `All checks passed!`.
+- **A6: PASS.** The fetcher seam test verifies one retained Trending item with Hot provenance in `also_appeared_in`; renderer coverage remains in the focused suite.
 
 ### Summary
 
-- Run status: BLOCKED
-- Reason: S1/Y1 requires top-level scope decision; Y2 repair obligation is pending.
+- Run status: PASS
+- Reason: both selected axes completed, all accepted obligations passed targeted recheck, and the final suite passed against the repair head.
