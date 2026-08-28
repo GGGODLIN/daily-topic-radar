@@ -106,6 +106,38 @@ assert packet['updates'] == [{
 print('✅ 測 4 npm 多 prefix：current 採 PATH 作用中安裝，其他版本分欄保留')
 PY
 
+UV_HOME="$TMP/uv-home"
+UV_BIN="$TMP/uv-bin"
+UV_META="$UV_HOME/.local/share/uv/tools/skillevaluator/lib/python3.13/site-packages/skillevaluator-0.2.1.dist-info"
+mkdir -p "$UV_BIN" "$UV_META"
+printf '%s\n' 'Name: skillevaluator' 'Version: 0.2.1' > "$UV_META/METADATA"
+printf '%s' '{"url":"https://github.com/NVIDIA/SkillEvaluator.git","vcs_info":{"vcs":"git","commit_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}' > "$UV_META/direct_url.json"
+cat > "$UV_BIN/uv" <<'EOF'
+#!/bin/bash
+if [ "$*" = "tool list" ]; then printf 'skillevaluator v0.2.1\n- skillevaluator\n'; else exit 1; fi
+EOF
+cat > "$UV_BIN/gh" <<'EOF'
+#!/bin/bash
+if [ "$*" = "api repos/NVIDIA/SkillEvaluator/commits/HEAD --jq .sha" ]; then printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'; else exit 1; fi
+EOF
+chmod +x "$UV_BIN/uv" "$UV_BIN/gh"
+printf '[{"name":"skillevaluator","manager":"uv-git","source":"NVIDIA/SkillEvaluator"}]' > "$TMP/m-uv-git.json"
+out_uv_git=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-uv-git.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_uv_git" <<'PY' || fail "uv-git 斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+assert packet['errors'] == [], packet['errors']
+assert packet['updates'] == [{
+  'name': 'skillevaluator',
+  'manager': 'uv-git',
+  'current': 'aaaaaaaa',
+  'latest': 'bbbbbbbb',
+  'source': 'NVIDIA/SkillEvaluator',
+  'notes': '',
+}], packet['updates']
+print('✅ 測 5 uv-git：讀 direct_url commit 並比對 GitHub HEAD')
+PY
+
 # graceful：fixture manifest 含不存在的 manager → 進 errors 不崩
 printf '[{"name":"nonexistent-xyz","manager":"cargo-git","source":"no/such-repo"}]' > "$TMP/m2.json"
 out2=$(CCTOOL_MANIFEST="$TMP/m2.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)

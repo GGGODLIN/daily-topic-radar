@@ -221,6 +221,27 @@ def uv_installed():
                 out[m.group(1)] = m.group(2)
     return out
 
+def uv_git_commit(tool_name):
+    import glob
+    target = pep503_norm(tool_name)
+    tool_dir = os.path.expanduser(f"~/.local/share/uv/tools/{tool_name}")
+    for direct_url in glob.glob(os.path.join(tool_dir, "lib/python*/site-packages/*.dist-info/direct_url.json")):
+        metadata = os.path.join(os.path.dirname(direct_url), "METADATA")
+        try:
+            name = None
+            with open(metadata) as f:
+                for line in f:
+                    if line.startswith("Name: "):
+                        name = line[6:].strip()
+                        break
+            if pep503_norm(name or "") != target:
+                continue
+            with open(direct_url) as f:
+                return json.load(f).get("vcs_info", {}).get("commit_id")
+        except Exception:
+            continue
+    return None
+
 def mcp_list():
     s = run(["claude", "mcp", "list"])
     names = []
@@ -242,6 +263,10 @@ def gh_latest(repo):
 def gh_notes(repo, tag):
     s = run(["gh", "api", f"repos/{repo}/releases/tags/{tag}", "--jq", ".body"])
     return " ".join(s.split())[:200] if s else ""
+
+def gh_head(repo):
+    s = run(["gh", "api", f"repos/{repo}/commits/HEAD", "--jq", ".sha"])
+    return s.strip() if s else None
 
 def npm_latest(pkg):
     s = run(["npm", "view", pkg, "version"])
@@ -321,6 +346,16 @@ for e in manifest:
             if not cur:
                 errors.append({"name": name, "reason": "not uv-installed"}); continue
             add_update(name, mgr, cur, pypi_latest(src or name), src or name)
+        elif mgr == "uv-git":
+            if not uv.get(name):
+                errors.append({"name": name, "reason": "not uv-installed"}); continue
+            current_commit = uv_git_commit(name)
+            latest_commit = gh_head(src)
+            if not current_commit:
+                errors.append({"name": name, "reason": "installed uv tool has no VCS commit"}); continue
+            if not latest_commit:
+                errors.append({"name": name, "reason": "cannot resolve upstream HEAD"}); continue
+            add_update(name, mgr, current_commit[:8], latest_commit[:8], src)
         elif mgr == "mcp-npx":
             entries = mcpnpx.get(name)
             if not entries:
