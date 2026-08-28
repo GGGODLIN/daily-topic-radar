@@ -23,20 +23,23 @@ async def test_fetch_skills_sh_parses_trending_and_hot(httpx_mock):
     async with httpx.AsyncClient() as client:
         items = await fetch(cfg, client)
 
-    assert len(items) == 6
+    assert len(items) == 3
     assert [item.source_handle for item in items] == [
         "trending:rank-1",
         "trending:rank-2",
         "trending:rank-3",
-        "hot:rank-1",
-        "hot:rank-2",
-        "hot:rank-3",
     ]
     assert items[0].title == "alpha-skill"
     assert items[0].url == "https://skills.sh/owner/repo/alpha-skill"
-    assert items[0].canonical_url == items[3].canonical_url
     assert items[0].author == "owner/repo"
     assert items[0].engagement == {"rank": 1, "installs": 21600}
+    assert items[0].also_appeared_in == [
+        {
+            "source": "skills_sh",
+            "source_handle": "hot:rank-1",
+            "url": "https://skills.sh/owner/repo/alpha-skill",
+        }
+    ]
     assert items[2].engagement == {"rank": 3, "installs": 92}
 
 
@@ -56,10 +59,8 @@ async def test_fetch_skills_sh_respects_shared_limit(httpx_mock):
     async with httpx.AsyncClient() as client:
         items = await fetch(cfg, client)
 
-    assert [item.source_handle for item in items] == [
-        "trending:rank-1",
-        "hot:rank-1",
-    ]
+    assert [item.source_handle for item in items] == ["trending:rank-1"]
+    assert items[0].also_appeared_in[0]["source_handle"] == "hot:rank-1"
 
 
 @pytest.mark.asyncio

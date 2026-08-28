@@ -70,7 +70,7 @@ def _parse_board(html: str, board: str, tier: int) -> list[Item]:
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
-    limit = max(0, int(source.params.get("limit", 25)))
+    limit = source.params.get("limit", 25)
     items: list[Item] = []
     last_exc: Exception | None = None
     for board in BOARDS:
@@ -88,4 +88,18 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
         items.extend(_parse_board(resp.text, board, source.tier)[:limit])
     if not items and last_exc is not None:
         raise last_exc
-    return items
+
+    merged: list[Item] = []
+    items_by_url: dict[str, Item] = {}
+    for item in items:
+        prior = items_by_url.get(item.canonical_url)
+        if prior is None:
+            merged.append(item)
+            items_by_url[item.canonical_url] = item
+            continue
+        prior.also_appeared_in.append({
+            "source": item.source,
+            "source_handle": item.source_handle,
+            "url": item.url,
+        })
+    return merged
