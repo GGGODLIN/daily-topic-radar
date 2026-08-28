@@ -64,3 +64,13 @@
 
 - Run status: PASS
 - Reason: both selected axes completed, all accepted obligations passed targeted recheck, and the final suite passed against the repair head.
+
+### Architecture visual decision
+
+- status: waived
+- top-level decision: `b`
+- reason: user chose not to generate an actual-delta architecture visual for this feature.
+- feature_base_sha: `a18a142f2483686085b83bc7cac7c32ece081653`
+- final_feature_head_sha: `9b8506c0e56b143dd91e748282e1aa33a06b6da0`
+- Archify invocations: 0
+- Plannotator invocations: 0
