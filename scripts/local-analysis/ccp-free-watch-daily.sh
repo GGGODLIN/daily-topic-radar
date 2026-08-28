@@ -48,6 +48,7 @@ date = os.environ["CCP_FREE_WATCH_DATE"]
 now = None
 min_context = 0
 secrets = []
+TERMS_HASH_SCOPE = "article-v1"
 
 
 def safe_output(value):
@@ -106,7 +107,10 @@ def request(url, token=None):
 
 def normalize_terms(raw):
   text = raw.decode("utf-8", "replace")
-  text = re.sub(r"<(script|style)\b.*?</\1>", " ", text, flags=re.S | re.I)
+  article = re.search(r"<article\b[^>]*>(.*?)</article>", text, flags=re.S | re.I)
+  if article is None:
+    raise RuntimeError("Stealth terms article is missing")
+  text = re.sub(r"<(script|style)\b.*?</\1>", " ", article.group(1), flags=re.S | re.I)
   text = re.sub(r"<[^>]+>", " ", text)
   text = html.unescape(text)
   return re.sub(r"\s+", " ", text).strip().encode("utf-8")
@@ -516,18 +520,29 @@ try:
     "key_limit_remaining": key_data.get("limit_remaining"),
     "is_free_tier": key_data.get("is_free_tier"),
     "terms_sha256": terms_hash,
+    "terms_hash_scope": TERMS_HASH_SCOPE,
     "candidate_ids": sorted((previous_candidates & set(qualified)) | set(passed_candidates)),
     "checked_on": date,
   }
-  terms_changed = bool(previous.get("terms_sha256") and previous.get("terms_sha256") != terms_hash)
+  terms_scope_migrated = bool(
+    previous.get("terms_sha256") and
+    previous.get("terms_hash_scope") != TERMS_HASH_SCOPE
+  )
+  terms_changed = bool(
+    previous.get("terms_hash_scope") == TERMS_HASH_SCOPE and
+    previous.get("terms_sha256") and
+    previous.get("terms_sha256") != terms_hash
+  )
   credential_changed = bool(credential_issue and (
     previous.get("credential_issue") != credential_issue or previous.get("key_expires_at") != expires_at
   ))
   lines = []
-  if passed_candidates or candidate_diagnostics or terms_changed or credential_changed:
-    if passed_candidates and not candidate_diagnostics and not terms_changed and not credential_changed:
+  if passed_candidates or candidate_diagnostics or terms_scope_migrated or terms_changed or credential_changed:
+    if terms_scope_migrated and not passed_candidates and not candidate_diagnostics and not terms_changed and not credential_changed:
+      lines.extend([f"# ccp-free baseline 遷移 — {date}", ""])
+    elif passed_candidates and not candidate_diagnostics and not terms_scope_migrated and not terms_changed and not credential_changed:
       lines.extend([f"# ccp-free 新候選 — {date}", ""])
-    elif candidate_diagnostics and not passed_candidates and not terms_changed and not credential_changed:
+    elif candidate_diagnostics and not passed_candidates and not terms_scope_migrated and not terms_changed and not credential_changed:
       lines.extend([f"# ccp-free 候選檢查 — {date}", ""])
     else:
       lines.extend([f"# ccp-free 需要處理 — {date}", ""])
@@ -548,6 +563,15 @@ try:
     lines.extend(["", "未產生上述候選的切換建議；route 未修改。", ""])
   if credential_changed:
     lines.extend(credential_lines + [""])
+  if terms_scope_migrated:
+    lines.extend([
+      "## 🛠 Stealth terms hash scope 已遷移",
+      "",
+      "- 現象：舊 baseline 沒有 article-v1 scope；舊 hash 與新 hash 不可直接比較。",
+      "- 影響：本輪只建立 article-only baseline，不宣稱條款有變或沒變。",
+      "- 後續：下一輪開始才做 article-to-article 比較。",
+      "",
+    ])
   if terms_changed:
     lines.extend([
       "## ⚠️ Stealth terms 已變更",

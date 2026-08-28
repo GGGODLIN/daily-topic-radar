@@ -177,7 +177,7 @@ cat > "$TMP/scenario.json" <<'JSON'
     "limit_remaining": 0.01,
     "is_free_tier": true
   },
-  "terms": "terms-v1"
+  "terms": "<html><body><nav>nav-v1</nav><article>terms-v1</article><footer>footer-v1</footer></body></html>"
 }
 JSON
 
@@ -254,7 +254,7 @@ elif case in {"candidate", "candidate-gate-fail", "candidate-extra-fee", "candid
   data["gate_extra_argument"] = case == "candidate-extra-argument"
   data["chat_redirect"] = case == "candidate-chat-redirect"
   if case == "candidate-terms-change":
-    data["terms"] = "terms-v2"
+    data["terms"] = "<html><body><nav>nav-v1</nav><article>terms-v2</article><footer>footer-v1</footer></body></html>"
 elif case == "models-429":
   data["models_status"] = 429
 elif case == "models-redirect":
@@ -297,8 +297,10 @@ elif case == "candidate-secret-id":
   data["endpoints"][candidate["id"]] = [
     {"provider_name": "Stealth", "status": 0, "pricing": {"prompt": "0", "completion": "0"}}
   ]
+elif case == "terms-shell-change":
+  data["terms"] = "<html><body><nav>nav-v2</nav><article>terms-v1</article><footer>footer-v2</footer></body></html>"
 elif case == "terms-change":
-  data["terms"] = "terms-v2"
+  data["terms"] = "<html><body><nav>nav-v2</nav><article>terms-v2</article><footer>footer-v2</footer></body></html>"
 path.write_text(json.dumps(data))
 PY
 }
@@ -626,6 +628,30 @@ assert_eq "不安全 model ID 不送 synthetic Gate" "0" "$([ -f "$TMP/calls.jso
 set_scenario "healthy"
 rm -f "$TMP/baseline.json" "$TMP/report.md" "$TMP/stdout" "$TMP/stderr"
 run_wrapper_expect_success
+python3 - "$TMP/baseline.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.pop("terms_hash_scope", None)
+data["terms_sha256"] = "legacy-whole-page-hash"
+path.write_text(json.dumps(data))
+PY
+set_scenario "healthy"
+rm -f "$TMP/report.md" "$TMP/stdout" "$TMP/stderr"
+run_wrapper_expect_success
+if grep -q '^# ccp-free baseline 遷移' "$TMP/report.md" && grep -q '舊 hash 與新 hash 不可直接比較' "$TMP/report.md" && ! grep -q 'Stealth terms 已變更' "$TMP/report.md"; then
+  pass "Stealth hash scope migration 明示不可比較"
+else
+  fail "Stealth hash scope migration 缺少一次性資訊 finding"
+fi
+assert_eq "Stealth baseline 記錄 article scope" "article-v1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["terms_hash_scope"])' "$TMP/baseline.json")"
+set_scenario "terms-shell-change"
+rm -f "$TMP/report.md" "$TMP/stdout" "$TMP/stderr"
+run_wrapper_expect_success
+assert_eq "Stealth page shell 變更保持 silent" "__SILENT__" "$(cat "$TMP/report.md")"
 set_scenario "terms-change"
 rm -f "$TMP/report.md" "$TMP/stdout" "$TMP/stderr"
 run_wrapper_expect_success
