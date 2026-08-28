@@ -19,7 +19,7 @@ Edit `sources.yml`. Schema:
 ```yaml
 sources:
   - id: <unique-id>
-    type: <one of: hn_algolia, reddit, github_trending, product_hunt, huggingface, rss, rsshub, twitter, threads, wewe_rss>
+    type: <one of: hn_algolia, reddit, github_trending, skills_sh, product_hunt, huggingface, rss, rsshub, twitter, threads, wewe_rss>
     enabled: true | false
     tier: 1 | 2
     language: en | zh-TW | zh-CN

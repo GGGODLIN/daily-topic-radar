@@ -221,3 +221,38 @@ def test_github_search_items_render_in_github_trending_group():
     )
     assert "mattpocock/skills" in md, "github_search item silently dropped from output"
     assert "GitHub Trending" in md, "github_search item did not land in GitHub Trending section"
+
+
+def test_skills_sh_items_render_in_own_group_with_rank_and_installs():
+    items = [
+        _item(
+            title="trending-skill",
+            url="https://skills.sh/owner/repo/trending-skill",
+            canonical_url="https://skills.sh/owner/repo/trending-skill",
+            source="skills_sh",
+            source_handle="trending:rank-1",
+            author="owner/repo",
+            engagement={"rank": 1, "installs": 100},
+        ),
+        _item(
+            title="hot-skill",
+            url="https://skills.sh/owner/repo/hot-skill",
+            canonical_url="https://skills.sh/owner/repo/hot-skill",
+            source="skills_sh",
+            source_handle="hot:rank-1",
+            author="owner/repo",
+            engagement={"rank": 1, "installs": 1000},
+        ),
+    ]
+
+    out = render_file(
+        date="2026-08-28",
+        generated_at=datetime(2026, 8, 28, 6, 0, 0),
+        items=items,
+        failures=[],
+    )
+
+    assert "## Agent Skills (skills.sh) (2 items)" in out
+    assert "rank #1" in out
+    assert "100 installs" in out
+    assert out.index("trending-skill") < out.index("hot-skill")

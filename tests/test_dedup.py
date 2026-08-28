@@ -8,8 +8,8 @@ import pytest
 from social_info._time import utcnow
 from social_info.db import Database
 from social_info.dedup import (
-    DedupResult,
     Deduper,
+    DedupResult,
     compute_item_id,
     compute_title_hash,
     normalize_title,
@@ -76,6 +76,58 @@ def test_l1_dedup_skips_seen_url(db):
     item_dup = _make_item("https://example.com/a", "Hello")
     result2 = deduper.process([item_dup])
     assert len(result2.new_items) == 0
+
+
+def test_l1_dedup_merges_same_batch_provenance(db):
+    url = "https://skills.sh/owner/repo/skill"
+    trending = _make_item(
+        url,
+        "skill",
+        source="skills_sh",
+        handle="trending:rank-1",
+        tier=1,
+    )
+    hot = _make_item(
+        url,
+        "skill",
+        source="skills_sh",
+        handle="hot:rank-2",
+        tier=1,
+    )
+
+    result = Deduper(db).process([trending, hot])
+
+    assert len(result.new_items) == 1
+    assert result.new_items[0].source_handle == "trending:rank-1"
+    assert result.new_items[0].also_appeared_in == [
+        {
+            "source": "skills_sh",
+            "source_handle": "hot:rank-2",
+            "url": url,
+        }
+    ]
+
+
+def test_l1_mapping_follows_l2_batch_winner(db):
+    url_a = "https://example.com/a"
+    first = _make_item(url_a, "same title", source="rss", handle="first", tier=2)
+    winner = _make_item(
+        "https://example.com/b",
+        "same title",
+        source="x",
+        handle="winner",
+        tier=1,
+    )
+    third = _make_item(url_a, "same title", source="skills_sh", handle="third", tier=1)
+
+    result = Deduper(db).process([first, winner, third])
+
+    assert len(result.new_items) == 1
+    assert result.new_items[0].source_handle == "winner"
+    assert {entry["source_handle"] for entry in result.new_items[0].also_appeared_in} == {
+        "first",
+        "third",
+    }
 
 
 def test_l2_dedup_merges_same_title_keeps_higher_tier(db):

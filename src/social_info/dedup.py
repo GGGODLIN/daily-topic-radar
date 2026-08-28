@@ -61,6 +61,7 @@ class Deduper:
     def process(self, items: list[Item]) -> DedupResult:
         result = DedupResult()
         seen_ids_in_batch: set[str] = set()
+        seen_items_by_id: dict[str, Item] = {}
         seen_title_hashes_in_batch: dict[str, Item] = {}
         threshold = utcnow() - timedelta(days=self.resurface_days)
 
@@ -69,6 +70,13 @@ class Deduper:
             title_hash = compute_title_hash(item.title)
 
             if item_id in seen_ids_in_batch:
+                prior = seen_items_by_id.get(item_id)
+                if prior is not None:
+                    prior.also_appeared_in.append({
+                        "source": item.source,
+                        "source_handle": item.source_handle,
+                        "url": item.url,
+                    })
                 continue
 
             if self.db.has_item_id(item_id):
@@ -91,6 +99,7 @@ class Deduper:
                     })
                     result.new_items.append(item)
                     seen_ids_in_batch.add(item_id)
+                    seen_items_by_id[item_id] = item
                     seen_title_hashes_in_batch[title_hash] = item
                     if is_stale:
                         result.resurface_ids.append(existing["id"])
@@ -118,6 +127,8 @@ class Deduper:
                     result.new_items.append(item)
                     seen_title_hashes_in_batch[title_hash] = item
                     seen_ids_in_batch.add(item_id)
+                    seen_items_by_id[item_id] = item
+                    seen_items_by_id[compute_item_id(prior.canonical_url)] = item
                 else:
                     prior.also_appeared_in.append({
                         "source": item.source,
@@ -128,6 +139,7 @@ class Deduper:
 
             result.new_items.append(item)
             seen_ids_in_batch.add(item_id)
+            seen_items_by_id[item_id] = item
             seen_title_hashes_in_batch[title_hash] = item
 
         return result

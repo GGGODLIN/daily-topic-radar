@@ -75,3 +75,16 @@ def test_36kr_does_not_use_the_challenged_direct_feed():
     assert src.type == "rsshub"
     assert src.params["path"].startswith("/36kr/")
     assert "36kr.com/feed" not in str(src.params.get("url", ""))
+
+
+def test_skills_sh_source_is_enabled_and_registered():
+    from social_info.pipeline import FETCHER_REGISTRY
+
+    cfg = load_config(Path("sources.yml"))
+    src = next(s for s in cfg.sources if s.id == "skills_sh")
+
+    assert src.type == "skills_sh"
+    assert src.enabled is True
+    assert src.tier == 1
+    assert src.params["limit"] == 25
+    assert "skills_sh" in FETCHER_REGISTRY

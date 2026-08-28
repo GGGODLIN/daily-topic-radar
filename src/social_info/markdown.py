@@ -13,6 +13,7 @@ PLATFORM_GROUP_ORDER = [
     ("hn", "Hacker News"),
     ("github_trending", "GitHub Trending"),
     ("trendshift", "GitHub Rising (Trendshift)"),
+    ("skills_sh", "Agent Skills (skills.sh)"),
     ("product_hunt", "Product Hunt"),
     ("huggingface", "HuggingFace"),
     ("rss_lab", "Lab Blogs & Releases"),
@@ -63,6 +64,10 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
         meta_parts.append(f"💬 {item.engagement['comments']}")
     if item.engagement.get("score") and item.source != "x":
         meta_parts.append(f"▲ {item.engagement['score']}")
+    if item.source == "skills_sh" and "rank" in item.engagement:
+        meta_parts.append(f"rank #{item.engagement['rank']}")
+    if item.source == "skills_sh" and "installs" in item.engagement:
+        meta_parts.append(f"{item.engagement['installs']:,} installs")
     lines.append(" · ".join(meta_parts))
     lines.append("")
 
@@ -111,7 +116,8 @@ def render_file(
         grouped[_group_key_for_source(it.source, it.source_handle, it.language)].append(it)
 
     for k in grouped:
-        grouped[k].sort(key=lambda x: (x.source_tier, -sum(x.engagement.values())))
+        if k != "skills_sh":
+            grouped[k].sort(key=lambda x: (x.source_tier, -sum(x.engagement.values())))
 
     sources_active = len({(i.source, i.source_handle) for i in all_items})
 
