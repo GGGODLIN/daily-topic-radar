@@ -226,15 +226,6 @@ def test_github_search_items_render_in_github_trending_group():
 def test_skills_sh_items_render_in_own_group_with_rank_and_installs():
     items = [
         _item(
-            title="trending-skill",
-            url="https://skills.sh/owner/repo/trending-skill",
-            canonical_url="https://skills.sh/owner/repo/trending-skill",
-            source="skills_sh",
-            source_handle="trending:rank-1",
-            author="owner/repo",
-            engagement={"rank": 1, "installs": 100},
-        ),
-        _item(
             title="hot-skill",
             url="https://skills.sh/owner/repo/hot-skill",
             canonical_url="https://skills.sh/owner/repo/hot-skill",
@@ -242,6 +233,24 @@ def test_skills_sh_items_render_in_own_group_with_rank_and_installs():
             source_handle="hot:rank-1",
             author="owner/repo",
             engagement={"rank": 1, "installs": 1000},
+        ),
+        _item(
+            title="trending-rank-2",
+            url="https://skills.sh/owner/repo/trending-rank-2",
+            canonical_url="https://skills.sh/owner/repo/trending-rank-2",
+            source="skills_sh",
+            source_handle="trending:rank-2",
+            author="owner/repo",
+            engagement={"rank": 2, "installs": 90},
+        ),
+        _item(
+            title="trending-skill",
+            url="https://skills.sh/owner/repo/trending-skill",
+            canonical_url="https://skills.sh/owner/repo/trending-skill",
+            source="skills_sh",
+            source_handle="trending:rank-1",
+            author="owner/repo",
+            engagement={"rank": 1, "installs": 100},
         ),
     ]
 
@@ -252,7 +261,8 @@ def test_skills_sh_items_render_in_own_group_with_rank_and_installs():
         failures=[],
     )
 
-    assert "## Agent Skills (skills.sh) (2 items)" in out
+    assert "## Agent Skills (skills.sh) (3 items)" in out
     assert "rank #1" in out
     assert "100 installs" in out
-    assert out.index("trending-skill") < out.index("hot-skill")
+    assert out.index("trending-skill") < out.index("trending-rank-2")
+    assert out.index("trending-rank-2") < out.index("hot-skill")

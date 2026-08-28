@@ -5,6 +5,7 @@ from datetime import datetime
 from social_info.fetchers.base import FetchResult, Item
 
 COMMENT_TRUNCATE_CHARS = 300
+_SKILLS_SH_BOARD_ORDER = {"trending": 0, "hot": 1}
 
 PLATFORM_GROUP_ORDER = [
     ("x", "X / Twitter"),
@@ -42,6 +43,14 @@ def _group_key_for_source(source: str, source_handle: str, language: str) -> str
             return "rss_lab"
         return "rss_media"
     return source
+
+
+def _skills_sh_sort_key(item: Item) -> tuple[int, int]:
+    board = item.source_handle.partition(":")[0]
+    return (
+        _SKILLS_SH_BOARD_ORDER.get(board, len(_SKILLS_SH_BOARD_ORDER)),
+        item.engagement.get("rank", 2**31),
+    )
 
 
 def render_item(item: Item, is_resurface: bool = False) -> str:
@@ -116,7 +125,9 @@ def render_file(
         grouped[_group_key_for_source(it.source, it.source_handle, it.language)].append(it)
 
     for k in grouped:
-        if k != "skills_sh":
+        if k == "skills_sh":
+            grouped[k].sort(key=_skills_sh_sort_key)
+        else:
             grouped[k].sort(key=lambda x: (x.source_tier, -sum(x.engagement.values())))
 
     sources_active = len({(i.source, i.source_handle) for i in all_items})
