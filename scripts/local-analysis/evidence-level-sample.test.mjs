@@ -118,7 +118,7 @@ const auditFor = (samples, findings = [], auditNonce = TEST_AUDIT_NONCE) => ({
   })),
 })
 const readResultText = (value, startLine = 1) => value.split('\n').map((line, index) => `${startLine + index}\t${line}`).join('\n')
-const writeAuditTranscript = ({ directory, name = 'agent-audit.jsonl', samplesPath, samplesText, audit, includeRead = true, includeOutput = true, chunks = null, extraTool = null }) => {
+const writeAuditTranscript = ({ directory, name = 'agent-audit.jsonl', samplesPath, samplesText, audit, includeRead = true, includeOutput = true, includeOutputResult = false, chunks = null, extraTool = null }) => {
   const content = []
   const readChunks = chunks ?? [{ offset: null, text: samplesText }]
   if (includeRead) {
@@ -134,11 +134,14 @@ const writeAuditTranscript = ({ directory, name = 'agent-audit.jsonl', samplesPa
   if (includeRead) {
     readChunks.forEach((chunk, index) => rows.push({ message: { content: [{ type: 'tool_result', tool_use_id: `read-${index + 1}`, content: readResultText(chunk.text, chunk.offset ?? 1) }] } }))
   }
-  if (includeOutput) rows.push({ message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: audit }] } })
+  if (includeOutput) {
+    rows.push({ message: { content: [{ type: 'tool_use', id: 'structured-output', name: 'StructuredOutput', input: audit }] } })
+    if (includeOutputResult) rows.push({ message: { content: [{ type: 'tool_result', tool_use_id: 'structured-output', content: 'Structured output provided successfully' }] } })
+  }
   fs.writeFileSync(path.join(directory, name), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`)
 }
 
-const writeBatchAuditTranscript = ({ directory, name, batch, samplesText, audit, metadata, attemptNonce }) => writeAuditTranscript({
+const writeBatchAuditTranscript = ({ directory, name, batch, samplesText, audit, metadata, attemptNonce, includeOutputResult = false }) => writeAuditTranscript({
   directory,
   name,
   samplesPath: batch.path,
@@ -151,6 +154,7 @@ const writeBatchAuditTranscript = ({ directory, name, batch, samplesText, audit,
     samples_sha256: batch.samples_sha256,
     ...(metadata ?? (attemptNonce == null ? {} : { attempt_nonce: attemptNonce })),
   },
+  includeOutputResult,
 })
 
 const makeTwentySampleFixture = () => {
@@ -165,7 +169,7 @@ const makeTwentySampleFixture = () => {
   return { fixture, sampled, manifest, samples: manifest.samples }
 }
 
-const writeValidBatchTranscripts = ({ fixture, sampled, manifest, directory = path.join(fixture.reports, 'wf-transcripts'), findings = null, attemptNonce, namePrefix = 'agent-batch-' }) => {
+const writeValidBatchTranscripts = ({ fixture, sampled, manifest, directory = path.join(fixture.reports, 'wf-transcripts'), findings = null, attemptNonce, namePrefix = 'agent-batch-', includeOutputResult = false }) => {
   const effectiveAttemptNonce = attemptNonce === undefined ? sampled.attempt_nonce : attemptNonce
   fs.mkdirSync(directory, { recursive: true })
   manifest.batches.forEach((batch, index) => {
@@ -178,6 +182,7 @@ const writeValidBatchTranscripts = ({ fixture, sampled, manifest, directory = pa
       samplesText: fs.readFileSync(batch.path, 'utf8'),
       audit: auditFor(batchSamples, batchFindings, sampled.audit_nonce),
       attemptNonce: effectiveAttemptNonce,
+      includeOutputResult,
     })
   })
   return directory
@@ -1301,6 +1306,102 @@ test('finalizer rejects a missing primary batch without publishing a report', ()
   const { fixture, sampled, manifest } = makeTwentySampleFixture()
   const wfDir = writeValidBatchTranscripts({ fixture, sampled, manifest })
   fs.rmSync(path.join(wfDir, 'agent-batch-4.jsonl'))
+
+  assertUnverified(fixture, run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce }))
+})
+
+test('prepare-reaudit ignores oversized transcripts from another workflow directory', () => {
+  const { fixture, sampled, manifest } = makeTwentySampleFixture()
+  const transcriptsRoot = path.join(fixture.reports, 'transcripts')
+  const wfDir = path.join(transcriptsRoot, 'current-workflow')
+  const unrelatedDir = path.join(transcriptsRoot, 'unrelated-workflow')
+  const stringContentDir = path.join(transcriptsRoot, 'string-content-workflow')
+  const findings = manifest.batches.map((_, batchIndex) => Array.from({ length: 5 }, (_, rowIndex) => {
+    const sampleIndex = batchIndex * 5 + rowIndex
+    return sampleIndex === 0
+      ? []
+      : [{ type: 'unsourced-number', quote: manifest.samples[sampleIndex].answer.slice(0, 5) }]
+  }))
+  writeValidBatchTranscripts({ fixture, sampled, manifest, directory: wfDir, findings })
+  fs.mkdirSync(unrelatedDir, { recursive: true })
+  fs.mkdirSync(stringContentDir, { recursive: true })
+  fs.writeFileSync(path.join(unrelatedDir, 'agent-unrelated.jsonl'), `${'x'.repeat(TRANSCRIPT_MAX_BYTES)}\n`)
+  fs.writeFileSync(path.join(stringContentDir, 'agent-string-content.jsonl'), `${JSON.stringify({ message: { content: 'plain text' } })}\n`)
+
+  const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: transcriptsRoot, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce })
+  assert.equal(prepared.reaudit_sample_count, 1)
+})
+
+test('prepare-reaudit ignores too many transcripts from another workflow directory', () => {
+  const { fixture, sampled, manifest } = makeTwentySampleFixture()
+  const transcriptsRoot = path.join(fixture.reports, 'transcripts')
+  const wfDir = path.join(transcriptsRoot, 'current-workflow')
+  const unrelatedDir = path.join(transcriptsRoot, 'unrelated-workflow')
+  const findings = manifest.batches.map((_, batchIndex) => Array.from({ length: 5 }, (_, rowIndex) => {
+    const sampleIndex = batchIndex * 5 + rowIndex
+    return sampleIndex === 0
+      ? []
+      : [{ type: 'unsourced-number', quote: manifest.samples[sampleIndex].answer.slice(0, 5) }]
+  }))
+  writeValidBatchTranscripts({ fixture, sampled, manifest, directory: wfDir, findings })
+  fs.mkdirSync(unrelatedDir, { recursive: true })
+  for (let index = 0; index <= TRANSCRIPT_MAX_FILES; index += 1) {
+    fs.writeFileSync(path.join(unrelatedDir, `agent-unrelated-${index}.jsonl`), `${JSON.stringify({ message: { content: 'plain text' } })}\n`)
+  }
+
+  const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: transcriptsRoot, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce })
+  assert.equal(prepared.reaudit_sample_count, 1)
+})
+
+test('prepare-reaudit accepts StructuredOutput success receipts', () => {
+  const { fixture, sampled, manifest } = makeTwentySampleFixture()
+  const findings = manifest.batches.map((_, batchIndex) => Array.from({ length: 5 }, (_, rowIndex) => {
+    const sampleIndex = batchIndex * 5 + rowIndex
+    return sampleIndex === 0
+      ? []
+      : [{ type: 'unsourced-number', quote: manifest.samples[sampleIndex].answer.slice(0, 5) }]
+  }))
+  const wfDir = writeValidBatchTranscripts({ fixture, sampled, manifest, findings, includeOutputResult: true })
+
+  const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce })
+  assert.equal(prepared.reaudit_sample_count, 1)
+})
+
+test('finalizer canonicalizes markdown-stripped finding quotes to exact source lines', () => {
+  const fixture = makeFixture()
+  const canonicalLine = '- `✓` 13 commits are traced. | note'
+  writeRows(path.join(fixture.project, 'markdown-quotes.jsonl'), Array.from({ length: 20 }, (_, index) => assistant({
+    text: index === 0 ? `${canonicalLine}\n${repeat('a', 220)}` : repeat(String.fromCharCode(98 + index), 220),
+    timestamp: `2026-08-14T${String(index + 1).padStart(2, '0')}:00:00.000Z`,
+    sessionId: `markdown-session-${index + 1}`,
+  })))
+  const sampled = run(fixture)
+  const manifest = JSON.parse(fs.readFileSync(manifestPathFor(fixture), 'utf8'))
+  const findings = manifest.batches.map((_, batchIndex) => Array.from({ length: 5 }, (_, rowIndex) => {
+    const sampleIndex = batchIndex * 5 + rowIndex
+    return [{ type: 'unsourced-number', quote: sampleIndex === 0 ? '✓ 13 commits are traced.' : manifest.samples[sampleIndex].answer.slice(0, 5) }]
+  }))
+  const wfDir = writeValidBatchTranscripts({ fixture, sampled, manifest, findings, includeOutputResult: true })
+
+  const finalized = run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce })
+  assert.equal(finalized.ok, true)
+  assert.equal(fs.readFileSync(reportPathFor(fixture), 'utf8').includes(canonicalLine.split('|')[0].trim()), true)
+})
+
+test('finalizer does not collapse literal identifier punctuation in finding quotes', () => {
+  const fixture = makeFixture()
+  writeRows(path.join(fixture.project, 'identifier-quotes.jsonl'), Array.from({ length: 20 }, (_, index) => assistant({
+    text: index === 0 ? `foo_bar is a literal identifier.\n${repeat('a', 220)}` : repeat(String.fromCharCode(98 + index), 220),
+    timestamp: `2026-08-14T${String(index + 1).padStart(2, '0')}:00:00.000Z`,
+    sessionId: `identifier-session-${index + 1}`,
+  })))
+  const sampled = run(fixture)
+  const manifest = JSON.parse(fs.readFileSync(manifestPathFor(fixture), 'utf8'))
+  const findings = manifest.batches.map((_, batchIndex) => Array.from({ length: 5 }, (_, rowIndex) => {
+    const sampleIndex = batchIndex * 5 + rowIndex
+    return [{ type: 'unsourced-mechanism', quote: sampleIndex === 0 ? 'foobar is a literal identifier.' : manifest.samples[sampleIndex].answer.slice(0, 5) }]
+  }))
+  const wfDir = writeValidBatchTranscripts({ fixture, sampled, manifest, findings, includeOutputResult: true })
 
   assertUnverified(fixture, run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce }))
 })

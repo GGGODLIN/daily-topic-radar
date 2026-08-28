@@ -529,6 +529,23 @@ const loadOrCreateManifest = (root, reports, date) => {
   if (persisted == null) throw new Error('evidence-level manifest persistence failed')
   return { file, manifest: persisted }
 }
+const normalizeFindingText = (value) => value
+  .replace(/^\s*(?:[-+]|\*)\s+/, '')
+  .replace(/\*\*/g, '')
+  .replace(/`/g, '')
+  .replace(/\s+/g, ' ')
+  .trim()
+const canonicalFindingQuote = (answer, quote) => {
+  if (answer.includes(quote)) return quote
+  const normalizedQuote = normalizeFindingText(quote)
+  if (normalizedQuote === '') return null
+  const matches = answer
+    .split('\n')
+    .flatMap((line) => line.split('|'))
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && normalizeFindingText(line).includes(normalizedQuote))
+  return matches.length === 1 ? matches[0] : null
+}
 const parseAuditObject = (audit, samples) => {
   if (!sameKeys(audit, ['audit_nonce', 'rows']) || !/^[a-f0-9]{64}$/.test(audit.audit_nonce) || !Array.isArray(audit.rows) || audit.rows.length !== samples.length) return null
   const rows = audit.rows.map((row, index) => {
@@ -539,8 +556,9 @@ const parseAuditObject = (audit, samples) => {
     const findings = row.findings.map((finding) => {
       if (!sameKeys(finding, ['type', 'quote'])) return null
       if (!VIOLATION_TYPES.has(finding.type) || typeof finding.quote !== 'string' || finding.quote === '') return null
-      if (finding.quote.includes('|') || /[\r\n]/.test(finding.quote) || !sample.answer.includes(finding.quote)) return null
-      return finding
+      if (finding.quote.includes('|') || /[\r\n]/.test(finding.quote)) return null
+      const quote = canonicalFindingQuote(sample.answer, finding.quote)
+      return quote == null ? null : { ...finding, quote }
     })
     if (findings.some((finding) => finding == null)) return null
     if (new Set(findings.map((finding) => finding.type)).size !== findings.length) return null
@@ -801,7 +819,7 @@ const parseTranscriptRows = (text) => {
   }
   return rows
 }
-const transcriptSnapshot = (root, boundaryFile) => {
+const currentTranscriptCandidates = (root, boundaryFile) => {
   let boundaryMtimeMs
   let files
   try {
@@ -810,9 +828,11 @@ const transcriptSnapshot = (root, boundaryFile) => {
   } catch {
     return null
   }
-  const candidates = files.filter(({ mtimeMs }) => mtimeMs >= boundaryMtimeMs)
+  return files.filter(({ mtimeMs }) => mtimeMs >= boundaryMtimeMs)
+}
+const snapshotCandidates = (candidates) => {
   const totalBytes = candidates.reduce((total, { size }) => total + size, 0)
-  if (candidates.length > TRANSCRIPT_MAX_CANDIDATE_FILES || totalBytes > TRANSCRIPT_MAX_CANDIDATE_BYTES) return null
+  if (totalBytes > TRANSCRIPT_MAX_CANDIDATE_BYTES) return null
   const snapshots = []
   for (const { file } of candidates) {
     const text = stableTranscriptText(file)
@@ -822,6 +842,10 @@ const transcriptSnapshot = (root, boundaryFile) => {
     snapshots.push({ file, rows })
   }
   return snapshots
+}
+const transcriptSnapshot = (root, boundaryFile) => {
+  const candidates = currentTranscriptCandidates(root, boundaryFile)
+  return candidates == null || candidates.length > TRANSCRIPT_MAX_CANDIDATE_FILES ? null : snapshotCandidates(candidates)
 }
 const restoreReadText = (content, expectedStartLine) => {
   if (typeof content !== 'string' || /^<tool_use_error>/m.test(content) || !Number.isSafeInteger(expectedStartLine) || expectedStartLine < 0 || expectedStartLine > MAX_READ_OFFSET) return null
@@ -863,11 +887,17 @@ const auditB64FromSnapshot = (snapshots, samplesTextPath, expectedText, auditNon
     const seenIds = new Set()
     let invalidTranscript = false
     let output = null
+    let outputId = null
+    let outputReceiptSeen = false
     for (const row of rows) {
       const content = row?.message?.content
       if (!Array.isArray(content)) continue
       for (const item of content) {
         if (output != null) {
+          if (item?.type === 'tool_result' && outputId != null && item.tool_use_id === outputId && item.is_error !== true && !outputReceiptSeen) {
+            outputReceiptSeen = true
+            continue
+          }
           if (isToolCallLike(item)) invalidTranscript = true
           if (invalidTranscript) break
           continue
@@ -917,6 +947,7 @@ const auditB64FromSnapshot = (snapshots, samplesTextPath, expectedText, auditNon
           if (restoredText == null) return null
           if (restoredText === expectedText) {
             output = Buffer.from(JSON.stringify(item.input), 'utf8').toString('base64')
+            outputId = typeof item.id === 'string' ? item.id : null
             continue
           }
           return null
@@ -937,12 +968,18 @@ const batchAuditFromRows = (rows, manifest, batch, attemptNonce) => {
   const chunks = []
   const seenIds = new Set()
   let output = null
+  let outputId = null
+  let outputReceiptSeen = false
   let invalidTranscript = false
   for (const row of rows) {
     const content = row?.message?.content
     if (!Array.isArray(content)) continue
     for (const item of content) {
       if (output != null) {
+        if (item?.type === 'tool_result' && outputId != null && item.tool_use_id === outputId && item.is_error !== true && !outputReceiptSeen) {
+          outputReceiptSeen = true
+          continue
+        }
         if (isToolCallLike(item)) invalidTranscript = true
         if (invalidTranscript) break
         continue
@@ -1011,6 +1048,7 @@ const batchAuditFromRows = (rows, manifest, batch, attemptNonce) => {
           break
         }
         output = parseBatchAuditObject(item.input, manifest, batch, attemptNonce)
+        outputId = typeof item.id === 'string' ? item.id : null
         if (output == null) invalidTranscript = true
         continue
       }
@@ -1024,7 +1062,7 @@ const batchAuditFromRows = (rows, manifest, batch, attemptNonce) => {
   return invalidTranscript || pending.size !== 0 || output == null ? null : output
 }
 const batchAttemptMatches = (rows, manifest, batch, attemptNonce) => rows.some((row) =>
-  row?.message?.content?.some((item) =>
+  Array.isArray(row?.message?.content) && row.message.content.some((item) =>
     item?.type === 'tool_use' &&
     item?.name === 'StructuredOutput' &&
     item?.input?.audit_nonce === manifest.audit_nonce &&
@@ -1032,6 +1070,24 @@ const batchAttemptMatches = (rows, manifest, batch, attemptNonce) => rows.some((
     item?.input?.batch_index === batch.index
   )
 )
+const batchTranscriptSnapshot = (root, boundaryFile, manifest, attemptNonce) => {
+  const candidates = currentTranscriptCandidates(root, boundaryFile)
+  if (candidates == null) return null
+  const groups = new Map()
+  for (const candidate of candidates) {
+    const directory = path.dirname(candidate.file)
+    groups.set(directory, [...(groups.get(directory) ?? []), candidate])
+  }
+  if (groups.size > TRANSCRIPT_MAX_CANDIDATE_FILES) return null
+  for (const group of groups.values()) {
+    if (group.length > TRANSCRIPT_MAX_CANDIDATE_FILES) continue
+    const snapshots = snapshotCandidates(group)
+    if (snapshots == null) continue
+    const matches = manifest.batches.some((batch) => snapshots.some((snapshot) => batchAttemptMatches(snapshot.rows, manifest, batch, attemptNonce)))
+    if (matches) return snapshots
+  }
+  return []
+}
 const batchAuditsFromSnapshot = (snapshots, manifest, attemptNonce) => {
   if (snapshots == null) return null
   const matches = []
@@ -1076,10 +1132,12 @@ const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFi
   }
   const samplesTextPath = samplesTextPathFor(reports, date)
   if (manifest == null || transcriptsRoot == null || samplesSha256 !== digestText(JSON.stringify(manifest.samples)) || !fs.existsSync(samplesTextPath) || samplesFileSha256 !== digestFile(samplesTextPath) || !batchArtifactsValid(reports, date, manifest)) return null
-  const snapshots = isBatchedManifest(manifest) && auditNonce !== manifest.audit_nonce
+  const snapshots = batched && auditNonce !== manifest.audit_nonce
     ? []
-    : transcriptSnapshot(transcriptsRoot, samplesTextPath)
-  const auditPacket = isBatchedManifest(manifest)
+    : batched
+      ? batchTranscriptSnapshot(transcriptsRoot, samplesTextPath, manifest, attemptNonce)
+      : transcriptSnapshot(transcriptsRoot, samplesTextPath)
+  const auditPacket = batched
     ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce)
     : parseAudit(auditB64FromSnapshot(snapshots, samplesTextPath, renderSamplesText(manifest), auditNonce), manifest)
   if (auditPacket == null || auditPacket.auditNonce !== auditNonce) return null
@@ -1127,7 +1185,11 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
   if (batched && (transcriptsRoot == null || auditB64 != null || auditNonce !== manifest.audit_nonce || !isNonce(attemptNonce) || !batchArtifactsValid(reports, date, manifest))) {
     return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   }
-  const snapshots = transcriptsRoot == null ? [] : transcriptSnapshot(transcriptsRoot, samplesTextPath)
+  const snapshots = transcriptsRoot == null
+    ? []
+    : batched
+      ? batchTranscriptSnapshot(transcriptsRoot, samplesTextPath, manifest, attemptNonce)
+      : transcriptSnapshot(transcriptsRoot, samplesTextPath)
   const auditPacket = batched
     ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce)
     : parseAudit(transcriptsRoot == null ? auditB64 : auditB64FromSnapshot(snapshots, samplesTextPath, renderSamplesText(manifest), auditNonce), manifest)
