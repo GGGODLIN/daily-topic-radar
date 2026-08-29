@@ -17,7 +17,7 @@ case " $* " in
   ;;
 esac
 python3 - "$@" <<'PY'
-import sys, os, json, re, shutil, subprocess, urllib.request
+import sys, os, json, re, shutil, subprocess, urllib.request, base64
 
 DIR = os.environ["CCTOOL_DIR"]
 JSON_OUT = "--json" in sys.argv[1:]
@@ -291,6 +291,47 @@ def brew_latest(formula):
     except Exception:
         return None
 
+PIN_VERSION = "2.1.246"
+PIN_REPO = "anthropics/claude-code"
+PIN_ISSUES = ["90299", "90537"]
+
+def pin_check():
+    if os.environ.get("CCTOOL_PIN_CHECK") == "0":
+        return None
+    states = []
+    for num in PIN_ISSUES:
+        s = run(["gh", "api", f"repos/{PIN_REPO}/issues/{num}", "--jq", ".state"])
+        if s and s.strip() in ("open", "closed"):
+            states.append((num, s.strip()))
+        else:
+            return {"error": f"cannot read issue #{num} state"}
+    releases = run(["gh", "api", f"repos/{PIN_REPO}/releases?per_page=100", "--jq", ".[].tag_name"])
+    if releases is None:
+        return {"error": "cannot list candidate releases"}
+    candidates = [t for t in releases.split() if _vkey(norm(t)) > _vkey(PIN_VERSION)]
+    try:
+        s = run(["gh", "api", f"repos/{PIN_REPO}/contents/CHANGELOG.md", "--jq", ".content"])
+        changelog = base64.b64decode(s).decode("utf-8", "replace") if s else None
+    except Exception:
+        changelog = None
+    if not changelog:
+        return {"error": "cannot read CHANGELOG.md"}
+    candidate_versions = {norm(t) for t in candidates}
+    newer_sections = []
+    for section in re.split(r'(?:^|\n)## ', changelog)[1:]:
+        lines = section.splitlines()
+        if lines and lines[0].strip() in candidate_versions:
+            newer_sections.append(section)
+    closed = [num for num, st in states if st == "closed"]
+    matched = []
+    for section in newer_sections:
+        if "sticky prompt" in section.lower():
+            matched.append("sticky prompt")
+        matched += ["#" + num for num in PIN_ISSUES if f"#{num}" in section]
+    if not closed and not matched:
+        return None
+    return {"closed": closed, "matched": matched, "candidates": candidates}
+
 manifest = load_manifest()
 ignore = load_ignore()
 cargo, brew, npm, uv, mcpnpx = cargo_git_installed(), brew_installed(), npm_g_installed(), uv_installed(), mcp_npx_installed()
@@ -376,6 +417,22 @@ for e in manifest:
 
 tracked = set(e.get("name") for e in manifest)
 discovered = []
+pin_signal = pin_check()
+if isinstance(pin_signal, dict) and "error" in pin_signal:
+    errors.append({"name": "claude-code-pin", "reason": pin_signal["error"]})
+elif pin_signal:
+    candidates = pin_signal.get("candidates", [])
+    if candidates:
+        reasons = []
+        if pin_signal.get("closed"):
+            reasons.append("issue closed: " + ", ".join("#" + n for n in pin_signal["closed"]))
+        if pin_signal.get("matched"):
+            reasons.append("CHANGELOG 命中: " + ", ".join(pin_signal["matched"]))
+        updates.append({
+            "name": "claude-code", "manager": "claude-code-pin",
+            "current": PIN_VERSION, "latest": candidates[0], "source": PIN_REPO,
+            "notes": "pin 可以重新驗證（" + "；".join(reasons) + "）— 人工測試候選版本，確認 sticky prompt 恢復後再解除 pin；未驗證是否已修復",
+        })
 for names, mgr in [(cargo.keys(), "cargo-git"), (brew_leaves(), "brew"),
                    (npm.keys(), "npm-g"), (uv.keys(), "uv-tool"), (mcpnpx.keys(), "mcp-npx"),
                    ([n for n in mcp_list() if n not in mcpnpx], "mcp")]:

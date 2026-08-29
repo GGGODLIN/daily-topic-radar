@@ -7,6 +7,8 @@ TMP="$(mktemp -d)"
 trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 fail(){ echo "❌ FAIL: $1"; exit 1; }
 
+export CCTOOL_PIN_CHECK=0
+
 [ -x "$HELPER" ] || fail "helper 不存在或不可執行: $HELPER"
 
 # fixture：白名單追 sem（本機 cargo-git 有）、黑名單忽略 cargo-bundle（本機有）
@@ -187,5 +189,131 @@ assert e and 'mismatch' in e[0]['reason'], '兩份 config 釘不同版應進 err
 assert not any(x['name']=='chrome-devtools' for x in d['updates']), 'mismatch 時不該進 updates'
 print('✅ 測 6 mcp-npx：兩份 config 釘版不一致 → errors(config mismatch)、不比對')
 " || fail "mcp-npx mismatch 斷言失敗"
+
+GH_BIN="$TMP/gh-pin"
+mkdir -p "$GH_BIN"
+GH_LOG="$TMP/gh-calls.log"
+CL_FIXTURE="$TMP/changelog.txt"
+
+pin_stub(){
+cat > "$GH_BIN/gh" <<EOF
+#!/bin/bash
+echo "\$*" >> "$GH_LOG"
+case "\$*" in
+  *"issues/90299 --jq .state"*) printf '$1\n' ;;
+  *"issues/90537 --jq .state"*) printf '$2\n' ;;
+  *"contents/CHANGELOG.md"*) base64 < "$CL_FIXTURE" ;;
+  *"releases?per_page=100"*) printf 'v2.1.251\nv2.1.250\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$GH_BIN/gh"
+}
+
+pin_run(){
+  CCTOOL_PIN_CHECK=1 PATH="$GH_BIN:/usr/bin:/bin" \
+  CCTOOL_MANIFEST="$TMP/m-empty.json" CCTOOL_IGNORE="$TMP/i.txt" \
+  "$HELPER" --json 2>/dev/null
+}
+
+printf "[]" > "$TMP/m-empty.json"
+printf '## 2.1.251\n- Fixed something unrelated\n- Tab to toggle thinking (sticky across sessions)\n\n## 2.1.245\n- Fullscreen sticky prompt header fixed\n\n## ' > "$CL_FIXTURE"
+pin_stub open open
+: > "$GH_LOG"
+out_pin1=$(pin_run)
+rc=$?
+[ $rc -eq 0 ] || fail "pin 測 7: exit code $rc != 0"
+grep -q 'issues/90299' "$GH_LOG" || fail "pin 檢查未查詢受監控 issue（gh 呼叫 log: $(cat "$GH_LOG")）"
+grep -q 'contents/CHANGELOG.md' "$GH_LOG" || fail "pin 檢查未查詢 CHANGELOG"
+grep -q 'releases?per_page=100' "$GH_LOG" || fail "pin 檢查未查詢候選 release"
+echo "$out_pin1" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+assert not hits, 'issues 全 open 且 CHANGELOG 無訊號，不該有 pin finding: ' + str(hits)
+pin_err = [e for e in d['errors'] if e.get('name') == 'claude-code-pin']
+assert not pin_err, 'stub gh 正常時 pin 檢查不該進 errors: ' + str(pin_err)
+print('✅ 測 7 pin 靜默：issue open + CHANGELOG 無訊號 → 無 finding、不進 errors')
+" || fail "pin 測 7 斷言失敗"
+
+pin_stub closed open
+out_pin2=$(pin_run)
+rc=$?
+[ $rc -eq 0 ] || fail "pin 測 8: exit code $rc != 0"
+echo "$out_pin2" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+assert hits, 'issue closed + 有候選 release，該產生 pin finding'
+u = hits[0]
+assert u['latest'] == 'v2.1.251' and u['current'] == '2.1.246', 'finding 應列 pin 版本與候選 release: ' + str(u)
+assert '重新驗證' in u['notes'], 'finding 應要求人工重新驗證: ' + str(u)
+assert '未驗證是否已修復' in u['notes'], 'finding 必須附未驗證免責聲明、不得宣稱已修復: ' + str(u)
+print('✅ 測 8 pin finding：issue closed → 提醒人工重新驗證、附候選 release')
+" || fail "pin 測 8 斷言失敗"
+
+pin_stub open open
+printf '## 2.1.250\n- Fullscreen sticky prompt header renders again\n' > "$CL_FIXTURE"
+out_pin3=$(pin_run)
+echo "$out_pin3" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+assert hits, 'CHANGELOG 命中 sticky prompt 應產生 finding'
+assert 'sticky prompt' in hits[0]['notes'], 'notes 應標命中原因: ' + str(hits[0])
+assert hits[0]['latest'] == 'v2.1.251' and hits[0]['current'] == '2.1.246', '版本對比錯: ' + str(hits[0])
+print('✅ 測 9 CHANGELOG 命中 sticky prompt → finding')
+" || fail "pin 測 9 斷言失敗"
+
+printf '## 2.1.250\n- Fix fullscreen regression (#90537)\n' > "$CL_FIXTURE"
+out_pin4=$(pin_run)
+echo "$out_pin4" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+assert hits, 'CHANGELOG 命中 issue #90537 應產生 finding'
+assert '#90537' in hits[0]['notes'], 'notes 應標命中 issue 編號: ' + str(hits[0])
+print('✅ 測 10 CHANGELOG 命中受監控 issue 編號 → finding')
+" || fail "pin 測 10 斷言失敗"
+
+printf '## 2.1.252\n- Restored fullscreen sticky prompt header\n' > "$CL_FIXTURE"
+cat > "$GH_BIN/gh" <<EOF
+#!/bin/bash
+case "\$*" in
+  *"issues/90299 --jq .state"*|*"issues/90537 --jq .state"*) printf 'open\n' ;;
+  *"contents/CHANGELOG.md"*) base64 < "$CL_FIXTURE" ;;
+  *"releases?per_page=5"*) printf 'v2.1.257\nv2.1.256\nv2.1.255\nv2.1.254\nv2.1.253\n' ;;
+  *"releases?per_page=100"*) printf 'v2.1.257\nv2.1.256\nv2.1.255\nv2.1.254\nv2.1.253\nv2.1.252\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$GH_BIN/gh"
+out_pin5=$(pin_run)
+echo "$out_pin5" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+assert hits, '較早候選 release 的修復訊號不該被查詢窗口擠出'
+assert hits[0]['latest'] == 'v2.1.257', 'finding 應仍列最新候選 release: ' + str(hits[0])
+print('✅ 測 11 release 窗口：第六筆候選版本含修復訊號仍會 finding')
+" || fail "pin 測 11 斷言失敗"
+
+cat > "$GH_BIN/gh" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod +x "$GH_BIN/gh"
+out_pin6=$(pin_run)
+rc=$?
+[ $rc -eq 0 ] || fail "pin 測 12: exit code $rc != 0"
+echo "$out_pin6" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+assert not hits, '查詢失敗不得當成修復訊號: ' + str(hits)
+errs = [e for e in d['errors'] if e.get('name') == 'claude-code-pin']
+assert errs, '查詢失敗應進 errors'
+print('✅ 測 12 gh 失敗：只進 errors、無修復 finding、exit 0')
+" || fail "pin 測 12 斷言失敗"
 
 echo "🎉 ALL PASS"
