@@ -14,6 +14,7 @@ from social_info.config import Config, SourceConfig
 from social_info.db import Database
 from social_info.dedup import Deduper, compute_item_id, compute_title_hash
 from social_info.fetchers import (
+    clawhub,
     github_search,
     github_trending,
     hn,
@@ -22,6 +23,7 @@ from social_info.fetchers import (
     reddit,
     rss,
     rsshub,
+    skillhub_cn,
     skills_sh,
     threads,
     threads_apify,
@@ -104,6 +106,8 @@ FETCHER_REGISTRY = {
     "rss": rss.fetch,
     "rsshub": rsshub.fetch,
     "skills_sh": skills_sh.fetch,
+    "skillhub_cn": skillhub_cn.fetch,
+    "clawhub": clawhub.fetch,
     "twitter": twitter.fetch,
     "threads": threads.fetch,
     "threads_apify": threads_apify.fetch,

@@ -23,6 +23,23 @@ def normalize_title(title: str) -> str:
     return t
 
 
+_METRIC_KEYS = ("downloads", "installs", "stars")
+
+
+def _metrics_summary(engagement: dict) -> str:
+    """Compact metric string kept on merge so cross-registry counts survive dedup."""
+    return " / ".join(
+        f"{engagement[k]:,} {k}" for k in _METRIC_KEYS if engagement.get(k)
+    )
+
+
+def _row_metrics(row: dict) -> str:
+    try:
+        return _metrics_summary(json.loads(row.get("engagement_json") or "{}"))
+    except (ValueError, TypeError):
+        return ""
+
+
 def compute_item_id(canonical_url: str) -> str:
     return hashlib.sha1(canonical_url.encode("utf-8")).hexdigest()
 
@@ -88,6 +105,7 @@ class Deduper:
                         "source": existing["source"],
                         "source_handle": existing["source_handle"] or "",
                         "url": existing["url"],
+                        "metrics": _row_metrics(existing),
                     })
                     result.new_items.append(item)
                     seen_ids_in_batch.add(item_id)
@@ -100,6 +118,7 @@ class Deduper:
                         "source": item.source,
                         "source_handle": item.source_handle,
                         "url": item.url,
+                        "metrics": _metrics_summary(item.engagement),
                     })
                     self.db.update_also_appeared_in(existing["id"], json.dumps(appeared))
                     if is_stale:
@@ -114,6 +133,7 @@ class Deduper:
                         "source": prior.source,
                         "source_handle": prior.source_handle,
                         "url": prior.url,
+                        "metrics": _metrics_summary(prior.engagement),
                     })
                     result.new_items.append(item)
                     seen_title_hashes_in_batch[title_hash] = item
@@ -123,6 +143,7 @@ class Deduper:
                         "source": item.source,
                         "source_handle": item.source_handle,
                         "url": item.url,
+                        "metrics": _metrics_summary(item.engagement),
                     })
                 continue
 

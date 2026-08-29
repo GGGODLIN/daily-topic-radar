@@ -6,6 +6,7 @@ from social_info.fetchers.base import FetchResult, Item
 
 COMMENT_TRUNCATE_CHARS = 300
 _SKILLS_SH_BOARD_ORDER = {"trending": 0, "hot": 1}
+_SKILL_REGISTRY_SOURCES = frozenset({"skills_sh", "skillhub_cn", "clawhub"})
 
 PLATFORM_GROUP_ORDER = [
     ("x", "X / Twitter"),
@@ -15,6 +16,8 @@ PLATFORM_GROUP_ORDER = [
     ("github_trending", "GitHub Trending"),
     ("trendshift", "GitHub Rising (Trendshift)"),
     ("skills_sh", "Agent Skills (skills.sh)"),
+    ("skillhub_cn", "Agent Skills (騰訊 SkillHub / 中國)"),
+    ("clawhub", "Agent Skills (ClawHub / OpenClaw)"),
     ("product_hunt", "Product Hunt"),
     ("huggingface", "HuggingFace"),
     ("rss_lab", "Lab Blogs & Releases"),
@@ -28,6 +31,8 @@ PLATFORM_GROUP_ORDER = [
 
 def _group_key_for_source(source: str, source_handle: str, language: str) -> str:
     """Bucket a (source, handle, language) triple into one of the platform groups."""
+    if source in _SKILL_REGISTRY_SOURCES:
+        return source
     if source == "v2ex":
         return "v2ex"
     if source == "github_search":
@@ -73,10 +78,15 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
         meta_parts.append(f"💬 {item.engagement['comments']}")
     if item.engagement.get("score") and item.source != "x":
         meta_parts.append(f"▲ {item.engagement['score']}")
-    if item.source == "skills_sh" and "rank" in item.engagement:
-        meta_parts.append(f"rank #{item.engagement['rank']}")
-    if item.source == "skills_sh" and "installs" in item.engagement:
-        meta_parts.append(f"{item.engagement['installs']:,} installs")
+    if item.source in _SKILL_REGISTRY_SOURCES:
+        if "rank" in item.engagement:
+            meta_parts.append(f"rank #{item.engagement['rank']}")
+        if item.engagement.get("downloads"):
+            meta_parts.append(f"{item.engagement['downloads']:,} downloads")
+        if item.engagement.get("installs"):
+            meta_parts.append(f"{item.engagement['installs']:,} installs")
+        if item.engagement.get("stars"):
+            meta_parts.append(f"★ {item.engagement['stars']:,}")
     lines.append(" · ".join(meta_parts))
     lines.append("")
 
@@ -97,7 +107,9 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
 
     if item.also_appeared_in:
         seen = "; ".join(
-            f"{a['source']}:{a['source_handle']}" for a in item.also_appeared_in
+            f"{a['source']}:{a['source_handle']}"
+            + (f" ({a['metrics']})" if a.get("metrics") else "")
+            for a in item.also_appeared_in
         )
         lines.append(f"_also seen at: {seen}_")
         lines.append("")
