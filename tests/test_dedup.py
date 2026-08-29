@@ -9,8 +9,8 @@ import pytest
 from social_info._time import utcnow
 from social_info.db import Database
 from social_info.dedup import (
-    DedupResult,
     Deduper,
+    DedupResult,
     compute_item_id,
     compute_title_hash,
     normalize_title,
