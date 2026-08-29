@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -201,3 +202,74 @@ def test_dedup_case_5_l1_hit_gte_n_days_resurfaces(db):
     result = Deduper(db, resurface_days=30).process([item])
     assert result.new_items == []
     assert result.resurface_ids == [item_id]
+
+
+def test_cross_registry_merge_preserves_metrics_via_db(db):
+    """skills_sh persisted yesterday, skillhub_cn arrives today: counts must survive."""
+    deduper = Deduper(db)
+    existing = _make_item(
+        "https://skills.sh/vercel-labs/skills/find-skills",
+        "find-skills",
+        source="skills_sh",
+        handle="trending:rank-3",
+        tier=1,
+    )
+    existing.engagement = {"rank": 3, "installs": 3159119}
+    first = deduper.process([existing])
+    for it in first.new_items:
+        db.insert_item(it.to_db_row(
+            item_id=compute_item_id(it.canonical_url),
+            title_hash=compute_title_hash(it.title),
+        ))
+
+    incoming = _make_item(
+        "https://skillhub.cn/tencent/find-skills",
+        "find skills",
+        source="skillhub_cn",
+        handle="rank-2",
+        tier=2,
+    )
+    incoming.engagement = {"rank": 2, "downloads": 842136, "installs": 75956}
+    deduper.process([incoming])
+
+    row = db.find_by_title_hash(compute_title_hash("find-skills"))
+    appeared = json.loads(row["also_appeared_in"])
+    assert len(appeared) == 1
+    assert appeared[0]["source"] == "skillhub_cn"
+    assert "842,136 downloads" in appeared[0]["metrics"]
+    assert "75,956 installs" in appeared[0]["metrics"]
+
+
+def test_higher_tier_incoming_carries_existing_metrics_from_db(db):
+    """Reverse direction: the DB row's counts are carried onto the winning item."""
+    deduper = Deduper(db)
+    existing = _make_item(
+        "https://clawhub.ai/skills/github",
+        "github",
+        source="clawhub",
+        handle="rank-5",
+        tier=2,
+    )
+    existing.engagement = {"downloads": 196868, "stars": 665}
+    first = deduper.process([existing])
+    for it in first.new_items:
+        db.insert_item(it.to_db_row(
+            item_id=compute_item_id(it.canonical_url),
+            title_hash=compute_title_hash(it.title),
+        ))
+
+    incoming = _make_item(
+        "https://skills.sh/steipete/skills/github",
+        "GitHub",
+        source="skills_sh",
+        handle="trending:rank-1",
+        tier=1,
+    )
+    incoming.engagement = {"rank": 1, "installs": 12000}
+    result = deduper.process([incoming])
+
+    assert len(result.new_items) == 1
+    appeared = result.new_items[0].also_appeared_in
+    assert appeared[0]["source"] == "clawhub"
+    assert "196,868 downloads" in appeared[0]["metrics"]
+    assert "665 stars" in appeared[0]["metrics"]
