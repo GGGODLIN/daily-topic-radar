@@ -23,8 +23,10 @@ mkdir -p "$(dirname "$OUT")" "$(dirname "$LOG")" "$(dirname "$BASELINE")"
 
   RAW=$(mktemp)
   CURRENT=$(mktemp)
+  SUPPRESSED=$(mktemp)
+  BASELINE_EFFECTIVE=$(mktemp)
   ERROR=$(mktemp)
-  trap 'rc=$?; rm -f "$RAW" "$CURRENT" "$ERROR"; exit $rc' EXIT
+  trap 'rc=$?; rm -f "$RAW" "$CURRENT" "$SUPPRESSED" "$BASELINE_EFFECTIVE" "$ERROR"; exit $rc' EXIT
 
   AGNIX_RC=0
   if [ -n "${AGNIX_JSON_INPUT:-}" ]; then
@@ -47,7 +49,7 @@ mkdir -p "$(dirname "$OUT")" "$(dirname "$LOG")" "$(dirname "$BASELINE")"
     exit 0
   fi
 
-  if ! python3 - "$RAW" <<'PYEOF' | sort > "$CURRENT"
+  if ! python3 - "$RAW" "$SUPPRESSED" <<'PYEOF' | sort > "$CURRENT"
 import json, sys
 allowed = {
     "Unknown frontmatter field 'upstream'",
@@ -55,6 +57,16 @@ allowed = {
     "Unknown frontmatter field 'upstream-pinned'",
     "Unknown frontmatter field 'upstream-status'",
 }
+allowed_diagnostics = {
+    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/dev-replies.md`' is deeper than one level"),
+    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/postmortems.md`' is deeper than one level"),
+    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/release-notes.md`' is deeper than one level"),
+    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tech-articles.md`' is deeper than one level"),
+    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tickets.md`' is deeper than one level"),
+}
+with open(sys.argv[2], "w") as suppressed:
+    for file, rule, message in sorted(allowed_diagnostics):
+        print(f"warning|{rule}|{file}|{message}", file=suppressed)
 try:
     d = json.load(open(sys.argv[1]))
 except (OSError, json.JSONDecodeError) as exc:
@@ -65,6 +77,8 @@ for i in items:
     f = i['file'].replace('/Users/linhancheng/.claude/', '')
     message = i['message'][:160].replace('|', '¦')
     if i['rule'] == 'CC-SK-017' and message in allowed:
+        continue
+    if (f, i['rule'], message) in allowed_diagnostics:
         continue
     print(f"{i['level']}|{i['rule']}|{f}|{message}")
 PYEOF
@@ -93,8 +107,9 @@ PYEOF
     exit 0
   fi
 
-  NEW_FINDINGS=$(comm -13 "$BASELINE" "$CURRENT" || true)
-  RESOLVED=$(comm -23 "$BASELINE" "$CURRENT" || true)
+  grep -vxF -f "$SUPPRESSED" "$BASELINE" > "$BASELINE_EFFECTIVE" || true
+  NEW_FINDINGS=$(comm -13 "$BASELINE_EFFECTIVE" "$CURRENT" || true)
+  RESOLVED=$(comm -23 "$BASELINE_EFFECTIVE" "$CURRENT" || true)
 
   if [ -z "$NEW_FINDINGS" ] && [ -z "$RESOLVED" ]; then
     printf '__SILENT__' > "$OUT"
@@ -118,7 +133,7 @@ PYEOF
         echo ""
       fi
     } > "$OUT"
-    cp "$CURRENT" "$BASELINE"
     echo "delta reported: new=$(echo "$NEW_FINDINGS" | grep -c . || true) resolved=$(echo "$RESOLVED" | grep -c . || true)"
   fi
+  cp "$CURRENT" "$BASELINE"
 } >> "$LOG" 2>&1
