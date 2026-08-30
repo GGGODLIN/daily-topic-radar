@@ -18,7 +18,10 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="${SKILLS_DIR:-$HOME/.claude/skills}"
+AGENTS_SKILLS_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
+SKILL_LOCK_FILE="${SKILL_LOCK_FILE:-$HOME/.agents/.skill-lock.json}"
 LOG_DIR="${LOG_DIR:-$HOME/code/social-info/reports/local-analysis/skill-updates}"
 ANALYSIS_DATE="${LOCAL_ANALYSIS_DATE:-$(date +%Y-%m-%d)}"
 mkdir -p "$LOG_DIR"
@@ -160,6 +163,19 @@ PY
   if [ "$fm_watched" -eq 0 ]; then
     echo "- ⚠️ 掃到 0 支帶 upstream 線索的 skill——散檔 fork 全部脫離雷達，確認 frontmatter 欄位還在" >> "$LOG_FILE"
   fi
+fi
+
+lock_report=$(python3 "$SCRIPT_DIR/skill-lock-drift.py" --skills-dir "$AGENTS_SKILLS_DIR" --lock-file "$SKILL_LOCK_FILE" 2>/dev/null)
+lock_status=$?
+if [ "$lock_status" -ne 0 ] && [ -z "$lock_report" ]; then
+  lock_report="- ⚠️ installed skill lock 驗證失敗 — verifier 執行錯誤"
+fi
+if [ -n "$lock_report" ]; then
+  {
+    echo ""
+    echo "## Installed skill lock drift（read-only）"
+    echo "$lock_report"
+  } >> "$LOG_FILE"
 fi
 
 # --- skill-creator 上游巡邏（2026-06-12 加）---
