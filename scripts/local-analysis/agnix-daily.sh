@@ -58,15 +58,17 @@ allowed = {
     "Unknown frontmatter field 'upstream-status'",
 }
 allowed_diagnostics = {
-    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/dev-replies.md`' is deeper than one level"),
-    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/postmortems.md`' is deeper than one level"),
-    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/release-notes.md`' is deeper than one level"),
-    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tech-articles.md`' is deeper than one level"),
-    ("vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tickets.md`' is deeper than one level"),
+    ("error", "settings.json", "CC-HK-008", "Script file not found at 'SEMBLE_SCOPE_WRAPPER=/Users/linhancheng/.claude/scripts/semble-route3.sh' (resolved to '/Users/linhancheng/SEMBLE_SCOPE_WRAPPER=/Users/linhancheng/.claude/scripts/semble-route3.sh')"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/dev-replies.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/postmortems.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/release-notes.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tech-articles.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tickets.md`' is deeper than one level"),
 }
 with open(sys.argv[2], "w") as suppressed:
-    for file, rule, message in sorted(allowed_diagnostics):
-        print(f"warning|{rule}|{file}|{message}", file=suppressed)
+    for level, file, rule, message in sorted(allowed_diagnostics):
+        normalized = message.replace('|', '¦').replace('\n', ' ')
+        print(f"{level}|{rule}|{file}|{normalized}", file=suppressed)
 try:
     d = json.load(open(sys.argv[1]))
 except (OSError, json.JSONDecodeError) as exc:
@@ -75,10 +77,10 @@ except (OSError, json.JSONDecodeError) as exc:
 items = d.get('diagnostics') or d.get('issues') or d.get('results') or []
 for i in items:
     f = i['file'].replace('/Users/linhancheng/.claude/', '')
-    message = i['message'][:160].replace('|', '¦')
+    message = i['message'].replace('|', '¦').replace('\n', ' ')
     if i['rule'] == 'CC-SK-017' and message in allowed:
         continue
-    if (f, i['rule'], message) in allowed_diagnostics:
+    if (i['level'], f, i['rule'], message) in allowed_diagnostics:
         continue
     print(f"{i['level']}|{i['rule']}|{f}|{message}")
 PYEOF
@@ -101,7 +103,7 @@ PYEOF
       echo ""
       echo "首跑，已存 baseline（$(wc -l < "$CURRENT" | tr -d ' ') 條 finding，噪音規則已由 ~/.claude/.agnix.toml 停用）。全量："
       echo ""
-      awk -F'|' '{ printf "- [%s] %s `%s` — %s\n", $1, $2, $3, $4 }' "$CURRENT"
+      awk -F'|' '{ printf "- [%s] %s `%s` — %s\n", $1, $2, $3, substr($4, 1, 160) }' "$CURRENT"
     } > "$OUT"
     echo "baseline created"
     exit 0
@@ -121,7 +123,7 @@ PYEOF
       if [ -n "$NEW_FINDINGS" ]; then
         echo "## ⚠️ 新 finding"
         echo ""
-        echo "$NEW_FINDINGS" | awk -F'|' '{ printf "- [%s] %s `%s` — %s\n", $1, $2, $3, $4 }'
+        echo "$NEW_FINDINGS" | awk -F'|' '{ printf "- [%s] %s `%s` — %s\n", $1, $2, $3, substr($4, 1, 160) }'
         echo ""
         echo "處置：error 級先修；warning 級判斷真偽，結構性誤報 → 加進 ~/.claude/.agnix.toml disabled_rules。"
         echo ""
