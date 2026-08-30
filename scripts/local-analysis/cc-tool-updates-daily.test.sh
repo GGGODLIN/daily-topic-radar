@@ -11,6 +11,24 @@ export CCTOOL_PIN_CHECK=0
 
 [ -x "$HELPER" ] || fail "helper 不存在或不可執行: $HELPER"
 
+MANIFEST_DIR="$(dirname "$HELPER")"
+python3 - "$MANIFEST_DIR/cc-tool-manifest.json" "$MANIFEST_DIR/cc-tool-ignore.txt" <<'PY' || fail "production 名單 maintenance 斷言失敗"
+import json, sys
+manifest_path, ignore_path = sys.argv[1:]
+manifest = json.load(open(manifest_path))
+by_name = {item['name']: item for item in manifest}
+ignore = {line.strip() for line in open(ignore_path) if line.strip() and not line.startswith('#')}
+assert by_name['steipete/tap/peekaboo'] == {
+  'name': 'steipete/tap/peekaboo',
+  'manager': 'brew',
+  'source': 'peekaboo',
+}, by_name.get('steipete/tap/peekaboo')
+assert 'go' in ignore
+assert not {'chungchihhan/tap/tracce', 'serena-agent'} & by_name.keys()
+assert {'agent-browser', 'dev-browser', 'yarn'} <= by_name.keys()
+print('✅ 測 0 production 名單：go 忽略、Peekaboo 追蹤、兩個已退役工具移除、三個無明確退役 owner 的項目保留')
+PY
+
 # fixture：白名單追 sem（本機 cargo-git 有）、黑名單忽略 cargo-bundle（本機有）
 printf '[{"name":"sem","manager":"cargo-git","source":"Ataraxy-Labs/sem"}]' > "$TMP/m.json"
 printf 'cargo-bundle\n' > "$TMP/i.txt"
