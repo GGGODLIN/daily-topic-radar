@@ -50,7 +50,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
 
     payload = {
         "searchTerms": search_terms,
-        "maxItems": max(20, per_handle_limit * len(handles)),
+        "maxItems": max(20, per_handle_limit),
         "queryType": "Latest",
     }
 

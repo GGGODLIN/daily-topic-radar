@@ -24,12 +24,18 @@ async def test_fetch_twitter_via_apify(httpx_mock, monkeypatch):
         type="twitter",
         enabled=True,
         tier=1,
-        params={"handles": ["sama"], "per_handle_limit": 10, "time_window_hours": 24},
+        params={
+            "handles": ["sama", "karpathy", "simonw"],
+            "per_handle_limit": 10,
+            "time_window_hours": 24,
+        },
     )
 
     async with httpx.AsyncClient() as client:
         items = await fetch(cfg, client)
 
+    payload = json.loads(httpx_mock.get_requests()[0].content)
+    assert payload["maxItems"] == 20
     assert len(items) == 1
     item = items[0]
     assert item.source == "x"
