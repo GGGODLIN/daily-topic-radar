@@ -23,10 +23,11 @@ assert by_name['steipete/tap/peekaboo'] == {
   'manager': 'brew',
   'source': 'peekaboo',
 }, by_name.get('steipete/tap/peekaboo')
-assert 'go' in ignore
+assert {'go', 'yarn'} <= ignore
 assert not {'chungchihhan/tap/tracce', 'serena-agent'} & by_name.keys()
-assert {'agent-browser', 'dev-browser', 'yarn'} <= by_name.keys()
-print('✅ 測 0 production 名單：go 忽略、Peekaboo 追蹤、兩個已退役工具移除、三個無明確退役 owner 的項目保留')
+assert 'agent-browser' in by_name
+assert not {'dev-browser', 'yarn'} & by_name.keys()
+print('✅ 測 0 production 名單：go 忽略、Peekaboo 追蹤、dev-browser/yarn 非 active npm-g owner 已移除、agent-browser 保留')
 PY
 
 # fixture：白名單追 sem（本機 cargo-git 有）、黑名單忽略 cargo-bundle（本機有）
@@ -124,6 +125,97 @@ assert packet['updates'] == [{
   'other_installs': [{'version': '0.21.10', 'root': other_root}],
 }], packet['updates']
 print('✅ 測 4 npm 多 prefix：current 採 PATH 作用中安裝，其他版本分欄保留')
+PY
+
+NPM_SHIM_ROOT="$TMP/npm-shim-root"
+NPM_SHIM_BIN="$TMP/npm-shim-bin"
+mkdir -p "$NPM_SHIM_ROOT/shim-tool" "$NPM_SHIM_BIN"
+printf '{"name":"shim-tool","version":"1.2.3","bin":{"shim-tool":"cli-entry.js"}}' > "$NPM_SHIM_ROOT/shim-tool/package.json"
+printf '#!/usr/bin/env node\n' > "$NPM_SHIM_ROOT/shim-tool/cli-entry.js"
+cat > "$NPM_SHIM_ROOT/shim-tool/platform-bin" <<'EOF'
+#!/bin/bash
+[ "$1" = "--version" ] && { printf 'shim-tool 1.2.3\n'; exit 0; }
+exit 1
+EOF
+ln -s "$NPM_SHIM_ROOT/shim-tool/platform-bin" "$NPM_SHIM_BIN/shim-tool"
+cat > "$NPM_SHIM_BIN/npm" <<'EOF'
+#!/bin/bash
+[ "$*" = "view shim-tool version" ] && { printf '1.2.4\n'; exit 0; }
+exit 1
+EOF
+chmod +x "$NPM_SHIM_ROOT/shim-tool/platform-bin" "$NPM_SHIM_BIN/npm"
+printf '[{"name":"shim-tool","manager":"npm-g","source":"shim-tool"}]' > "$TMP/m-npm-shim.json"
+out_npm_shim=$(PATH="$NPM_SHIM_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_SHIM_ROOT" CCTOOL_MANIFEST="$TMP/m-npm-shim.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_npm_shim" "$NPM_SHIM_ROOT" <<'PY' || fail "npm transformed executable 斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+active_root = sys.argv[2]
+assert packet['errors'] == [], packet['errors']
+assert packet['updates'] == [{
+  'name': 'shim-tool',
+  'manager': 'npm-g',
+  'current': '1.2.3',
+  'latest': '1.2.4',
+  'source': 'shim-tool',
+  'notes': '',
+  'active_install': active_root,
+  'other_installs': [],
+}], packet['updates']
+print('✅ 測 4b npm transformed executable：package 內 platform binary 可辨識 active')
+PY
+
+NPM_UNOWNED_ROOT="$TMP/npm-unowned-root"
+NPM_UNOWNED_BIN="$TMP/npm-unowned-bin"
+mkdir -p "$NPM_UNOWNED_ROOT/unowned-tool" "$NPM_UNOWNED_BIN"
+printf '{"name":"unowned-tool","version":"2.0.0","bin":{"unowned-tool":"cli-entry.js"}}' > "$NPM_UNOWNED_ROOT/unowned-tool/package.json"
+printf '#!/usr/bin/env node\n' > "$NPM_UNOWNED_ROOT/unowned-tool/cli-entry.js"
+cat > "$NPM_UNOWNED_BIN/unowned-tool" <<'EOF'
+#!/bin/bash
+[ "$1" = "--version" ] && { printf '2.0.0\n'; exit 0; }
+exit 1
+EOF
+cat > "$NPM_UNOWNED_BIN/npm" <<'EOF'
+#!/bin/bash
+[ "$*" = "view unowned-tool version" ] && { printf '2.1.0\n'; exit 0; }
+exit 1
+EOF
+chmod +x "$NPM_UNOWNED_BIN/unowned-tool" "$NPM_UNOWNED_BIN/npm"
+printf '[{"name":"unowned-tool","manager":"npm-g","source":"unowned-tool"}]' > "$TMP/m-npm-unowned.json"
+out_npm_unowned=$(PATH="$NPM_UNOWNED_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_UNOWNED_ROOT" CCTOOL_MANIFEST="$TMP/m-npm-unowned.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_npm_unowned" <<'PY' || fail "npm unowned executable 斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+assert packet['updates'] == [], packet['updates']
+assert len(packet['errors']) == 1 and 'no executable on PATH' in packet['errors'][0]['reason'], packet['errors']
+print('✅ 測 4c npm unowned executable：同名同版本但不屬 package 時不誤判 active')
+PY
+
+NPM_AMBIG_A="$TMP/npm-ambig-a"
+NPM_AMBIG_B="$TMP/npm-ambig-b"
+NPM_AMBIG_BIN="$TMP/npm-ambig-bin"
+mkdir -p "$NPM_AMBIG_A/ambiguous-tool" "$NPM_AMBIG_B/ambiguous-tool" "$NPM_AMBIG_BIN"
+printf '{"name":"ambiguous-tool","version":"1.0.0","bin":{"amb-a":"a.js","amb-b":"b.js"}}' > "$NPM_AMBIG_A/ambiguous-tool/package.json"
+printf '{"name":"ambiguous-tool","version":"2.0.0","bin":{"amb-a":"a.js","amb-b":"b.js"}}' > "$NPM_AMBIG_B/ambiguous-tool/package.json"
+printf '#!/usr/bin/env node\n' > "$NPM_AMBIG_A/ambiguous-tool/a.js"
+printf '#!/usr/bin/env node\n' > "$NPM_AMBIG_B/ambiguous-tool/b.js"
+printf '#!/bin/bash\n' > "$NPM_AMBIG_A/ambiguous-tool/platform-a"
+printf '#!/bin/bash\n' > "$NPM_AMBIG_B/ambiguous-tool/platform-b"
+ln -s "$NPM_AMBIG_A/ambiguous-tool/platform-a" "$NPM_AMBIG_BIN/amb-a"
+ln -s "$NPM_AMBIG_B/ambiguous-tool/platform-b" "$NPM_AMBIG_BIN/amb-b"
+cat > "$NPM_AMBIG_BIN/npm" <<'EOF'
+#!/bin/bash
+[ "$*" = "view ambiguous-tool version" ] && { printf '3.0.0\n'; exit 0; }
+exit 1
+EOF
+chmod +x "$NPM_AMBIG_A/ambiguous-tool/platform-a" "$NPM_AMBIG_B/ambiguous-tool/platform-b" "$NPM_AMBIG_BIN/npm"
+printf '[{"name":"ambiguous-tool","manager":"npm-g","source":"ambiguous-tool"}]' > "$TMP/m-npm-ambig.json"
+out_npm_ambig=$(PATH="$NPM_AMBIG_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_AMBIG_A:$NPM_AMBIG_B" CCTOOL_MANIFEST="$TMP/m-npm-ambig.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_npm_ambig" <<'PY' || fail "npm ambiguous executable 斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+assert packet['updates'] == [], packet['updates']
+assert len(packet['errors']) == 1 and 'ambiguous active installs' in packet['errors'][0]['reason'], packet['errors']
+print('✅ 測 4d npm ambiguous executable：多 install 各有 active bin 時明確報錯')
 PY
 
 UV_HOME="$TMP/uv-home"

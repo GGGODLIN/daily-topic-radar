@@ -168,14 +168,27 @@ def npm_g_installed():
                 read_pkg(path, root)
     out = {}
     for name, installs in found.items():
-        active = next((
-            install for install in installs
-            if any(
-                shutil.which(bin_name)
-                and os.path.realpath(shutil.which(bin_name)) == os.path.realpath(os.path.join(install["package_dir"], target))
-                for bin_name, target in install["bins"].items()
-            )
-        ), None)
+        active_candidates = []
+        seen_candidates = set()
+        for install in installs:
+            package_root = os.path.realpath(install["package_dir"]) + os.sep
+            for bin_name, target in install["bins"].items():
+                executable = shutil.which(bin_name)
+                if not executable:
+                    continue
+                executable_real = os.path.realpath(executable)
+                target_real = os.path.realpath(os.path.join(install["package_dir"], target))
+                if executable_real == target_real or executable_real.startswith(package_root):
+                    key = (install["root"], install["package_dir"])
+                    if key not in seen_candidates:
+                        active_candidates.append(install)
+                        seen_candidates.add(key)
+                    break
+        active = active_candidates[0] if len(active_candidates) == 1 else None
+        active_error = None
+        if len(active_candidates) > 1:
+            choices = ", ".join(f"{item['version']} @ {item['root']}" for item in active_candidates)
+            active_error = f"ambiguous active installs: {choices}"
         others = sorted(
             ({"version": install["version"], "root": install["root"]} for install in installs if install is not active),
             key=lambda item: (_vkey(item["version"]), item["root"]),
@@ -184,6 +197,7 @@ def npm_g_installed():
         out[name] = {
             "active": {"version": active["version"], "root": active["root"]} if active else None,
             "others": others,
+            "error": active_error,
         }
     return out
 
@@ -369,6 +383,8 @@ for e in manifest:
             info = npm.get(src or name)
             if not info:
                 errors.append({"name": name, "reason": "not npm-g-installed"}); continue
+            if info.get("error"):
+                errors.append({"name": name, "reason": info["error"]}); continue
             active = info.get("active")
             if not active:
                 installed = ", ".join(f"{item['version']} @ {item['root']}" for item in info.get("others", []))
