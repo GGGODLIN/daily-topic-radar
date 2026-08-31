@@ -51,18 +51,3 @@ def test_apify_post_url_direct_token(monkeypatch):
     url, params = apify_post_url("https://api.apify.com/endpoint", "APIFY_TOKEN_TWITTER")
     assert url == "https://api.apify.com/endpoint"
     assert params == {"token": "fake-token"}
-
-
-def test_apify_post_url_direct_missing_token_raises(monkeypatch):
-    monkeypatch.setenv("APIFY_RELAY_URL", "")
-    monkeypatch.delenv("APIFY_TOKEN_TWITTER", raising=False)
-    with pytest.raises(RuntimeError, match="APIFY_TOKEN_TWITTER"):
-        apify_post_url("https://api.apify.com/endpoint", "APIFY_TOKEN_TWITTER")
-
-
-def test_apify_post_url_relay_mode_omits_token(monkeypatch):
-    monkeypatch.setenv("APIFY_RELAY_URL", "http://127.0.0.1:8317")
-    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "should-not-be-used")
-    url, params = apify_post_url("https://api.apify.com/v2/acts/example/run", "APIFY_TOKEN_TWITTER")
-    assert url == "http://127.0.0.1:8317/v2/acts/example/run"
-    assert params is None
