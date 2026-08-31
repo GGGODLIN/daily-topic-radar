@@ -42,6 +42,7 @@ async def test_fetch_threads_apify_parses_posts(httpx_mock, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_threads_apify_no_token_raises(monkeypatch):
+    monkeypatch.setenv("APIFY_RELAY_URL", "")
     monkeypatch.delenv("APIFY_TOKEN_THREADS", raising=False)
     cfg = SourceConfig(
         id="threads_keyword",

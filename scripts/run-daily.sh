@@ -23,7 +23,8 @@ LOG_FILE="logs/cron-$DATE.log"
   fi
 
   export APIFY_RELAY_URL="${APIFY_RELAY_URL:-http://127.0.0.1:8788}"
-  unset APIFY_TOKEN_TWITTER APIFY_TOKEN_THREADS
+  export APIFY_TOKEN_TWITTER=""
+  export APIFY_TOKEN_THREADS=""
 
   # ── VPN_PRECHECK_START ─────────────────────────────────────────────────────
   # 出口雲端 ASN 偵測（2026-08-05 事故：WireGuard 開著、出口 AWS Tokyo AS16509，

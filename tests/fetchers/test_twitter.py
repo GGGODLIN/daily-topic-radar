@@ -131,6 +131,7 @@ async def test_fetch_twitter_empty_dataset_returns_empty(httpx_mock, monkeypatch
 
 @pytest.mark.asyncio
 async def test_fetch_twitter_no_token_raises(monkeypatch):
+    monkeypatch.setenv("APIFY_RELAY_URL", "")
     monkeypatch.delenv("APIFY_TOKEN_TWITTER", raising=False)
     cfg = SourceConfig(
         id="twitter_tier1",
