@@ -6,7 +6,6 @@ Why Apify (vs twitterapi.io / scrape) — see BACKLOG.md and design spec:
 - Pay-Per Result, no rate limits, no personal-account ban risk
 - Actor maintainer keeps anti-scrape working (no DevX maintenance)
 """
-import os
 from datetime import datetime, timedelta
 
 import httpx
@@ -14,6 +13,7 @@ import httpx
 from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
+from social_info.fetchers.relay import apify_post_url
 from social_info.url_utils import canonical_url
 
 ACTOR_ID = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest"
@@ -37,9 +37,7 @@ def _parse_tweet_time(s: str) -> datetime | None:
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
-    token = os.environ.get("APIFY_TOKEN_TWITTER")
-    if not token:
-        raise RuntimeError("APIFY_TOKEN_TWITTER env var not set")
+    url, params = apify_post_url(API_URL, "APIFY_TOKEN_TWITTER")
 
     handles = source.params.get("handles", [])
     per_handle_limit = source.params.get("per_handle_limit", 10)
@@ -55,8 +53,8 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     }
 
     resp = await http.post(
-        API_URL,
-        params={"token": token},
+        url,
+        params=params,
         json=payload,
         timeout=180.0,
     )

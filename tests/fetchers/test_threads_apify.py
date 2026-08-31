@@ -68,3 +68,66 @@ async def test_fetch_threads_apify_empty_queries_short_circuits(monkeypatch):
     async with httpx.AsyncClient() as client:
         items = await fetch(cfg, client)
     assert items == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_threads_apify_relay_mode_omits_token(httpx_mock, monkeypatch):
+    monkeypatch.setenv("APIFY_RELAY_URL", "http://127.0.0.1:8317")
+    monkeypatch.delenv("APIFY_TOKEN_THREADS", raising=False)
+    fixture = json.loads(Path("tests/fixtures/apify_threads_response.json").read_text())
+    httpx_mock.add_response(
+        url=re.compile(r"http://127\.0\.0\.1:8317"),
+        json=fixture,
+        is_reusable=True,
+    )
+
+    cfg = SourceConfig(
+        id="threads_keyword",
+        type="threads_apify",
+        enabled=True,
+        tier=1,
+        params={"queries": ["Claude", "Cursor"], "per_query_limit": 2},
+    )
+
+    async with httpx.AsyncClient() as client:
+        items = await fetch(cfg, client)
+
+    req = httpx_mock.get_requests()[0]
+    assert str(req.url) == (
+        "http://127.0.0.1:8317/v2/acts/D15iJFBNZ9wgeWAhw/"
+        "run-sync-get-dataset-items"
+    )
+    assert "token" not in req.url.params
+    assert req.headers.get("Authorization") is None
+    payload = json.loads(req.content)
+    assert payload["keywords"] == ["Claude", "Cursor"]
+    assert payload["maxItemsPerKeyword"] == 2
+    assert len(items) == 2
+    assert items[0].source == "threads"
+    assert items[0].source_handle == "@wright_mode"
+
+
+@pytest.mark.asyncio
+async def test_fetch_threads_apify_invalid_relay_url_fail_closed(httpx_mock, monkeypatch):
+    monkeypatch.setenv("APIFY_RELAY_URL", "http://127.0.0.1:8317/secret")
+    monkeypatch.delenv("APIFY_TOKEN_THREADS", raising=False)
+    httpx_mock.add_response(
+        url=re.compile(r"http://127\.0\.0\.1:8317"),
+        json=[],
+        is_reusable=True,
+        is_optional=True,
+    )
+
+    cfg = SourceConfig(
+        id="threads_keyword",
+        type="threads_apify",
+        enabled=True,
+        tier=1,
+        params={"queries": ["Claude"]},
+    )
+
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(RuntimeError, match="APIFY_RELAY_URL"):
+            await fetch(cfg, client)
+
+    assert httpx_mock.get_requests() == []

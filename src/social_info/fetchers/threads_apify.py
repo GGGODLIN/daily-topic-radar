@@ -3,13 +3,12 @@
 Multi-keyword single invocation, $8/1000 results pay-per-result, built-in dedup.
 Replaces the Meta Threads API path (Dev-mode keyword_search dead-end).
 """
-import os
-
 import httpx
 
 from social_info._time import utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
+from social_info.fetchers.relay import apify_post_url
 from social_info.url_utils import canonical_url
 
 ACTOR_ID = "D15iJFBNZ9wgeWAhw"
@@ -17,9 +16,7 @@ API_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items"
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
-    token = os.environ.get("APIFY_TOKEN_THREADS")
-    if not token:
-        raise RuntimeError("APIFY_TOKEN_THREADS env var not set")
+    url, params = apify_post_url(API_URL, "APIFY_TOKEN_THREADS")
 
     keywords = source.params.get("queries", [])
     per_query_limit = source.params.get("per_query_limit", 3)
@@ -36,8 +33,8 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     }
 
     resp = await http.post(
-        API_URL,
-        params={"token": token},
+        url,
+        params=params,
         json=payload,
         timeout=180.0,
     )

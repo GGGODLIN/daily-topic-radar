@@ -142,3 +142,41 @@ async def test_fetch_twitter_no_token_raises(monkeypatch):
     async with httpx.AsyncClient() as client:
         with pytest.raises(RuntimeError, match="APIFY_TOKEN_TWITTER"):
             await fetch(cfg, client)
+
+
+@pytest.mark.asyncio
+async def test_fetch_twitter_relay_mode_omits_token(httpx_mock, monkeypatch):
+    monkeypatch.setenv("APIFY_RELAY_URL", "http://127.0.0.1:8317")
+    monkeypatch.delenv("APIFY_TOKEN_TWITTER", raising=False)
+    fixture = json.loads(Path("tests/fixtures/apify_tweet_scraper_response.json").read_text())
+    httpx_mock.add_response(
+        url=re.compile(r"http://127\.0\.0\.1:8317"),
+        json=fixture,
+        is_reusable=True,
+    )
+
+    cfg = SourceConfig(
+        id="twitter_tier1",
+        type="twitter",
+        enabled=True,
+        tier=1,
+        params={"handles": ["sama"], "per_handle_limit": 10, "time_window_hours": 24},
+    )
+
+    async with httpx.AsyncClient() as client:
+        items = await fetch(cfg, client)
+
+    req = httpx_mock.get_requests()[0]
+    assert str(req.url) == (
+        "http://127.0.0.1:8317/v2/acts/"
+        "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest/"
+        "run-sync-get-dataset-items"
+    )
+    assert "token" not in req.url.params
+    assert req.headers.get("Authorization") is None
+    payload = json.loads(req.content)
+    assert payload["searchTerms"][0].startswith("from:sama since:")
+    assert payload["maxItems"] == 20
+    assert len(items) == 1
+    assert items[0].source == "x"
+    assert items[0].engagement["likes"] == 734
