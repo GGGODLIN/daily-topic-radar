@@ -40,6 +40,11 @@ if [ -n "$DATE" ] && [ -f "$MANIFEST" ]; then
   exit 0
 fi
 
+SCAN_MANIFEST="$TMP/scan-manifest"
+if [ ! -d "$PROJECTS_DIR" ] || ! find "$PROJECTS_DIR" -maxdepth 2 -type f -name '*.jsonl' -print0 > "$SCAN_MANIFEST"; then
+  exit 1
+fi
+
 if [ -n "$DATE" ] && [ -f "$LEDGER" ]; then
   jq -Rr --arg date "$DATE" 'fromjson? | select(type == "object" and .date == $date and (.session | type == "string") and (.invoke | type == "string")) | @base64' "$LEDGER" > "$PINNED"
   pinned_count="$(wc -l < "$PINNED" | tr -d ' ')"
@@ -65,10 +70,11 @@ if [ -n "$DATE" ] && [ -f "$LEDGER" ]; then
         case "$candidate" in
           */subagents/*|*widget-log*) continue ;;
         esac
+        [ "$(basename "$candidate")" = "$session.jsonl" ] || continue
         if [ -z "$path" ] || [[ "$candidate" < "$path" ]]; then
           path="$candidate"
         fi
-      done < <(find "$PROJECTS_DIR" -maxdepth 2 -type f -name "$session.jsonl" -print0 2>/dev/null)
+      done < "$SCAN_MANIFEST"
       [ -n "$path" ] || exit 1
       jq -cn --arg session "$session" --arg invoke "$invoke" --arg path "$path" '{session: $session, invoke: $invoke, path: $path}' >> "$pinned_samples"
     done < "$PINNED"
@@ -96,19 +102,23 @@ while IFS= read -r -d '' file; do
   case "$file" in
     */subagents/*|*widget-log*) continue ;;
   esac
+  invoke_file="$TMP/invokes"
+  if ! jq -r 'select(.message.content != null) as $row | $row.message.content | if type == "array" then .[] else empty end | select(.type == "tool_use" and .name == "Skill" and (.input.skill // "") == "research-before-answer") | $row.timestamp // empty' "$file" > "$invoke_file"; then
+    exit 1
+  fi
   invoke_timestamp=""
   while IFS= read -r timestamp; do
     [[ "$timestamp" < "$CUTOFF" ]] && continue
     [[ "$timestamp" > "$END" ]] && break
     invoke_timestamp="$timestamp"
     break
-  done < <(jq -r 'select(.message.content != null) as $row | $row.message.content | if type == "array" then .[] else empty end | select(.type == "tool_use" and .name == "Skill" and (.input.skill // "") == "research-before-answer") | $row.timestamp // empty' "$file" 2>/dev/null)
+  done < "$invoke_file"
   [ -n "$invoke_timestamp" ] || continue
   session="$(basename "$file" .jsonl)"
   if ! grep -qxF "$session" "$REVIEWED"; then
     jq -cn --arg session "$session" --arg invoke "$invoke_timestamp" --arg path "$file" '{session: $session, invoke: $invoke, path: $path}' >> "$CANDIDATES"
   fi
-done < <(find "$PROJECTS_DIR" -maxdepth 2 -type f -name '*.jsonl' -print0 2>/dev/null)
+done < "$SCAN_MANIFEST"
 
 candidates_json="$(jq -sc 'sort_by(.session, .path) | unique_by(.session)' "$CANDIDATES")"
 count="$(jq 'length' <<< "$candidates_json")"

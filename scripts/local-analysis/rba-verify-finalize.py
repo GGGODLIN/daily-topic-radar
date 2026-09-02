@@ -18,6 +18,13 @@ def decode_packet(value):
   return json.loads(base64.b64decode(value).decode("utf-8"))
 
 
+def decode_json_packet(value, label):
+  try:
+    return json.loads(value)
+  except (TypeError, json.JSONDecodeError) as error:
+    raise ValueError(f"invalid {label} JSON") from error
+
+
 def extract_packets_from_transcripts(transcripts_dir):
   primary = None
   verifier = None
@@ -334,6 +341,8 @@ def replace_file(path, content):
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--date", required=True)
+  parser.add_argument("--primary-json")
+  parser.add_argument("--verifier-json")
   parser.add_argument("--primary-b64")
   parser.add_argument("--verifier-b64")
   parser.add_argument("--packets-from-transcripts")
@@ -343,19 +352,27 @@ def main():
   parser.add_argument("--projects", default=str(Path.home() / ".claude/projects"))
   options = parser.parse_args()
 
-  if options.packets_from_transcripts:
-    require(not options.primary_b64 and not options.verifier_b64, "--packets-from-transcripts excludes --primary-b64/--verifier-b64")
-    primary, verifier = extract_packets_from_transcripts(options.packets_from_transcripts)
-  else:
-    require(bool(options.primary_b64) and bool(options.verifier_b64), "need --primary-b64 and --verifier-b64, or --packets-from-transcripts")
+  json_mode = options.primary_json is not None or options.verifier_json is not None
+  b64_mode = options.primary_b64 is not None or options.verifier_b64 is not None
+  transcript_mode = options.packets_from_transcripts is not None
+  require(sum((json_mode, b64_mode, transcript_mode)) == 1, "choose exactly one packet input mode")
+  if json_mode:
+    require(options.primary_json is not None and options.verifier_json is not None, "--primary-json and --verifier-json are required together")
+    primary = decode_json_packet(options.primary_json, "primary")
+    verifier = decode_json_packet(options.verifier_json, "verifier")
+  elif b64_mode:
+    require(bool(options.primary_b64) and bool(options.verifier_b64), "--primary-b64 and --verifier-b64 are required together")
     primary = decode_packet(options.primary_b64)
     verifier = decode_packet(options.verifier_b64)
+  else:
+    primary, verifier = extract_packets_from_transcripts(options.packets_from_transcripts)
   validate_packets(primary, verifier)
   ledger_path = Path(options.ledger)
   report_path = Path(options.report)
   manifest_path = report_path.with_suffix(".json")
-  trusted = run_sampler(Path(options.sampler), Path(options.projects), ledger_path, manifest_path, options.date)
-  validate_sampler_binding(primary, trusted)
+  if not json_mode:
+    trusted = run_sampler(Path(options.sampler), Path(options.projects), ledger_path, manifest_path, options.date)
+    validate_sampler_binding(primary, trusted)
   candidate_samples = merge_verifier(primary["samples"], verifier)
   lock_path = Path(f"{ledger_path}.lock")
   lock_path.parent.mkdir(parents=True, exist_ok=True)

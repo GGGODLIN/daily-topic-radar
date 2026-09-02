@@ -86,6 +86,39 @@ partial_rc=$?
 set -e
 test "$partial_rc" -ne 0
 
+MISSING_PROJECTS="$TMP/missing-projects"
+set +e
+RBA_PROJECTS_DIR="$MISSING_PROJECTS" RBA_LEDGER="$TMP/missing-ledger.jsonl" RBA_DATE="2026-08-05" RBA_END="2026-08-05T23:59:59.999Z" "$HELPER" >/dev/null 2>&1
+missing_projects_rc=$?
+set -e
+test "$missing_projects_rc" -ne 0
+
+MALFORMED_PROJECTS="$TMP/malformed-projects"
+mkdir -p "$MALFORMED_PROJECTS/malformed"
+printf '%s\n' '{not-json' > "$MALFORMED_PROJECTS/malformed/bad.jsonl"
+set +e
+RBA_PROJECTS_DIR="$MALFORMED_PROJECTS" RBA_LEDGER="$TMP/malformed-ledger.jsonl" RBA_DATE="2026-08-05" RBA_END="2026-08-05T23:59:59.999Z" "$HELPER" >/dev/null 2>&1
+malformed_transcript_rc=$?
+set -e
+test "$malformed_transcript_rc" -ne 0
+
+SINGLE_SCAN_BIN="$TMP/single-scan-bin"
+SINGLE_SCAN_COUNTER="$TMP/single-scan-counter"
+mkdir -p "$SINGLE_SCAN_BIN"
+cat > "$SINGLE_SCAN_BIN/find" <<'SH'
+#!/bin/bash
+count=0
+[ ! -f "$RBA_FIND_COUNTER" ] || count="$(cat "$RBA_FIND_COUNTER")"
+count=$((count + 1))
+printf '%s' "$count" > "$RBA_FIND_COUNTER"
+[ "$count" -eq 1 ] || exit 73
+exec /usr/bin/find "$@"
+SH
+chmod +x "$SINGLE_SCAN_BIN/find"
+single_scan_json="$(RBA_FIND_COUNTER="$SINGLE_SCAN_COUNTER" PATH="$SINGLE_SCAN_BIN:$PATH" RBA_PROJECTS_DIR="$FIXED_PROJECTS" RBA_LEDGER="$TMP/single-scan-ledger.jsonl" RBA_CUTOFF="2026-07-22T00:00:00.000Z" "$HELPER")"
+test "$(cat "$SINGLE_SCAN_COUNTER")" = "1"
+test "$(jq -r '.eligible' <<< "$single_scan_json")" = "7"
+
 prompt="$(bash "$WRAPPER")"
 grep -F 'rba-verify-sample.sh' <<< "$prompt" >/dev/null
 grep -F '每個 session 只評 `.samples[].invoke` timestamp 指定的 research-before-answer invoke' <<< "$prompt" >/dev/null
@@ -387,9 +420,53 @@ if python3 "$FINALIZER" --sampler "$HELPER" --projects "$TRANSCRIPTS_PROJECTS" -
   exit 1
 fi
 
+RAW_CASE="$TMP/raw-json-case"
+mkdir -p "$RAW_CASE"
+RAW_PROJECTS="$RAW_CASE/projects"
+PROJECTS="$RAW_PROJECTS"
+add_session raw a1000000-0000-0000-0000-000000000000 research-before-answer 2026-08-01T12:00:00.000Z
+add_session raw b2000000-0000-0000-0000-000000000000 research-before-answer 2026-08-02T12:00:00.000Z
+add_session raw c3000000-0000-0000-0000-000000000000 research-before-answer 2026-08-03T12:00:00.000Z
+RAW_PRIMARY="$RAW_CASE/primary.json"
+RAW_VERIFIER="$RAW_CASE/verifier.json"
+jq -cn \
+  --arg p1 "$RAW_PROJECTS/raw/a1000000-0000-0000-0000-000000000000.jsonl" \
+  --arg p2 "$RAW_PROJECTS/raw/b2000000-0000-0000-0000-000000000000.jsonl" \
+  --arg p3 "$RAW_PROJECTS/raw/c3000000-0000-0000-0000-000000000000.jsonl" \
+  '{eligible:3,samples:[
+    {session:"a1000000-0000-0000-0000-000000000000",invoke:"2026-08-01T12:00:00.000Z",path:$p1,topic:"one",claims:[],R1:"PASS",R2:"PASS",R3:"PASS",note:""},
+    {session:"b2000000-0000-0000-0000-000000000000",invoke:"2026-08-02T12:00:00.000Z",path:$p2,topic:"two",claims:[],R1:"PASS",R2:"PASS",R3:"PASS",note:""},
+    {session:"c3000000-0000-0000-0000-000000000000",invoke:"2026-08-03T12:00:00.000Z",path:$p3,topic:"three",claims:[],R1:"PASS",R2:"PASS",R3:"PASS",note:""}
+  ]}' > "$RAW_PRIMARY"
+printf '%s' '{"missed_claims":[],"false_greens":[]}' > "$RAW_VERIFIER"
+add_session raw d4000000-0000-0000-0000-000000000000 research-before-answer 2026-08-04T10:00:00.000Z
+python3 "$FINALIZER" --date 2026-08-05 --primary-json "$(<"$RAW_PRIMARY")" --verifier-json "$(<"$RAW_VERIFIER")" --ledger "$RAW_CASE/ledger.jsonl" --report "$RAW_CASE/report.md" >/dev/null
+test "$(jq -s '[.[] | select(.date == "2026-08-05")] | length' "$RAW_CASE/ledger.jsonl")" = "3"
+if grep -F 'd4000000-0000-0000-0000-000000000000' "$RAW_CASE/ledger.jsonl" >/dev/null; then
+  printf 'raw finalizer must not resample the changed corpus\n' >&2
+  exit 1
+fi
+
+RAW_TAMPER_CASE="$RAW_CASE/tamper"
+mkdir -p "$RAW_TAMPER_CASE"
+jq '.samples[0].topic = null' "$RAW_PRIMARY" > "$RAW_TAMPER_CASE/primary.json"
+set +e
+python3 "$FINALIZER" --date 2026-08-05 --primary-json "$(<"$RAW_TAMPER_CASE/primary.json")" --verifier-json "$(<"$RAW_VERIFIER")" --ledger "$RAW_TAMPER_CASE/ledger.jsonl" --report "$RAW_TAMPER_CASE/report.md" >/dev/null 2>&1
+raw_tamper_rc=$?
+set -e
+test "$raw_tamper_rc" -ne 0
+test ! -e "$RAW_TAMPER_CASE/ledger.jsonl"
+test ! -e "$RAW_TAMPER_CASE/ledger.jsonl.lock"
+test ! -e "$RAW_TAMPER_CASE/report.md"
+test ! -e "$RAW_TAMPER_CASE/report.json"
+
 grep -F "{ key: 'rba-verify', freq: 'weekly-tue', kind: 'llm', src: \`\${W}/rba-verify-weekly.sh\`, model: 'opus', effort: 'medium' }," "$WORKFLOW" >/dev/null
-grep -F -- '--packets-from-transcripts' "$WORKFLOW" >/dev/null
-grep -F -- '--audit-from-transcripts' "$WORKFLOW" >/dev/null
+if grep -F 'max(c,key=os.path.getmtime)' "$WORKFLOW" >/dev/null || grep -F 'WF_DIR' "$WORKFLOW" >/dev/null || grep -F 'rba-verify-snapshot' "$WORKFLOW" >/dev/null || grep -F -- '--packets-from-transcripts' "$WORKFLOW" >/dev/null || grep -F -- '--sampler' "$WORKFLOW" >/dev/null; then
+  printf 'production workflow must not discover transcripts, snapshots, or resample\n' >&2
+  exit 1
+fi
+grep -F -- '--primary-json' "$WORKFLOW" >/dev/null
+grep -F -- '--verifier-json' "$WORKFLOW" >/dev/null
 grep -F 'const channelAgentOptions = (c) =>' "$WORKFLOW" >/dev/null
 grep -F '...channelAgentOptions(c),' "$WORKFLOW" >/dev/null
 grep -F "c.channel === 'rba-verify'" "$WORKFLOW" >/dev/null
