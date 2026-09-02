@@ -40,7 +40,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `reports/local-analysis/` 是 [`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js) workflow 的 proposal markdown 輸出，user review 完手動 apply。`.gitignore` 已排除（個人 path + 分析結果不 commit）。
 
-- **Channel 清單 / 頻率 / 沿革以 workflow 檔內 `CHANNELS` 陣列 + 檔頂註解為 SSOT**（2026-07-25 時點 22 個 channel = LLM 對內整理 13 + shell scan 9、daily 14 / weekly-tue 8；數字有疑義時以 `CHANNELS` 陣列現查為準、不以本行為據），本檔不列表、不重複維護
+- **Channel 清單 / 頻率 / 沿革以 workflow 檔內 `CHANNELS` 陣列 + 檔頂註解為 SSOT**（要數量或頻率就現查 `CHANNELS`），本檔不列表、不重複維護
 - 觸發：「今日本機分析」等語句走 hook 注入 workflow；備援 slash command `/daily-local`
 - **2026-07-30 三分架構（改任何一層之前先確認你動的是哪一層）**：
   | 層 | 誰做 | 職責 |
@@ -77,7 +77,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 - 使用者說「今日話題分析」/「daily 分析」/「跑日報」/「產 digest」→ **跑 stage-2 digest workflow**（2026-05-26 起）：pre-flight（KNOWN_ISSUES.md + WATCH.md + PROBES.md stage-2 fetch）→ 主軸抽取 →（視版本）URL fact-check → 吐 JSON 給 main session 接寫 HTML。**不掃 `reports/local-analysis/`、digest「系統當天動態」段只寫 digest pipeline 自身（不寫本機 channel 跑了沒 / 失敗沒 / drift proposal）**。
 - **版本分派的唯一來源是 [`~/.claude/hooks/daily-topic-analysis-trigger.sh`](file:///Users/linhancheng/.claude/hooks/daily-topic-analysis-trigger.sh) 的 `if / elif` case 表**，本檔刻意不列版本清單、不寫檔名、不寫 lens 數——列舉式維護必然落後（2026-08-19 之前本檔寫「兩個版本」，磁碟上已經有三支，且整份 0 次提到 vendor 版）。分派由 hook 自動判斷、main 不用選；每個版本的 lens 組成、覆蓋缺口、audit 續輪規則都由 hook 的 `lens_desc` / `audit_policy` 注入。要查現有哪幾支就 `ls ~/.claude/workflows/daily-topic-analysis*.js`。
-- **版本沿革（只記為什麼，不記清單）**：08-07 起試跑 lean 變體，原砍 A/B/C/D 四個推論層 lens；08-10 收編為預設當天第一跑實測到代價（只跑 F+E 的第 1 輪抓 6 material，main 補派兩輪覆蓋 A/B/C/D 又抓出 15 material，全是 F+E 結構上看不到的類型），同日使用者拍板把命中率最高的 **A、D 加回**。2026-08-19 新增極簡版（省錢＋額度緊時仍要跑得完）：砍 FactCheck / Verify / external-feeds、matt_videos 條件派工、audit 減為 A+D 兩軸並降 sonnet、只跑 1 輪不補派——8 agent、估 $14.45 一跑（預設版 30.3 agent / $30.93）。設計與量測依據見 [docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md](/docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md)。
+- **為什麼有多版**：lens 砍到只剩 F+E 時實測漏抓（同一天補派兩輪才補齊），所以預設版保留 A、D；極簡版存在的理由是額度緊時仍要跑得完。成本與 agent 數現查 workflow 檔頭。設計與量測依據見 [docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md](/docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md)。
 - 使用者說「今日本機分析」/「跑本機分析」/「跑一下本機分析」/「每日本機分析」→ 走 hook 觸發 [`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js) workflow，按 weekday 篩 channel 後 fan-out + 合成 digest 給使用者。
 - 兩條都是「daily 分析」家族、都住這個 repo，但 digest session 不代管本機那條。
 
