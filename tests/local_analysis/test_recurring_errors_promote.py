@@ -150,6 +150,21 @@ def test_other_channel_source_key_does_not_break_recurring_selection(tmp_path):
   assert packet["candidate"]["source_key"] == "recurring-errors:shell-eval-syntax"
 
 
+def test_observed_2026_09_01_heading_is_accepted(tmp_path):
+  report = tmp_path / "2026-09-01-recurring-errors.md"
+  report.write_text(
+    "## 🔁 重複錯誤 pattern（按 escalation 優先，再按目前簽名次數）\n\n"
+    "### 🚨 observed pattern（第 2 次）\n"
+    "- 代表簽名：`stable observed signature`\n"
+  )
+  result = run_selector(tmp_path, [], report=report, date="2026-09-01")
+
+  assert result.returncode == 0, result.stderr
+  packet = json.loads(result.stdout)
+  assert packet["eligible_count"] == 1
+  assert packet["candidate"]["pattern"] == "observed pattern"
+
+
 def test_similar_or_fenced_section_does_not_count_as_the_real_section(tmp_path):
   report = tmp_path / "2026-08-11-recurring-errors.md"
   report.write_text(

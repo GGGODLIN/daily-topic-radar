@@ -11,7 +11,7 @@ from pathlib import Path
 DIR = Path(__file__).resolve().parent
 DEFAULT_LEDGER = DIR.parent.parent / "reports" / "local-analysis" / "pending-actions.jsonl"
 DEFAULT_ALIASES = DIR / "recurring-errors-pattern-aliases.json"
-SECTION_RE = re.compile(r"^## 🔁 重複錯誤 pattern(?:（按次數降冪(?:，escalation 優先排前)?）)?$")
+SECTION_RE = re.compile(r"^## 🔁 重複錯誤 pattern(?:（按次數降冪(?:，escalation 優先排前)?）|（按 escalation 優先，再按目前簽名次數）)?$")
 HEADING_RE = re.compile(r"^### (🚨|⚠️) (.+)$")
 STAT_SUFFIX_RE = re.compile(r"（(?=[^）]*(?:第|延續|本輪|sessions|最近))[^）]*）$")
 SIGNATURE_RE = re.compile(r"`([^`\n]+)`")
