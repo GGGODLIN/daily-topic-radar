@@ -26,8 +26,9 @@ assert by_name['steipete/tap/peekaboo'] == {
 assert {'go', 'yarn'} <= ignore
 assert not {'chungchihhan/tap/tracce', 'serena-agent'} & by_name.keys()
 assert 'agent-browser' in by_name
+assert by_name['ollama'] == {'name': 'ollama', 'manager': 'brew', 'source': 'ollama'}
 assert not {'dev-browser', 'yarn'} & by_name.keys()
-print('✅ 測 0 production 名單：go 忽略、Peekaboo 追蹤、dev-browser/yarn 非 active npm-g owner 已移除、agent-browser 保留')
+print('✅ 測 0 production 名單：go 忽略、Peekaboo／Ollama 追蹤、dev-browser/yarn 非 active npm-g owner 已移除、agent-browser 保留')
 PY
 
 # fixture：白名單追 sem（本機 cargo-git 有）、黑名單忽略 cargo-bundle（本機有）
