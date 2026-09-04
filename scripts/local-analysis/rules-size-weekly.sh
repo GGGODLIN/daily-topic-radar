@@ -1,4 +1,7 @@
 #!/bin/bash
+# 跨檔字串依賴：下方報告的「🎯 建議處理」heading 必須與
+# ~/.claude/hooks/daily-local-analysis-trigger.sh 第 12 條的排檔條件逐字一致。
+# 兩邊任一改字，digest 的超標提醒會靜默失效（代價只是提醒不出現，故未配測試）。
 cd /
 set -euo pipefail
 
@@ -76,9 +79,11 @@ TOTAL_CAP="${RULES_SIZE_TOTAL_CAP:-46080}"     # 45KB
         echo "$TOTAL_LINE"
         echo ""
       fi
-      echo "## 動作"
+      echo "## 🎯 建議處理"
       echo ""
-      echo "超標檔案在下次想加新段前先瘦身：刪過時段落、或下放 memory cluster（詳細規則與歷史脈絡見 ~/Desktop/projects/harness-audit-2026-07-03.md P-len 段）。門檻的目的是強迫「先刪再加」、不是禁止成長——確有必要成長時調 cap 並在本 wrapper 檔頭留一行原因。"
+      echo "找出該砍哪幾段、產草稿逐段拍板：\`/rules-slim\`（手動觸發，排檔不會自動跑它）"
+      echo ""
+      echo "瘦身方向：刪過時段落、下放 memory cluster、或砍掉已有 hook 覆蓋的散文（詳細規則與歷史脈絡見 ~/Desktop/projects/harness-audit-2026-07-03.md P-len 段）。門檻的目的是強迫「先刪再加」、不是禁止成長——確有必要成長時調 cap 並在本 wrapper 檔頭留一行原因。"
     } > "$OUT"
     echo "violations=$HIT_COUNT total=$TOTAL → report written"
   fi
