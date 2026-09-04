@@ -359,6 +359,13 @@ def is_active_trial_residue(path):
     return False
 
 
+def is_archived_trial_residue(path):
+    parts = path.parts
+    if parts[-3:] != ("snapshot", "before", "dirs"):
+        return False
+    return any(parts[index:index + 2] == ("trials", "archive") for index in range(len(parts) - 1))
+
+
 def is_legacy_directory_target(path):
     if not path.is_dir():
         return False
@@ -528,7 +535,7 @@ def main():
             continue
         if entry.get("kind") == "residue" and any(item.get("metric") == "legacy_dirs_present" for item in entry.get("threshold", [])) and not is_legacy_directory_target(path):
             continue
-        if entry.get("kind") == "residue" and is_active_trial_residue(path):
+        if entry.get("kind") == "residue" and (is_active_trial_residue(path) or is_archived_trial_residue(path)):
             continue
         identity = logical_path(path, root) if has_magic(entry["path"]) else entry["path"]
         index_path = index_path_for(entry, root) if entry.get("kind") == "append" else None

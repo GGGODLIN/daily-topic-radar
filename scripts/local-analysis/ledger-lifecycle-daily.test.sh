@@ -518,8 +518,11 @@ grep -F '已故障' "$MB_OUT" >/dev/null
 printf '%s\n' 'ledger-lifecycle daily hard failure units slice: PASS'
 
 TRIAL_ROOT="$TMP/trial-home"
-TRIAL_DIR="$TRIAL_ROOT/Desktop/projects/.claude/trials/archive/closed/snapshot/before/dirs"
-mkdir -p "$TRIAL_DIR/old-copy"
+ARCHIVED_TRIAL_DIR="$TRIAL_ROOT/Desktop/projects/.claude/trials/archive/closed/snapshot/before/dirs"
+ARCHIVED_OTHER_DIR="$TRIAL_ROOT/Desktop/projects/.claude/trials/archive/closed/other-residue"
+TRIAL_DIR="$TRIAL_ROOT/Desktop/projects/.claude/trials/closed/snapshot/before/dirs"
+mkdir -p "$ARCHIVED_TRIAL_DIR/old-copy" "$ARCHIVED_OTHER_DIR" "$TRIAL_DIR/old-copy"
+printf '%s\n' 'archived file' > "$ARCHIVED_TRIAL_DIR/old-copy/file.txt"
 printf '%s\n' 'nested file' > "$TRIAL_DIR/old-copy/file.txt"
 TRIAL_REGISTRY="$TMP/trial-registry.json"
 TRIAL_OUT="$TMP/trial-report.md"
@@ -530,27 +533,40 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(json.dumps({
     "schema_version": 1,
     "scan_roots": ["~/Desktop/work/*", "~/Desktop/projects/*", "~/code/*"],
-    "entries": [{
-        "path": "~/Desktop/projects/.claude/trials/**/snapshot/before/dirs",
-        "kind": "residue",
-        "threshold": [{"metric": "legacy_dirs_present", "unit": "boolean", "operator": "equals", "value": True}],
-        "action": "提醒縮形",
-    }],
+    "entries": [
+        {
+            "path": "~/Desktop/projects/.claude/trials/**/snapshot/before/dirs",
+            "kind": "residue",
+            "threshold": [{"metric": "legacy_dirs_present", "unit": "boolean", "operator": "equals", "value": True}],
+            "action": "提醒縮形",
+        },
+        {
+            "path": "~/Desktop/projects/.claude/trials/archive/**/other-residue",
+            "kind": "residue",
+            "threshold": [{"metric": "exists", "unit": "boolean", "operator": "equals", "value": True}],
+            "action": "提醒其他殘留",
+        },
+    ],
 }, ensure_ascii=False), encoding="utf-8")
 PY
 bash "$SCRIPT" --root "$TRIAL_ROOT" --registry "$TRIAL_REGISTRY" --date 2026-08-23 --out "$TRIAL_OUT"
-grep -F 'closed/snapshot/before/dirs' "$TRIAL_OUT" >/dev/null
+grep -F 'trials/closed/snapshot/before/dirs' "$TRIAL_OUT" >/dev/null
+! grep -F 'trials/archive/closed/snapshot/before/dirs' "$TRIAL_OUT" >/dev/null
+grep -F 'trials/archive/closed/other-residue' "$TRIAL_OUT" >/dev/null
 ! grep -F 'file.txt' "$TRIAL_OUT" >/dev/null
 test "$(grep -c '| legacy_dirs_present |' "$TRIAL_OUT")" = 1
 mkdir -p "$TRIAL_ROOT/Desktop/projects/.claude/trials/active-trial/snapshot/before/dirs/old-copy"
 printf '%s\n' '## active-trial (2026-08-01)' > "$TRIAL_ROOT/Desktop/projects/.claude/trials/active.md"
 bash "$SCRIPT" --root "$TRIAL_ROOT" --registry "$TRIAL_REGISTRY" --date 2026-08-23 --out "$TRIAL_OUT"
-grep -F 'closed' "$TRIAL_OUT" >/dev/null
+grep -F 'trials/closed/snapshot/before/dirs' "$TRIAL_OUT" >/dev/null
+! grep -F 'trials/archive/closed/snapshot/before/dirs' "$TRIAL_OUT" >/dev/null
+grep -F 'trials/archive/closed/other-residue' "$TRIAL_OUT" >/dev/null
 ! grep -F 'active-trial' "$TRIAL_OUT" >/dev/null
-rm -rf "$TRIAL_ROOT/Desktop/projects/.claude/trials/archive/closed/snapshot/before/dirs"
+rm -rf "$TRIAL_DIR"
 bash "$SCRIPT" --root "$TRIAL_ROOT" --registry "$TRIAL_REGISTRY" --date 2026-08-23 --out "$TRIAL_OUT"
-test "$(<"$TRIAL_OUT")" = '__SILENT__'
-printf '%s\n' 'ledger-lifecycle daily residue fallback slice: PASS'
+! grep -F 'trials/archive/closed/snapshot/before/dirs' "$TRIAL_OUT" >/dev/null
+grep -F 'trials/archive/closed/other-residue' "$TRIAL_OUT" >/dev/null
+printf '%s\n' 'ledger-lifecycle daily residue archive slice: PASS'
 
 UNKNOWN_ROOT="$TMP/unknown-metric-home"
 mkdir -p "$UNKNOWN_ROOT"
