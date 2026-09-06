@@ -64,6 +64,11 @@ allowed_diagnostics = {
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/release-notes.md`' is deeper than one level"),
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tech-articles.md`' is deeper than one level"),
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/tickets.md`' is deeper than one level"),
+    ("error", "vendor/sepia/plugin.json", "CC-PL-001", "plugin.json must be located in .claude-plugin/ directory"),
+    ("warning", "vendor/sepia/plugin.json", "CC-PL-004", "Missing or invalid recommended field: version"),
+    ("warning", "vendor/sepia/skills/sepia-hemingway/SKILL.md", "AS-013", "File reference 'references/voices/hemingway.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/voices/`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/voices/registry.md`' is deeper than one level"),
 }
 with open(sys.argv[2], "w") as suppressed:
     for level, file, rule, message in sorted(allowed_diagnostics):
