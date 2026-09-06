@@ -23,6 +23,7 @@ DIR = os.environ["CCTOOL_DIR"]
 JSON_OUT = "--json" in sys.argv[1:]
 MANIFEST = os.environ.get("CCTOOL_MANIFEST") or os.path.join(DIR, "cc-tool-manifest.json")
 IGNORE = os.environ.get("CCTOOL_IGNORE") or os.path.join(DIR, "cc-tool-ignore.txt")
+UPGRADE_NOTES = os.environ.get("CCTOOL_UPGRADE_NOTES") or os.path.expanduser("~/.claude/references/tool-upgrade-notes.json")
 
 def run(args, timeout=20):
     try:
@@ -48,6 +49,13 @@ def load_ignore():
         return set(l.strip() for l in open(IGNORE) if l.strip() and not l.startswith("#"))
     except Exception:
         return set()
+
+def load_upgrade_notes():
+    try:
+        value = json.load(open(UPGRADE_NOTES))
+        return value.get("tools", {}) if value.get("schema_version") == 1 else {}
+    except Exception:
+        return {}
 
 def norm(v):
     return re.sub(r'^v', '', (v or "").strip())
@@ -348,12 +356,16 @@ def pin_check():
 
 manifest = load_manifest()
 ignore = load_ignore()
+upgrade_notes = load_upgrade_notes()
 cargo, brew, npm, uv, mcpnpx = cargo_git_installed(), brew_installed(), npm_g_installed(), uv_installed(), mcp_npx_installed()
 updates, errors = [], []
 
 def add_update(name, mgr, cur, latest, src, notes="", **details):
     if latest and norm(latest) != norm(cur):
         update = {"name": name, "manager": mgr, "current": cur, "latest": latest, "source": src, "notes": notes}
+        registered = upgrade_notes.get(name)
+        if isinstance(registered, dict) and registered.get("report_note"):
+            update["upgrade_note"] = registered["report_note"]
         update.update(details)
         updates.append(update)
 
@@ -485,7 +497,8 @@ if updates:
         if u.get("other_installs"):
             values = "、".join(f"{item['version']} @ {item['root']}" for item in u["other_installs"])
             others = f"；其他安裝：{values}"
-        out.append(f"- {u['name']} {u['current']}→{u['latest']}（{u['manager']}{active}{others}）{note}")
+        upgrade_note = f" {u['upgrade_note']}" if u.get("upgrade_note") else ""
+        out.append(f"- {u['name']} {u['current']}→{u['latest']}（{u['manager']}{active}{others}）{upgrade_note}{note}")
 if discovered:
     out.append("### 待分類（新發現，不在白/黑名單；歸白名單追蹤 or 黑名單忽略）")
     for d in discovered:

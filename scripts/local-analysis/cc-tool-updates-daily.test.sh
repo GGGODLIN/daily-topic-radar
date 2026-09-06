@@ -8,6 +8,11 @@ trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 fail(){ echo "❌ FAIL: $1"; exit 1; }
 
 export CCTOOL_PIN_CHECK=0
+NOTES="$TMP/tool-upgrade-notes.json"
+cat > "$NOTES" <<'EOF'
+{"schema_version":1,"tools":{"skillevaluator":{"report_note":"⚠️ trial 釘版：升級要一起改 EXPECTED_COMMIT、用完整 40 碼 SHA 重裝、跑 skillevaluator-trial.test.py"}}}
+EOF
+export CCTOOL_UPGRADE_NOTES="$NOTES"
 
 [ -x "$HELPER" ] || fail "helper 不存在或不可執行: $HELPER"
 
@@ -247,9 +252,13 @@ assert packet['updates'] == [{
   'latest': 'bbbbbbbb',
   'source': 'NVIDIA/SkillEvaluator',
   'notes': '',
+  'upgrade_note': '⚠️ trial 釘版：升級要一起改 EXPECTED_COMMIT、用完整 40 碼 SHA 重裝、跑 skillevaluator-trial.test.py',
 }], packet['updates']
-print('✅ 測 5 uv-git：讀 direct_url commit 並比對 GitHub HEAD')
+print('✅ 測 5 uv-git：讀 direct_url commit、比對 GitHub HEAD、附升級注意事項')
 PY
+report_uv_git=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-uv-git.json" CCTOOL_IGNORE="$TMP/i.txt" CCTOOL_OUT="$TMP/tool-report.md" "$HELPER" 2>/dev/null)
+grep -q 'skillevaluator aaaaaaaa→bbbbbbbb（uv-git） ⚠️ trial 釘版：升級要一起改 EXPECTED_COMMIT、用完整 40 碼 SHA 重裝、跑 skillevaluator-trial.test.py' "$TMP/tool-report.md" || fail "markdown report 未顯示升級注意事項: $report_uv_git"
+echo '✅ 測 5b markdown：使用者拍板前同一行可看到升級注意事項'
 
 # graceful：fixture manifest 含不存在的 manager → 進 errors 不崩
 printf '[{"name":"nonexistent-xyz","manager":"cargo-git","source":"no/such-repo"}]' > "$TMP/m2.json"
