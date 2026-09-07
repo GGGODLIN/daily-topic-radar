@@ -1,4 +1,9 @@
 #!/bin/bash
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  printf 'recap route: execute this file; do not source it\n' >&2
+  return 2
+fi
+
 cd /
 set -euo pipefail
 

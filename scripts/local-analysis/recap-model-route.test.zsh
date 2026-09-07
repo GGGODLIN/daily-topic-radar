@@ -51,6 +51,21 @@ printf '# Daily Recap fixture\n'
 EOF
 chmod +x "$fake"
 
+source_root="$fixture/source"
+source_error="$fixture/source.err"
+source_state="$fixture/source.state"
+set +e
+env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_OUT_DIR="$source_root/out" RECAP_LOG_DIR="$source_root/log" RECAP_DATE=2026-09-08 RECAP_CAPTURE_FILE="$source_root/capture" bash -c 'before=$PWD; source "$1"; status=$?; after=$PWD; printf "%s\n%s\n" "$before" "$after" > "$2"; exit "$status"' _ "$script" "$source_state" >/dev/null 2>"$source_error"
+source_status=$?
+set -e
+if ((source_status != 2)); then
+  print -ru2 -- "source guard returned $source_status instead of 2"
+  exit 1
+fi
+grep -Fqx 'recap route: execute this file; do not source it' "$source_error"
+[[ "$(sed -n '1p' "$source_state")" == "$(sed -n '2p' "$source_state")" ]]
+[[ ! -e "$source_root/capture" && ! -e "$source_root/out" && ! -e "$source_root/log" ]]
+
 assert_line() {
   local file="$1" line="$2"
   ((++checks))
