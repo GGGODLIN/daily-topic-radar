@@ -4,16 +4,17 @@ set -euo pipefail
 
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
 export PATH
-# headless channel run: 走 hook Defense 0 跳過 nudge 類 Stop hook（checkpoint-judge 曾把最後一則訊息蓋成「skip」、claude -p stdout 只印最後一則，2026-07-15 查因）
-export CC_VENDOR=headless-channel
 
-CLAUDE="/Users/linhancheng/.local/bin/claude"
+PARENT_CC_VENDOR="${CC_VENDOR-}"
+PARENT_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL-}"
+CLAUDE="${RECAP_CLAUDE_BIN:-/Users/linhancheng/.local/bin/claude}"
+KEYS_FILE="${RECAP_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}"
 REPO_DIR="/Users/linhancheng/code/social-info"
-OUT_DIR="$REPO_DIR/reports/local-analysis"
-LOG_DIR="$REPO_DIR/logs"
+OUT_DIR="${RECAP_OUT_DIR:-$REPO_DIR/reports/local-analysis}"
+LOG_DIR="${RECAP_LOG_DIR:-$REPO_DIR/logs}"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"
-DATE=$(date +%Y-%m-%d)
+DATE="${RECAP_DATE:-$(date +%Y-%m-%d)}"
 OUT="$OUT_DIR/$DATE-recap.md"
 LOG="$LOG_DIR/local-analysis-recap-$DATE.log"
 
@@ -138,12 +139,69 @@ stdout 只輸出 markdown 報告本身，不要 preamble（「整理完...」「
 EOF
 )
 
+run_recap() {
+  local luna_model='gpt-5.6-luna(max)'
+  if [[ -z "$PARENT_CC_VENDOR" && -z "$PARENT_ANTHROPIC_BASE_URL" ]]; then
+    (
+      unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL
+      unset ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+      unset CLAUDE_CODE_SUBAGENT_MODEL ANTHROPIC_AUTH_TOKEN
+      export CC_VENDOR=headless-channel
+      command "$CLAUDE" --model opus -p "$PROMPT"
+    )
+    return $?
+  fi
+  if [[ ! -f "$KEYS_FILE" ]]; then
+    printf 'recap route: keys file missing: %s\n' "$KEYS_FILE" >&2
+    return 1
+  fi
+  (
+    local CLIPROXY_BASE_URL=''
+    local CLIPROXY_KEY_CC=''
+    local key value
+    while IFS='=' read -r key value; do
+      value="${value%$'\r'}"
+      case "$key" in
+        CLIPROXY_BASE_URL) CLIPROXY_BASE_URL="$value" ;;
+        CLIPROXY_KEY_CC) CLIPROXY_KEY_CC="$value" ;;
+      esac
+    done < "$KEYS_FILE"
+    if [[ -z "$CLIPROXY_BASE_URL" || -z "$CLIPROXY_KEY_CC" ]]; then
+      printf 'recap route: keys file must define CLIPROXY_BASE_URL and CLIPROXY_KEY_CC\n' >&2
+      exit 1
+    fi
+    case "$CLIPROXY_BASE_URL" in
+      http://127.0.0.1:8317|http://localhost:8317) ;;
+      *)
+        printf 'recap route: relay URL must be local port 8317\n' >&2
+        exit 1
+        ;;
+    esac
+    unset ANTHROPIC_API_KEY ANTHROPIC_FALLBACK_MODEL CLAUDE_CODE_FALLBACK_MODEL
+    export CC_VENDOR=headless-channel
+    export ANTHROPIC_BASE_URL="$CLIPROXY_BASE_URL"
+    export ANTHROPIC_AUTH_TOKEN="$CLIPROXY_KEY_CC"
+    export ANTHROPIC_MODEL="$luna_model"
+    export ANTHROPIC_DEFAULT_FABLE_MODEL="$luna_model"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$luna_model"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$luna_model"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$luna_model"
+    export CLAUDE_CODE_SUBAGENT_MODEL="$luna_model"
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-1000000}"
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-900000}"
+    export API_TIMEOUT_MS="${API_TIMEOUT_MS:-3000000}"
+    export CLAUDE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-600000}"
+    export CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS:-600000}"
+    command "$CLAUDE" --model "$luna_model" -p "$PROMPT"
+  )
+}
+
 {
   echo "=== recap started: $(date) ==="
 } >> "$LOG"
 
 set +e
-"$CLAUDE" -p "$PROMPT" > "$OUT" 2>> "$LOG"
+run_recap > "$OUT" 2>> "$LOG"
 RC=$?
 set -e
 
@@ -152,3 +210,5 @@ set -e
   echo "=== recap finished: $(date) ==="
   echo "Output: $OUT ($(wc -c < "$OUT") bytes)"
 } >> "$LOG"
+
+exit "$RC"
