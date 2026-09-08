@@ -406,7 +406,8 @@ def status_value(path):
         content = candidate.read_text(encoding="utf-8", errors="replace")
         if candidate.suffix == ".json":
             try:
-                value = json.loads(content).get("status")
+                payload = json.loads(content)
+                value = payload.get("status") if isinstance(payload, dict) else None
             except (TypeError, json.JSONDecodeError):
                 value = None
             if isinstance(value, str) and value:
