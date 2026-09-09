@@ -79,6 +79,86 @@ async def test_fetch_twitter_all_mock_raises(httpx_mock, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_twitter_falls_back_to_twitter_content(httpx_mock, monkeypatch):
+    """The `searchTerms` field fails intermittently upstream while the actor's
+    `twitterContent` field keeps serving the same data (observed 2026-08-20 and
+    2026-09-09; both recovered on their own hours later). When the primary shape
+    comes back all-mock, retry once with the OR-joined single-query shape before
+    giving up.
+
+    The two fields cannot be combined in one call — the actor documents (and a
+    live probe on 2026-09-09 confirmed) that `searchTerms` overrides
+    `twitterContent` whenever both are set.
+    """
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
+    real = json.loads(Path("tests/fixtures/apify_tweet_scraper_response.json").read_text())
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=[{"type": "mock_tweet", "id": -1, "text": "minimum charge..."}],
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=real,
+    )
+
+    cfg = SourceConfig(
+        id="twitter_tier1",
+        type="twitter",
+        enabled=True,
+        tier=1,
+        params={
+            "handles": ["sama", "karpathy", "simonw"],
+            "per_handle_limit": 10,
+            "time_window_hours": 24,
+        },
+    )
+
+    async with httpx.AsyncClient() as client:
+        items = await fetch(cfg, client)
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 2
+
+    primary = json.loads(requests[0].content)
+    assert "twitterContent" not in primary
+    assert primary["maxItems"] == 20
+
+    fallback = json.loads(requests[1].content)
+    assert "searchTerms" not in fallback
+    assert fallback["twitterContent"].startswith(
+        "(from:sama OR from:karpathy OR from:simonw) since:"
+    )
+    assert " until:" in fallback["twitterContent"]
+    assert fallback["maxItems"] == 30
+
+    assert len(items) == 1
+    assert items[0].source_handle == "@sama"
+
+
+@pytest.mark.asyncio
+async def test_fetch_twitter_all_mock_error_names_both_shapes(httpx_mock, monkeypatch):
+    """Both shapes exhausted — the KNOWN_ISSUES message has to say the fallback
+    was tried too, otherwise the next debugging round re-probes it by hand."""
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=[{"type": "mock_tweet", "id": -1, "text": "minimum charge..."}],
+        is_reusable=True,
+    )
+    cfg = SourceConfig(
+        id="twitter_tier1",
+        type="twitter",
+        enabled=True,
+        tier=1,
+        params={"handles": ["nobody"]},
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(RuntimeError, match="searchTerms, twitterContent"):
+            await fetch(cfg, client)
+    assert len(httpx_mock.get_requests()) == 2
+
+
+@pytest.mark.asyncio
 async def test_fetch_twitter_mixed_mock_and_real_keeps_real(httpx_mock, monkeypatch):
     """Partial padding is normal — the actor tops a short result set up to its
     minimum. As long as at least one real tweet survives, filter the mocks and
