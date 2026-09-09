@@ -160,6 +160,40 @@ bash "$SCRIPT" --root "$ROOT" --registry "$STATUS_REGISTRY" --date 2026-08-23 --
 grep -F 'status' "$STATUS_OUT" >/dev/null
 printf '%s\n' 'ledger-lifecycle daily residue status slice: PASS'
 
+JSON_STATUS_REGISTRY="$TMP/json-status-registry.json"
+JSON_STATUS_OUT="$TMP/json-status-report.md"
+python3 - "$ROOT" "$JSON_STATUS_REGISTRY" <<'PY'
+import json
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]) / 'json-status'
+root.mkdir()
+for name, payload in {
+  'array': [{'status': 'active'}],
+  'null': None,
+  'string': 'active',
+  'number': 1,
+  'boolean': True,
+  'empty-object': {},
+  'z-active': {'status': 'active'},
+}.items():
+  (root / f'{name}.json').write_text(json.dumps(payload), encoding='utf-8')
+Path(sys.argv[2]).write_text(json.dumps({
+  'schema_version': 1,
+  'scan_roots': ['~/json-status/*'],
+  'entries': [{
+    'path': '~/json-status/*.json',
+    'kind': 'residue',
+    'threshold': [{'metric': 'status', 'unit': 'state', 'operator': 'equals', 'value': 'active'}],
+    'action': '保持不動',
+  }],
+}, ensure_ascii=False), encoding='utf-8')
+PY
+bash "$SCRIPT" --root "$ROOT" --registry "$JSON_STATUS_REGISTRY" --date 2026-08-23 --out "$JSON_STATUS_OUT"
+grep -F 'json-status/z-active.json' "$JSON_STATUS_OUT" >/dev/null
+test "$(grep -c '| status |' "$JSON_STATUS_OUT")" = 1
+printf '%s\n' 'ledger-lifecycle daily JSON status shapes slice: PASS'
+
 COMPLETION_DIR="$ROOT/scratch/completed-work"
 mkdir -p "$COMPLETION_DIR"
 printf '%s\n' 'status: completed' 'completed_at: 2026-07-01' > "$COMPLETION_DIR/status.md"
