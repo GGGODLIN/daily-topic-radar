@@ -7,14 +7,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
-from social_info.config import load_config  # noqa: E402
-from social_info.db import Database  # noqa: E402
-from social_info.fetchers.base import Item  # noqa: E402
-from social_info import known_issues  # noqa: E402
-from social_info.markdown import render_item  # noqa: E402
-from social_info.pipeline import (  # noqa: E402
+from social_info.config import load_config
+from social_info.db import Database
+from social_info.fetchers.base import Item
+from social_info import known_issues
+from social_info.markdown import render_item
+from social_info.pipeline import (
     resolve_resurface_items,
     resolve_stale_and_empty,
     run_pipeline,
@@ -160,6 +158,7 @@ async def _main() -> int:
 
 
 def main() -> None:
+    load_dotenv()
     raise SystemExit(asyncio.run(_main()))
 
 
