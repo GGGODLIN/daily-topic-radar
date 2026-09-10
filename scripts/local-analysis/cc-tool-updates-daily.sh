@@ -358,7 +358,8 @@ manifest = load_manifest()
 ignore = load_ignore()
 upgrade_notes = load_upgrade_notes()
 cargo, brew, npm, uv, mcpnpx = cargo_git_installed(), brew_installed(), npm_g_installed(), uv_installed(), mcp_npx_installed()
-updates, errors = [], []
+updates, errors, held = [], [], []
+RUN_DATE = os.environ.get("LOCAL_ANALYSIS_DATE") or __import__("datetime").date.today().isoformat()
 
 def add_update(name, mgr, cur, latest, src, notes="", **details):
     if latest and norm(latest) != norm(cur):
@@ -367,6 +368,12 @@ def add_update(name, mgr, cur, latest, src, notes="", **details):
         if isinstance(registered, dict) and registered.get("report_note"):
             update["upgrade_note"] = registered["report_note"]
         update.update(details)
+        hold_until = registered.get("hold_until") if isinstance(registered, dict) else None
+        if hold_until and RUN_DATE <= str(hold_until):
+            update["hold_until"] = str(hold_until)
+            update["hold_reason"] = registered.get("hold_reason", "")
+            held.append(update)
+            return
         updates.append(update)
 
 for e in manifest:
@@ -468,7 +475,7 @@ for names, mgr in [(cargo.keys(), "cargo-git"), (brew_leaves(), "brew"),
         if n not in tracked and n not in ignore:
             discovered.append({"name": n, "manager": mgr})
 
-result = {"updates": updates, "discovered": discovered, "errors": errors}
+result = {"updates": updates, "discovered": discovered, "errors": errors, "held": held}
 
 if JSON_OUT:
     print(json.dumps(result, ensure_ascii=False))
@@ -499,6 +506,11 @@ if updates:
             others = f"；其他安裝：{values}"
         upgrade_note = f" {u['upgrade_note']}" if u.get("upgrade_note") else ""
         out.append(f"- {u['name']} {u['current']}→{u['latest']}（{u['manager']}{active}{others}）{upgrade_note}{note}")
+if held:
+    out.append("### 暫緩（使用者拍板 hold_until 未到，不列入有更新；到期自動回到有更新）")
+    for u in held:
+        reason = f"；{u['hold_reason']}" if u.get("hold_reason") else ""
+        out.append(f"- {u['name']} {u['current']}→{u['latest']}（{u['manager']}）hold 至 {u['hold_until']}{reason}")
 if discovered:
     out.append("### 待分類（新發現，不在白/黑名單；歸白名單追蹤 or 黑名單忽略）")
     for d in discovered:

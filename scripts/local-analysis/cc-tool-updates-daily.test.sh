@@ -260,6 +260,33 @@ report_uv_git=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$T
 grep -q 'skillevaluator aaaaaaaa→bbbbbbbb（uv-git） ⚠️ trial 釘版：升級要一起改 EXPECTED_COMMIT、用完整 40 碼 SHA 重裝、跑 skillevaluator-trial.test.py' "$TMP/tool-report.md" || fail "markdown report 未顯示升級注意事項: $report_uv_git"
 echo '✅ 測 5b markdown：使用者拍板前同一行可看到升級注意事項'
 
+HOLD_NOTES="$TMP/tool-upgrade-notes-hold.json"
+cat > "$HOLD_NOTES" <<'EOF'
+{"schema_version":1,"tools":{"skillevaluator":{"report_note":"⚠️ pinned","hold_until":"2026-09-16","hold_reason":"trial 觀察窗內不換版"}}}
+EOF
+out_hold=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-uv-git.json" CCTOOL_IGNORE="$TMP/i.txt" CCTOOL_UPGRADE_NOTES="$HOLD_NOTES" LOCAL_ANALYSIS_DATE=2026-09-16 "$HELPER" --json 2>/dev/null)
+python3 - "$out_hold" <<'PY' || fail "hold 斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+assert packet['updates'] == [], packet['updates']
+assert len(packet['held']) == 1 and packet['held'][0]['name'] == 'skillevaluator', packet['held']
+assert packet['held'][0]['hold_until'] == '2026-09-16' and packet['held'][0]['hold_reason'] == 'trial 觀察窗內不換版', packet['held'][0]
+print('✅ 測 5c hold：hold_until 當天含當天仍暫緩、不進 updates、held 帶到期日與原因')
+PY
+report_hold=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-uv-git.json" CCTOOL_IGNORE="$TMP/i.txt" CCTOOL_UPGRADE_NOTES="$HOLD_NOTES" LOCAL_ANALYSIS_DATE=2026-09-16 CCTOOL_OUT="$TMP/tool-report-hold.md" "$HELPER" 2>/dev/null)
+grep -q '^### 暫緩' "$TMP/tool-report-hold.md" || fail "markdown report 缺暫緩段: $report_hold"
+grep -q 'skillevaluator aaaaaaaa→bbbbbbbb（uv-git）hold 至 2026-09-16；trial 觀察窗內不換版' "$TMP/tool-report-hold.md" || fail "暫緩行格式不符: $report_hold"
+grep -q '^### 有更新' "$TMP/tool-report-hold.md" && fail "hold 中仍出現有更新段: $report_hold"
+echo '✅ 測 5d markdown：hold 中只列暫緩段、不列有更新'
+out_expired=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-uv-git.json" CCTOOL_IGNORE="$TMP/i.txt" CCTOOL_UPGRADE_NOTES="$HOLD_NOTES" LOCAL_ANALYSIS_DATE=2026-09-17 "$HELPER" --json 2>/dev/null)
+python3 - "$out_expired" <<'PY' || fail "hold 到期斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+assert packet['held'] == [], packet['held']
+assert len(packet['updates']) == 1 and packet['updates'][0]['name'] == 'skillevaluator', packet['updates']
+print('✅ 測 5e hold 到期：隔天自動回到有更新')
+PY
+
 # graceful：fixture manifest 含不存在的 manager → 進 errors 不崩
 printf '[{"name":"nonexistent-xyz","manager":"cargo-git","source":"no/such-repo"}]' > "$TMP/m2.json"
 out2=$(CCTOOL_MANIFEST="$TMP/m2.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
