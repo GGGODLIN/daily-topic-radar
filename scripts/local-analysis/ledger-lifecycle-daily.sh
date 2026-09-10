@@ -354,7 +354,10 @@ def is_active_trial_residue(path):
     slug = trial_dir.name
     for line in active_path.read_text(encoding="utf-8", errors="replace").splitlines():
         match = re.match(r"^##\s+(.+?)\s+\(", line)
-        if match is not None and match.group(1) == slug:
+        if match is None:
+            continue
+        name = match.group(1)
+        if name == slug or slug in name.split("-"):
             return True
     return False
 
