@@ -1,5 +1,6 @@
 #!/bin/bash
-# Weekly upstream check for git-cloned skills in ~/.claude/skills/
+# 本檔在契約測試底下：bash ~/code/social-info/scripts/local-analysis/skill-upstream-check-weekly.test.sh
+# Weekly upstream check for git-cloned skills in ~/.claude/skills/ and vendor bundles in ~/.claude/vendor/
 # Read-only: only `git fetch` + compare HEAD vs origin/HEAD, never auto-pull
 # Writes report to ~/code/social-info/reports/local-analysis/skill-updates/YYYY-MM-DD.md
 #
@@ -8,8 +9,14 @@
 # - User decides when to actually pull (script gives the exact command)
 # - Matches read-only nature of sibling local-analysis routines
 #
-# 兩種被巡邏的 skill 形態（2026-07-28 起）：
+# 三種被巡邏的形態：
 # 1. git clone 型（帶 .git 目錄）→ fetch + HEAD 比對（下方第一段迴圈）
+# 1b. submodule / linked worktree 型（.git 是「檔案」、內容為 gitdir: 指針）→ 同一段迴圈，2026-09-11 起才納入。
+#     守門一度寫成 `[ -d "$dir/.git" ]`，對這型必定失敗且不報錯，失敗方向是「看起來乾淨」；
+#     現用 `[ -e ]`。反向斷言在 test 檔的 fx-git-file-behind／fx-vendor-detached 兩件。
+#     掃描根同日從 SKILLS_DIR 擴到 SKILLS_DIR + VENDOR_DIR（~/.claude/vendor/*，釘死版本的 upstream bundle 住這）。
+#     detached HEAD（釘版本的 vendor 常態）沒有 @{u}，退回 origin 預設分支比對；仍解不出才報「無 upstream tracking」。
+#     本機領先上游時不報「落後 0 commits」也不給 git pull 指令——那是 2026-09-11 修掉的既有標籤錯誤。
 # 2. 散檔 fork 型（無 .git）→ SKILL.md frontmatter 自帶線索；新檔放在 validator 接受的 metadata 下，舊頂層格式仍相容：
 #      metadata: { upstream: <owner/repo>, upstream-path: <path>, upstream-pinned: <sha> }
 #      選配 upstream-branch（預設 main）、upstream-status: orphaned（已知上游移除、不巡）
@@ -20,6 +27,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="${SKILLS_DIR:-$HOME/.claude/skills}"
+VENDOR_DIR="${VENDOR_DIR:-$HOME/.claude/vendor}"
 AGENTS_SKILLS_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
 SKILL_LOCK_FILE="${SKILL_LOCK_FILE:-$HOME/.agents/.skill-lock.json}"
 LOG_DIR="${LOG_DIR:-$HOME/code/social-info/reports/local-analysis/skill-updates}"
@@ -30,17 +38,20 @@ LOG_FILE="$LOG_DIR/$ANALYSIS_DATE.md"
 {
   echo "# Skill upstream check — $ANALYSIS_DATE"
   echo ""
-  echo "掃 \`~/.claude/skills/*/.git\` 看上游有沒有新 commit（read-only，不 auto-pull）"
+  echo "掃 \`~/.claude/skills/*/.git\` 與 \`~/.claude/vendor/*/.git\` 看上游有沒有新 commit（read-only，不 auto-pull；含 submodule 與 linked worktree）"
   echo ""
 } > "$LOG_FILE"
 
 found_skills=0
 behind_count=0
 
-for skill_git in "$SKILLS_DIR"/*/.git; do
-  [ -d "$skill_git" ] || continue
+for skill_git in "$SKILLS_DIR"/*/.git "$VENDOR_DIR"/*/.git; do
+  # -e 不是 -d：submodule 與 linked worktree 的 .git 是檔案（內容 gitdir: 指針）。
+  # glob 沒命中時保留字面路徑，-e 一樣擋得掉，不需要額外 nullglob。
+  [ -e "$skill_git" ] || continue
   parent=$(dirname "$skill_git")
   name=$(basename "$parent")
+  case "$parent" in "$VENDOR_DIR"/*) name="vendor/$name" ;; esac
   found_skills=$((found_skills + 1))
 
   cd "$parent" || continue
@@ -59,27 +70,53 @@ for skill_git in "$SKILLS_DIR"/*/.git; do
   fi
 
   local_sha=$(git rev-parse --short HEAD 2>/dev/null)
+
+  # 比對基準：優先 tracking branch；detached HEAD（釘版本的 vendor bundle 常態）沒有 @{u}，
+  # 退回 origin 預設分支。兩者都解不出才報「無 upstream tracking」。
+  remote_ref='@{u}'
   remote_sha=$(git rev-parse --short '@{u}' 2>/dev/null || echo "")
+  if [ -z "$remote_sha" ]; then
+    fallback_ref=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null || echo "")
+    if [ -z "$fallback_ref" ] && git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      fallback_ref="origin/main"
+    fi
+    if [ -n "$fallback_ref" ]; then
+      remote_ref="$fallback_ref"
+      remote_sha=$(git rev-parse --short "$fallback_ref" 2>/dev/null || echo "")
+    fi
+  fi
 
   if [ -z "$remote_sha" ]; then
     echo "- ⚠️ **$name** — 無 upstream tracking ($remote_url)" >> "$LOG_FILE"
     continue
   fi
 
+  head_desc=$(git symbolic-ref -q --short HEAD 2>/dev/null || echo "detached@$(git describe --tags --always 2>/dev/null || echo "$local_sha")")
+
   if [ "$local_sha" = "$remote_sha" ]; then
     echo "- ✅ $name — up to date (\`$local_sha\`)" >> "$LOG_FILE"
   else
-    behind=$(git rev-list --count HEAD..'@{u}' 2>/dev/null || echo "?")
+    behind=$(git rev-list --count "HEAD..$remote_ref" 2>/dev/null || echo "?")
+    ahead=$(git rev-list --count "$remote_ref..HEAD" 2>/dev/null || echo "?")
+    if [ "$behind" = "0" ]; then
+      # 本機領先上游（本地 commit 未推）。不是落後，不給 git pull——那會讓人以為該拉。
+      echo "- ℹ️ $name — 本機領先上游 $ahead commits（\`$remote_ref\` 無新 commit，HEAD \`$local_sha\`／${head_desc}）" >> "$LOG_FILE"
+      continue
+    fi
     behind_count=$((behind_count + 1))
     {
       echo "- ⬇️ **$name — $behind commits behind**"
-      echo "  - Local: \`$local_sha\` / Remote: \`$remote_sha\`"
+      echo "  - Local: \`$local_sha\`（${head_desc}） / Remote: \`$remote_sha\`（\`$remote_ref\`）"
       echo "  - Remote URL: $remote_url"
-      echo "  - 更新指令: \`cd $parent && git pull\`"
+      if [ "$remote_ref" = '@{u}' ]; then
+        echo "  - 更新指令: \`cd $parent && git pull\`"
+      else
+        echo "  - 更新指令（detached／無 tracking，先確認要不要動釘死的版本）: \`cd $parent && git log HEAD..$remote_ref\`"
+      fi
       echo "  - 最新 commits:"
-      git log --oneline "HEAD..@{u}" 2>/dev/null | head -5 | sed 's/^/    - /'
+      git log --oneline "HEAD..$remote_ref" 2>/dev/null | head -5 | sed 's/^/    - /'
       # capability delta（2026-07-11 起、SkilLock 借鑑）：審更新看能力面新增，不用讀全文 diff
-      cap_delta=$(git diff HEAD..'@{u}' 2>/dev/null | grep '^+' | grep -oE "https?://[^ )\"']+|curl |wget |npx |sudo |rm -rf|chmod " | sort | uniq -c | sort -rn | head -8)
+      cap_delta=$(git diff "HEAD..$remote_ref" 2>/dev/null | grep '^+' | grep -oE "https?://[^ )\"']+|curl |wget |npx |sudo |rm -rf|chmod " | sort | uniq -c | sort -rn | head -8)
       if [ -n "$cap_delta" ]; then
         echo "  - ⚠️ capability delta（更新新增的 network / exec 面，pull 前過目）:"
         echo "$cap_delta" | sed 's/^/    - /'

@@ -172,7 +172,52 @@ exec "$REAL_GH" "\$@"
 EOF
 chmod +x "$FIX/bin/gh"
 
-PATH="$FIX/bin:$PATH" SKILLS_DIR="$FIX/skills" AGENTS_SKILLS_DIR="$FIX/agents-skills" SKILL_LOCK_FILE="$FIX/skill-lock.json" LOG_DIR="$FIX/logs" LOCAL_ANALYSIS_DATE="2026-01-02" bash "$SCRIPT_DIR/skill-upstream-check-weekly.sh"
+# --- loop 1（git repo 型）四件 fixture，2026-09-11 加 -------------------------
+# 反向斷言：守門一度是 `[ -d "$dir/.git" ]`，對 submodule／linked worktree（.git 是檔案）
+# 必定失敗且不報錯；掃描根一度只有 SKILLS_DIR，照不到 ~/.claude/vendor/*。
+# 兩者都是靜默漏巡，失敗方向是「報告看起來乾淨」。全部用本地 bare repo 當 remote，不碰網路。
+mkdir -p "$FIX/vendor" "$FIX/remotes" "$FIX/gitdirs"
+mk_remote() {                     # $1=name  $2=commit 數；回傳 bare repo 路徑
+  local r="$FIX/remotes/$1.git" w="$FIX/remotes/$1-work" i=1
+  git init --quiet --bare --initial-branch=main "$r"
+  git init --quiet --initial-branch=main "$w"
+  git -C "$w" config user.email t@t; git -C "$w" config user.name t
+  while [ "$i" -le "$2" ]; do
+    printf 'c%s\n' "$i" > "$w/f.txt"
+    git -C "$w" add -A; git -C "$w" commit --quiet -m "commit $i"
+    i=$((i+1))
+  done
+  git -C "$w" remote add origin "$r"
+  git -C "$w" push --quiet -u origin main
+  printf '%s' "$r"
+}
+
+# known-good：一般 clone（.git 是目錄）、與上游同步 → 改動不得誤殺
+loop1_r=$(mk_remote uptodate 2)
+git clone --quiet "$loop1_r" "$FIX/skills/fx-git-dir-uptodate"
+
+# known-bad：submodule 形態（.git 是檔案）、落後上游 1
+loop1_r=$(mk_remote behind 3)
+git clone --quiet --separate-git-dir="$FIX/gitdirs/fx-git-file-behind" "$loop1_r" "$FIX/skills/fx-git-file-behind"
+git -C "$FIX/skills/fx-git-file-behind" reset --hard --quiet HEAD~1
+
+# 邊界：VENDOR_DIR 下的 detached HEAD（釘死版本的 vendor bundle 常態）、落後 2
+# 同時驗兩件事：掃描根有涵蓋 vendor、detached 沒有 @{u} 時退回 origin 預設分支
+loop1_r=$(mk_remote vendored 4)
+git clone --quiet --separate-git-dir="$FIX/gitdirs/fx-vendor-detached" "$loop1_r" "$FIX/vendor/fx-vendor-detached"
+git -C "$FIX/vendor/fx-vendor-detached" checkout --quiet --detach "$(git -C "$FIX/vendor/fx-vendor-detached" rev-parse HEAD~2)"
+
+# 標籤誤植：本機領先上游，不得報成「落後 0 commits」也不得給 git pull
+loop1_r=$(mk_remote ahead 2)
+git clone --quiet "$loop1_r" "$FIX/skills/fx-git-dir-ahead"
+git -C "$FIX/skills/fx-git-dir-ahead" config user.email t@t
+git -C "$FIX/skills/fx-git-dir-ahead" config user.name t
+printf 'local-only\n' > "$FIX/skills/fx-git-dir-ahead/local.txt"
+git -C "$FIX/skills/fx-git-dir-ahead" add -A
+git -C "$FIX/skills/fx-git-dir-ahead" commit --quiet -m "local edit"
+# -----------------------------------------------------------------------------
+
+PATH="$FIX/bin:$PATH" SKILLS_DIR="$FIX/skills" VENDOR_DIR="$FIX/vendor" AGENTS_SKILLS_DIR="$FIX/agents-skills" SKILL_LOCK_FILE="$FIX/skill-lock.json" LOG_DIR="$FIX/logs" LOCAL_ANALYSIS_DATE="2026-01-02" bash "$SCRIPT_DIR/skill-upstream-check-weekly.sh"
 report="$FIX/logs/2026-01-02.md"
 
 pass=0; fail=0
@@ -198,6 +243,24 @@ check "known-orphan 報 ℹ️ 跳過" "ℹ️ fx-known-orphan"
 check "非 404 API 錯誤不冒充 path 消失" "⚠️ \*\*fx-api-error\*\* — upstream API 查詢失敗（非 404）"
 check "線索不完整列待確認" "⚠️ \*\*fx-incomplete\*\* — frontmatter 線索不完整"
 check "summary 計數 9 支 / 4 待確認" "9 支散檔 fork 對賬巡過（4 支待對賬 / 待確認）"
+
+check_absent() {
+  if grep -qE "$2" "$report"; then
+    echo "FAIL: $1 — 不該出現的 pattern 仍在: $2"; fail=$((fail+1))
+  else
+    echo "PASS: $1"; pass=$((pass+1))
+  fi
+}
+
+# --- loop 1（git repo 型）2026-09-11 加 ---
+check "loop1 known-good：一般 clone 同步中報 ✅" "✅ fx-git-dir-uptodate — up to date"
+check "loop1 known-bad：submodule（.git 為檔案）落後被抓到" "⬇️ \*\*fx-git-file-behind — 1 commits behind\*\*"
+check "loop1 邊界：vendor 掃描根涵蓋、detached 落後被抓到" "⬇️ \*\*vendor/fx-vendor-detached — 2 commits behind\*\*"
+check "loop1 邊界：detached 無 @\{u\} 時退回 origin 預設分支比對" "Remote: .*（\`origin/main\`）"
+check_absent "loop1 邊界：detached 不給 git pull（釘死版本不該被當成該拉）" "fx-vendor-detached && git pull"
+check "loop1 標籤：本機領先報 ℹ️ 領先、附上游 ref" "ℹ️ fx-git-dir-ahead — 本機領先上游 1 commits"
+check_absent "loop1 標籤：本機領先不得報成落後 0 commits" "fx-git-dir-ahead — 0 commits behind"
+check_absent "loop1 標籤：本機領先不得建議 git pull" "fx-git-dir-ahead && git pull"
 check "tampered installed skill 報 drift" "⚠️ \*\*tampered-skill\*\* — installed skill 與 lock hash 不符"
 check "missing installed skill 報 drift" "⚠️ \*\*missing-skill\*\* — lock 有紀錄，但已安裝 skill 目錄不存在"
 primary_lock_drift_count=$(python3 - "$report" <<'PY'
