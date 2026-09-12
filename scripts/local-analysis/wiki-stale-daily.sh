@@ -48,6 +48,8 @@ cat <<'EOF'
 **「最後 changelog entry」的日期怎麼取（2026-07-31 補，兩條都是當日實撞）**：
 1. **取全部 entry 日期的最大值、不是「區塊最後一行」**——有 entity 的 changelog 新到舊倒序排列，按最後一行取會拿到最舊的 entry（wiki-graduation channel 同日實撞：6 天前被誤判成 84 天前）。
 2. **日期格式至少涵蓋三種**：裸 `YYYY-MM-DD`、backtick 包裹、粗體 `**YYYY-MM-DD**:`——本 channel 2026-07-31 實撞漏抓粗體格式，導致 last_changelog 誤判成更早的舊條目。
+3. **Changelog 標題不要求整行恰好是 `Changelog`**（2026-09-12 實撞）：現存 wiki 有 `## §7 Changelog`、`## 8. Sources & freshness — Changelog` 這類帶編號／前綴的標題，整行比對會把 `harness-implementation-landscape`、`llm-model-landscape` 誤判成 parse failure。判定：`## ` 起頭、去掉數字／`§`／`.` 前綴後標題含 `changelog`（不分大小寫）；同檔多個命中時優先用恰好是 `## Changelog` 的那個（例：`## 6. 政策 / 穩定性事實（changelog 倒序）` 是內容段、不是 changelog 區）。
+4. **只認 bullet 行首的日期**（同日實撞）：changelog 區塊內文會提到未來日期（如 `stale_by: 2026-12-31`），抓「區塊內所有日期取最大」會算出負天數（`npm-supply-chain-defense-2026`、`zed-ide-setup-2026` 實撞）。只取 `- YYYY-MM-DD`／`` - `YYYY-MM-DD` ``／`- **YYYY-MM-DD**` 這種 entry 行首日期，再套第 1 條取最大值。
 
 排序：報告內 entity 按 volatility 排（high 在前、留空當 medium、low 在後），同級按天數降冪——高易腐先進使用者視線。
 
