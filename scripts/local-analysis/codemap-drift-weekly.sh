@@ -32,7 +32,7 @@ PROMPT=$(cat <<'EOF'
 
 **具體執行 command**：`/refresh-codemaps`（akocommerce 專屬、`~/.claude/commands/refresh-codemaps.md`、按上述規範派 5 個 subagent 並行 refresh + 寫 commit msg 模板）。對非 akocommerce 的 project（如 cc-i18n-proxy）目前無對應 command、user 自行決定要不要手動 rescan 或 fork 一份 command。
 
-1. 掃 /Users/linhancheng/Desktop/projects/* 和 /Users/linhancheng/Desktop/work/* 找含 docs/CODEMAPS/ 目錄的 project
+1. 掃 /Users/linhancheng/Desktop/projects/* 和 /Users/linhancheng/Desktop/work/* 找含 docs/CODEMAPS/ 目錄的 project。**排除 /Users/linhancheng/Desktop/work/akocommerce**（使用者 2026-08-18 已離開 akohub，2026-09-15 拍板不再追它的 codemap drift；報告只寫一行「akocommerce 依拍板排除」、不算 commit、不建議 rescan）
 2. 對每個有 codemap 的 project（用 absolute path，因 launchd 環境可能影響 ~/Desktop 存取）：
    - **⚠ 先 `git -C <repo> fetch --quiet` 再算任何 commit 數（2026-07-30 加）**。`fetch` 只更新 remote-tracking ref、不動 working tree 也不動任何 codemap 檔，**不違反下面的 read-only 紀律**、必須做。
    - **⚠ 比對基準用 `origin/<default-branch>`，不要用本地 HEAD**。本地 master 可能落後好幾天，而且如果當下 checkout 在 feature branch，`git log` 算的是錯的分支。取 default branch：`git -C <repo> symbolic-ref --short refs/remotes/origin/HEAD`（拿不到就退 `origin/master` → `origin/main`）。
