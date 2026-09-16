@@ -117,4 +117,17 @@ run_case
 grep -F '## 🚨 掃描器輸出不是合法 JSON' "$OUT" >/dev/null
 test "$BASELINE_HASH" = "$(shasum -a 256 "$BASELINE" | cut -d' ' -f1)"
 
-printf '5/5 passed\n'
+printf '' > "$BASELINE"
+cat > "$INPUT" <<'JSON'
+{"diagnostics":[
+  {"file":"/Users/linhancheng/.claude/vendor/sepia/skills/sepia/SKILL.md","level":"warning","rule":"AS-013","message":"File reference 'references/languages/zh.md`' is deeper than one level"},
+  {"file":"/Users/linhancheng/.claude/vendor/sepia/skills/sepia/SKILL.md","level":"warning","rule":"AS-013","message":"File reference 'references/languages/en.md`' is deeper than one level"},
+  {"file":"/Users/linhancheng/.claude/skills/other/SKILL.md","level":"warning","rule":"AS-013","message":"File reference 'references/languages/zh.md`' is deeper than one level"}
+]}
+JSON
+run_case
+test "$(grep -Fc 'references/languages/zh.md' "$OUT")" -eq 1
+grep -F 'skills/other/SKILL.md' "$OUT" >/dev/null
+grep -F 'references/languages/en.md' "$OUT" >/dev/null
+
+printf '6/6 passed\n'

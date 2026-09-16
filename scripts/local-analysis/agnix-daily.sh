@@ -69,6 +69,7 @@ allowed_diagnostics = {
     ("warning", "vendor/sepia/skills/sepia-hemingway/SKILL.md", "AS-013", "File reference 'references/voices/hemingway.md`' is deeper than one level"),
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/voices/`' is deeper than one level"),
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/voices/registry.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/languages/zh.md`' is deeper than one level"),
 }
 with open(sys.argv[2], "w") as suppressed:
     for level, file, rule, message in sorted(allowed_diagnostics):
