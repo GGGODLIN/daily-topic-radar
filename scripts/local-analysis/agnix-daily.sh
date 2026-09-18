@@ -33,7 +33,7 @@ mkdir -p "$(dirname "$OUT")" "$(dirname "$LOG")" "$(dirname "$BASELINE")"
     cp "$AGNIX_JSON_INPUT" "$RAW"
   else
     cd "$TARGET"
-    npx -y "agnix@$AGNIX_VERSION" --format json . > "$RAW" 2> "$ERROR" || AGNIX_RC=$?
+    npm_config_ignore_scripts=false npx -y "agnix@$AGNIX_VERSION" --format json . > "$RAW" 2> "$ERROR" || AGNIX_RC=$?
   fi
 
   if [ ! -s "$RAW" ]; then
