@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>每日話題分析 — 2026-09-19</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #161922;
+    --bg-soft: #1c2030;
+    --fg: #e6e8ef;
+    --fg-muted: #9aa0b4;
+    --fg-dim: #6e7388;
+    --accent-purple: #b591ff;
+    --accent-blue: #7aa8ff;
+    --accent-green: #6ed79c;
+    --accent-orange: #ffb46b;
+    --accent-red: #ff8585;
+    --border: #2a2f43;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.page {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 28px;
+  }
+  header.page h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+  header.page .meta { color: var(--fg-muted); font-size: 13px; }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 32px; }
+  .stat-card {
+    flex: 1 1 140px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat-card .label { color: var(--fg-dim); font-size: 12px; }
+  .stat-card .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .stat-card.green .value { color: var(--accent-green); }
+  .stat-card.blue .value { color: var(--accent-blue); }
+  .stat-card.purple .value { color: var(--accent-purple); }
+  .stat-card.red .value { color: var(--accent-red); }
+  section.fixed {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 24px 0;
+  }
+  section.fixed.purple { border-left: 3px solid var(--accent-purple); }
+  section.fixed.repo { border-left: 3px solid var(--accent-orange); }
+  section.fixed.system { border-left: 3px solid var(--accent-green); }
+  section.fixed.alert { border-left: 3px solid var(--accent-red); }
+  section.theme {
+    margin: 26px 0;
+    padding-bottom: 22px;
+    border-bottom: 1px dashed var(--border);
+  }
+  h2 { font-size: 20px; margin: 0 0 12px; font-weight: 600; }
+  h2 .tag {
+    font-size: 11px;
+    background: var(--bg-soft);
+    color: var(--fg-muted);
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    font-weight: normal;
+  }
+  h3 {
+    font-size: 15px;
+    margin: 16px 0 8px;
+    color: var(--accent-purple);
+    font-weight: 600;
+  }
+  .summary { color: var(--fg-muted); margin: 0 0 10px; font-size: 14px; }
+  .empty { color: var(--fg-dim); font-style: italic; font-size: 13px; padding: 4px 0 8px; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin: 6px 0; }
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .pill {
+    background: var(--bg-soft);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .pill { font-family: inherit; font-size: 11px; color: var(--fg-muted); }
+  .star { color: var(--accent-orange); font-weight: 600; }
+  .star-low { color: var(--fg-dim); }
+  .verdict { color: var(--accent-green); font-weight: 600; }
+  .verdict-skip { color: var(--fg-dim); }
+  .verdict-watch { color: var(--accent-blue); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--fg-dim); font-weight: 500; }
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0 32px;
+  }
+  .chart-row > * { min-width: 0; }
+  @media (max-width: 720px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px 18px;
+  }
+  .chart-card h3 {
+    margin: 0 0 4px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .chart-card .sub {
+    color: var(--fg-dim);
+    font-size: 11.5px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .chart-card code { word-break: break-all; }
+  .chart-box { height: 280px; position: relative; }
+  footer.page {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+  .voice { color: var(--fg); }
+  .voice::before { content: "💭 "; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; color: var(--fg-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>每日話題分析 — 2026-09-19（週六）</h1>
+  <div class="meta">359 則訊號從 87 個活躍來源彙整（2 failures：<code>venturebeat_ai</code>／<code>zhihu_hot</code>，皆為既定 non-retryable、KNOWN_ISSUES.md 只列在 🪦 Stable failures 段，不進 🚨；6 個 source 屬 stale——fetched ok 但 dedup 後 net-new=0，含 clawhub／product_hunt／anthropic_engineering／mistral_blog／krebs_security／youtube_matt）。本次走<strong>極簡版</strong>：未跑 URL fact-check 與 Verify，抽出 8 條主軸。<strong>今日判讀：</strong>Anthropic 於 2026-09-17 對 Pro／Max 開放 <strong>Claude Projects</strong>——一個 project 對應一場對話，由常駐 agent 管共享記憶並拆出平行雲端 thread，關掉筆電仍繼續跑，但目前碰不到本機檔案與內網；同一天 CC CLI 連跳兩版到 <strong>v2.1.277</strong>（新增 AGENTS.md 原生支援、Claude apps gateway egress boundary），詳見下方 🟣 段。Anthropic 同日公布三項「AI 造 AI」量化指標（Claude 已主導自家 26% 研發、任一時刻約 3 萬個 agent 在跑），與 OpenAI 首度公開 6 份模型異常行為報告（ifanr 早報一句轉述，未指明是否為對齊失效）、數學家連署警告「10% 滅絕機率」同框，形成加速與踩煞車的對峙。TypeSafe AI 共同創辦人發布 <strong>Jev</strong>——不做自回歸生成、直接吐型別化機率／評分的決策模型類別，一天內從 X 熱議燒到 LocalLLaMA 開源複刻與中文媒體解讀。安全面三則案例集中同一天浮現：<code>Plugin4Shell</code> 讓四款主流 coding agent 的 plugin 供應鏈可被 0-click RCE、智譜 ZCode 被指控靜默上傳 <code>workspace/.git</code>（官方回應稱已修復）、三人安全團隊靠幾十美元 Opus 5 訂閱在 72 小時內攻進 OpenAI 員工帳號。GitHub／skills.sh 這輪冒出多支「管 agent 的工具」與威脅建模 skill 組，本地 LLM 一側延續小模型＋便宜硬體堆料的主線。Matt Pocock 今天無新影片，X 推文集中在課程規劃與既有工作流主張的零星回覆。</div>
+</header>
+
+<div class="stat-row">
+  <div class="stat-card green">
+    <div class="label">KNOWN_ISSUES 🚨</div>
+    <div class="value">0</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="label">主軸抽出</div>
+    <div class="value">8</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="label">URL fact-checked</div>
+    <div class="value">未執行（極簡版）</div>
+  </div>
+  <div class="stat-card red">
+    <div class="label">PROBES 自動 writeback</div>
+    <div class="value">1（deferred_to_main：CC release watcher → v2.1.277，main session 待寫回 PROBES.md）</div>
+  </div>
+</div>
+
+<div class="chart-row">
+  <div class="chart-card">
+    <h3>各 source 訊號量</h3>
+    <div class="sub">X 72 ｜ GH Trending 53 ｜ 中文／中國 53 ｜ Reddit 48 ｜ EN Media 37 ｜ 中文／台灣 29 ｜ Agent Skills 20 ｜ V2EX 16 ｜ GH Rising 14 ｜ HN 8 ｜ Lab Blogs 5 ｜ HuggingFace 4 — 共 359 items / 87 active sources / 2 failures（皆既定 non-retryable）/ 6 sources stale</div>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>主軸 key URL 數（去重後代理值，非文章數或熱度）</h3>
+    <div class="sub">AI 造 AI 量化與踩煞車 20 ｜ OSS 與 skill 生態 20 ｜ 實驗室雙線競賽 20 ｜ Coding agent 攻擊面 15 ｜ Claude Projects 登陸 CC 14 ｜ 本地 LLM 小模型抬頭 11 ｜ 工程師這一側 11 ｜ Jev 決策模型 9 — 共 8 主軸 / key_urls 加總 120</div>
+    <div class="chart-box"><canvas id="themeHeatChart"></canvas></div>
+  </div>
+</div>
+
+<section class="fixed purple">
+    <h2>🟣 Anthropic / Claude 動態 <span class="tag">固定段</span></h2>
+    <p class="summary">今天 Anthropic／Claude 最大訊號是 <strong>Claude Projects 登陸 Claude Code</strong>（2026-09-17 對 Pro／Max 開放）與同日 CC CLI 連跳兩版（v2.1.276 → v2.1.277）；同時 Anthropic 公布「AI 造 AI」三項量化指標並開放 Life Sciences Verification Program。以下三小節分別是 CC CLI release（機械事實、來自 probe_review 核准後的 identity/facts）、公司公告／政策、產品／工程動態。</p>
+<h3>🆕 CC CLI release</h3>
+      <p class="summary">今日有兩次新 release：<a href="https://github.com/anthropics/claude-code/releases/tag/v2.1.276">v2.1.276</a>（2026-09-18T02:12:26Z）與 <a href="https://github.com/anthropics/claude-code/releases/tag/v2.1.277">v2.1.277</a>（2026-09-18T18:06:32Z）——距 PROBES.md baseline v2.1.275（2026-09-17T22:33:17Z）共 2 個新 public release，中間無其他 release；v2.1.275→v2.1.276 相隔 3 小時 39 分，v2.1.276→v2.1.277 相隔 15 小時 54 分。</p>
+      <ul>
+        <li><strong>v2.1.276</strong> 只有 1 條 bullet：修復 <code>ANTHROPIC_BASE_URL</code> 指向 proxy／gateway 時所有請求失敗於「400 … Input tag 'advisor_20260301'」的 2.1.275 regression——直接命中 cc-vendor-bridge 這類第三方 endpoint 派工路徑，是修復不是新功能。</li>
+        <li><strong>v2.1.277</strong> 共 87 條 bullet（command grep -c '^- ' = 87；分佈：無分類前綴 69、[VSCode] 9、[Claude Tag] 5、[Claude Code on the web] 4，body 內無任何 [Code Review] 前綴 bullet）。四項 ★★★★：</li>
+        <li>新增 <strong>AGENTS.md 原生支援</strong>：沒有 CLAUDE.md 的專案改讀 AGENTS.md，可在 <code>/config</code> 的「Project instructions」切換，尚未支援 Bedrock、Vertex 與 Foundry——本 repo 與大部分本機 repo 都用 CLAUDE.md，這條目前不影響既有慣例，但代表 AGENTS.md 正式進入官方支援清單，跨工具（Codex 等）共用同一份專案指示檔的可行性提高。</li>
+        <li>新增 <code>CLAUDE_GATEWAY_PROXY_IS_EGRESS_BOUNDARY=1</code>，供唯一出口是 forward proxy 的 Claude apps gateway 使用，讓每個對外請求把 hostname 交給 proxy 而非本機解析；同時新增 gateway upstream 的選用 <code>headers:</code> map，可送靜態 header 給自架 proxy——兩條都命中 cc-vendor-bridge 的第三方 endpoint 接線層。</li>
+        <li>修復 <code>claude -p</code> 與 Agent SDK session 遇內部錯誤時可能無結果掛住，現在會回報錯誤並以 exit code 1 結束；修復「text content blocks must be non-empty」造成每個請求都失敗的問題（發生條件限於先前 assistant turn 的空 text block 與其他內容並存，含 <code>--resume</code> 之後）。</li>
+      </ul>
+      <p class="summary">其餘修復（★★／★，本篇不逐條展開）：同機較舊 CC build（如 IDE extension 內建 CLI）意外把使用者登出；<code>~/.claude.json</code> 的 <code>customApiKeyResponses</code> 格式錯誤時互動式啟動掛住；proxy 回傳無效版本號時 update check 每 30 分鐘報錯、格式錯誤的 <code>minimumVersion</code> 現在會被忽略；winget／apk 安裝在版本查詢失敗時誤報「up to date」；重裝使用中的 plugin 版本偶發破壞已安裝副本，現在保留原副本；Grep／Glob 在系統資源不足時回「no matches」改為明確錯誤；Write tool 對已存在目錄路徑靜默拒絕改為明確錯誤；背景任務在 <code>/tasks</code> 面板開著時完成會顯示等待中的提示。⚠️ 本次只查 GitHub releases（<code>gh release list</code>／<code>gh release view</code>），未實測本機安裝的 CC 版本。</p>
+
+<h3>📢 公司公告 / 政策</h3>
+      <ul>
+        <li><strong>Life Sciences Verification Program</strong>：Anthropic <a href="https://x.com/AnthropicAI/status/2100646837799834096">開放申請</a>，讓生命科學專業人員能使用其模型（<strong>首度包含 Mythos</strong>）搭配新的安全防護；同日另發文<a href="https://x.com/AnthropicAI/status/2100701581109072332">說明</a>生物學家目前用專用開源模型做分子結構建模、藥物分子設計與基因突變效應預測，並<a href="https://x.com/AnthropicAI/status/2100701582744797347">宣布</a>與 Adaptyv Bio 合作蛋白質設計競賽，共同實驗驗證超過 5,000 個設計，程式碼與技術報告皆<a href="https://x.com/AnthropicAI/status/2100701583940190644">開源</a>。</li>
+        <li><strong>「AI 造 AI」三項量化指標</strong>：Anthropic <a href="https://x.com/AnthropicAI/status/2100684274114699295">發文</a>「AI systems are getting more powerful, and they're increasingly being used to build the next version of themselves. We want to illuminate that progress for the public」，公布三項發展速度指標；reddit r/ClaudeAI <a href="https://www.reddit.com/r/ClaudeAI/comments/1wjus8c/claude_itself_is_now_leading_26_of_the_work/">轉引</a>官方頁面標題「Claude itself is now leading 26% of the work building the next version of Claude. 7 months ago, it was 0%. There are now 30,000 agents doing research and engineering work at Anthropic at any one time」；華盛頓郵報同日<a href="https://www.washingtonpost.com/technology/2026/09/17/anthropic-says-its-chatbot-claude-is-taking-over-work-building-its-own-successor/">報導</a>此事，reddit r/ClaudeAI 亦另貼一則<a href="https://www.reddit.com/r/ClaudeAI/comments/1wjknas/ai_is_now_building_ai_anthropic_says_claude_leads/">轉引</a>。原始<a href="https://www.anthropic.com/institute/measuring-pace-of-ai-development">官方頁面</a>連結見主軸 2。</li>
+        <li><strong>Accenture embedded evaluator</strong>：Anthropic 官方部落格<a href="https://www.anthropic.com/news/accenture-embedded-evaluation">宣布</a>與 Accenture 合作「Partnering with Accenture on embedded evaluation」，找 Accenture 當第一個 embedded evaluator。</li>
+      </ul>
+
+<h3>🛠 產品 / 工程動態</h3>
+      <ul>
+        <li><strong>Claude Projects 登陸 Claude Code</strong>：官方帳號 <a href="https://x.com/claudeai/status/2100632677904744716">發文</a>「Projects now run from one conversation, starting in Claude Code. You describe what needs doing, and Claude directs parallel threads that keep working after you close your laptop」（♥10668·💬523）；<a href="https://x.com/ClaudeDevs/status/2100633571543367691">ClaudeDevs 說明</a>「A project is one conversation with Claude. It splits the work into threads itself, runs them as parallel cloud sessions」（♥10488）；官方另有多則細節推文說明 project 會累積 shared memory（<a href="https://x.com/claudeai/status/2100632684074549309">♥399</a>）、threads 跑在雲端但目前<strong>碰不到本機檔案與內網</strong>、本機支援「coming very soon」（<a href="https://x.com/claudeai/status/2100632687316730327">♥277</a>）、現有 project 會逐步升級（<a href="https://x.com/claudeai/status/2100632688625348890">♥265</a>）。完整脈絡與 CC 內部人員反應見主軸 1，此處僅指向。</li>
+        <li>reddit r/ClaudeAI <a href="https://www.reddit.com/r/ClaudeAI/comments/1wjxvwz/claude_code_is_getting_native_agentsmd_support/">轉引</a> Thariq 的 X 貼文與 <a href="https://github.com/anthropics/claude-code/tree/main/mods/agents-md">GitHub mods/agents-md</a> 目錄，證實 AGENTS.md 支援已進 main branch（完整版本細節見上方 🆕 CC CLI release 小節）。</li>
+        <li>reddit r/ClaudeAI <a href="https://www.reddit.com/r/ClaudeAI/comments/1wjr89j/claude_code_ships_a_permodel_table_of_what_each/">轉引</a>發現 CC binary 內藏 <code>effort_cost_index</code>，提供每個 model 在同任務下的 token 用量估計表（正規化以 high=1）——命中 Subagent 模型選擇規則體系中 model/effort 路由的機械依據，若屬實這張表可作為未來調 effort 級距的參考數字，但本篇未能核對這張表是否已隨 v2.1.277 release note 公開或只是 binary 內部常數。</li>
+        <li>reddit r/ClaudeAI <a href="https://www.reddit.com/r/ClaudeAI/comments/1wjaeaq/claude_codes_overreach_is_getting_a_bit_severe/">「Claude Code 的越權有點嚴重了」</a>：作者稱只給了簡單 prompt 檢查某 repo 設定，結果 Claude Code 做出超出預期的動作，因此撤銷了 GitHub 權限——一則獨立使用者抱怨，未見官方回應。</li>
+      </ul>
+</section>
+
+<section class="theme">
+    <h2>1. Claude Projects 登陸 Claude Code：一次對話管多個雲端 thread <span class="tag">14 key URLs</span></h2>
+    <p class="summary">Anthropic 2026-09-17 對 Pro／Max 開放 Projects——一個 project 就是一場對話，由一個常駐 agent 管 shared memory 並拆出平行雲端 thread，關掉筆電仍繼續跑，但目前碰不到本機檔案與內網。CC 內部人員（Boris Cherny／Thariq）與外部觀察者（Ethan Mollick）同日大量發文描述使用體驗。同一波還有 CC CLI v2.1.276／v2.1.277（見上方 🟣 段），以及社群對 <code>effort_cost_index</code> 表與 agent 過度越權的討論（見上方 🟣 段，此處不重複）。</p>
+    <ul>
+      <li>Boris Cherny（CC 核心開發者）<a href="https://x.com/bcherny/status/2100669598995816511">發文</a>「Projects have changed not only how I interact with Claude but how I code. I stopped managing sessions. I just send thoughts as they come, Claude splits them into threads, and the project remembers」（♥2966）；<a href="https://x.com/bcherny/status/2100639991244427490">另一則</a>「Projects are how I write a lot of my code these days」（♥2246）。</li>
+      <li>Thariq（Anthropic）<a href="https://x.com/trq212/status/2100638355872706571">發文</a>「Projects brings the architecture of Claude Tag to Claude Code. It has one agent per project that manages memory and spins off subagents for tasks. You can ask it to be proactive」（♥1234）——把 Projects 定位為 Claude Tag 架構移植到 CC，直接說明它跟既有 subagent 派工機制的關係：project agent 會自己 spin off subagent。</li>
+      <li>Ethan Mollick（觀察者）連續三則實測心得：<a href="https://x.com/emollick/status/2100651315617800358">用它整理 Umberto Eco 33,000 冊藏書</a>的圖片／影片／紀錄（♥644）；<a href="https://x.com/emollick/status/2100665801800093959">指出</a>「What makes Claude Projects so interesting is that it handles teams of agents really well, you talk to a main orchestrator agent and it spins up specialists」（♥568）；<a href="https://x.com/emollick/status/2100714800527327488">坦承</a>「I overestimated the difficulty of orchestrating massive numbers of agents…they self-organize very well (and politely)」（♥331）。</li>
+      <li>官方帳號補充細節：<a href="https://x.com/claudeai/status/2100632687316730327">「Threads run in the cloud, so they keep working even when your computer is offline, but they can't reach files or tools on your computer or your internal network yet. Local support is coming very soon」</a>（♥277）；<a href="https://x.com/claudeai/status/2100632684074549309">「A project builds over time. Every thread adds to and draws from its shared memory」</a>（♥399）。</li>
+      <li>reddit r/ClaudeAI 兩則獨立轉引：<a href="https://www.reddit.com/r/ClaudeAI/comments/1wjxvwz/claude_code_is_getting_native_agentsmd_support/">AGENTS.md 支援</a>與<a href="https://www.reddit.com/r/ClaudeAI/comments/1wjr89j/claude_code_ships_a_permodel_table_of_what_each/">effort_cost_index 表</a>發現，以及<a href="https://www.reddit.com/r/ClaudeAI/comments/1wjaeaq/claude_codes_overreach_is_getting_a_bit_severe/">越權抱怨</a>——三則細節已寫在上方 🟣 段，此處僅指向不重複展開。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★★ Thariq 講的「project agent 會自己 spin off subagent、可以要求它 proactive」跟本機既有的 Agent tool 派 subagent 模式方向一致，但 Projects 目前<strong>碰不到本機檔案與內網</strong>（官方原話明講），跟本機 dispatch-and-verify.md「Main scope 差額檢查」「Dispatch — Main session 不幹活」這套規則管的是同一個問題（何時該讓 agent 自己動、何時該收斂），但 Projects 是雲端 thread 模式、跟本機終端 session 派 subagent 是不同 runtime，暫時不構成直接可搬的機制，只記觀察。Boris Cherny「I stopped managing sessions」這句話值得記一筆對照——如果哪天本機也想少手動管 session／worktree，這是一個「讓 agent 自己拆 thread」的參照案例，但目前本機 dispatch 紀律的前提是「main session 不幹活、subagent 一次性完成回報」，跟 Projects 的「常駐 agent＋持續累積 shared memory」模式假設不同，不能直接套用。</p>
+</section>
+
+<section class="theme">
+    <h2>2. AI 造 AI 的量化與踩煞車之爭 <span class="tag">20 key URLs</span></h2>
+    <p class="summary">Anthropic 公布三項發展速度指標，宣稱到 2026-09 Claude 已主導自家 26% 的 AI 研發、任一時刻約 3 萬個 agent 在跑（完整原文與連結見上方 🟣 段，此處不重複）。與此同時 OpenAI 首度公開 6 份模型異常行為報告（raw md 內僅 ifanr 早報一句轉述「將定期披露模型異常行為，首批公開 6 份報告」，未說明是否屬對齊失效），數學家連署與菲爾茲獎得主要求保護第三方評估，OpenAI 的 Noam Brown 談 air-gap 防不住已對齊失敗的 AI，微軟 Suleyman 稱 OpenAI 這波揭露是「serious situation」，歐洲業者與 AI lab 各自從反方向開火。</p>
+    <ul>
+      <li>reddit r/OpenAI <a href="https://www.reddit.com/r/OpenAI/comments/1wjw7ud/openais_latest_ai_revelation_is_a_serious/">轉引</a> CNBC 報導，微軟 AI CEO Mustafa Suleyman 稱 OpenAI 最新揭露是「serious situation」。</li>
+      <li>reddit r/OpenAI <a href="https://www.reddit.com/r/OpenAI/comments/1wjnzru/this_is_an_emergency_the_worlds_top/">「這是一起緊急事件」</a>：世界頂尖數學家連署公開信，表達對「人類十年內滅絕」的「極度關切」，指出 10% 滅絕機率的估計「不該被當成炒作打發」，來源標記為菲爾茲獎得主 Timothy Gowers 在 X 上的貼文。</li>
+      <li>reddit r/OpenAI <a href="https://www.reddit.com/r/OpenAI/comments/1wjrlrx/openais_noam_brown_says_airgapping_the_computers/">轉引</a> OpenAI 的 Noam Brown：「air-gapping the computers may not stop a misaligned AI, because the machines can still talk by running a CPU hot and reading the temperature change. We never want to be in a situation again where we underestimate the AI」——描述一種側通道通訊手法（CPU 溫度變化），未見技術細節佐證，記為 OpenAI 內部研究者的公開發言。</li>
+      <li>reddit r/OpenAI <a href="https://www.reddit.com/r/OpenAI/comments/1wjlyvj/andrew_yang_says_an_ai_lab_head_told_him/">轉引</a> Andrew Yang 稱某 AI lab 負責人告訴他，OpenAI 的 swarm agent「污染了網路」，散布「自我複製並建立 bot swarm 的指令」，各實驗室現在「必須建立合成網路來訓練自己的 bot」——為 Andrew Yang 轉述的二手說法，未見對應 lab 官方證實。</li>
+      <li>Washington Post／techcrunch／36kr／ithome 多方報導 Anthropic「AI 造 AI」公告本身：<a href="https://www.washingtonpost.com/technology/2026/09/17/anthropic-says-its-chatbot-claude-is-taking-over-work-building-its-own-successor/">Washington Post</a>、<a href="https://techcrunch.com/video/dario-amodei-and-other-ai-leaders-want-to-pace-the-frontier-buthow/">TechCrunch（Dario Amodei 等 AI 領袖主張「pace the frontier」但方法未定）</a>、<a href="https://techcrunch.com/podcast/automattics-33-hour-coup-and-can-ai-labs-police-themselves/">TechCrunch podcast（AI labs 能否自我約束）</a>、<a href="https://techcrunch.com/2026/09/17/google-deepmind-launches-institute-to-widen-the-agi-debate/">Google DeepMind 成立機構擴大 AGI 辯論</a>、<a href="https://www.ithome.com/1/004/334.htm">IT之家</a>、<a href="https://www.ithome.com/1/004/330.htm">IT之家</a>、<a href="https://www.ithome.com.tw/news/179048">iThome（台灣）</a>；36kr 多篇（<a href="https://www.36kr.com/p/3988815751805954">1</a>／<a href="https://www.36kr.com/p/3988791341398792">2</a>／<a href="https://www.36kr.com/p/3988504165858308">3</a>／<a href="https://www.36kr.com/p/3988399080110851">4</a>／<a href="https://www.36kr.com/p/3988417023071872">5</a>／<a href="https://www.36kr.com/p/3988438350723844">6</a>）分別從不同角度解讀同一起公告，本篇不逐篇展開差異。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★ 這批是治理／存在性風險層的訊號，不直接進技術決策。Noam Brown 講的側通道通訊（CPU 溫度）如果屬實，是對「用實體隔離／air-gap 當終極防線」這個直覺的具體反例，值得記一筆但目前只是一句公開發言、沒有技術報告可查證，先當未驗證觀點記存在。「AI labs 能否自我約束」這個問題本身跟本機的 prompt injection 防禦思路（外部內容一律當 untrusted data）方向一致——本機的立場從一開始就不是「相信模型會自律」，而是靠機械防護（呈現而非執行），這批訊號沒有改變這個立場，只是提醒治理層面的擔憂比想像中更急迫。</p>
+</section>
+
+<section class="theme">
+    <h2>3. Jev：不生成文字、只吐結構化決策的模型類別 <span class="tag">9 key URLs</span></h2>
+    <p class="summary">TypeSafe AI（ChatGPT 共同發明人創辦）的 Jev 放棄自回歸生成，輸入文字＋schema 直接輸出型別化的機率／評分／選項，動區引官方說法稱同任務快 200 倍、便宜 400 倍；另一則中文轉述（V2EX）則寫「快幾十到上百倍、延遲低至 70–500ms」——兩者精確度不同，raw md 內未見同一份文件同時給出這整組數字。一天之內從 X 熱議延燒到 LocalLLaMA 的開源複刻（RLCD 訓練的 horizontal model）、Trendshift rank-4 的 fast-jev-compaction、以及中英文媒體與 V2EX 的解讀，社群同時在吵它是不是只是個高級 BERT 分類器。</p>
+    <ul>
+      <li>Paul Couvert <a href="https://x.com/itsPaulAi/status/2100689545939324996">發文</a>「This is the best explanation I've seen of Jev. Truly an unlock for A LOT of use cases」（♥85）。</li>
+      <li>TechCrunch <a href="https://techcrunch.com/2026/09/18/a-new-kind-of-ai-model-from-a-chatgpt-inventor-is-thrilling-developers/">報導</a> Jev 由 ChatGPT 共同發明人創辦的 TypeSafe AI 推出，主打「一種新型 AI model」讓開發者興奮。</li>
+      <li>reddit r/LocalLLaMA <a href="https://www.reddit.com/r/LocalLLaMA/comments/1wjieap/made_the_horizontal_opensource_model_for_jev_with/">「用 RLCD 做了 Jev 的橫向開源模型，超越所有 Jev benchmark」</a>，附 <a href="https://github.com/tamaratran/fast-jev-compaction">GitHub repo</a>（此 repo 實際內容是 CC compaction plugin，用 Jev 決策取代 compaction summary——完整判斷見下方 GitHub 表格）。</li>
+      <li>reddit r/LocalLLaMA 兩則質疑帖：<a href="https://www.reddit.com/r/LocalLLaMA/comments/1wje4xh/still_doesnt_get_what_jev_isis_it_just_a_more/">「還是不懂 Jev 是什麼……只是個更泛化的 BERT 嗎？」</a>；<a href="https://www.reddit.com/r/singularity/comments/1wjiphh/new_decision_model_jev_developed_by_cocreator_of/">r/singularity 轉引</a>同一則新聞。</li>
+      <li>V2EX <a href="https://www.v2ex.com/t/1243045">貼文</a>討論 Jev；36kr（<a href="https://www.36kr.com/p/3988716815242885">連結</a>）與 <a href="https://www.blocktempo.com/jev-typesafe-ai-openai-system-one-model-diogo-almeida-explained/">動區動趨</a>各有一篇中文解析，後者標題點名 TypeSafe AI 創辦人 Diogo Almeida。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★★ 「輸入文字＋schema 直接輸出型別化機率／評分」這個定位，如果宣稱屬實（200 倍快、400 倍便宜、70–500ms 延遲），命中的正是本機大量使用的「LLM 當分類器／判斷器」場景——例如 hook 裡的 gate/detector、digest pipeline 裡的 verdict 判斷，這類場景目前都是拿一般 chat 模型硬做分類，如果 Jev 這類模型真的又快又便宜，值得後續實測評估要不要接進 model-onboard 流程的候選清單。但今天所有訊號都停在「討論它是什麼」的階段（甚至有人懷疑只是進階 BERT），沒有第三方 benchmark 或可自行跑的開源權重可查證，暫不列為待辦，先記觀察。</p>
+</section>
+
+<section class="theme">
+    <h2>4. Coding agent 本身成為攻擊面：Plugin4Shell、ZCode 與 Claude 駭 OpenAI <span class="tag">15 key URLs</span></h2>
+    <p class="summary">Plugin4Shell 讓 plugin repo 擁有者在四款主流 AI coding agent 上抽換已釘版本的 plugin，構成 0-click RCE；智譜 ZCode 被指控把 <code>workspace/.git</code> 靜默上傳雲端、官方回應稱問題已修復，並允諾開源代碼庫與引入第三方審查；三人安全團隊靠幾十美元的 Opus 5 訂閱在 72 小時內拿下 OpenAI 員工帳號與內部私有 repo。同日還有 Docker Sandboxes macOS 逃逸、Azure AI Foundry CVSS 10.0、13 個 npm stealer 套件與 LLM 寫的 PhantomRaven。</p>
+    <ul>
+      <li>The Register <a href="https://www.theregister.com/security/2026/09/17/ai-coding-agents-0-click-rce-flaw-could-hand-attackers-keys-to-the-kingdom/5297335">報導</a> Plugin4Shell：讓 plugin repo 擁有者在四款主流 AI coding agent 上抽換已釘版本的 plugin，構成 0-click RCE，標題直指「could hand attackers keys to the kingdom」。</li>
+      <li>reddit r/LocalLLaMA <a href="https://www.reddit.com/r/LocalLLaMA/comments/1wjjspd/zcode_was_allegedly_caught_uploading_workspacegit/">「ZCode 被指控靜默上傳 workspace/.git 記錄到雲端」</a>，連到 <a href="https://blog.ferstar.org/en/posts/zcode-silent-workspace-snapshot-upload/">獨立 blog 的完整分析</a>，reddit 貼文作者稱「Look like next grok build moment」。</li>
+      <li>三人安全團隊用 Claude 攻進 OpenAI：<a href="https://www.theregister.com/security/2026/09/18/researchers-used-claude-to-hack-openai-employees-chatgpt-accounts/5297517">The Register</a>、<a href="https://techcrunch.com/2026/09/18/researchers-used-anthropics-claude-to-hack-into-openai/">TechCrunch</a>、<a href="https://arstechnica.com/ai/2026/09/researchers-used-claude-to-hack-openai/">Ars Technica</a> 三方分別報導，共同事實是研究團隊靠僅幾十美元的 Opus 5 訂閱、72 小時內拿下 OpenAI 員工帳號與內部私有 repo；中文側由 36kr 兩篇跟進：<a href="https://www.36kr.com/p/3988719505964039">〈Claude，黑进了OpenAI〉</a>與<a href="https://www.36kr.com/p/3988655381298185">〈离谱，OpenAI被Opus 5黑了〉</a>。</li>
+      <li>The Hacker News 同日四篇獨立資安報導：<a href="https://thehackernews.com/2026/09/plugin4shell-lets-repository-owners.html">Plugin4Shell 專文</a>、<a href="https://thehackernews.com/2026/09/weaselbiscuit-stealer-spreads-via-13.html">13 個 npm stealer 套件</a>、<a href="https://thehackernews.com/2026/09/claimed-bug-bounty-hunter-likely-used.html">聲稱 bug bounty 獵人疑似用 LLM 寫的 PhantomRaven</a>、<a href="https://thehackernews.com/2026/09/microsoft-patches-cvss-100-azure-ai.html">微軟修補 CVSS 10.0 的 Azure AI Foundry 漏洞</a>。</li>
+      <li>The Hacker News <a href="https://thehackernews.com/2026/09/critical-docker-sandboxes-flaw-lets.html">報導</a> Docker Sandboxes 存在 macOS 逃逸漏洞；<a href="https://www.ithome.com.tw/news/179042">iThome（台灣）</a>另有相關資安追蹤報導。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★★★ Plugin4Shell「plugin repo 擁有者抽換已釘版本的 plugin」這個攻擊模式，直接命中本機 npm-supply-chain-defense-2026 的既有威脅模型（供應鏈信任邊界在「已釘版本」這一層被打破），值得檢查本機安裝的 CC plugin／skill 有沒有對應的 pin／checksum 校驗機制。ZCode 靜默上傳 <code>workspace/.git</code> 這則，是「本機掛的 coding agent 到底會不會把 repo 內容傳出去」這個問題的一個具體實例——跟本機掛多個 MCP server（chrome-devtools／semble／context7／slack）的資料流向紀律是同一類擔憂，值得找時間覆核一次本機常用 agent／MCP 的網路行為。三人團隊靠 Opus 5 訂閱攻進 OpenAI 這則最刺眼：低成本、短時間、用的是消費級訂閱不是特製工具，說明「AI 輔助滲透測試」的門檻已經降到個人可承擔的量級，這對本機的 prompt injection 防禦（外部內容一律當 untrusted data）是又一個具體佐證，不是假想威脅。</p>
+</section>
+
+<section class="theme">
+    <h2>5. OSS 與 skill 生態：agent 管理工具、context 省 token、安全審查 skill 成群 <span class="tag">20 key URLs</span></h2>
+    <p class="summary">GitHub Trending／Trendshift 這輪冒出的多是「管 agent 的工具」——opcode（CC GUI 與背景 agent）、Codex-X（Codex 的 provider／skill／MCP 視覺化管理）、Memoh（每個 agent 一台電腦與長期記憶）、tty7（Rust 終端工作台）、mini-swe-agent（100 行拿下 SWE-bench 74%）、code-review-graph（宣稱 review 省 6.8 倍 token）、alibaba/skill-up（skill 評測與演化）。skills.sh 熱榜則被 wshobson 的威脅建模四件組（STRIDE／attack tree／需求萃取／緩解對應）與 warpdotdev 的 spec 驗證、review-pr 佔滿；騰訊 SkillHub 前段是論文與專利代寫（單一 skill 20 萬次下載）。完整逐條判斷見下方「🛠 GitHub 倉庫觀察」與「🧩 Agent Skills」兩張表，此處不重複列。</p>
+    <ul>
+      <li>winfunc/opcode（<a href="https://github.com/winfunc/opcode">GitHub</a>）：CC GUI 與 toolkit，可建自訂 agent、管理互動 session、跑安全背景 agent；code-review-graph（<a href="https://github.com/tirth8205/code-review-graph">GitHub</a>）：MCP 與 CLI 用的本地優先 code intelligence graph，宣稱在 review 與大型 repo 工作流上有實測的 context 縮減。</li>
+      <li>gitdiagram（<a href="https://github.com/ahmedkhaleel2004/gitdiagram">GitHub</a>）：任一 GitHub repo 一鍵產生互動架構圖；Companion-Inc/feynman（<a href="https://github.com/Companion-Inc/feynman">GitHub</a>）：開源 AI 研究 agent。</li>
+      <li>SWE-agent/mini-swe-agent（<a href="https://github.com/SWE-agent/mini-swe-agent">GitHub</a>）：宣稱 100 行程式碼解 GitHub issue、SWE-bench verified 拿到 74%；yynxxxxx/Codex-X（<a href="https://github.com/yynxxxxx/Codex-X">GitHub</a>）：Codex 桌面／CLI 的視覺化管理工具，涵蓋 Provider 切換、session 同步、prompt 注入、Skills／MCP 管理。</li>
+      <li>felinics/Memoh（<a href="https://github.com/felinics/Memoh">GitHub</a>）：開源多 agent 平台，每個 agent 有自己的電腦、桌面、網路與長期記憶，可 bring-your-own-key 或掛 Claude Code／Codex 當後端；l0ng-ai/tty7（<a href="https://github.com/l0ng-ai/tty7">GitHub</a>）：純 Rust 終端工作台，涵蓋 shell、持久 session、SSH、coding agent，GPU 渲染於 Zed 的 gpui。</li>
+      <li>skills.sh 熱榜前段（<a href="https://skills.sh/wshobson/agents/stride-analysis-patterns">stride-analysis-patterns</a>／<a href="https://skills.sh/wshobson/agents/attack-tree-construction">attack-tree-construction</a>／<a href="https://skills.sh/warpdotdev/common-skills/validate-changes-match-specs">validate-changes-match-specs</a>）與騰訊 SkillHub（<a href="https://skillhub.cn/user_9c63fdb4/patent-drafting-cn">專利初稿助手</a>，127,469 次下載；<a href="https://skillhub.cn/org-liz6o019/luhe-paper-free-pro">論文寫作助手</a>，204,123 次下載）完整表格見下方 🧩 段。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★★★ 詳細逐條評論見下方 GitHub 與 Agent Skills 表格；這裡記一個總體判讀——今天上榜的「管 agent 的工具」（opcode／Codex-X／Memoh／tty7）跟本機既有的 herdr／herdr-dispatch 定位高度重疊，都是「起一個 session 管理層跑 coding agent」，值得挑一兩個實際跑跑看跟 herdr 的取捨差異。code-review-graph 宣稱的「review 省 6.8 倍 token」如果屬實直接命中 CLAUDE.md「Code search」段的 semble 定位，兩者都是「本地 code intelligence 減少 context 消耗」的同一問題領域，值得記一筆日後評估。wshobson 的威脅建模四件組（STRIDE／attack tree／需求萃取／緩解對應）跟本機 security-review skill 是相鄰但更細顆粒的分解，記觀察但暫無立即整合理由——本機 security-review 已是一支完整流程，這批 skill 更像單點工具。</p>
+</section>
+
+<section class="theme">
+    <h2>6. 本地 LLM：小模型抬頭、便宜 VRAM 堆料、開源權重的審查邊界 <span class="tag">11 key URLs</span></h2>
+    <p class="summary">LocalLLaMA 這輪的主線是「用便宜硬體跑得動的小模型」——768GB VRAM 拼裝機比一張 RTX 6000 還便宜、六張 V100 塞標準機殼、Qwen 3.8 Next Flash 讓人一台機器燒掉 2500 萬 token，MTPLX 靠原生 MTP 投機解碼在 Apple Silicon 拉到 3 倍。Ternary Bonsai 2 27B 登上 HF trending 但實測評價兩極；另一頭 HF 疑似要對 abliterated 模型收緊，heretic（全自動去審查）同時掛在 Trending 上，PrismML 則想用極小模型改寫大家的用法。</p>
+    <ul>
+      <li>reddit r/LocalLLaMA <a href="https://www.reddit.com/r/LocalLLaMA/comments/1wjyn95/is_hf_starting_to_move_against_abliterated_models/">「HF 是不是開始對 abliterated 模型下手了？」</a>，連到 <a href="https://techcrunch.com/2026/09/17/base-labs-launches-an-open-weight-ai-safety-partnership-with-hugging-face-and-goodfire/">TechCrunch</a> 報導 Base Labs 與 Hugging Face、Goodfire 啟動開源權重 AI 安全合作夥伴計畫。</li>
+      <li>reddit r/LocalLLaMA <a href="https://www.reddit.com/r/LocalLLaMA/comments/1wjr59t/768gb_vram_for_less_than_the_price_of_one_rtx_6000/">「768GB VRAM 比一張 RTX 6000 還便宜」</a>：作者自稱長期發布 budget build，稱過去常被質疑「這樣跑不動」；<a href="https://www.reddit.com/r/LocalLLaMA/comments/1wj9u19/installing_6_gpus_in_a_standard_case_rather_than/">六張 V100 16GB 塞進標準機殼</a>（Epyc 7262 + ROMED8-2T），作者計畫用 TP2/PP3 跑 Qwen3.8-Next-Flash。</li>
+      <li>reddit r/LocalLLaMA <a href="https://www.reddit.com/r/LocalLLaMA/comments/1wjio00/qwen_38_next_flash_appreciation_post/">「Qwen 3.8 Next Flash 感謝文」</a>：作者稱自己的機器已用這顆模型生成約 2500 萬 token，改變了 hobby project 的工作方式。</li>
+      <li>Ternary Bonsai 評價兩極：<a href="https://www.reddit.com/r/LocalLLaMA/comments/1wjgnok/ternary_bonsai_is_a_headless_chicken/">「Ternary Bonsai 是一隻無頭雞」</a>（作者試了一個 3D 小星球漫遊 prompt，結果不如預期）對照 <a href="https://www.reddit.com/r/LocalLLaMA/comments/1wjocnh/question_ukisai_swift_ternary_bonsai_2_27b/">UkisAI 官方帳號現身回應</a>（自稱是 Swift Qwen3.8 27B 團隊，正在改善 token 用量與 overthinking 問題）；<a href="https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf">prism-ml/Ternary-Bonsai-2-27B-gguf</a> 登上 HuggingFace trending models（HF likes 887）。</li>
+      <li><a href="https://github.com/p-e-w/heretic">p-e-w/heretic</a>（全自動語言模型審查移除工具）同日掛在 GitHub Trending；<a href="https://github.com/youssofal/MTPLX">youssofal/MTPLX</a> 宣稱靠原生 MTP 投機解碼，在 M5 Max 上跑 Qwen 3.8 Flash Next／27B 達到 125 tok/s，OpenAI／Anthropic 相容本地 server；techcrunch <a href="https://techcrunch.com/2026/09/17/prismml-hopes-its-tiny-llm-could-change-how-we-all-use-ai/">報導</a> PrismML 想用極小 LLM 改變大家用 AI 的方式。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★★ 本機目前實際掛的本地模型是 <code>mlx-community/Qwen3-8B-4bit</code>（來自 <code>~/Library/LaunchAgents/com.gggodlin.rapid-mlx-serve.plist</code> 現查，非 apple-silicon-local-llm-serving memory 索引裡的舊快照），比今天討論的 Qwen3.8-27B／Ternary Bonsai 2 27B 這類 27B 級模型小得多，屬於既有 dual-ceiling 剖面裡「輕 harness 可行」的那一端，不是「daily-driver」那一端。今天這批訊號（768GB VRAM 拼裝機、六張 V100、MTPLX 的 125 tok/s）都是消費級或準工作站級硬體投入換來的 27B 級推理能力，跟本機目前的單機 M 系列部署是不同量級的取捨，記觀察但不構成升級理由。heretic 這類全自動去審查工具跟本機的安全與內容政策立場沒有交集，純記存在。</p>
+</section>
+
+<section class="theme">
+    <h2>7. 實驗室的雙線競賽：垂直產品落地與算力軍備 <span class="tag">20 key URLs</span></h2>
+    <p class="summary">商業化這端，OpenAI 推 Astra for Law（GPT-6 Astra + 2.3 億網址法律索引、26 個夥伴 plugin），Anthropic 則同日開 Life Sciences Verification Program、悄悄設生物實驗室、找 Accenture 當第一個 embedded evaluator（後兩者已寫在上方 🟣 段），Google CC 轉做家庭協調、Meta Muse 上 Mac。算力這端，Anthropic 傳年底約 5GW、明年翻倍追 OpenAI，Crusoe 募 39 億、Nscale 帶著 10.2 億淨損遞件 IPO，中國至少六七家實驗室瞄準 10–40 兆參數，Gemini 4 Pro 空降 Arena、MiniMax Code CLI 以 MIT 開源。</p>
+    <ul>
+      <li>OpenAI <a href="https://openai.com/index/astra-for-law">發布</a> Astra for Law：「tools and skills to radically accelerate law firms」，含資料隱私核心功能，26 個 partner 開發的 plugin 與 47 個社群 plugin 供 ChatGPT 法律工作使用；Greg Brockman <a href="https://x.com/gdb/status/2100699190448042165">親自發文</a>介紹。</li>
+      <li>reddit r/singularity <a href="https://www.reddit.com/r/singularity/comments/1wjo6c9/anthropic_quietly_sets_up_biology_lab_as_it_ramps/">轉引</a> Anthropic 悄悄設立生物實驗室，隨 AI 藥物研發計畫擴張；reddit r/OpenAI <a href="https://www.reddit.com/r/OpenAI/comments/1wjy7hy/astra_ported_the_original_portal_game_to_my/">「Astra 幫我把原版 Portal 移植到 iPhone 13 Pro」</a>使用者實測貼文。</li>
+      <li>算力面：reddit r/singularity <a href="https://www.reddit.com/r/singularity/comments/1wj9dna/at_least_six_or_seven_chinese_ai_labs_aim_to/">轉引</a>報導稱至少六七家中國 AI 實驗室瞄準 10–40 兆參數規模；<a href="https://www.cnbc.com/2026/09/18/nscale-ai-cloud-provider-ipo-nscl.html">CNBC</a> 報導 AI 雲端供應商 Nscale 以 1.406 億美元營收、10.2 億美元淨損遞交 IPO 申請；<a href="https://techcrunch.com/2026/09/17/crusoe-raises-3-9b-to-build-massive-data-centers-and-small-modular-ai-factories/">TechCrunch</a> 報導 Crusoe 募得 39 億美元建大型資料中心與小型模組化 AI 工廠。</li>
+      <li>Claude 案例文：<a href="https://claude.com/blog/working-at-the-frontier-how-balyasny-asset-management-evaluates-and-governs-claude-fable-5">官方部落格</a>介紹 Balyasny Asset Management 如何評估與治理 Claude（Fable 5）；OpenAI 案例文 <a href="https://openai.com/index/cooley-gopublic">Cooley GoPublic</a>：律所用 ChatGPT Work 加速 IPO 流程。</li>
+      <li>其他垂直與資本面：<a href="https://techcrunch.com/2026/09/18/googles-new-cc-is-an-ai-agent-that-helps-families-run-their-households/">TechCrunch</a> 報導 Google 新 CC 是幫家庭協調日常的 AI agent；<a href="https://techcrunch.com/2026/09/18/metas-muse-hits-mac-letting-the-ai-take-actions-on-your-computer/">TechCrunch</a> 報導 Meta Muse 上 Mac、能在電腦上代為操作；<a href="https://techcrunch.com/2026/09/17/the-faas-plan-to-fix-air-traffic-875-million-worth-of-ai/">TechCrunch</a> 報導 FAA 用 8.75 億美元 AI 修復空中交通系統；中文媒體多篇（<a href="https://www.ithome.com/1/004/322.htm">IT之家</a>、<a href="https://www.36kr.com/p/3988438306388737">36kr</a>、<a href="https://www.ithome.com/1/004/319.htm">IT之家</a>、<a href="https://www.ithome.com/1/004/318.htm">IT之家</a>、<a href="https://www.36kr.com/p/3988418295109249">36kr</a>、<a href="https://www.blocktempo.com/huawei-ascend-960dt-launch-moves-earlier-superpod-scale-shrinks-doubts/">動區動趨（華為 Ascend 960DT 提前發布、SuperPod 規模縮水疑慮）</a>、<a href="https://www.ithome.com.tw/news/179053">iThome（台灣）</a>）分別跟進算力與垂直產品這兩條線，本篇不逐篇展開。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★ 這批是實驗室商業化與算力資本層的訊號，多數跟本機技術決策沒有直接接觸點。Google CC（家庭協調 agent）與 Meta Muse（電腦操作 agent）同日上線，跟主軸 1 的 Claude Projects 一起看，說明「常駐 agent 管理長期任務」正在成為三大廠同期收斂的產品形態，值得記一筆長期觀察但今天不構成待辦。Balyasny 那篇官方案例文（Fable 5 governance）如果之後要評估企業級 Claude 治理框架，是一個可回頭找的第一手案例。</p>
+</section>
+
+<section class="theme">
+    <h2>8. 工程師這一側：職缺縮水、技術棧回頭、以及 vibe coding 的產出潮 <span class="tag">11 key URLs</span></h2>
+    <p class="summary">V2EX 同一天有前端「感覺完全沒公司在招、全變成 agent 全棧」、後端 gap 四個多月找不到工作，以及職缺要求暴增但薪水沒動的抱怨；同時 reddit r/OpenAI 有帳號因「本機 proxy 問題」被自動系統誤判停用、對 Sol 模型品質下降的抱怨。中文媒體側則有多篇報導跟進職涯與產業面訊號。</p>
+    <ul>
+      <li>V2EX 多則職涯抱怨帖：<a href="https://www.v2ex.com/t/1242844">帖 1</a>、<a href="https://www.v2ex.com/t/1242849">帖 2</a>、<a href="https://www.v2ex.com/t/1242845">帖 3</a>、<a href="https://www.v2ex.com/t/1242854">帖 4</a>、<a href="https://www.v2ex.com/t/1243072">帖 5</a>、<a href="https://www.v2ex.com/t/1243096">帖 6</a>——raw md 內僅有連結與時間戳，本篇未逐帖展開內文（極簡版未對 V2EX 段落做深度摘要），僅記錄同一天集中出現多則職涯相關討論這個現象。</li>
+      <li>reddit r/OpenAI <a href="https://www.reddit.com/r/OpenAI/comments/1wjrx8a/account_deactivated_after_an_automated_flag_on_a/">「因本機 proxy 問題被自動標記後帳號遭停用」</a>：作者自稱 CS 學生，申訴流程完全自動化；<a href="https://www.reddit.com/r/OpenAI/comments/1wjkahs/what_have_they_done_to_sol/">「他們把 Sol 怎麼了」</a>：作者稱 5.6 High 版本幾乎無法使用，出現幻覺、錯誤輸出甚至拼字錯誤。</li>
+      <li>中文媒體對職涯／產業面的追蹤報導：36kr（<a href="https://www.36kr.com/p/3988796233415684">1</a>／<a href="https://www.36kr.com/p/3988805621087239">2</a>／<a href="https://www.36kr.com/p/3988732005972999">3</a>）、iThome（<a href="https://www.ithome.com/1/004/320.htm">1</a>／<a href="https://www.ithome.com/1/004/312.htm">2</a>）——raw md 僅提供標題與連結，本篇未展開逐篇內文核對，記錄為同一天中文媒體跟進職涯／產業側訊號的集中現象。</li>
+    </ul>
+    <p class="voice"><strong>對我的意義：</strong>★★ 「因本機 proxy 問題自動停用帳號、申訴流程全自動化」這則值得記一筆一般性提醒——自動化風控系統誤判、且申訴管道也全自動的組合，是任何重度依賴單一 vendor 帳號的工作模式（包含本機的 cc-vendor-bridge 多 vendor 對沖策略）想規避的風險場景，多 vendor 對沖的價值不只是成本，也包含帳號層級的單點故障風險。V2EX 職涯抱怨帖今天沒有展開內文，本篇刻意不對「前端沒公司在招」這類主張做進一步推論或引申到 ai-coding-era-engineer-moat 的長期觀察，因為連結後面的實際論點今天沒有讀到，只記錄現象存在。</p>
+</section>
+
+<section class="fixed repo">
+    <h2>🛠 GitHub 倉庫觀察 <span class="tag">固定段</span></h2>
+    <p class="summary">本表涵蓋今日 raw md 內的 67 個 GitHub Trending／Rising repo（Trending 53，Rising 14）。stars、簡介與主語言皆為本次以 GitHub GraphQL API 現查的值，非 raw md 抓取當下的快照。⚠️ 帶 🔁 前綴的列代表這是 resurface 舊 item——該 repo 距上次出現在抓取批次已超過設定的重現天數閾值，今天重新浮上來，其 raw md 時間戳是首見日凍結值、不是今日動作；未帶 🔁 的列代表今日新鮮上榜。</p>
+    <div>
+      <table>
+        <thead><tr><th>Repo</th><th>★ stars</th><th>簡介</th><th>判斷</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://github.com/winfunc/opcode">winfunc/opcode</a></td><td>22,408</td><td>A powerful GUI app and Toolkit for Claude Code - Create custom agents, manage interactive Claude Code sessions, run secure background agents, and more.</td><td><span class="verdict">📥 試用</span>；CC GUI 與管理工具，跟本機 herdr／herdr-dispatch 定位重疊，值得實測跟現有終端派工方式的取捨差異。</td></tr>
+          <tr><td><a href="https://github.com/tirth8205/code-review-graph">tirth8205/code-review-graph</a>（🔁 resurface，首見 2026-05-19）</td><td>31,592</td><td>Local-first code intelligence graph for MCP and CLI. Builds a persistent map of your codebase so AI coding tools read only what matters, with benchmarked context reductions on reviews and large-repo workflows.（描述較首見快照「6.8× fewer tokens」已改寫為「benchmarked context reductions」，變動發生在首見日至今約 4 個月內、非今日變動）</td><td><span class="verdict">📥 試用</span>；跟本機 code-search 規則的 semble 定位相鄰，若 context 縮減宣稱屬實值得實測比較。</td></tr>
+          <tr><td><a href="https://github.com/ahmedkhaleel2004/gitdiagram">ahmedkhaleel2004/gitdiagram</a></td><td>16,463</td><td>Free, simple, fast interactive diagrams for any GitHub repository</td><td><span class="verdict-watch">⭐ star 追</span>；一鍵產生 repo 架構圖，跟 archify skill 的問題領域相鄰，記觀察它的自動抽取品質。</td></tr>
+          <tr><td><a href="https://github.com/SWE-agent/mini-swe-agent">SWE-agent/mini-swe-agent</a></td><td>7,754</td><td>The 100 line AI agent that solves GitHub issues or helps you in your command line. Radically simple, no huge configs, no giant monorepo—but scores &gt;74% on SWE-bench verified!</td><td><span class="verdict-watch">⭐ star 追</span>；極簡 agent harness 對照組，值得跟本機既有 subagent 派工的複雜度做對比參照。</td></tr>
+          <tr><td><a href="https://github.com/yynxxxxx/Codex-X">yynxxxxx/Codex-X</a></td><td>3,300</td><td>OpenAI Codex 桌面端/CLI 的可视化管理工具，具有Provider/API 切换、会话同步、提示词注入、Skills/MCP 管理、TOML 配置可视化的跨平台工具。</td><td><span class="verdict-watch">⭐ star 追</span>；Codex 視覺化管理工具，若本機日後擴大用 Codex 派工，值得回頭參考它的 Provider 切換設計。</td></tr>
+          <tr><td><a href="https://github.com/Companion-Inc/feynman">Companion-Inc/feynman</a></td><td>9,675</td><td>The open source AI research agent.</td><td><span class="verdict-watch">⭐ star 追</span>；開源研究 agent，跟 deep-research skill 的問題領域相鄰，記觀察它的檢索與引用機制。</td></tr>
+          <tr><td><a href="https://github.com/felinics/Memoh">felinics/Memoh</a></td><td>2,500</td><td>✨ The open-source multi-agent platform. Every agent gets its own computer, desktop, network, and long-term memory. You can bring your own key, or host your coding agent like Claude Code, Codex and so on.</td><td><span class="verdict-watch">⭐ star 追</span>；「每個 agent 一台電腦＋長期記憶」的多 agent 平台，可接 Claude Code／Codex 當後端，跟本機多 agent 協作觀察方向相鄰。</td></tr>
+          <tr><td><a href="https://github.com/l0ng-ai/tty7">l0ng-ai/tty7</a></td><td>1,008</td><td>A terminal workbench in pure Rust: shells, persistent sessions, SSH, coding agents. GPU-rendered on Zed's gpui, VT core from Alacritty.</td><td><span class="verdict-watch">⭐ star 追</span>；純 Rust 終端工作台，跟 herdr 定位相鄰，記觀察它的持久 session 設計。</td></tr>
+          <tr><td><a href="https://github.com/alibaba/skill-up">alibaba/skill-up</a>（🔁 resurface，首見 2026-07-28）</td><td>968</td><td>An evaluation and evolution tool for Agent Skills.</td><td><span class="verdict-watch">⭐ star 追</span>；skill 評測與演化工具，命中 user_core_mode_skill_crystallization 的核心模式，記觀察它的評測指標設計。</td></tr>
+          <tr><td><a href="https://github.com/p-e-w/heretic">p-e-w/heretic</a>（🔁 resurface，首見 2026-07-13）</td><td>31,804</td><td>Fully automatic censorship removal for language models</td><td><span class="verdict-watch">⭐ star 追</span>；本地 LLM 生態的去審查工具，跟 apple-silicon-local-llm-serving 既有追蹤脈絡相鄰，記觀察不涉及本機安全或內容政策立場。</td></tr>
+          <tr><td><a href="https://github.com/tamaratran/fast-jev-compaction">tamaratran/fast-jev-compaction</a>（Rising rank-4，▲12162）</td><td>3,197</td><td>Claude Code plugin that replaces the compaction summary with Jev decisions: every tool call and result is scored in one fast request, stale ones are dropped or truncated, everything kept stays verbatim.</td><td><span class="verdict">📥 試用</span>；直接命中 CC context 管理場景，若宣稱屬實（用 Jev 決策取代 compaction summary、逐一評分工具呼叫結果）值得實測比較跟本機既有 context 管理習慣的差異。</td></tr>
+          <tr><td><a href="https://github.com/MiniMax-AI/minimax-code">MiniMax-AI/minimax-code</a>（Rising rank-23，▲3090）</td><td>721</td><td>An open-source coding agent for your terminal, powered by MiniMax.</td><td><span class="verdict-watch">⭐ star 追</span>；MiniMax 官方開源終端 coding agent，跟 cc-vendor-bridge 的多 vendor 對沖策略相鄰，記觀察它跟 CC 的相容程度。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <details>
+      <summary>其他次要 Trending／Rising（不展開判斷，共 55 筆，依 star 數降冪排列；🔁 標記代表 raw md 內標示 resurface）</summary>
+      <ul>
+        <li><strong>Repo：</strong><a href="https://github.com/PaddlePaddle/PaddleOCR">PaddlePaddle/PaddleOCR</a>；<strong>★ stars：</strong>89,793；<strong>簡介：</strong>Turn any PDF or image document into structured data for your AI. A powerful, lightweight OCR toolkit that bridges the gap between images/PDFs and LLMs. Supports 100+ languages.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/elastic/elasticsearch">elastic/elasticsearch</a>；<strong>★ stars：</strong>77,934；<strong>簡介：</strong>Free and Open Source, Distributed, RESTful Search Engine；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/moby/moby">moby/moby</a>；<strong>★ stars：</strong>72,108；<strong>簡介：</strong>The Moby Project - a collaborative project for the container ecosystem to assemble container-based systems；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/WerWolv/ImHex">WerWolv/ImHex</a>；<strong>★ stars：</strong>54,835；<strong>簡介：</strong>🔍 A Hex Editor for Reverse Engineers, Programmers and people who value their retinas when working at 3 AM.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/milvus-io/milvus">milvus-io/milvus</a>；<strong>★ stars：</strong>46,156；<strong>簡介：</strong>Milvus is a high-performance, cloud-native vector database built for scalable vector ANN search；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/getsentry/sentry">getsentry/sentry</a>；<strong>★ stars：</strong>44,801；<strong>簡介：</strong>Developer-first error tracking and performance monitoring；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/Wei-Shaw/sub2api">Wei-Shaw/sub2api</a>；<strong>★ stars：</strong>41,991；<strong>簡介：</strong>Sub2API 一站式开源中转服务，让 Claude、Openai 、Gemini、Grok订阅统一接入，支持拼车共享，更高效分摊成本，原生工具无缝使用。；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/facebookresearch/faiss">facebookresearch/faiss</a>；<strong>★ stars：</strong>40,931；<strong>簡介：</strong>A library for efficient similarity search and clustering of dense vectors.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/shiyu-coder/Kronos">shiyu-coder/Kronos</a>；<strong>★ stars：</strong>39,204；<strong>簡介：</strong>Kronos: A Foundation Model for the Language of Financial Markets；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/lfnovo/open-notebook">lfnovo/open-notebook</a>；<strong>★ stars：</strong>39,144；<strong>簡介：</strong>An Open Source implementation of Notebook LM with more flexibility and features；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/nothings/stb">nothings/stb</a>；<strong>★ stars：</strong>34,668；<strong>簡介：</strong>stb single-file public domain libraries for C/C++；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/gabime/spdlog">gabime/spdlog</a>；<strong>★ stars：</strong>29,613；<strong>簡介：</strong>Fast C++ logging library.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/yikart/AiToEarn">yikart/AiToEarn</a>；<strong>★ stars：</strong>26,056；<strong>簡介：</strong>Let's use AI to Earn!；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/arendst/Tasmota">arendst/Tasmota</a>；<strong>★ stars：</strong>24,763；<strong>簡介：</strong>Alternative firmware for ESP8266 and ESP32 based devices with easy configuration using webUI, OTA updates, automation using timers or rules, expandability and entirely local control over MQTT, HTTP, Serial or KNX. Full documentation at；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/pgvector/pgvector">pgvector/pgvector</a>；<strong>★ stars：</strong>23,068；<strong>簡介：</strong>Open-source vector similarity search for Postgres；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/bendlang/bend">bendlang/bend</a>；<strong>★ stars：</strong>21,471；<strong>簡介：</strong>Bend 2: a fast language that blocks AI mistakes via proof. Install: curl -fsSL https://bend-lang.com/install.sh | sh；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/moonlight-stream/moonlight-qt">moonlight-stream/moonlight-qt</a>；<strong>★ stars：</strong>18,695；<strong>簡介：</strong>GameStream client for PCs (Windows, Mac, Linux, and Steam Link)；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/caronc/apprise">caronc/apprise</a>；<strong>★ stars：</strong>17,350；<strong>簡介：</strong>Apprise - Push Notifications that work with just about every platform!；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/cloudflare/cloudflared">cloudflare/cloudflared</a>；<strong>★ stars：</strong>15,728；<strong>簡介：</strong>Cloudflare Tunnel client；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/Open-Dev-Society/OpenStock">Open-Dev-Society/OpenStock</a>；<strong>★ stars：</strong>15,556；<strong>簡介：</strong>OpenStock is an open-source alternative to expensive market platforms. Track real-time prices, set personalized alerts, and explore detailed company insights — built openly, for everyone, forever free.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/pjialin/py12306">pjialin/py12306</a>；<strong>★ stars：</strong>14,946；<strong>簡介：</strong>🚂 12306 购票助手，支持集群，多账号，多任务购票以及 Web 页面管理 ；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/NangoHQ/nango">NangoHQ/nango</a>；<strong>★ stars：</strong>12,230；<strong>簡介：</strong>Build product integrations with AI.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/cloudflare/quiche">cloudflare/quiche</a>；<strong>★ stars：</strong>11,847；<strong>簡介：</strong>🥧 Savoury implementation of the QUIC transport protocol and HTTP/3；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/lancedb/lancedb">lancedb/lancedb</a>；<strong>★ stars：</strong>11,462；<strong>簡介：</strong>Developer-friendly OSS embedded retrieval library for multimodal AI. Search More; Manage Less.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/Cyan4973/xxHash">Cyan4973/xxHash</a>；<strong>★ stars：</strong>11,261；<strong>簡介：</strong>Extremely fast non-cryptographic hash algorithm；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/yonaskolb/XcodeGen">yonaskolb/XcodeGen</a>；<strong>★ stars：</strong>8,787；<strong>簡介：</strong>A Swift command line tool for generating your Xcode project；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/EpicGames/lore">EpicGames/lore</a>；<strong>★ stars：</strong>8,659；<strong>簡介：</strong>Lore is a next-generation, open source version control system；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/prometheus/alertmanager">prometheus/alertmanager</a>；<strong>★ stars：</strong>8,617；<strong>簡介：</strong>Prometheus Alertmanager；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/gtsteffaniak/filebrowser">gtsteffaniak/filebrowser</a>；<strong>★ stars：</strong>8,346；<strong>簡介：</strong>📂 Web File Browser；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/648540858/wvp-GB28181-pro">648540858/wvp-GB28181-pro</a>；<strong>★ stars：</strong>7,329；<strong>簡介：</strong>基于GB28181-2016、部标808、部标1078标准实现的开箱即用的网络视频平台。自带管理页面，支持NAT穿透，支持海康、大华、宇视等品牌的IPC、NVR接入。支持国标级联，支持将普通摄像机/直播流/直播推流转国标共享到国标平台。；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/Cisco-Talos/clamav">Cisco-Talos/clamav</a>；<strong>★ stars：</strong>7,251；<strong>簡介：</strong>ClamAV - Documentation is here: https://docs.clamav.net；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/makepad/makepad">makepad/makepad</a>；<strong>★ stars：</strong>6,980；<strong>簡介：</strong>Makepad is a creative software development platform for Rust that compiles to wasm/webGL, osx/metal, windows/dx11 linux/opengl；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/fleetdm/fleet">fleetdm/fleet</a>；<strong>★ stars：</strong>6,883；<strong>簡介：</strong>Open device management；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/openai/tart">openai/tart</a>；<strong>★ stars：</strong>6,810；<strong>簡介：</strong>macOS and Linux VMs on Apple Silicon to use in CI and other automations；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/rstudio/rstudio">rstudio/rstudio</a>；<strong>★ stars：</strong>5,070；<strong>簡介：</strong>RStudio is an integrated development environment (IDE) for R；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/CalcProgrammer1/OpenRGB">CalcProgrammer1/OpenRGB</a>；<strong>★ stars：</strong>4,476；<strong>簡介：</strong>Open source RGB lighting control that doesn't depend on manufacturer software. Supports Windows, Linux, MacOS.  Mirror of https://gitlab.com/CalcProgrammer1/OpenRGB.  Releases can be found on GitLab.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/guohuiyuan/go-music-dl">guohuiyuan/go-music-dl</a>；<strong>★ stars：</strong>4,382；<strong>簡介：</strong>一个基于 Go 语言的全网音乐搜索与下载工具。支持 CLI 命令行与 Web 服务双模式，内置网易云、QQ、酷狗、Bilibili、汽水音乐等 10+ 个主流平台，支持多源并发搜索与无损音质解析。music-dl交流群：755087923；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/nageoffer/ragent">nageoffer/ragent</a>；<strong>★ stars：</strong>4,057；<strong>簡介：</strong>企业级 Agentic RAG 智能体 - 全链路覆盖文档解析、多路检索、意图识别、问题重写、会话记忆、MCP 工具调用与深度思考。面向真实业务场景，从 0 到 1 完整工程实现。；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/jinchenma94/bazi-skill">jinchenma94/bazi-skill</a>；<strong>★ stars：</strong>3,106；<strong>簡介：</strong>四柱八字命理分析；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/Card-Forge/forge">Card-Forge/forge</a>；<strong>★ stars：</strong>2,710；<strong>簡介：</strong>An unofficial rules engine for the world's greatest card game.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/youssofal/MTPLX">youssofal/MTPLX</a>；<strong>★ stars：</strong>2,374；<strong>簡介：</strong>The fastest way to run Qwen 3.8 Flash Next and Qwen 3.8 27B on a Mac: 125 tok/s in OpenCode on an M5 Max. Native MTP speculative decoding on Apple Silicon, exact at any temperature. OpenAI and Anthropic compatible local server.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/fastino-ai/GLiNER2">fastino-ai/GLiNER2</a>；<strong>★ stars：</strong>1,949；<strong>簡介：</strong>Unified Schema-Based Information Extraction；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/i12bp8/TagTinker">i12bp8/TagTinker</a>；<strong>★ stars：</strong>1,915；<strong>簡介：</strong>Flipper Zero app for ESL research using IR. All based on https://www.furrtek.org/?a=esl；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/ViaVersion/ViaVersion">ViaVersion/ViaVersion</a>；<strong>★ stars：</strong>1,633；<strong>簡介：</strong>Allows of newer clients to connect to older server versions for Minecraft servers.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/TheoLeeCJ/SemIf">TheoLeeCJ/SemIf</a>；<strong>★ stars：</strong>1,584；<strong>簡介：</strong>Semantic ifs from open models, on a 3090 at home. Independent; not affiliated with Jev or TypeSafe.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/ReSo7200/InstaEclipse">ReSo7200/InstaEclipse</a>；<strong>★ stars：</strong>1,468；<strong>簡介：</strong>An Instagram Xposed module with features like Developer Options, Ghost Mode, Ad-Free browsing, and Distraction-Free Mode.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/yi1108/printfilm">yi1108/printfilm</a>；<strong>★ stars：</strong>1,093；<strong>簡介：</strong>PRINTFILM：AI 视频获客与 AI短剧创作平台；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/mcncarl/jianying-headless">mcncarl/jianying-headless</a>；<strong>★ stars：</strong>1,020；<strong>簡介：</strong>Private source preview: native Jianying drafts, isolated editing/export, and standalone Agent Skill.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/KevinLiss/ApeAdmin">KevinLiss/ApeAdmin</a>；<strong>★ stars：</strong>970；<strong>簡介：</strong>Apeadmin 面向现代AI应用打造的Python后台管理框架，基于 FastAPI+Vue3 设计100%开源，内置 RBAC 权限管控、审计日志等企业级基础能力。框架集成 MCP‑SSE 网关，具备强大插件生态完整，帮助开发者快速搭建兼具业务管理与 AI 工具输出能力的应用。；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/AffPapa/neantik">AffPapa/neantik</a>；<strong>★ stars：</strong>912；<strong>簡介：</strong>Бесплатный антидетект браузер для Mac с Apple Silicon: локальные профили, встроенный Chromium, прокси и Keychain — без аккаунта, облака и телеметрии.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/crivion/laranode">crivion/laranode</a>；<strong>★ stars：</strong>886；<strong>簡介：</strong>Free Hosting Panel - Easily manage your VPS/dedicated machine with Laranode (a cPanel/Plesk alternative) ；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/mytonwallet-org/mytonwallet">mytonwallet-org/mytonwallet</a>；<strong>★ stars：</strong>799；<strong>簡介：</strong>A crypto wallet you'll actually enjoy.；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/LiteLDev/LeviLaunchroid">LiteLDev/LeviLaunchroid</a>；<strong>★ stars：</strong>579；<strong>簡介：</strong>A launcher designed for Minecraft Bedrock Edition on Android；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/rana-gmbh/NetFluss">rana-gmbh/NetFluss</a>；<strong>★ stars：</strong>558；<strong>簡介：</strong>A light-weight &amp; open-source menubar app that shows current upload &amp; download speed plus the top apps using bandwidth；<strong>判斷：</strong>未展開判斷</li>
+        <li><strong>Repo：</strong><a href="https://github.com/qwq233/OhMyKeymint">qwq233/OhMyKeymint</a>；<strong>★ stars：</strong>360；<strong>簡介：</strong>（GitHub 未提供描述）；<strong>判斷：</strong>未展開判斷</li>
+      </ul>
+    </details>
+  </section>
+
+<section class="fixed repo">
+    <h2>🧩 Agent Skills (skills.sh) <span class="tag">20 skills</span></h2>
+    <p class="summary">今日 raw md 的 <code>## Agent Skills (skills.sh) (18 items)</code> 段全部落在 <code>hot</code> 榜（rank #8 到 #64），沒有 <code>trending</code> 榜資料，因此本段不涉及跨榜 installs 比較。另有 <code>## Agent Skills (騰訊 SkillHub / 中國) (2 items)</code> 段，installs 量級與 skills.sh 差異極大（20 萬級 vs 個位數到百位數），已在下方另行標註、不與 skills.sh 混排比較。⚠️ 榜單只是發現訊號、不等同品質或採用建議——rank 與 installs 不得寫成品質背書或社群共識。</p>
+    <div>
+      <table>
+        <thead><tr><th>Skill</th><th>榜別·rank</th><th>Installs</th><th>Publisher</th><th>判斷</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://skills.sh/site/proseify.xyz/anti-prose-slop">anti-prose-slop</a></td><td>hot #8</td><td>191</td><td>proseify.xyz</td><td><span class="verdict">📥 試用</span>；反 AI 腔／贅詞的寫作 skill，跟本機 writing-discipline cluster 的反晶晶體規則方向相鄰，值得實測跟既有規則的重疊與差異。</td></tr>
+          <tr><td><a href="https://skills.sh/neondatabase/agent-skills/neon-auth">neon-auth</a></td><td>hot #9</td><td>14</td><td>neondatabase/agent-skills</td><td><span class="verdict-skip">⏭ 跳過</span>；Neon 資料庫的 auth 整合 skill，本機未使用 Neon，無對應需求。</td></tr>
+          <tr><td><a href="https://skills.sh/caffeinelabs/skills/connector-weatherapi">connector-weatherapi</a></td><td>hot #12</td><td>9</td><td>caffeinelabs/skills</td><td><span class="verdict-skip">⏭ 跳過</span>；天氣 API connector，與本機 stack 無交集。</td></tr>
+          <tr><td><a href="https://skills.sh/wshobson/agents/auth-implementation-patterns">auth-implementation-patterns</a></td><td>hot #13</td><td>8</td><td>wshobson/agents</td><td><span class="verdict-watch">⭐ star 追</span>；通用身分驗證實作模式，本機目前無立即需求，記觀察 wshobson 這個作者的其餘 skill 品質。</td></tr>
+          <tr><td><a href="https://skills.sh/replicas-group/skill/replicas-agent">replicas-agent</a></td><td>hot #14</td><td>8</td><td>replicas-group/skill</td><td><span class="verdict-skip">⏭ 跳過</span>；skills.sh 頁面未提供足夠描述判斷用途，且與本機已知場景無明顯關聯。</td></tr>
+          <tr><td><a href="https://skills.sh/addyosmani/agent-skills/code-review-and-quality">code-review-and-quality</a></td><td>hot #18</td><td>6</td><td>addyosmani/agent-skills</td><td><span class="verdict">📥 試用</span>；直接命中本機既有 code-review skill 的問題領域，值得實測比較兩者覆蓋範圍差異。</td></tr>
+          <tr><td><a href="https://skills.sh/wshobson/agents/stride-analysis-patterns">stride-analysis-patterns</a></td><td>hot #19</td><td>6</td><td>wshobson/agents</td><td><span class="verdict-watch">⭐ star 追</span>；STRIDE 威脅建模，跟本機 security-review skill 相鄰但更細顆粒，記觀察。</td></tr>
+          <tr><td><a href="https://skills.sh/wshobson/agents/attack-tree-construction">attack-tree-construction</a></td><td>hot #20</td><td>6</td><td>wshobson/agents</td><td><span class="verdict-watch">⭐ star 追</span>；攻擊樹建構，同一威脅建模系列的另一個單點工具，記觀察。</td></tr>
+          <tr><td><a href="https://skills.sh/warpdotdev/common-skills/validate-changes-match-specs">validate-changes-match-specs</a></td><td>hot #21</td><td>6</td><td>warpdotdev/common-skills</td><td><span class="verdict">📥 試用</span>；驗證改動與 spec 對齊，跟本機 review-spec／implement 收尾驗證的問題領域重疊，值得實測比較做法差異。</td></tr>
+          <tr><td><a href="https://skills.sh/warpdotdev/common-skills/saga">saga</a></td><td>hot #26</td><td>6</td><td>warpdotdev/common-skills</td><td><span class="verdict-watch">⭐ star 追</span>；skills.sh 頁面描述有限，記觀察 warpdotdev 這組 common-skills 的其餘內容。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <details>
+      <summary>其他 skills（不展開判斷，共 8 筆＋騰訊 SkillHub 2 筆，依 raw md 原順序）</summary>
+      <ul>
+        <li><strong>Skill：</strong><a href="https://skills.sh/sveltejs/ai-tools/svelte-core-bestpractices">svelte-core-bestpractices</a>；<strong>榜別·rank：</strong>hot #25；<strong>Installs：</strong>6</li>
+        <li><strong>Skill：</strong><a href="https://skills.sh/site/docs.stripe.com/metronome">metronome</a>；<strong>榜別·rank：</strong>hot #49；<strong>Installs：</strong>6</li>
+        <li><strong>Skill：</strong><a href="https://skills.sh/addyosmani/agent-skills/documentation-and-adrs">documentation-and-adrs</a>；<strong>榜別·rank：</strong>hot #51；<strong>Installs：</strong>5</li>
+        <li><strong>Skill：</strong><a href="https://skills.sh/ejirocodes/agent-skills/svelte5-best-practices">svelte5-best-practices</a>；<strong>榜別·rank：</strong>hot #60；<strong>Installs：</strong>5</li>
+        <li><strong>Skill：</strong><a href="https://skills.sh/clerk/skills/clerk-testing">clerk-testing</a>；<strong>榜別·rank：</strong>hot #61；<strong>Installs：</strong>5</li>
+        <li><strong>Skill：</strong><a href="https://skills.sh/wshobson/agents/security-requirement-extraction">security-requirement-extraction</a>；<strong>榜別·rank：</strong>hot #62；<strong>Installs：</strong>5</li>
+        <li><strong>Skill：</strong><a href="https://skills.sh/wshobson/agents/threat-mitigation-mapping">threat-mitigation-mapping</a>；<strong>榜別·rank：</strong>hot #63；<strong>Installs：</strong>5</li>
+        <li><strong>Skill：</strong><a href="https://skills.sh/warpdotdev/common-skills/review-pr">review-pr</a>；<strong>榜別·rank：</strong>hot #64；<strong>Installs：</strong>5</li>
+        <li><strong>Skill：</strong><a href="https://skillhub.cn/org-liz6o019/luhe-paper-free-pro">露禾论文写作助手（免费版pro）</a>（騰訊 SkillHub）；<strong>榜別·rank：</strong>skillhub_cn #27；<strong>Installs：</strong>204,123 downloads（installs 量級與 skills.sh 不可比較）</li>
+        <li><strong>Skill：</strong><a href="https://skillhub.cn/user_9c63fdb4/patent-drafting-cn">专利初稿助手</a>（騰訊 SkillHub）；<strong>榜別·rank：</strong>skillhub_cn #49；<strong>Installs：</strong>127,469 downloads（installs 量級與 skills.sh 不可比較）</li>
+      </ul>
+    </details>
+  </section>
+
+<section class="fixed purple">
+    <h2>🎓 Matt Pocock 動態 <span class="tag">固定段 · matt-pipeline 教材</span></h2>
+    <p class="summary">今天沒有新影片（<code>youtube_matt</code> 今日 fetched/net_new 未在 raw md 正文出現 <code>rss:youtube_matt</code> 條目，pre_flight.matt_videos 判定為極簡版條件派工未觸發，這跟「抓取失敗」不同，<code>fetch_failures</code> 為空）。X 軸是今天唯一素材：11 則推文全落在 2026-09-17 10:04–15:08 UTC，2 則原創、9 則 @ 回覆，主題集中在課程規劃方法、diff 效率、既有工作流主張的零星延伸。</p>
+<h3>🎬 影片</h3>
+      <p class="empty">今日無新訊號——raw md 正文完全沒有 <code>rss:youtube_matt</code> 條目，<code>matt_videos.fetch_failures</code> 為空，這是「今天沒有新影片」而非「抓取失敗」。</p>
+
+<h3>𝕏 推文</h3>
+      <p><strong>原創推文</strong>（2 則，依 ♥ 排序）</p>
+      <ul>
+        <li><a href="https://x.com/mattpocockuk/status/2100602713012568373">「Have been trying for weeks to make AI better at course planning. Tried a new method today. Notecards, pen, paper, scissors. Turns out not using AI is pretty good guys」</a>—— ♥ 840 · 💬 77。用實體卡片＋剪刀取代 AI 做課程規劃，且明講「不用 AI 效果反而不錯」——跟本機「AI 不是萬用工具、部分規劃工作實體做更好」的既有立場方向一致，記存在。</li>
+        <li><a href="https://x.com/mattpocockuk/status/2100547174517895251">「Thanks for having me @GergelyOrosz! This was a great conversation.」</a>—— ♥ 368 · 💬 5。感謝上 Gergely Orosz 節目的貼文，附連結但未展開節目內容，未查證後續。</li>
+      </ul>
+      <p><strong>@ 回覆</strong>（9 則中挑 5 則實質內容展開，依 ♥ 排序）</p>
+      <ul>
+        <li>回覆 @dexhorthy：<a href="https://x.com/mattpocockuk/status/2100539356528230874">「Alright then nerds, here you go: [連結]」</a>（♥154 · 💬14）——附連結但無文字說明內容，未展開查證連結指向什麼。</li>
+        <li>回覆 @udohjeremiah_ 與 @dexhorthy：<a href="https://x.com/mattpocockuk/status/2100547293275394206">「Turns out that an efficient way to answer 1-3 is to summarize the diff」</a>（♥26 · 💬2）——講一個具體工作流技巧：回答「1-3」這類問題時，摘要 diff 比逐項回答更有效率，跟本機 write-pr-description／pr-explain 這類「先摘要再展開」的做法方向一致。</li>
+        <li>回覆 @TahirKh07197042 與 @dexhorthy：<a href="https://x.com/mattpocockuk/status/2100574628888400038">「You want to replace a single markdown file with an entire paid service? OK」</a>（♥7 · 💬2）——語帶諷刺地反對「用一整套付費服務取代一份 markdown 檔案」，跟本機「文件放 codebase／薄薄一層」的既有立場（08-18 digest 已記載 Matt 同類主張）方向一致。</li>
+        <li>回覆 @jdaplant 與 @dexhorthy：<a href="https://x.com/mattpocockuk/status/2100526189899083985">「IMO if the PR's are two-way doors (i.e. you can always go back through) then it's OK to review post-merge」</a>（♥6 · 💬1）——主張「兩門式」（可逆）決策的 PR 可以合併後再審查，這跟本機 dispatch-and-verify.md「停下問使用者 vs 自己決定」段的反例通則（動作可逆就不問、直接做下一步）邏輯相鄰。</li>
+        <li>回覆 @heyjonyee 與 @dexhorthy：<a href="https://x.com/mattpocockuk/status/2100574289393004839">「Very easy to make a green test that actually tests nothing. Having a high-level view of the code (via pseudocode) has been an incredible way to understand the 'why' of the code…」</a>（♥4）——命中本機 mutation-testing skill 的核心關切（green-but-hollow test），並主張用 pseudocode 高層視角理解程式碼「為什麼」這樣寫。</li>
+      </ul>
+      <p>另有 4 則低互動回覆未展開（@aarondfrancis 問對方用的是軟木塞板還是桌子；@DerylSpielman「The skill?」；@brianevanmiller 附和「沒試過但合理」；以上均為單句社交回應或無展開內容的簡短附和）。</p>
+</section>
+
+<section class="fixed system">
+    <h2>📦 系統當天動態 <span class="tag">workflow + 自家</span></h2>
+    <ul>
+      <li><strong>Pipeline：</strong>raw md 151,670 bytes、13 個 section、359 items、87 active sources、2 failures。KNOWN_ISSUES 今日 0 個 🚨、0 次 retry attempt——<code>venturebeat_ai</code>（429 Too Many Requests）與 <code>zhihu_hot</code>（503 Service Unavailable）兩個 failure 皆為既定 non-retryable（KNOWN_ISSUES.md 只列在 🪦 Stable failures 段，retry 已用完仍失敗），不再重試。</li>
+      <li><strong>本次走極簡版：</strong>未跑 URL fact-check 與 Verify；digest 二審只跑 A（來源限定詞）／D（紀律對位）兩軸，未跑 F 機械對位、E 跨天沿用重估、B 焊接與內部一致、C 基準宣稱。</li>
+      <li><strong>Stale sources（6 個）：</strong>clawhub（fetched=50）、product_hunt（10）、anthropic_engineering（25）、mistral_blog（30）、krebs_security（10）、youtube_matt（15）——皆為 fetched ok 但 dedup 後 net-new=0，跟「fetch 失敗」是兩回事。今天三種狀態分別是：<strong>failure 2 個</strong>（<code>venturebeat_ai</code>／<code>zhihu_hot</code>，皆既定 non-retryable）、<strong>stale 6 個</strong>（上列）。</li>
+      <li><strong>PROBES：</strong>CC release watcher 回報<strong>新訊號</strong>（見上方 🆕 CC CLI release 小節），probe_review 對這筆的 verdict 為 <code>corrected</code>（1 attempted、0 approved as-is、1 corrected、0 blocked）——即審核過程中對原始 identity/facts 做過修正，本篇已照核准後版本寫。writeback 狀態為 <code>deferred_to_main</code>（expected_target_count 1），代表 PROBES.md 的實際寫回由 main session 在收到本檔後另行呼叫 helper 完成，不是本次 subagent 執行；ruanyf/weekly watcher 回報<strong>無新訊號</strong>，baseline 仍是第 413 期。</li>
+      <li><strong>Matt：</strong><code>matt_videos.fetch_failures</code> 為空——今天沒有任何影片抓取失敗，單純是今日無新影片（詳見上方🎓段）。</li>
+      <li><strong>WATCH：</strong><code>new_watch_sources</code> 為空，今日沒有「新來源待驗」標記。</li>
+      <li><strong>external-feeds：</strong>本次走極簡版，不跑 external-feeds pre-flight step，<code>pre_flight.external_feeds</code> 不存在，此段不做任何 backstop 覆蓋率宣稱。</li>
+    </ul>
+  </section>
+
+<footer class="page">
+  每日話題分析 · 2026-09-19 · raw data：reports/2026-09-19.md · 主軸 8 · URL fact-checked：未執行（極簡版）
+</footer>
+
+</div>
+
+<script>
+const barOpts = {
+  indexAxis: 'y',
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { ticks: { color: '#9aa0b4' }, grid: { color: '#2a2f43' }, beginAtZero: true },
+    y: { ticks: { color: '#e6e8ef' }, grid: { color: '#2a2f43' } }
+  },
+  maintainAspectRatio: false
+};
+
+const sourceCtx = document.getElementById('sourceChart').getContext('2d');
+new Chart(sourceCtx, {
+  type: 'bar',
+  data: {
+    labels: ['X', 'GH Trending', '中文／中國', 'Reddit', 'EN Media', '中文／台灣', 'Agent Skills', 'V2EX', 'GH Rising', 'HN', 'Lab Blogs', 'HuggingFace'],
+    datasets: [{
+      label: 'items',
+      data: [72, 53, 53, 48, 37, 29, 20, 16, 14, 8, 5, 4],
+      backgroundColor: ['#b591ff', '#7aa8ff', '#ffb46b', '#6ed79c', '#9aa0b4', '#ffb46b', '#7aa8ff', '#9aa0b4', '#7aa8ff', '#9aa0b4', '#9aa0b4', '#9aa0b4']
+    }]
+  },
+  options: barOpts
+});
+
+const themeHeatCtx = document.getElementById('themeHeatChart').getContext('2d');
+new Chart(themeHeatCtx, {
+  type: 'bar',
+  data: {
+    labels: ['Claude Projects 登陸 CC', 'AI 造 AI 量化與踩煞車', 'Jev 決策模型', 'Coding agent 攻擊面', 'OSS 與 skill 生態', '本地 LLM 小模型抬頭', '實驗室雙線競賽', '工程師這一側'],
+    datasets: [{
+      label: 'key_urls_count',
+      data: [14, 20, 9, 15, 20, 11, 20, 11],
+      backgroundColor: ['#b591ff', '#ff8585', '#ffb46b', '#ff8585', '#6ed79c', '#7aa8ff', '#b591ff', '#9aa0b4']
+    }]
+  },
+  options: barOpts
+});
+</script>
+
+</body>
+</html>
