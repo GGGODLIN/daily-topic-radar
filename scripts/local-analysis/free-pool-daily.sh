@@ -219,7 +219,10 @@ except Exception:
     sys.exit(3)
 for p in (cfg or {}).get("openai-compatibility", []):
     if p.get("name") == "atkins-devin-swe2":
-        print(p.get("base-url", ""))
+        if p.get("disabled"):
+            print("DISABLED")
+        else:
+            print(p.get("base-url", ""))
         break
 PY
     ) || ngrok_rc=$?
@@ -227,6 +230,8 @@ PY
       add_finding D "[devin-swe2] 探測環境缺 yaml 解析器（${PY_YAML} 無法 import yaml）——drift 軸無法判定（fail-loud）"
     elif [[ "$ngrok_rc" -eq 3 ]]; then
       add_finding D "[devin-swe2] relay config 解析失敗：${RELAY_CONFIG}——drift 軸無法判定（fail-loud）"
+    elif [[ "${ngrok_url:-}" == "DISABLED" ]]; then
+      echo "devin_swe2_base=（provider 已 disabled，照紀錄略過不探測）"
     elif [[ -n "${ngrok_url:-}" ]]; then
       devin_code=$(http_code "${ngrok_url%/}/models")
       echo "devin_swe2_base=${ngrok_url} code=${devin_code}"
