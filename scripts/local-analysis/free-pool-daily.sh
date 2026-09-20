@@ -1,0 +1,221 @@
+#!/bin/bash
+# free-pool-daily.sh — /daily-local workflow 的 free-pool channel（2026-09-21 建）。
+#
+# kind: 'shell'——零 LLM。偵測 free / free-smart 模型池各來源的三層死法：
+#   過程沒開（port / process）／認證・額度死（402、ready 數、餘額）／位址漂移（ngrok 現行 URL 實打）。
+# 全綠寫 __SILENT__；任一來源異常才產出報告，嚴重度排序 A→B→C→D：全池級（relay / litellm 掛）→
+# 花錢來源（stepfun 額度）→ 池內其他來源 → 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
+# 「獨立 free-pool 軸、不併 codex-cdp」——codex-cdp 管連線地基、本軸管供應鏈三層死法。
+#
+# Threat model（提示型 detector）：
+#   - 不保證即時性：日頻；分鐘級中斷由鏈的 failover 自己撐，本軸管「隔天要知道要修什麼」
+#   - 不自動修、不拔腿；處置歸使用者（trial review / 手動）
+#   - 探測失敗 ≠ 綠燈：判不出來一律標 ⚠ unknown（fail-loud），不靜默放行
+#   - 刻意不做：派工流量壓測、自動修復、通知管道（消費走 daily-local digest）
+#
+# read-only：唯讀探測；唯二寫入是 OUT 與 LOG。workflow channel 非 CC hook，不進 cc-hooks.json。
+# Wrapper 路徑慣例：local-analysis.js 的 W 常數 = ~/code/social-info/scripts/local-analysis。
+
+cd /
+set -euo pipefail
+
+PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/Users/linhancheng/.local/bin"
+export PATH
+
+SI="/Users/linhancheng/code/social-info"
+OUT_DIR="${FREE_POOL_OUT_DIR:-$SI/reports/local-analysis}"
+LOG_DIR="${FREE_POOL_LOG_DIR_PATH:-$SI/logs}"
+DATE="${LOCAL_ANALYSIS_DATE:-$(date +%F)}"
+OUT="$OUT_DIR/$DATE-free-pool.md"
+LOG="$LOG_DIR/local-analysis-free-pool-$DATE.log"
+mkdir -p "$OUT_DIR" "$LOG_DIR"
+
+RELAY_CONFIG="${FREE_POOL_RELAY_CONFIG:-$HOME/.cli-proxy-api/config.yaml}"
+CLINE_ACCOUNTS="${FREE_POOL_CLINE_ACCOUNTS:-$HOME/.cline2api/.cline-accounts.json}"
+LITELLM_LOG_DIR="${FREE_POOL_LITELLM_LOG_DIR:-$HOME/.local/state/litellm}"
+STEPFUN_PLIST="${FREE_POOL_STEPFUN_PLIST:-$HOME/Library/LaunchAgents/com.gggodlin.litellm-proxy.plist}"
+STEPFUN_URL="${FREE_POOL_STEPFUN_URL:-https://api.stepfun.com/v1/accounts}"
+STEPFUN_FLOOR="${FREE_POOL_STEPFUN_FLOOR:-2}"
+PORT_RELAY="${FREE_POOL_PORT_RELAY:-8317}"
+PORT_LITELLM="${FREE_POOL_PORT_LITELLM:-8000}"
+PORT_CLINE="${FREE_POOL_PORT_CLINE:-3457}"
+PORT_WB="${FREE_POOL_PORT_WB:-3010}"
+PORT_AR="${FREE_POOL_PORT_AR:-8002}"
+WB_URL="${FREE_POOL_WB_URL:-http://127.0.0.1:$PORT_WB}"
+AR_URL="${FREE_POOL_AR_URL:-http://127.0.0.1:$PORT_AR}"
+MIMO_HEALTH="${FREE_POOL_MIMO_HEALTH:-http://127.0.0.1:8320/health}"
+
+FINDINGS="$LOG_DIR/.free-pool-findings-$DATE.tmp"
+: > "$FINDINGS"
+
+add_finding() { printf '%s\t%s\n' "$1" "$2" >> "$FINDINGS"; }
+
+port_probe() { /usr/bin/nc -z 127.0.0.1 "$1" 2>/dev/null; }
+
+http_code() {
+  local c
+  c=$(/usr/bin/curl -sS -o /dev/null -m 4 -w '%{http_code}' "$1" 2>/dev/null) || true
+  printf '%s' "${c:-000}"
+}
+
+{
+  echo "free-pool daily probe $DATE $(date '+%H:%M:%S')"
+  echo "relay_config=$RELAY_CONFIG"
+
+  if ! port_probe "$PORT_RELAY"; then
+    add_finding A "[relay] :${PORT_RELAY} 未在聽——全池死（launchd 應自摔重啟，若持續紅查 ~/Library/LaunchAgents/com.philip.cli-proxy-api）"
+  fi
+  if ! port_probe "$PORT_LITELLM"; then
+    add_finding A "[litellm] :${PORT_LITELLM} 未在聽——經 litellm 的腿（groq/bai/mimo/stepfun）全死"
+  fi
+
+  if [[ -r "$STEPFUN_PLIST" ]] && command -v /usr/libexec/PlistBuddy >/dev/null; then
+    sf_key=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:STEPFUN_KEY' "$STEPFUN_PLIST" 2>/dev/null || true)
+    if [[ -z "${sf_key:-}" ]]; then
+      add_finding D "[stepfun] plist 讀不到 STEPFUN_KEY——探測不能（fail-loud，非綠燈）"
+    else
+      sf_json=$(/usr/bin/curl -fsS -m 6 -H "Authorization: Bearer ${sf_key}" "$STEPFUN_URL" 2>/dev/null) || sf_json=""
+      if [[ -z "$sf_json" ]]; then
+        add_finding D "[stepfun] 帳戶端點探測失敗（網路或 key 失效；不代表額度耗盡）"
+      else
+        sf_bal=$(printf '%s' "$sf_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('balance',0))" 2>/dev/null || echo "?")
+        sf_vou=$(printf '%s' "$sf_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total_voucher_balance',0))" 2>/dev/null || echo "?")
+        if python3 -c "import sys; b=float('${sf_bal}'); v=float('${sf_vou}'); sys.exit(0 if (b<=0 and v<=0) or b<float('${STEPFUN_FLOOR}') else 1)" 2>/dev/null; then
+          add_finding B "[stepfun] 餘額 ¥${sf_bal}（贈金 ¥${sf_vou}）低於地板 ¥${STEPFUN_FLOOR} 或已歸零——拔鏈腿或充值前鏈會自動繞過；trial ccp-stepfun review 處理"
+        fi
+      fi
+      step_log_count=$(
+        python3 - "$LITELLM_LOG_DIR" "$DATE" <<'PY'
+import json, sys, os, glob, datetime
+log_dir, today = sys.argv[1], sys.argv[2]
+days = {today}
+try:
+    days.add((datetime.date.fromisoformat(today) - datetime.timedelta(days=1)).isoformat())
+except Exception:
+    pass
+c402 = c429 = cs = cf = 0
+for d in days:
+    for path in glob.glob(os.path.join(log_dir, f"calls-{d}.jsonl")):
+        for line in open(path, encoding="utf-8", errors="replace"):
+            if "step-" not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if not str(rec.get("model", "")).startswith("step-"):
+                continue
+            if rec.get("status") == "success":
+                cs += 1
+            else:
+                cf += 1
+                blob = line.lower()
+                if "402" in blob or "insufficient" in blob:
+                    c402 += 1
+                elif "429" in blob or "rate" in blob:
+                    c429 += 1
+print(f"{cs}|{cf}|{c402}|{c429}")
+PY
+      )
+      IFS='|' read -r sf_cs sf_cf sf_402 sf_429 <<< "${step_log_count:-0|0|0|0}"
+      if [[ "${sf_402:-0}" -gt 0 ]]; then
+        add_finding B "[stepfun] 24h litellm log 有 402/insufficient×${sf_402}——額度耗盡實錘；充值後 kickstart relay 解冷卻"
+      fi
+      echo "stepfun_log_24h=${sf_cs}勝/${sf_cf}敗 402×${sf_402} 429×${sf_429}"
+    fi
+  fi
+
+  wb_code=$(http_code "$WB_URL/health")
+  if [[ "$wb_code" == "000" ]]; then
+    add_finding C "[workbuddy] :${PORT_WB} sidecar 未回應——workbuddy-v41 腿死，鏈會跳過"
+  elif [[ "$wb_code" != "200" ]]; then
+    add_finding C "[workbuddy] health 回 HTTP ${wb_code}——sidecar 在但狀態異常"
+  fi
+
+  ar_code=$(http_code "$AR_URL/health/liveliness")
+  if [[ "$ar_code" == "000" ]]; then
+    add_finding C "[agentrouter] :${PORT_AR} 未回應——agentrouter-glm 腿死"
+  elif [[ "$ar_code" != "200" ]]; then
+    add_finding C "[agentrouter] liveliness 回 HTTP ${ar_code}"
+  fi
+
+  if port_probe "$PORT_CLINE"; then
+    if [[ -r "$CLINE_ACCOUNTS" ]]; then
+      cline_stat=$(python3 - "$CLINE_ACCOUNTS" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    accs = d.get("accounts", d if isinstance(d, list) else [])
+    total = len(accs)
+    active = sum(1 for a in accs if (a.get("status") or "") == "active")
+    print(f"{active}/{total}")
+except Exception:
+    print("?/?")
+PY
+      )
+      echo "cline_accounts_active=${cline_stat}"
+      if [[ "$cline_stat" == "0/"* ]]; then
+        add_finding C "[cline] 帳號池 0 active（共 ${cline_stat#*/}）——cline 系腿（free/glm/ds/v41/muse）全死；查額度或 namespace 漂移（09-15 V4.1 事件同形）"
+      fi
+    else
+      add_finding D "[cline] 帳號檔不可讀：${CLINE_ACCOUNTS}——ready 數無法判定（fail-loud）"
+    fi
+  else
+    add_finding C "[cline2api] :${PORT_CLINE} 未在聽——cline 帳號池腿全死"
+  fi
+
+  mimo_code=$(http_code "$MIMO_HEALTH")
+  if [[ "$mimo_code" == "000" ]]; then
+    if /usr/bin/pgrep -qf "Xiaomi MiMo AI"; then
+      add_finding C "[mimo] Desktop 程序在但 adapter :8320 無回應——引擎狀態異常"
+    else
+      add_finding C "[mimo] Desktop 未啟動（adapter 無回應）——mimo 腿死；開 app 並確認登入即恢復"
+    fi
+  elif [[ "$mimo_code" != "200" ]]; then
+    add_finding C "[mimo] adapter /health 回 HTTP ${mimo_code}（503=Desktop 開著但未登入）"
+  fi
+
+  if [[ -r "$RELAY_CONFIG" ]]; then
+    ngrok_url=$(python3 - "$RELAY_CONFIG" <<'PY'
+import yaml, sys
+try:
+    cfg = yaml.safe_load(open(sys.argv[1]))
+    for p in cfg.get("openai-compatibility", []):
+        if p.get("name") == "atkins-devin-swe2":
+            print(p.get("base-url", ""))
+            break
+except Exception:
+    pass
+PY
+    )
+    if [[ -n "${ngrok_url:-}" ]]; then
+      devin_code=$(http_code "${ngrok_url%/}/models")
+      echo "devin_swe2_base=${ngrok_url} code=${devin_code}"
+      if [[ "$devin_code" == "000" || "$devin_code" == "404" || "$devin_code" == "502" || "$devin_code" == "503" ]]; then
+        add_finding C "[devin-swe2] 現行 ngrok URL（${ngrok_url}）探測 HTTP ${devin_code}——網址可能已漂移（免費隧道重開即變），更新 relay config 前該腿死"
+      fi
+    else
+      echo "devin_swe2_base=（config 無 atkins-devin-swe2，略過）"
+    fi
+  else
+    add_finding D "[relay-config] 讀不到 ${RELAY_CONFIG}——鏈腿清單與 devin URL 無法判定（fail-loud）"
+  fi
+} > "$LOG" 2>&1 || true
+
+if [[ -s "$FINDINGS" ]]; then
+  {
+    echo "# free-pool liveness ${DATE}"
+    echo
+    echo "結論：⚠ $(wc -l < "$FINDINGS" | tr -d ' ') 個發現（嚴重度排序：全池級→花錢來源→池內其他→探測失敗）"
+    echo
+    sort -t$'\t' -k1,1 "$FINDINGS" | while IFS=$'\t' read -r _pri msg; do
+      echo "- ⚠ ${msg}"
+    done
+  } > "$OUT"
+  rm -f "$FINDINGS"
+  echo "free-pool: findings written to $OUT"
+else
+  rm -f "$FINDINGS"
+  printf '__SILENT__\n' > "$OUT"
+  echo "free-pool: all green"
+fi
