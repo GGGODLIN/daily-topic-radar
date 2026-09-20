@@ -21,6 +21,8 @@ set -euo pipefail
 
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/Users/linhancheng/.local/bin"
 export PATH
+PY_YAML="${FREE_POOL_PY_YAML:-/opt/homebrew/bin/python3}"
+[[ -x "$PY_YAML" ]] || PY_YAML="$(command -v python3 || echo python3)"
 
 SI="/Users/linhancheng/code/social-info"
 OUT_DIR="${FREE_POOL_OUT_DIR:-$SI/reports/local-analysis}"
@@ -141,21 +143,49 @@ PY
 
   if port_probe "$PORT_CLINE"; then
     if [[ -r "$CLINE_ACCOUNTS" ]]; then
-      cline_stat=$(python3 - "$CLINE_ACCOUNTS" <<'PY'
+      cline_stat=$("$PY_YAML" - "$CLINE_ACCOUNTS" "$(date '+%Y-%m-%dT%H:%M:%S')" <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
-    accs = d.get("accounts", d if isinstance(d, list) else [])
-    total = len(accs)
-    active = sum(1 for a in accs if (a.get("status") or "") == "active")
-    print(f"{active}/{total}")
 except Exception:
-    print("?/?")
+    print("PARSE_FAIL")
+    sys.exit(0)
+now = sys.argv[2]
+accs = d.get("accounts", d if isinstance(d, list) else [])
+total = len(accs)
+active = sum(1 for a in accs if (a.get("status") or "") == "active")
+keys = set()
+for a in accs:
+    keys.update((a.get("modelCooldowns") or {}).keys())
+models = sorted(keys | {"z-ai/glm-5.3-flash", "deepseek/deepseek-v4-flash-0731", "cline-free/deepseek-v4.1-flash"})
+parts = []
+zeros = []
+for m in models:
+    n = 0
+    for a in accs:
+        if (a.get("status") or "") != "active":
+            continue
+        until = (a.get("modelCooldowns") or {}).get(m) or ""
+        if isinstance(until, list):
+            until = until[0] if until else ""
+        if not until or str(until)[:19] <= now[:19]:
+            n += 1
+    parts.append(f"{m}={n}")
+    if n == 0:
+        zeros.append(m)
+print(f"{active}/{total}|" + " ".join(parts) + "|" + ",".join(zeros))
 PY
       )
-      echo "cline_accounts_active=${cline_stat}"
-      if [[ "$cline_stat" == "0/"* ]]; then
-        add_finding C "[cline] 帳號池 0 active（共 ${cline_stat#*/}）——cline 系腿（free/glm/ds/v41/muse）全死；查額度或 namespace 漂移（09-15 V4.1 事件同形）"
+      echo "cline_accounts=${cline_stat}"
+      if [[ "$cline_stat" == "PARSE_FAIL" || -z "$cline_stat" ]]; then
+        add_finding D "[cline] 帳號檔解析失敗：${CLINE_ACCOUNTS}——ready 數無法判定（fail-loud）"
+      else
+        IFS='|' read -r cline_active cline_avail cline_zeros <<< "$cline_stat"
+        if [[ "$cline_active" == "0/"* ]]; then
+          add_finding C "[cline] 帳號池 0 active（${cline_active}）——cline 系腿全死；查額度或 namespace 漂移（09-15 V4.1 事件同形）"
+        elif [[ -n "$cline_zeros" ]]; then
+          add_finding C "[cline] 帳號皆 active（${cline_active}）但模型 ${cline_zeros} 冷卻後 0 個可用帳號——該腿安靜死（cline2api 選號會排除冷卻帳號，pool.go eligible 邏輯）；per-model available：${cline_avail}"
+        fi
       fi
     else
       add_finding D "[cline] 帳號檔不可讀：${CLINE_ACCOUNTS}——ready 數無法判定（fail-loud）"
@@ -176,26 +206,35 @@ PY
   fi
 
   if [[ -r "$RELAY_CONFIG" ]]; then
-    ngrok_url=$(python3 - "$RELAY_CONFIG" <<'PY'
-import yaml, sys
+    ngrok_rc=0
+    ngrok_url=$("$PY_YAML" - "$RELAY_CONFIG" <<'PY'
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(2)
 try:
     cfg = yaml.safe_load(open(sys.argv[1]))
-    for p in cfg.get("openai-compatibility", []):
-        if p.get("name") == "atkins-devin-swe2":
-            print(p.get("base-url", ""))
-            break
 except Exception:
-    pass
+    sys.exit(3)
+for p in (cfg or {}).get("openai-compatibility", []):
+    if p.get("name") == "atkins-devin-swe2":
+        print(p.get("base-url", ""))
+        break
 PY
-    )
-    if [[ -n "${ngrok_url:-}" ]]; then
+    ) || ngrok_rc=$?
+    if [[ "$ngrok_rc" -eq 2 ]]; then
+      add_finding D "[devin-swe2] 探測環境缺 yaml 解析器（${PY_YAML} 無法 import yaml）——drift 軸無法判定（fail-loud）"
+    elif [[ "$ngrok_rc" -eq 3 ]]; then
+      add_finding D "[devin-swe2] relay config 解析失敗：${RELAY_CONFIG}——drift 軸無法判定（fail-loud）"
+    elif [[ -n "${ngrok_url:-}" ]]; then
       devin_code=$(http_code "${ngrok_url%/}/models")
       echo "devin_swe2_base=${ngrok_url} code=${devin_code}"
       if [[ "$devin_code" == "000" || "$devin_code" == "404" || "$devin_code" == "502" || "$devin_code" == "503" ]]; then
         add_finding C "[devin-swe2] 現行 ngrok URL（${ngrok_url}）探測 HTTP ${devin_code}——網址可能已漂移（免費隧道重開即變），更新 relay config 前該腿死"
       fi
     else
-      echo "devin_swe2_base=（config 無 atkins-devin-swe2，略過）"
+      echo "devin_swe2_base=（config 確認無 atkins-devin-swe2 provider，該軸不適用）"
     fi
   else
     add_finding D "[relay-config] 讀不到 ${RELAY_CONFIG}——鏈腿清單與 devin URL 無法判定（fail-loud）"
