@@ -463,4 +463,36 @@ assert errs, '查詢失敗應進 errors'
 print('✅ 測 12 gh 失敗：只進 errors、無修復 finding、exit 0')
 " || fail "pin 測 12 斷言失敗"
 
+# ---- 測 13 npm min-release-age：@latest 未滿天數 → 有更新退到已滿天數的最高版、新版進 release_pending 附解禁日 ----
+AGE_BIN="$TMP/npm-age-bin"
+mkdir -p "$AGE_BIN"
+ln -s "$NPM_ACTIVE/@qwen-code/qwen-code/cli-entry.js" "$AGE_BIN/qwen"
+cat > "$AGE_BIN/npm" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "config get min-release-age") printf '7\n' ;;
+  "view @qwen-code/qwen-code version") printf '0.21.11\n' ;;
+  "view @qwen-code/qwen-code time --json") printf '{"created":"2025-01-01T00:00:00.000Z","modified":"2026-09-17T00:00:00.000Z","0.21.6":"2026-08-20T00:00:00.000Z","0.21.10":"2026-09-01T00:00:00.000Z","0.21.11-rc.1":"2026-09-02T00:00:00.000Z","0.21.11":"2026-09-17T00:00:00.000Z"}\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$AGE_BIN/npm"
+out_age=$(PATH="$AGE_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-20 "$HELPER" --json 2>/dev/null)
+report_age=$(PATH="$AGE_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-20 "$HELPER" 2>/dev/null)
+out_age_current=$(PATH="$AGE_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-24 "$HELPER" --json 2>/dev/null)
+python3 - "$out_age" "$report_age" "$out_age_current" <<'PY' || fail "npm min-release-age 斷言失敗"
+import json, sys
+packet, report, unlocked = json.loads(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3])
+assert packet['errors'] == [], packet['errors']
+assert [(u['current'], u['latest']) for u in packet['updates']] == [('0.21.6', '0.21.10')], packet['updates']
+assert packet['release_pending'] == [{
+  'name': '@qwen-code/qwen-code', 'manager': 'npm-g', 'current': '0.21.6', 'installable': '0.21.10',
+  'version': '0.21.11', 'published': '2026-09-17', 'unlock_date': '2026-09-24', 'min_release_age': 7,
+}], packet['release_pending']
+assert '### ⏳ 未滿 release age' in report and '0.21.11' in report and '2026-09-24 解禁' in report, report
+assert [(u['current'], u['latest']) for u in unlocked['updates']] == [('0.21.6', '0.21.11')], unlocked['updates']
+assert unlocked['release_pending'] == [], unlocked['release_pending']
+print('✅ 測 13 npm min-release-age：有更新退到已滿 7 天的 0.21.10、0.21.11 進 ⏳ 附解禁日、prerelease 不計、到期日當天回到有更新')
+PY
+
 echo "🎉 ALL PASS"

@@ -290,9 +290,38 @@ def gh_head(repo):
     s = run(["gh", "api", f"repos/{repo}/commits/HEAD", "--jq", ".sha"])
     return s.strip() if s else None
 
+def npm_min_release_age():
+    s = run(["npm", "config", "get", "min-release-age"])
+    try:
+        return max(int((s or "").strip()), 0)
+    except ValueError:
+        return 0
+
 def npm_latest(pkg):
     s = run(["npm", "view", pkg, "version"])
     return s.strip() if s else None
+
+def npm_installable(pkg, min_age_days, run_date):
+    newest = npm_latest(pkg)
+    if not newest or min_age_days <= 0:
+        return newest, None
+    s = run(["npm", "view", pkg, "time", "--json"])
+    try:
+        times = json.loads(s or "")
+    except ValueError:
+        return newest, None
+    import datetime as _dt
+    today = _dt.date.fromisoformat(run_date)
+    cutoff = today - _dt.timedelta(days=min_age_days)
+    def published(v):
+        return _dt.date.fromisoformat(times[v][:10])
+    stable = [v for v in times if v not in ("created", "modified") and "-" not in v]
+    aged = [v for v in stable if published(v) <= cutoff]
+    installable = max(aged, key=_vkey) if aged else None
+    if installable is None or _vkey(newest) <= _vkey(installable):
+        return installable, None
+    pending = {"version": newest, "published": times[newest][:10], "unlock_date": (published(newest) + _dt.timedelta(days=min_age_days)).isoformat()}
+    return installable, pending
 
 def pypi_latest(pkg):
     try:
@@ -358,8 +387,9 @@ manifest = load_manifest()
 ignore = load_ignore()
 upgrade_notes = load_upgrade_notes()
 cargo, brew, npm, uv, mcpnpx = cargo_git_installed(), brew_installed(), npm_g_installed(), uv_installed(), mcp_npx_installed()
-updates, errors, held = [], [], []
+updates, errors, held, release_pending = [], [], [], []
 RUN_DATE = os.environ.get("LOCAL_ANALYSIS_DATE") or __import__("datetime").date.today().isoformat()
+NPM_MIN_RELEASE_AGE = npm_min_release_age()
 
 def add_update(name, mgr, cur, latest, src, notes="", **details):
     if latest and norm(latest) != norm(cur):
@@ -408,11 +438,14 @@ for e in manifest:
             if not active:
                 installed = ", ".join(f"{item['version']} @ {item['root']}" for item in info.get("others", []))
                 errors.append({"name": name, "reason": f"installed but no executable on PATH: {installed}"}); continue
+            installable, pending = npm_installable(src or name, NPM_MIN_RELEASE_AGE, RUN_DATE)
+            if pending:
+                release_pending.append({"name": name, "manager": mgr, "current": active["version"], "installable": installable, **pending, "min_release_age": NPM_MIN_RELEASE_AGE})
             add_update(
                 name,
                 mgr,
                 active["version"],
-                npm_latest(src or name),
+                installable,
                 src or name,
                 active_install=active["root"],
                 other_installs=info.get("others", []),
@@ -475,7 +508,7 @@ for names, mgr in [(cargo.keys(), "cargo-git"), (brew_leaves(), "brew"),
         if n not in tracked and n not in ignore:
             discovered.append({"name": n, "manager": mgr})
 
-result = {"updates": updates, "discovered": discovered, "errors": errors, "held": held}
+result = {"updates": updates, "discovered": discovered, "errors": errors, "held": held, "release_pending": release_pending}
 
 if JSON_OUT:
     print(json.dumps(result, ensure_ascii=False))
@@ -490,7 +523,7 @@ def emit(text):
             pass
     print(text)
 
-if not updates and not discovered:
+if not updates and not discovered and not release_pending:
     emit("__SILENT__")
     sys.exit(0)
 
@@ -506,6 +539,10 @@ if updates:
             others = f"；其他安裝：{values}"
         upgrade_note = f" {u['upgrade_note']}" if u.get("upgrade_note") else ""
         out.append(f"- {u['name']} {u['current']}→{u['latest']}（{u['manager']}{active}{others}）{upgrade_note}{note}")
+if release_pending:
+    out.append("### ⏳ 未滿 release age（npm min-release-age 擋、現在裝不到；到期自動回到有更新）")
+    for u in release_pending:
+        out.append(f"- {u['name']} {u['current']}→{u['version']}（{u['manager']}；{u['published']} 發布、min-release-age={u['min_release_age']} 天、{u['unlock_date']} 解禁）")
 if held:
     out.append("### 暫緩（使用者拍板 hold_until 未到，不列入有更新；到期自動回到有更新）")
     for u in held:
