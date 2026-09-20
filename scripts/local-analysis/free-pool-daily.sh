@@ -3,8 +3,16 @@
 #
 # kind: 'shell'——零 LLM。偵測 free / free-smart 模型池各來源的三層死法：
 #   過程沒開（port / process）／認證・額度死（402、ready 數、餘額）／位址漂移（ngrok 現行 URL 實打）。
-# 全綠寫 __SILENT__；任一來源異常才產出報告，嚴重度排序 A→B→C→D：全池級（relay / litellm 掛）→
-# 花錢來源（stepfun 額度）→ 池內其他來源 → 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
+# 可用證據語義（使用者拍板的 hello 簡化）：對 relay config 內每條 free/free-smart 腿（跳過
+# disabled、按 base-url+model 去重、動態讀檔新腿自動納入）打一發 hello 小請求——200+非空
+# content＝「此刻這條腿真的能出活」；認證死／額度死／通道死一發現形，「未驗證」態被主動
+# 探測壓縮掉。hello 失敗分級：step- 402 或 content 空＝B（花錢來源）、其他腿死＝C、
+# 429（無 deployments／cooldown 字樣）或探測環境壞＝D（判不出來，fail-loud）；
+# 429 但回應體含 No deployments／cooldown＝C（上游配額死，litellm 對冷卻耗盡的表達方式）。
+# hello 逾時 60 秒——mimo 這類引擎文件記載延遲可達 30 秒，20 秒會假陽。
+# 全綠寫 __SILENT__（證據落在 LOG 的 hello 行）；任一來源異常才產出報告，嚴重度排序
+# A→B→C→D：全池級（relay / litellm 掛）→ 花錢來源（stepfun 額度）→ 池內其他來源 →
+# 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
 # 「獨立 free-pool 軸、不併 codex-cdp」——codex-cdp 管連線地基、本軸管供應鏈三層死法。
 #
 # Threat model（提示型 detector）：
@@ -244,6 +252,84 @@ PY
   else
     add_finding D "[relay-config] 讀不到 ${RELAY_CONFIG}——鏈腿清單與 devin URL 無法判定（fail-loud）"
   fi
+
+  hello_rc=0
+  hello_out=$("$PY_YAML" - "$RELAY_CONFIG" <<'PY'
+import json, sys, time, urllib.request, urllib.error
+try:
+    import yaml
+except ImportError:
+    print("HELLO_FAIL\tD\t[hello] 探測環境缺 yaml——全池 hello 證據未取得（fail-loud）")
+    sys.exit(0)
+try:
+    cfg = yaml.safe_load(open(sys.argv[1]))
+except Exception:
+    print("HELLO_FAIL\tD\t[hello] relay config 解析失敗——全池 hello 證據未取得（fail-loud）")
+    sys.exit(0)
+probes = {}
+for p in (cfg or {}).get("openai-compatibility", []):
+    if p.get("disabled"):
+        continue
+    chain_models = [m for m in p.get("models", []) if m.get("alias") in ("free", "free-smart")]
+    if not chain_models:
+        continue
+    base = (p.get("base-url") or "").rstrip("/")
+    key_entries = p.get("api-key-entries") or [{}]
+    key = key_entries[0].get("api-key", "")
+    for m in chain_models:
+        probes.setdefault((base, m.get("name")), (p.get("name", "?"), key))
+for (base, model), (pname, key) in sorted(probes.items()):
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 400,
+        "temperature": 0,
+    }).encode()
+    req = urllib.request.Request(
+        base + "/chat/completions", data=body, method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            d = json.loads(r.read())
+            msg = ((d.get("choices") or [{}])[0].get("message")) or {}
+            content = msg.get("content") or ""
+            reasoning = msg.get("reasoning") or msg.get("reasoning_content") or ""
+            comp_tok = ((d.get("usage") or {}).get("completion_tokens")) or 0
+            print(f"hello ✓ {pname} {model}: {r.status} content={content[:24]!r} reasoning={bool(reasoning)} comp_tok={comp_tok}")
+            if not content.strip() and not reasoning.strip() and comp_tok <= 0:
+                sev = "B" if str(model).startswith("step-") else "C"
+                print(f"HELLO_FAIL\t{sev}\t[{pname}] hello 回 200 但零輸出（content/reasoning/completion_tokens 全空）——回應通道死（{base} model={model}）")
+    except urllib.error.HTTPError as e:
+        code = e.code
+        try:
+            body_txt = e.read(200).decode("utf-8", "replace").replace("\n", " ")
+        except Exception:
+            body_txt = ""
+        if code == 429 and ("No deployments" in body_txt or "cooldown" in body_txt):
+            sev, kind = "C", "上游 deployment 全數冷卻——配額／key 疑耗盡（litellm 回 429 但語義是腿死）"
+        elif code == 429:
+            sev, kind = "D", "撞限流未能判定（fail-loud）"
+        elif code == 402:
+            sev = "B" if str(model).startswith("step-") else "C"
+            kind = "額度耗盡"
+        elif code in (401, 403):
+            sev, kind = "C", f"認證／權限失效（HTTP {code}）"
+        else:
+            sev, kind = "C", f"HTTP {code}"
+        print(f"HELLO_FAIL\t{sev}\t[{pname}] hello 失敗：{kind}（{base} model={model}）上游回應：{body_txt[:120]}")
+    except Exception as e:
+        print(f"HELLO_FAIL\tC\t[{pname}] hello 連線失敗：{type(e).__name__}（{base} model={model}）")
+    time.sleep(1)
+PY
+  ) || hello_rc=$?
+  printf '%s\n' "$hello_out"
+  if [[ "${hello_rc:-0}" -ne 0 ]]; then
+    add_finding D "[hello] 探測執行失敗（exit ${hello_rc}）——全池可用證據未取得（fail-loud）"
+  fi
+  while IFS=$'\t' read -r _tag _sev _msg; do
+    [[ "$_tag" == "HELLO_FAIL" ]] && add_finding "$_sev" "$_msg"
+  done <<< "$hello_out"
 } > "$LOG" 2>&1 || true
 
 if [[ -s "$FINDINGS" ]]; then
