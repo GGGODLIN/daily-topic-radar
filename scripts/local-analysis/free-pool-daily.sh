@@ -49,9 +49,7 @@ STEPFUN_FLOOR="${FREE_POOL_STEPFUN_FLOOR:-2}"
 PORT_RELAY="${FREE_POOL_PORT_RELAY:-8317}"
 PORT_LITELLM="${FREE_POOL_PORT_LITELLM:-8000}"
 PORT_CLINE="${FREE_POOL_PORT_CLINE:-3457}"
-PORT_WB="${FREE_POOL_PORT_WB:-3010}"
 PORT_AR="${FREE_POOL_PORT_AR:-8002}"
-WB_URL="${FREE_POOL_WB_URL:-http://127.0.0.1:$PORT_WB}"
 AR_URL="${FREE_POOL_AR_URL:-http://127.0.0.1:$PORT_AR}"
 MIMO_HEALTH="${FREE_POOL_MIMO_HEALTH:-http://127.0.0.1:8320/health}"
 
@@ -133,13 +131,6 @@ PY
       fi
       echo "stepfun_log_24h=${sf_cs}勝/${sf_cf}敗 402×${sf_402} 429×${sf_429}"
     fi
-  fi
-
-  wb_code=$(http_code "$WB_URL/health")
-  if [[ "$wb_code" == "000" ]]; then
-    add_finding C "[workbuddy] :${PORT_WB} sidecar 未回應——workbuddy-v41 腿死，鏈會跳過"
-  elif [[ "$wb_code" != "200" ]]; then
-    add_finding C "[workbuddy] health 回 HTTP ${wb_code}——sidecar 在但狀態異常"
   fi
 
   ar_code=$(http_code "$AR_URL/health/liveliness")
