@@ -22,8 +22,9 @@ LOG="$LOG_DIR/local-analysis-rules-size-$DATE.log"
 # LLM 可穩定遵循 ~150-200 條 instruction（CC system prompt 已占 ~50 條）、
 # 單檔理想 <300 行、prompt 周邊位置（開頭/結尾）注意力較高。
 # byte cap 是 proxy——若未來要調 cap，用「指令條數」重新換算而非直接放大 bytes。
+# 2026-09-22 使用者拍板 CLAUDE.md cap 12288 → 14000：09-03 瘦身到 13058 後三週長回 13718，選擇認了不再砍。
 CLAUDE_MD="/Users/linhancheng/.claude/CLAUDE.md"
-CLAUDE_CAP="${RULES_SIZE_CLAUDE_CAP:-12288}"   # 12KB
+CLAUDE_CAP="${RULES_SIZE_CLAUDE_CAP:-14000}"   # 14KB（2026-09-22 起）
 RULE_CAP="${RULES_SIZE_RULE_CAP:-9728}"        # 9.5KB
 TOTAL_CAP="${RULES_SIZE_TOTAL_CAP:-46080}"     # 45KB
 

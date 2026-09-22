@@ -15,6 +15,9 @@ plugin 前綴（含冒號）的 Skill invoke 不對映；死庫存軸是 90 天�
 死庫存軸排除 settings.json skillOverrides 設 name-only 的 skill（2026-08-04 拍板）：
 name-only 只注入名字一行（~5 tok）、無 description 誤觸發面、由 router/手動叫用，
 零 invoke 是設計預期而非死庫存訊號；排除數在報告標題註記、不靜默。
+registry mode 為 hook-driven 的同樣排除（2026-09-22 拍板）：這類 command 由 hook 注入 workflow
+指令觸發、不經 Skill tool（例 daily-topic），計數器結構上看不到；使用者原則是
+「零成本／看不到的 skill 不進死庫存警報」。
 計數紀律：auto 按 distinct tool_use id、manual 按 distinct message uuid 去重
 （resume/fork 會複製訊息，原始命中數灌水 3-13 倍，前案見 memory adhd extract 洞察 2）。
 """
@@ -211,6 +214,7 @@ def main():
 
   alerts, rows, dead, undecided, new_undecided = [], [], [], [], []
   dead_name_only_excluded = 0
+  dead_hook_driven_excluded = 0
   for name, meta in sorted(inventory.items()):
     mode = registry.get(name, {}).get("mode", meta["guess"])
     decided = registry.get(name, {}).get("decided", False)
@@ -230,6 +234,9 @@ def main():
       if name in name_only:
         dead_name_only_excluded += 1
         continue
+      if mode == "hook-driven":
+        dead_hook_driven_excluded += 1
+        continue
       rel = os.path.relpath(meta["path"], args.claude_git_dir) if args.claude_git_dir else meta["path"]
       inst = install_date(args.claude_git_dir, rel)
       if inst and (now - inst) >= args.dead_min_age_days * 86400:
@@ -247,7 +254,7 @@ def main():
   lines += alerts if alerts else ["無。"]
   lines += ["", f"## 統計儀表（{args.alert_window_days} 天窗、僅列有活動者，共 {len(rows)}/{len(inventory)}）", "", "| skill | mode | auto | manual | 90d 合計 |", "|---|---|---|---|---|"]
   lines += rows if rows else []
-  lines += ["", f"## 死庫存候選（安裝 ≥ {args.dead_min_age_days} 天且 {args.dead_window_days} 天零 invoke；本輪列 {min(len(dead), args.dead_cap)}/{len(dead)}；另排除 name-only {dead_name_only_excluded} 個——router 選單成員、零 invoke 屬設計預期）", ""]
+  lines += ["", f"## 死庫存候選（安裝 ≥ {args.dead_min_age_days} 天且 {args.dead_window_days} 天零 invoke；本輪列 {min(len(dead), args.dead_cap)}/{len(dead)}；另排除 name-only {dead_name_only_excluded} 個——router 選單成員、零 invoke 屬設計預期；排除 hook-driven {dead_hook_driven_excluded} 個——由 hook 注入觸發、不經 Skill tool，計數器看不到）", ""]
   for inst, name, mode in dead[: args.dead_cap]:
     age = int((now - inst) / 86400)
     lines.append(f"- `{name}`（{mode}、安裝 {age} 天、{args.dead_window_days} 天零 invoke）→ 留/殺候選")
