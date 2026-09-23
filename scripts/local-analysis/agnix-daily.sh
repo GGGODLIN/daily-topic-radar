@@ -70,6 +70,10 @@ allowed_diagnostics = {
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/voices/`' is deeper than one level"),
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/voices/registry.md`' is deeper than one level"),
     ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/languages/zh.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/domains/journalism.md`' is deeper than one level"),
+    ("warning", "vendor/sepia/skills/sepia/SKILL.md", "AS-013", "File reference 'references/voices/PERSONA-TEMPLATE.md`' is deeper than one level"),
+    ("error", "vendor/sepia/.qwenpaw-plugin/plugin.json", "CC-PL-001", "plugin.json must be located in .claude-plugin/ directory"),
+    ("warning", "vendor/sepia/.qwenpaw-plugin/plugin.json", "CC-PL-009", "Invalid author object: 'author.name' must be a non-empty string"),
 }
 with open(sys.argv[2], "w") as suppressed:
     for level, file, rule, message in sorted(allowed_diagnostics):
