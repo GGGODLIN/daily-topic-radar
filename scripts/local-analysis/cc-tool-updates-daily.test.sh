@@ -495,4 +495,28 @@ assert unlocked['release_pending'] == [], unlocked['release_pending']
 print('✅ 測 13 npm min-release-age：有更新退到已滿 7 天的 0.21.10、0.21.11 進 ⏳ 附解禁日、prerelease 不計、到期日當天回到有更新')
 PY
 
+# ---- 測 14 npm 已裝版本比「已滿天數最高版」新 → 不得報成有更新（降版誤報） ----
+DOWN_BIN="$TMP/npm-down-bin"
+mkdir -p "$DOWN_BIN"
+ln -s "$NPM_ACTIVE/@qwen-code/qwen-code/cli-entry.js" "$DOWN_BIN/qwen"
+cat > "$DOWN_BIN/npm" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "config get min-release-age") printf '7\n' ;;
+  "view @qwen-code/qwen-code version") printf '0.21.11\n' ;;
+  "view @qwen-code/qwen-code time --json") printf '{"created":"2025-01-01T00:00:00.000Z","modified":"2026-09-19T00:00:00.000Z","0.21.5":"2026-09-01T00:00:00.000Z","0.21.6":"2026-09-18T00:00:00.000Z","0.21.11":"2026-09-19T00:00:00.000Z"}\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$DOWN_BIN/npm"
+out_down=$(PATH="$DOWN_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-20 "$HELPER" --json 2>/dev/null)
+python3 - "$out_down" <<'PY' || fail "npm 降版誤報斷言失敗"
+import json, sys
+packet = json.loads(sys.argv[1])
+assert packet['errors'] == [], packet['errors']
+assert packet['updates'] == [], packet['updates']
+assert [(p['current'], p['version']) for p in packet['release_pending']] == [('0.21.6', '0.21.11')], packet['release_pending']
+print('✅ 測 14 npm 降版：已裝 0.21.6 比已滿 7 天的 0.21.5 新 → 不進有更新、0.21.11 仍進 ⏳')
+PY
+
 echo "🎉 ALL PASS"

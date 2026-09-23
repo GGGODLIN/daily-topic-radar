@@ -441,6 +441,8 @@ for e in manifest:
             installable, pending = npm_installable(src or name, NPM_MIN_RELEASE_AGE, RUN_DATE)
             if pending:
                 release_pending.append({"name": name, "manager": mgr, "current": active["version"], "installable": installable, **pending, "min_release_age": NPM_MIN_RELEASE_AGE})
+            if installable and _vkey(installable) <= _vkey(active["version"]):
+                installable = None
             add_update(
                 name,
                 mgr,
