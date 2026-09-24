@@ -11,7 +11,7 @@
 # 429 但回應體含 No deployments／cooldown＝C（上游配額死，litellm 對冷卻耗盡的表達方式）。
 # hello 逾時 60 秒——mimo 這類引擎文件記載延遲可達 30 秒，20 秒會假陽。
 # 全綠寫 __SILENT__（證據落在 LOG 的 hello 行）；任一來源異常才產出報告，嚴重度排序
-# A→B→C→D：全池級（relay / litellm 掛）→ 花錢來源（stepfun 額度）→ 池內其他來源 →
+# A→B→C→D：全池級（relay / litellm 掛）→ 花錢來源（2026-09-24 stepfun 拔除後暫無）→ 池內其他來源 →
 # 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
 # 「獨立 free-pool 軸、不併 codex-cdp」——codex-cdp 管連線地基、本軸管供應鏈三層死法。
 #
@@ -43,9 +43,6 @@ mkdir -p "$OUT_DIR" "$LOG_DIR"
 RELAY_CONFIG="${FREE_POOL_RELAY_CONFIG:-$HOME/.cli-proxy-api/config.yaml}"
 CLINE_ACCOUNTS="${FREE_POOL_CLINE_ACCOUNTS:-$HOME/.cline2api/.cline-accounts.json}"
 LITELLM_LOG_DIR="${FREE_POOL_LITELLM_LOG_DIR:-$HOME/.local/state/litellm}"
-STEPFUN_PLIST="${FREE_POOL_STEPFUN_PLIST:-$HOME/Library/LaunchAgents/com.gggodlin.litellm-proxy.plist}"
-STEPFUN_URL="${FREE_POOL_STEPFUN_URL:-https://api.stepfun.com/v1/accounts}"
-STEPFUN_FLOOR="${FREE_POOL_STEPFUN_FLOOR:-2}"
 PORT_RELAY="${FREE_POOL_PORT_RELAY:-8317}"
 PORT_LITELLM="${FREE_POOL_PORT_LITELLM:-8000}"
 PORT_CLINE="${FREE_POOL_PORT_CLINE:-3457}"
@@ -74,64 +71,9 @@ http_code() {
     add_finding A "[relay] :${PORT_RELAY} 未在聽——全池死（launchd 應自摔重啟，若持續紅查 ~/Library/LaunchAgents/com.philip.cli-proxy-api）"
   fi
   if ! port_probe "$PORT_LITELLM"; then
-    add_finding A "[litellm] :${PORT_LITELLM} 未在聽——經 litellm 的腿（groq/bai/mimo/stepfun）全死"
+    add_finding A "[litellm] :${PORT_LITELLM} 未在聽——經 litellm 的腿（groq/bai/mimo）全死"
   fi
 
-  if [[ -r "$STEPFUN_PLIST" ]] && command -v /usr/libexec/PlistBuddy >/dev/null; then
-    sf_key=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:STEPFUN_KEY' "$STEPFUN_PLIST" 2>/dev/null || true)
-    if [[ -z "${sf_key:-}" ]]; then
-      add_finding D "[stepfun] plist 讀不到 STEPFUN_KEY——探測不能（fail-loud，非綠燈）"
-    else
-      sf_json=$(/usr/bin/curl -fsS -m 6 -H "Authorization: Bearer ${sf_key}" "$STEPFUN_URL" 2>/dev/null) || sf_json=""
-      if [[ -z "$sf_json" ]]; then
-        add_finding D "[stepfun] 帳戶端點探測失敗（網路或 key 失效；不代表額度耗盡）"
-      else
-        sf_bal=$(printf '%s' "$sf_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('balance',0))" 2>/dev/null || echo "?")
-        sf_vou=$(printf '%s' "$sf_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total_voucher_balance',0))" 2>/dev/null || echo "?")
-        if python3 -c "import sys; b=float('${sf_bal}'); v=float('${sf_vou}'); sys.exit(0 if (b<=0 and v<=0) or b<float('${STEPFUN_FLOOR}') else 1)" 2>/dev/null; then
-          add_finding B "[stepfun] 餘額 ¥${sf_bal}（贈金 ¥${sf_vou}）低於地板 ¥${STEPFUN_FLOOR} 或已歸零——拔鏈腿或充值前鏈會自動繞過；trial ccp-stepfun review 處理"
-        fi
-      fi
-      step_log_count=$(
-        python3 - "$LITELLM_LOG_DIR" "$DATE" <<'PY'
-import json, sys, os, glob, datetime
-log_dir, today = sys.argv[1], sys.argv[2]
-days = {today}
-try:
-    days.add((datetime.date.fromisoformat(today) - datetime.timedelta(days=1)).isoformat())
-except Exception:
-    pass
-c402 = c429 = cs = cf = 0
-for d in days:
-    for path in glob.glob(os.path.join(log_dir, f"calls-{d}.jsonl")):
-        for line in open(path, encoding="utf-8", errors="replace"):
-            if "step-" not in line:
-                continue
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-            if not str(rec.get("model", "")).startswith("step-"):
-                continue
-            if rec.get("status") == "success":
-                cs += 1
-            else:
-                cf += 1
-                blob = line.lower()
-                if "402" in blob or "insufficient" in blob:
-                    c402 += 1
-                elif "429" in blob or "rate" in blob:
-                    c429 += 1
-print(f"{cs}|{cf}|{c402}|{c429}")
-PY
-      )
-      IFS='|' read -r sf_cs sf_cf sf_402 sf_429 <<< "${step_log_count:-0|0|0|0}"
-      if [[ "${sf_402:-0}" -gt 0 ]]; then
-        add_finding B "[stepfun] 24h litellm log 有 402/insufficient×${sf_402}——額度耗盡實錘；充值後 kickstart relay 解冷卻"
-      fi
-      echo "stepfun_log_24h=${sf_cs}勝/${sf_cf}敗 402×${sf_402} 429×${sf_429}"
-    fi
-  fi
 
   ar_code=$(http_code "$AR_URL/health/liveliness")
   if [[ "$ar_code" == "000" ]]; then
