@@ -156,7 +156,7 @@ active = sum(1 for a in accs if (a.get("status") or "") == "active")
 keys = set()
 for a in accs:
     keys.update((a.get("modelCooldowns") or {}).keys())
-models = sorted(keys | {"z-ai/glm-5.3-flash", "deepseek/deepseek-v4-flash-0731", "cline-free/deepseek-v4.1-flash"})
+models = sorted(keys | {"deepseek/deepseek-v4-flash-0731", "cline-free/deepseek-v4.1-flash"})
 parts = []
 zeros = []
 for m in models:
