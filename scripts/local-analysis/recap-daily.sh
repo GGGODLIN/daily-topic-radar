@@ -14,6 +14,7 @@ PARENT_CC_VENDOR="${CC_VENDOR-}"
 PARENT_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL-}"
 CLAUDE="${RECAP_CLAUDE_BIN:-/Users/linhancheng/.local/bin/claude}"
 KEYS_FILE="${RECAP_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}"
+GPT_MODELS_FILE="${RECAP_GPT_MODELS_FILE:-$HOME/.claude/config/gpt-models.env}"
 REPO_DIR="/Users/linhancheng/code/social-info"
 OUT_DIR="${RECAP_OUT_DIR:-$REPO_DIR/reports/local-analysis}"
 LOG_DIR="${RECAP_LOG_DIR:-$REPO_DIR/logs}"
@@ -145,7 +146,7 @@ EOF
 )
 
 run_recap() {
-  local luna_model='gpt-5.6-luna(max)'
+  local luna_model=''
   if [[ -z "$PARENT_CC_VENDOR" && -z "$PARENT_ANTHROPIC_BASE_URL" ]]; then
     (
       unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL
@@ -158,6 +159,17 @@ run_recap() {
   fi
   if [[ ! -f "$KEYS_FILE" ]]; then
     printf 'recap route: keys file missing: %s\n' "$KEYS_FILE" >&2
+    return 1
+  fi
+  # 版本表跟 keys file 一樣逐行解析、不 source，理由相同：內容不能被當 shell 執行。
+  if [[ -f "$GPT_MODELS_FILE" ]]; then
+    local key value
+    while IFS='=' read -r key value; do
+      [[ "$key" == GPT_LUNA ]] && luna_model="${value%$'\r'}(max)"
+    done < "$GPT_MODELS_FILE"
+  fi
+  if [[ -z "$luna_model" ]]; then
+    printf 'recap route: GPT_LUNA missing from %s\n' "$GPT_MODELS_FILE" >&2
     return 1
   fi
   (

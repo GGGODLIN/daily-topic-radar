@@ -3,7 +3,7 @@ set -eu
 
 root="${0:A:h}"
 script="$root/recap-daily.sh"
-for marker in RECAP_CLAUDE_BIN RECAP_KEYS_FILE RECAP_OUT_DIR RECAP_LOG_DIR PARENT_CC_VENDOR; do
+for marker in RECAP_CLAUDE_BIN RECAP_KEYS_FILE RECAP_GPT_MODELS_FILE RECAP_OUT_DIR RECAP_LOG_DIR PARENT_CC_VENDOR; do
   if ! grep -Fq "$marker" "$script"; then
     print -ru2 -- "RED missing route seam: $marker"
     exit 1
@@ -16,9 +16,16 @@ fake="$fixture/claude"
 keys="$fixture/keys.env"
 relay_url='http://127.0.0.1:8317'
 relay_token='fixture-relay-token'
-luna='gpt-5.6-luna(max)'
+models="$fixture/gpt-models.env"
+luna='fixture-luna(max)'
 checks=0
 failures=0
+
+cat > "$models" <<'MODELS'
+# fixture
+GPT_SOL=fixture-sol
+GPT_LUNA=fixture-luna
+MODELS
 
 cat > "$keys" <<EOF
 CLIPROXY_BASE_URL=$relay_url
@@ -78,7 +85,7 @@ assert_line() {
 run_case() {
   local label="$1" vendor="$2" base="$3"
   local capture="$fixture/$label.capture" out="$fixture/$label.out" log="$fixture/$label.log"
-  env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_OUT_DIR="$out" RECAP_LOG_DIR="$log" RECAP_DATE=2026-09-08 RECAP_CAPTURE_FILE="$capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR="$vendor" ANTHROPIC_BASE_URL="$base" ANTHROPIC_AUTH_TOKEN='fixture-parent-token' ANTHROPIC_API_KEY='fixture-parent-api-key' bash "$script"
+  env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$out" RECAP_LOG_DIR="$log" RECAP_DATE=2026-09-08 RECAP_CAPTURE_FILE="$capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR="$vendor" ANTHROPIC_BASE_URL="$base" ANTHROPIC_AUTH_TOKEN='fixture-parent-token' ANTHROPIC_API_KEY='fixture-parent-api-key' bash "$script"
   assert_line "$capture" "model=$luna"
   assert_line "$capture" 'cc_vendor=headless-channel'
   assert_line "$capture" "base_url=$relay_url"
@@ -143,6 +150,16 @@ set -e
 ((++checks))
 if ((missing_status == 0)) || [[ -e "$fixture/missing.capture" ]]; then
   print -ru2 -- 'missing keys case did not fail closed'
+  ((++failures))
+fi
+
+set +e
+env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$fixture/missing-models.env" RECAP_OUT_DIR="$fixture/nomodels.out" RECAP_LOG_DIR="$fixture/nomodels.log" RECAP_DATE=2026-09-08 RECAP_CAPTURE_FILE="$fixture/nomodels.capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>&1
+nomodels_status=$?
+set -e
+((++checks))
+if ((nomodels_status == 0)) || [[ -e "$fixture/nomodels.capture" ]]; then
+  print -ru2 -- 'missing GPT version table did not fail closed'
   ((++failures))
 fi
 
