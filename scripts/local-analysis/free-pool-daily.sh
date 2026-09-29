@@ -5,8 +5,8 @@
 #   過程沒開（port / process）／認證・額度死（402、ready 數、餘額）／位址漂移（ngrok 現行 URL 實打）。
 # 可用證據語義（使用者拍板的 hello 簡化）：對 relay config 內每條 free/free-smart 腿（跳過
 # disabled、按 base-url+model 去重、動態讀檔新腿自動納入）打一發 hello 小請求——200+非空
-# content＝「此刻這條腿真的能出活」；認證死／額度死／通道死一發現形，「未驗證」態被主動
-# 探測壓縮掉。hello 失敗分級：step- 402 或 content 空＝B（花錢來源）、其他腿死＝C、
+# content＝「小請求存活」：只證明此刻一發小請求能過，不代表正常大小的請求或白天沒出事
+# （那段交給下方「過去 24 小時」）；認證死／額度死／通道死一發現形。hello 失敗分級：step- 402 或 content 空＝B（花錢來源）、其他腿死＝C、
 # 429（無 deployments／cooldown 字樣）或探測環境壞＝D（判不出來，fail-loud）；
 # 429 但回應體含 No deployments／cooldown＝C（上游配額死，litellm 對冷卻耗盡的表達方式）。
 # hello 逾時 60 秒——mimo 這類引擎文件記載延遲可達 30 秒，20 秒會假陽。
@@ -14,6 +14,13 @@
 # A→B→C→D：全池級（relay / litellm 掛）→ 花錢來源（2026-09-24 stepfun 拔除後暫無）→ 池內其他來源 →
 # 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
 # 「獨立 free-pool 軸、不併 codex-cdp」——codex-cdp 管連線地基、本軸管供應鏈三層死法。
+#
+# 過去 24 小時段（2026-09-28 relay-watch 06 號票）：呼叫 cliproxyapi-setup 的
+# `relay-watch report`，把整個 relay 池過去 24 小時的門檻 alias、低樣本故障、額度拒絕、
+# 覆蓋缺口與自檢接在 hello 段後面；門檻定義只在 relay_watch.py，和 30 分鐘排程共用。
+# hello 有發現或 24 小時段有異常就出報告；兩者都沒事才 __SILENT__。report 失敗（非零、
+# 找不到檔、空輸出）時本腳本非零退出，run-shell-channel 回報失敗、digest 顯示「偵測
+# channel 失敗」，不退回只看 hello 的全綠。
 #
 # Threat model（提示型 detector）：
 #   - 不保證即時性：日頻；分鐘級中斷由鏈的 failover 自己撐，本軸管「隔天要知道要修什麼」
@@ -49,6 +56,7 @@ PORT_CLINE="${FREE_POOL_PORT_CLINE:-3457}"
 PORT_AR="${FREE_POOL_PORT_AR:-8002}"
 AR_URL="${FREE_POOL_AR_URL:-http://127.0.0.1:$PORT_AR}"
 MIMO_HEALTH="${FREE_POOL_MIMO_HEALTH:-http://127.0.0.1:8320/health}"
+RELAY_WATCH="${FREE_POOL_RELAY_WATCH:-$HOME/Desktop/projects/cliproxyapi-setup/tools/relay-watch/relay_watch.py}"
 
 FINDINGS="$LOG_DIR/.free-pool-findings-$DATE.tmp"
 : > "$FINDINGS"
@@ -265,6 +273,18 @@ PY
   done <<< "$hello_out"
 } > "$LOG" 2>&1 || true
 
+day_rc=0
+day_section=$("$PY_YAML" "$RELAY_WATCH" report 2>>"$LOG") || day_rc=$?
+if [[ "$day_rc" -ne 0 || -z "$day_section" ]]; then
+  echo "relay-watch report 失敗（exit ${day_rc}）：${RELAY_WATCH}" >> "$LOG"
+  rm -f "$FINDINGS"
+  echo "free-pool: relay-watch report failed (exit ${day_rc}), see $LOG" >&2
+  exit 1
+fi
+printf '%s\n' "$day_section" >> "$LOG"
+day_clean=false
+grep -qx '過去 24 小時無異常' <<< "$day_section" && day_clean=true
+
 if [[ -s "$FINDINGS" ]]; then
   {
     echo "# free-pool liveness ${DATE}"
@@ -274,9 +294,21 @@ if [[ -s "$FINDINGS" ]]; then
     sort -t$'\t' -k1,1 "$FINDINGS" | while IFS=$'\t' read -r _pri msg; do
       echo "- ⚠ ${msg}"
     done
+    echo
+    printf '%s\n' "$day_section"
   } > "$OUT"
   rm -f "$FINDINGS"
   echo "free-pool: findings written to $OUT"
+elif [[ "$day_clean" == false ]]; then
+  {
+    echo "# free-pool liveness ${DATE}"
+    echo
+    echo "結論：小請求存活（free／free-smart 各腿 hello 通過，未發現程序、額度或位址異常）"
+    echo
+    printf '%s\n' "$day_section"
+  } > "$OUT"
+  rm -f "$FINDINGS"
+  echo "free-pool: 24h findings written to $OUT"
 else
   rm -f "$FINDINGS"
   printf '__SILENT__\n' > "$OUT"

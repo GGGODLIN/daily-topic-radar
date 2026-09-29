@@ -1963,3 +1963,107 @@ test('batched preparer and finalizer reject missing attempt nonce', () => {
     reauditNonce: '0',
   }))
 })
+
+const compactAuditFor = (samples, findings, auditNonce, startIndex = 1) => ({
+  audit_nonce: auditNonce,
+  rows: samples.map((_, index) => ({
+    sample_index: startIndex + index,
+    result: findings[index]?.length ? 'FAIL' : 'PASS',
+    findings: findings[index] ?? [],
+  })),
+})
+
+const writeCompactBatchTranscripts = (options) => {
+  const directory = writeValidBatchTranscripts(options)
+  for (const batch of options.manifest.batches) {
+    const file = path.join(directory, `agent-batch-${batch.index}.jsonl`)
+    const records = fs.readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    for (const record of records) {
+      for (const item of record.message.content) {
+        if (item.name !== 'StructuredOutput') continue
+        item.input.rows = item.input.rows.map((row, index) => ({
+          sample_index: batch.range.start + index,
+          result: row.result,
+          findings: row.findings,
+        }))
+        options.mutate?.(item.input, batch)
+      }
+    }
+    writeRows(file, records)
+  }
+  return directory
+}
+
+test('compact sampler omits copied identities while the manifest keeps its source members', () => {
+  const { sampled, manifest } = makeTwentySampleFixture()
+  assert.equal(sampled.batches.length, 4)
+  for (const batch of sampled.batches) {
+    assert.equal(Object.hasOwn(batch, 'members'), false)
+    assert.deepEqual(Object.keys(batch).sort(), ['audit_nonce', 'batch_sha256', 'index', 'path', 'range', 'samples_sha256'])
+  }
+  assert.equal(manifest.batches[0].members[0].session, 'batch-session-1')
+  assert.equal(manifest.batches[0].members[0].path.endsWith('/twenty.jsonl'), true)
+})
+
+test('compact primary audits restore report identities from the manifest instead of model text', () => {
+  const { fixture, sampled, manifest } = makeTwentySampleFixture()
+  const manifestBefore = fs.readFileSync(manifestPathFor(fixture))
+  const wfDir = writeCompactBatchTranscripts({ fixture, sampled, manifest })
+  const finalized = run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce })
+  assert.equal(finalized.ok, true)
+  assert.equal(finalized.tp_style_violation_count, 20)
+  const rows = fs.readFileSync(reportPathFor(fixture), 'utf8').split('\n').filter((line) => line.startsWith('| 2026-08-14T'))
+  assert.equal(rows.length, 20)
+  for (let index = 0; index < rows.length; index += 1) {
+    assert.equal(rows[index].startsWith(`| ${manifest.samples[index].timestamp} | batch-session-${index + 1} | ${path.join(fixture.project, 'twenty.jsonl')} | FAIL |`), true)
+  }
+  assert.deepEqual(fs.readFileSync(manifestPathFor(fixture)), manifestBefore)
+})
+
+test('compact PASS reaudit indexes bind to the subset rather than primary sample positions', () => {
+  for (const wrongIndex of [false, true]) {
+    const { fixture, sampled, manifest } = makeTwentySampleFixture()
+    const passIndexes = [0, 5, 10, 15]
+    const findings = manifest.batches.map((_, batchIndex) => Array.from({ length: 5 }, (_, rowIndex) => {
+      const index = batchIndex * 5 + rowIndex
+      return passIndexes.includes(index) ? [] : [{ type: 'unsourced-number', quote: manifest.samples[index].answer.slice(0, 5) }]
+    }))
+    const wfDir = writeCompactBatchTranscripts({ fixture, sampled, manifest, findings })
+    const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce })
+    assert.equal(prepared.reaudit_sample_count, 4)
+    const passSamples = passIndexes.map((index) => manifest.samples[index])
+    const audit = compactAuditFor(passSamples, [[], [{ type: 'doc-as-evidence', quote: passSamples[1].answer.slice(0, 5) }]], prepared.reaudit_nonce)
+    if (wrongIndex) audit.rows[1].sample_index = 6
+    const reauditPath = reauditSamplesTextPathFor(fixture, '2026-08-14', sampled.attempt_nonce)
+    writeAuditTranscript({ directory: wfDir, name: 'agent-reaudit.jsonl', samplesPath: reauditPath, samplesText: fs.readFileSync(reauditPath, 'utf8'), audit })
+    const finalized = run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce, reauditNonce: prepared.reaudit_nonce, reauditSamplesFileSha256: prepared.reaudit_samples_file_sha256 })
+    if (wrongIndex) assertUnverified(fixture, finalized)
+    else {
+      assert.equal(finalized.ok, true)
+      assert.equal(finalized.reaudit_sample_count, 4)
+      assert.equal(finalized.tp_style_violation_count, 17)
+    }
+  }
+})
+
+test('compact audits reject malformed indices, mixed rows, bad bindings and forged quotes', () => {
+  const cases = [
+    (packet) => { packet.rows[0].sample_index = 0 },
+    (packet) => { packet.rows[0].sample_index = 21 },
+    (packet) => { packet.rows[0].sample_index = 1.5 },
+    (packet) => { packet.rows[1].sample_index = 1 },
+    (packet) => { [packet.rows[0], packet.rows[1]] = [packet.rows[1], packet.rows[0]] },
+    (packet) => { packet.rows.pop() },
+    (packet) => { packet.rows[0].path = '/invented/session.jsonl' },
+    (packet) => { delete packet.rows[0].sample_index; Object.assign(packet.rows[0], { timestamp: 't', session: 's', path: 'p' }) },
+    (packet) => { packet.audit_nonce = '0'.repeat(64) },
+    (packet) => { packet.attempt_nonce = '0'.repeat(64) },
+    (packet) => { packet.batch_sha256 = '0'.repeat(64) },
+    (packet) => { packet.rows[0].findings[0].quote = 'not in this answer' },
+  ]
+  for (const mutate of cases) {
+    const { fixture, sampled, manifest } = makeTwentySampleFixture()
+    const wfDir = writeCompactBatchTranscripts({ fixture, sampled, manifest, mutate: (packet, batch) => { if (batch.index === 1) mutate(packet) } })
+    assertUnverified(fixture, run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce }))
+  }
+})
