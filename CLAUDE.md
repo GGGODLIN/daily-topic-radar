@@ -18,6 +18,8 @@
 
 電腦睡眠時 launchd 會在喚醒時補跑一次；整夜關機那天就 miss、不追補。
 
+**Threads 來源走 muse.ai（2026-09-29 加）**：`threads_muse` source 只讀 `muse/threads-radar.json`（gitignored）。檔案由 watchdogs repo 的 launchd `com.gggodlin.watchdogs.muse-threads-radar` 每週一、四 05:15 產生，它用 [`muse/threads-radar-prompt.txt`](/muse/threads-radar-prompt.txt) 派 muse1 帳號去 Threads 找貼文；內文與時間從 Threads 頁面自己讀，不用 Muse 的轉述。超過 110 小時沒更新，這個 source 會失敗、進 KNOWN_ISSUES。改關鍵字或過濾條件就改那份 prompt，要保留第一行「共打開 N 則貼文」和完整貼文網址，收集程式靠這兩樣收結果。
+
 ### 常用指令
 
 ```bash

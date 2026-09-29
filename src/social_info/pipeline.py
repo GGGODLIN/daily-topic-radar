@@ -19,6 +19,7 @@ from social_info.fetchers import (
     github_trending,
     hn,
     huggingface,
+    muse_spool,
     product_hunt,
     reddit,
     rss,
@@ -114,6 +115,7 @@ FETCHER_REGISTRY = {
     "trendshift": trendshift.fetch,
     "v2ex": v2ex.fetch,
     "wewe_rss": wewe_rss.fetch,
+    "muse_spool": muse_spool.fetch,
 }
 
 
