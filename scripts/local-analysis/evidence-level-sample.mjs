@@ -546,12 +546,14 @@ const canonicalFindingQuote = (answer, quote) => {
     .filter((line) => line !== '' && normalizeFindingText(line).includes(normalizedQuote))
   return matches.length === 1 ? matches[0] : null
 }
-const parseAuditObject = (audit, samples) => {
+const parseAuditObject = (audit, samples, startIndex = 1) => {
   if (!sameKeys(audit, ['audit_nonce', 'rows']) || !/^[a-f0-9]{64}$/.test(audit.audit_nonce) || !Array.isArray(audit.rows) || audit.rows.length !== samples.length) return null
+  const compact = audit.rows.every((row) => sameKeys(row, ['sample_index', 'result', 'findings']))
+  const legacy = audit.rows.every((row) => sameKeys(row, ['timestamp', 'session', 'path', 'result', 'findings']))
+  if (!compact && !legacy) return null
   const rows = audit.rows.map((row, index) => {
     const sample = samples[index]
-    if (!sameKeys(row, ['timestamp', 'session', 'path', 'result', 'findings'])) return null
-    if (row.timestamp !== sample.timestamp || row.session !== sample.session || row.path !== sample.path) return null
+    if (compact ? row.sample_index !== startIndex + index : row.timestamp !== sample.timestamp || row.session !== sample.session || row.path !== sample.path) return null
     if (!['PASS', 'FAIL'].includes(row.result) || !Array.isArray(row.findings)) return null
     const findings = row.findings.map((finding) => {
       if (!sameKeys(finding, ['type', 'quote'])) return null
@@ -563,7 +565,13 @@ const parseAuditObject = (audit, samples) => {
     if (findings.some((finding) => finding == null)) return null
     if (new Set(findings.map((finding) => finding.type)).size !== findings.length) return null
     if ((row.result === 'PASS') !== (findings.length === 0)) return null
-    return { ...row, findings: [...findings].sort((left, right) => VIOLATION_ORDER.get(left.type) - VIOLATION_ORDER.get(right.type)) }
+    return {
+      timestamp: sample.timestamp,
+      session: sample.session,
+      path: sample.path,
+      result: row.result,
+      findings: [...findings].sort((left, right) => VIOLATION_ORDER.get(left.type) - VIOLATION_ORDER.get(right.type)),
+    }
   })
   return rows.some((row) => row == null) ? null : { auditNonce: audit.audit_nonce, rows }
 }
@@ -580,7 +588,7 @@ const parseBatchAuditObject = (audit, manifest, batch, attemptNonce) => {
   if (!sameKeys(audit, ['audit_nonce', 'attempt_nonce', 'batch_index', 'range', 'batch_sha256', 'samples_sha256', 'rows'])) return null
   if (audit.attempt_nonce !== attemptNonce) return null
   if (audit.audit_nonce !== manifest.audit_nonce || audit.batch_index !== batch.index || !sameKeys(audit.range, ['start', 'end']) || audit.range.start !== batch.range.start || audit.range.end !== batch.range.end || audit.batch_sha256 !== batch.batch_sha256 || audit.samples_sha256 !== batch.samples_sha256) return null
-  return parseAuditObject({ audit_nonce: audit.audit_nonce, rows: audit.rows }, batchSamplesFor(manifest.samples, batch))
+  return parseAuditObject({ audit_nonce: audit.audit_nonce, rows: audit.rows }, batchSamplesFor(manifest.samples, batch), batch.range.start)
 }
 const violationCounts = (rows) => {
   const counts = new Map()
@@ -1336,7 +1344,7 @@ const main = () => {
     sample_count: manifest.samples.length,
     samples_sha256: digestText(JSON.stringify(manifest.samples)),
     samples_file_sha256: digestFile(samplesTextPath),
-    ...(batched ? { attempt_nonce: attemptNonce, batches: manifest.batches } : {}),
+    ...(batched ? { attempt_nonce: attemptNonce, batches: manifest.batches.map(({ members, ...batch }) => batch) } : {}),
     manifest_hash: manifest.manifest_hash,
     challenge: manifest.challenge,
   })}\n`)

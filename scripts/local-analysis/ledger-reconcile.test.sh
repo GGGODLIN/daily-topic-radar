@@ -125,7 +125,7 @@ for it in d['open']:
     if it['title'].startswith('$1'):
         print(json.dumps(it.get('verify_evidence'),ensure_ascii=False)); raise SystemExit
 print('MISSING')"; }
-check "存在的檔 -> exists true"  true  "$(ev 檢查\ /Users | python3 -c "import json,sys; v=json.load(sys.stdin); print(str(any(c.get('exists') for c in v)).lower())" 2>/dev/null || echo skip)"
+check "存在的檔 -> exists true"  true  "$(ev "檢查 $SCRIPT" | python3 -c "import json,sys; v=json.load(sys.stdin); print(str(any(c.get('exists') for c in v)).lower())" 2>/dev/null || echo skip)"
 check "不存在的檔 -> exists false" false "$(ev 檢查\ /no | python3 -c "import json,sys; v=json.load(sys.stdin); print(str(all(c.get('exists') for c in v)).lower())" 2>/dev/null || echo skip)"
 check "無可查物 -> verify_evidence 空陣列" "[]" "$(ev 沒有任何)"
 
@@ -187,7 +187,10 @@ EOF
 cat > "$TMP/beads-channel.json" <<'EOF'
 [{"title":"beads-item","match":null,"channel":"beads-aging"}]
 EOF
-for case_name in missing-channel unknown-channel beads-channel; do
+cat > "$TMP/near-channel.json" <<'EOF'
+[{"title":"near-channel-item","match":null,"channel":"skill-changes-extra"}]
+EOF
+for case_name in missing-channel unknown-channel beads-channel near-channel; do
   cp "$TMP/gates.jsonl" "$TMP/$case_name.jsonl"
   BEFORE=$(shasum -a 256 < "$TMP/$case_name.jsonl")
   python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/$case_name.jsonl" --findings "$TMP/$case_name.json" --apply --no-health >/dev/null 2>&1
@@ -204,6 +207,15 @@ cp "$TMP/gates.jsonl" "$TMP/ledger-lifecycle-channel.jsonl"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/ledger-lifecycle-channel.jsonl" --findings "$TMP/ledger-lifecycle-channel.json" --apply --no-health >/dev/null 2>&1
 check "ledger-lifecycle -> 白名單接受" 0 "$?"
 check "ledger-lifecycle -> 新 entry 寫入" 1 "$(grep -c 'ledger-lifecycle-item' "$TMP/ledger-lifecycle-channel.jsonl")"
+
+cat > "$TMP/skill-changes-channel.json" <<'EOF'
+[{"title":"skill-changes-item","match":null,"channel":"skill-changes","source_key":"skill-changes:test-item"}]
+EOF
+cp "$TMP/gates.jsonl" "$TMP/skill-changes-channel.jsonl"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/skill-changes-channel.jsonl" --findings "$TMP/skill-changes-channel.json" --apply --no-health >/dev/null 2>&1
+check "skill-changes -> 白名單接受" 0 "$?"
+check "skill-changes -> 新 entry 寫入" 1 "$(grep -c 'skill-changes-item' "$TMP/skill-changes-channel.jsonl")"
+check "skill-changes -> 既有 rows 不改" 1 "$(python3 -c 'import json,sys; before=[json.loads(x) for x in open(sys.argv[1])]; after=[json.loads(x) for x in open(sys.argv[2])]; print(int(before==[r for r in after if r["title"]!="skill-changes-item"]))' "$TMP/gates.jsonl" "$TMP/skill-changes-channel.jsonl")"
 
 echo "== 壞輸入要明確失敗、不得靜默 =="
 printf '{"title":"ok","status":"pending","count":1,"first_seen":"2026-07-01","last_seen":"2026-07-01","note":""}\nNOT JSON\n' > "$TMP/broken.jsonl"

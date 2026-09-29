@@ -9,7 +9,7 @@
 # 探測壓縮掉。hello 失敗分級：step- 402 或 content 空＝B（花錢來源）、其他腿死＝C、
 # 429（無 deployments／cooldown 字樣）或探測環境壞＝D（判不出來，fail-loud）；
 # 429 但回應體含 No deployments／cooldown＝C（上游配額死，litellm 對冷卻耗盡的表達方式）。
-# hello 逾時 60 秒——mimo 這類引擎文件記載延遲可達 30 秒，20 秒會假陽。
+# hello 逾時維持 60 秒，避免把慢回應誤判成來源不可用。
 # 全綠寫 __SILENT__（證據落在 LOG 的 hello 行）；任一來源異常才產出報告，嚴重度排序
 # A→B→C→D：全池級（relay / litellm 掛）→ 花錢來源（2026-09-24 stepfun 拔除後暫無）→ 池內其他來源 →
 # 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
@@ -48,7 +48,6 @@ PORT_LITELLM="${FREE_POOL_PORT_LITELLM:-8000}"
 PORT_CLINE="${FREE_POOL_PORT_CLINE:-3457}"
 PORT_AR="${FREE_POOL_PORT_AR:-8002}"
 AR_URL="${FREE_POOL_AR_URL:-http://127.0.0.1:$PORT_AR}"
-MIMO_HEALTH="${FREE_POOL_MIMO_HEALTH:-http://127.0.0.1:8320/health}"
 
 FINDINGS="$LOG_DIR/.free-pool-findings-$DATE.tmp"
 : > "$FINDINGS"
@@ -71,7 +70,7 @@ http_code() {
     add_finding A "[relay] :${PORT_RELAY} 未在聽——全池死（launchd 應自摔重啟，若持續紅查 ~/Library/LaunchAgents/com.philip.cli-proxy-api）"
   fi
   if ! port_probe "$PORT_LITELLM"; then
-    add_finding A "[litellm] :${PORT_LITELLM} 未在聽——經 litellm 的腿（groq/bai/mimo）全死"
+    add_finding A "[litellm] :${PORT_LITELLM} 未在聽——經 litellm 的來源不可用"
   fi
 
 
@@ -133,17 +132,6 @@ PY
     fi
   else
     add_finding C "[cline2api] :${PORT_CLINE} 未在聽——cline 帳號池腿全死"
-  fi
-
-  mimo_code=$(http_code "$MIMO_HEALTH")
-  if [[ "$mimo_code" == "000" ]]; then
-    if /usr/bin/pgrep -qf "Xiaomi MiMo AI"; then
-      add_finding C "[mimo] Desktop 程序在但 adapter :8320 無回應——引擎狀態異常"
-    else
-      add_finding C "[mimo] Desktop 未啟動（adapter 無回應）——mimo 腿死；開 app 並確認登入即恢復"
-    fi
-  elif [[ "$mimo_code" != "200" ]]; then
-    add_finding C "[mimo] adapter /health 回 HTTP ${mimo_code}（503=Desktop 開著但未登入）"
   fi
 
   if [[ -r "$RELAY_CONFIG" ]]; then

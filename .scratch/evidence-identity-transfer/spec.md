@@ -4,7 +4,7 @@
 
 本機分析原始 manifest 的內容與 checksum 正確，但 sampler agent 回傳批次資料時抄錯成員 path；workflow 又把這份轉錄當作預期身分，造成正確輸出遭拒。恢復過程曾沿用錯誤轉錄，進一步製造錯誤提示。判官本身也可能在回傳時間、session 與 path 時抄錯。
 
-本次已透過原始樣本及既有 finalizer 恢復當日報告，但正式流程仍有相同轉錄面。修補目標是減少這個錯誤來源，不重寫整套分析，也不把格式恢復當成判官語意一定正確。
+實作前只透過原始樣本及既有 finalizer 恢復當日報告，正式流程仍有相同轉錄面。修補目標是減少這個錯誤來源，不重寫整套分析，也不把格式恢復當成判官語意一定正確。
 
 ## Solution
 
@@ -52,7 +52,9 @@ nonce、hash、完整 Read 收據、引用原句、批次覆蓋與歷史報告�
 
 ## Further Notes
 
-本方案與驗收邊界已在使用者回覆「都可以」後整理。尚未實作、尚未拆 ticket；依既有流程，下一步先確認是否做 spec review。
+使用者確認方案後，再明示「你直接做就好，不用這麼麻煩」；本輪採 main 直接實作，不重開方案選單。compact sampler／主審／PASS 複核與原 manifest 身分還原已在本機落地，相關 Node 測試73項與pytest207項通過。新程序判官的Read＋精簡JSON回傳也已實測；未重跑完整live日報。
+
+先前票面關閉遭worker-only gate拒絕；後續使用既有手動補審入口取得兩repo裁決、核對意見後已關票，未偽造worker或停用gate。發布採最新origin/main的乾淨worktree，僅帶入本session可逐行對回的差異；發布結果另以commit與遠端核對收據為準。舊routing suite在修改前後均有相同7條既有失敗。細節見[Verification Log](/.scratch/evidence-identity-transfer/issues/01-transfer-identities.md)，不要重做已驗證的實作。
 
 ADR 判定：本次是可逆的私有資料契約修補，不符合「難以回復」條件，因此不另立 ADR。
 
