@@ -478,7 +478,7 @@ esac
 EOF
 chmod +x "$AGE_BIN/npm"
 out_age=$(PATH="$AGE_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-20 "$HELPER" --json 2>/dev/null)
-report_age=$(PATH="$AGE_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-20 "$HELPER" 2>/dev/null)
+report_age=$(PATH="$AGE_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-20 CCTOOL_OUT="$TMP/tool-report-age.md" "$HELPER" 2>/dev/null)
 out_age_current=$(PATH="$AGE_BIN:/usr/bin:/bin" CCTOOL_NPM_ROOTS="$NPM_HIGH:$NPM_ACTIVE" CCTOOL_MANIFEST="$TMP/m-npm.json" CCTOOL_IGNORE="$TMP/i.txt" LOCAL_ANALYSIS_DATE=2026-09-24 "$HELPER" --json 2>/dev/null)
 python3 - "$out_age" "$report_age" "$out_age_current" <<'PY' || fail "npm min-release-age 斷言失敗"
 import json, sys
