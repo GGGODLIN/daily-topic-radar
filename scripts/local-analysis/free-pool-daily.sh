@@ -55,7 +55,6 @@ PORT_LITELLM="${FREE_POOL_PORT_LITELLM:-8000}"
 PORT_CLINE="${FREE_POOL_PORT_CLINE:-3457}"
 PORT_AR="${FREE_POOL_PORT_AR:-8002}"
 AR_URL="${FREE_POOL_AR_URL:-http://127.0.0.1:$PORT_AR}"
-MIMO_HEALTH="${FREE_POOL_MIMO_HEALTH:-http://127.0.0.1:8320/health}"
 RELAY_WATCH="${FREE_POOL_RELAY_WATCH:-$HOME/Desktop/projects/cliproxyapi-setup/tools/relay-watch/relay_watch.py}"
 
 FINDINGS="$LOG_DIR/.free-pool-findings-$DATE.tmp"
@@ -143,16 +142,8 @@ PY
     add_finding C "[cline2api] :${PORT_CLINE} 未在聽——cline 帳號池腿全死"
   fi
 
-  mimo_code=$(http_code "$MIMO_HEALTH")
-  if [[ "$mimo_code" == "000" ]]; then
-    if /usr/bin/pgrep -qf "Xiaomi MiMo AI"; then
-      add_finding C "[mimo] Desktop 程序在但 adapter :8320 無回應——引擎狀態異常"
-    else
-      add_finding C "[mimo] Desktop 未啟動（adapter 無回應）——mimo 腿死；開 app 並確認登入即恢復"
-    fi
-  elif [[ "$mimo_code" != "200" ]]; then
-    add_finding C "[mimo] adapter /health 回 HTTP ${mimo_code}（503=Desktop 開著但未登入）"
-  fi
+  # mimo-desktop 腿 2026-09-27 隨帳號結束退役（launchd plist 已改名 .retired-20260927、relay config 無 mimo-desktop）；
+  # 探針留著會每天誤報「Desktop 未啟動」，2026-09-29 移除。要復活得先重新 onboard 再加回探針。
 
   if [[ -r "$RELAY_CONFIG" ]]; then
     ngrok_rc=0

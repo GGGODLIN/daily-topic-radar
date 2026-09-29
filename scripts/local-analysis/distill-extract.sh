@@ -40,8 +40,9 @@ while IFS= read -r f; do
   intent=$(jq -r 'select(.type=="user" and (.message.content|type)=="string" and ((.isMeta // false)|not)) | .message.content' "$f" 2>/dev/null \
     | grep -avE '^(<|Caveat:|Shell cwd|Stop hook|AUTO-SAVE)' | head -1 | tr -d '\n' | cut -c1-120 || true)
 
+  # seq 只留每個 Bash 指令前兩個詞，但 `TOKEN=xxx; curl` 這種寫法會把 secret 前綴存進 ledger（2026-09-29 distill 揭露 24+ 個 key 指紋）；含 = 的詞一律改成 VAR=<redacted>
   seq=$(jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")
-      | if .name=="Bash" then "Bash:"+((.input.command // "")|gsub("[\\n\\t]";" ")|split(" ")|map(select(length>0))|.[0:2]|join(" "))
+      | if .name=="Bash" then "Bash:"+((.input.command // "")|gsub("[\\n\\t]";" ")|split(" ")|map(select(length>0))|.[0:2]|map(if test("=") then (split("=")[0]+"=<redacted>") else . end)|join(" "))
         elif .name=="Skill" then "Skill:"+(.input.skill // "")
         elif .name=="Agent" then "Agent:"+(.input.subagent_type // "general")
         elif .name=="Workflow" then "Workflow"

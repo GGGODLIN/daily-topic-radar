@@ -125,7 +125,6 @@ run_wrapper() {
   FREE_POOL_PORT_LITELLM="$PORT" \
   FREE_POOL_PORT_CLINE="$PORT" \
   FREE_POOL_AR_URL="http://127.0.0.1:$PORT" \
-  FREE_POOL_MIMO_HEALTH="http://127.0.0.1:$PORT/health" \
   FREE_POOL_RELAY_WATCH="$rw" \
   bash "${RUN_WITH:-$WRAPPER}" ${RUN_ARGS:-} >/dev/null 2>&1
 }
