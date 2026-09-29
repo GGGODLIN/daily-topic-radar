@@ -68,6 +68,7 @@ bash /Users/linhancheng/code/social-info/scripts/local-analysis/recurring-errors
 （extract 輸出 / ledger 總行數 / 過門檻候選數 / **環境類與行為類各幾條**（envclass stats 原文）/ 聚類後 pattern 數 / **本次增量掃描的 session 檔數**）
 
 ## 🔁 重複錯誤 pattern（按次數降冪）
+（這行標題逐字照抄、括號內不得改寫——recurring-errors-promote.py 用固定 regex 認它，2026-09-29 曾因寫成「escalation 優先，再按本輪新增」讓升格整輪失效；排序想以 escalation 優先，就用「（按 escalation 優先，再按目前簽名次數）」這個腳本也認的版本）
 每個 pattern：
 ### <一句話 pattern 名>（第 N 次、跨 M sessions、最近 <date>）
 - 代表簽名：<原文簽名>
