@@ -311,16 +311,20 @@ def npm_installable(pkg, min_age_days, run_date):
     except ValueError:
         return newest, None
     import datetime as _dt
-    today = _dt.date.fromisoformat(run_date)
-    cutoff = today - _dt.timedelta(days=min_age_days)
+    # npm 的 min-release-age 以發布時間戳算足 N×24 小時、不是日期差；只比日期會在解禁日當天早幾小時
+    # 把版本列成可裝，實裝就 ETARGET（2026-10-02 backpass 0.1.28／acpx 0.19.3）。當日真跑用現在時刻，
+    # 指定過去日期（測試、補跑）用該日 00:00 UTC 維持可重現。
+    now = _dt.datetime.now(_dt.timezone.utc)
+    run_at = now if run_date == _dt.date.today().isoformat() else _dt.datetime.fromisoformat(run_date).replace(tzinfo=_dt.timezone.utc)
+    cutoff = run_at - _dt.timedelta(days=min_age_days)
     def published(v):
-        return _dt.date.fromisoformat(times[v][:10])
+        return _dt.datetime.fromisoformat(times[v].replace("Z", "+00:00"))
     stable = [v for v in times if v not in ("created", "modified") and "-" not in v]
     aged = [v for v in stable if published(v) <= cutoff]
     installable = max(aged, key=_vkey) if aged else None
     if installable is None or _vkey(newest) <= _vkey(installable):
         return installable, None
-    pending = {"version": newest, "published": times[newest][:10], "unlock_date": (published(newest) + _dt.timedelta(days=min_age_days)).isoformat()}
+    pending = {"version": newest, "published": times[newest][:10], "unlock_date": (published(newest) + _dt.timedelta(days=min_age_days)).date().isoformat()}
     return installable, pending
 
 def pypi_latest(pkg):
