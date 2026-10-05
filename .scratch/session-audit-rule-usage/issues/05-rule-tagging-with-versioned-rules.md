@@ -30,3 +30,7 @@
 - main 唯讀 smoke：新版 `status` 讀現役 state 不報錯，`rules` 區為空（尚未有帶規則的 run）。
 - Minor：週別與 last_seen 取 session 最早 timestamp，長 session 跨週時會偏早（report 已註明）；多段 session 的逐段覆蓋計數沒有專門測試；真實 free 池回的 rule_tags 品質未知，留給 09。
 - Minor：worker 對真實 `~/.claude` 2026-10-01 commit 切出 134 條規則、規則區塊 33,785 bytes。
+- 2026-10-05 ticket-yagni verdict（kill 0／demote 3／keep 81，verdict 檔在 `~/.claude/logs/ticket-yagni/…/05/…/verdict.json`）。收到時 05 已合進 main（main 先整合、verdict 後到，流程順序錯在 main），06／07 worker 正以 4ecc774 為底開工，所以延到 06／07 回來後才處理。main 逐條判定：
+  - `connect`（逐段帳本 `rule_coverage`）：**不接受**。逐段列是「來源改寫重跑時只算當前 generation」的去重依據，換成每週計數器會在重跑時重複計數（Failure: F6）；07 還要依「該段 session 用的版本含不含這條規則」算有覆蓋週，需要 session→commit 的連結。`rule_sessions` 是 spec 要求的「記下用哪個 commit」。
+  - `store_rule_tags`（每筆標記都存）：**部分接受**。applied 標記只需要更新 last_seen：07 往回走遇到的第一個有標記週，就是 last_seen 所在週，所以不必存逐筆 applied。violated 逐筆要留，因為 06 的子行需要每筆的 source_ref 與引文。待 07 回來確認它沒依賴逐筆 applied 後再砍。
+  - `rules_snapshot`（status 重列全部 tags）：**接受**。status 只列 violated（06 用）與彙總；applied 逐筆不列。
