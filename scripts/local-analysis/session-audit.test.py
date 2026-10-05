@@ -1763,6 +1763,169 @@ class SessionAuditCliTest(unittest.TestCase):
       self.assertIn(expected, text)
 
 
+  # ---- Ticket 07：零使用候選清單 ----
+
+  ZERO_USE_HEADING = "## 🪦 零使用規則候選"
+  WEEK_STAMPS = {
+    "W37": "2026-09-08T10:00:00.000Z",
+    "W38": "2026-09-15T10:00:00.000Z",
+    "W39": "2026-09-22T10:00:00.000Z",
+    "W40": "2026-09-29T10:00:00.000Z",
+    "W41": "2026-10-06T10:00:00.000Z",
+  }
+
+  def commit_zero_rules(self, files, date="2026-09-02T00:00:00+00:00"):
+    return commit_rules(self.rules_repo, files, date)
+
+  def zero_week_session(self, week, marker=None, stamp=None):
+    marker = marker or f"ZW_{week}"
+    write_jsonl(
+      self.projects / "work" / f"{marker}.jsonl",
+      user_line(f"{marker} 內容", session_id=marker, timestamp=stamp or self.WEEK_STAMPS[week]),
+    )
+    return marker
+
+  def zero_use(self, extra=None, state=None):
+    args = ["zero-use", "--state", str(state or self.state), "--rules-repo", str(self.rules_repo), *(extra or [])]
+    proc = self.cli(args)
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    return proc.stdout
+
+  def zero_items(self, text):
+    return [line for line in text.splitlines() if line.startswith("- ")]
+
+  def item_for(self, text, marker):
+    found = [line for line in self.zero_items(text) if marker in line]
+    self.assertEqual(len(found), 1, f"{marker} 應剛好出現在一個候選項目：\n{text}")
+    return found[0]
+
+  ZERO_RULES = {
+    "CLAUDE.md": (
+      "# 全域設定\n\n## 零使用測試\n\n"
+      "- ZU_NEVER 從未被模型回報的規則\n"
+      "- ZU_OLD 很久以前遇到過的規則\n"
+      "- ZU_VIOLATED 中間被違反過的規則\n"
+      "- ZU_RECENT 最新一週遇到的規則\n"
+    ),
+    "rules/common/alpha.md": None,
+  }
+
+  def test_zero_use_lists_rules_quiet_for_four_covered_weeks(self):
+    sha = self.commit_zero_rules(self.ZERO_RULES)
+    plan = [
+      (self.zero_week_session("W37"), "ZU_OLD", "applied", "ZW_W37"),
+      (self.zero_week_session("W38"), "NO_SUCH_RULE_MARKER", "applied", "ZW_W38"),
+      (self.zero_week_session("W39"), "ZU_VIOLATED", "violated", "ZW_W39"),
+      (self.zero_week_session("W40"), "NO_SUCH_RULE_MARKER", "applied", "ZW_W40"),
+      (self.zero_week_session("W41"), "ZU_RECENT", "applied", "ZW_W41"),
+    ]
+    server, url = self.tagging_provider(plan)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    before = len(server.bodies)
+    text = self.zero_use()
+    self.assertEqual(len(server.bodies), before, "zero-use 唯讀，不呼叫模型")
+    lines = text.splitlines()
+    self.assertEqual(lines[0], f"{self.ZERO_USE_HEADING}（2）")
+    self.assertEqual(
+      lines[1],
+      "連續 4 個有覆蓋的週沒遇到場合；觀察範圍內未見場合的候選，不是已證明的死碼",
+    )
+    self.assertEqual(len(self.zero_items(text)), 2, text)
+    never = self.item_for(text, "ZU_NEVER")
+    old = self.item_for(text, "ZU_OLD")
+    for absent in ("ZU_VIOLATED", "ZU_RECENT"):
+      self.assertNotIn(absent, text)
+    # 從未被回報過的規則也依名冊列入；觀察期間是連續計數走過的週。
+    self.assertIn("2026-W37～2026-W41", never)
+    self.assertIn("開始觀察後未見", never)
+    self.assertIn("2026-W38～2026-W41", old)
+    self.assertIn("2026-09-08T10:00:00Z", old)
+    self.assertNotIn("開始觀察後未見", old)
+    for item in (never, old):
+      self.assertIn(sha[:12], item)
+      self.assertIn("CLAUDE.md > 全域設定 > 零使用測試", item)
+      self.assertRegex(item, r"`[0-9a-f]{16}`")
+      for banned in ("死碼", "沒用"):
+        self.assertNotIn(banned, item)
+    tag = next(t for t in self.status(url)["rules"]["tags"] if t["quote"] == "ZW_W37")
+    self.assertIn(f"`{tag['rule']}`", old)
+
+  def test_zero_use_gap_week_restarts_the_count_without_stitching(self):
+    self.commit_zero_rules(self.ZERO_RULES)
+    for week in ("W37", "W38", "W40", "W41"):
+      self.zero_week_session(week)
+    self.zero_week_session("W39", marker="ZW_FAIL_W39")
+
+    def reply(body):
+      if "ZW_FAIL_W39" in user_text(body):
+        return "{}", 500
+      return analysis([], rule_tags=[]), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(
+      self.status(url)["rules"]["weekly_segments"],
+      [{"week": f"2026-W{n}", "segments": 1} for n in (37, 38, 40, 41)],
+    )
+    text = self.zero_use()
+    self.assertEqual(text.splitlines()[0], f"{self.ZERO_USE_HEADING}（0）")
+    self.assertIn("本週沒有候選", text)
+    self.assertEqual(self.zero_items(text), [])
+
+  def test_zero_use_rewritten_or_added_rule_restarts_from_zero(self):
+    sha_a = self.commit_zero_rules({
+      "CLAUDE.md": "# 全域設定\n\n- ZU_STABLE 不變的規則\n- ZU_REWRITE_V1 舊文字\n",
+      "rules/common/alpha.md": None,
+    })
+    sha_b = self.commit_zero_rules({
+      "CLAUDE.md": "# 全域設定\n\n- ZU_STABLE 不變的規則\n- ZU_REWRITE_V2 新文字\n- ZU_ADDED 新增的規則\n",
+    }, date="2026-09-29T00:00:00+00:00")
+    for week in ("W37", "W38", "W39", "W40", "W41"):
+      self.zero_week_session(week)
+    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    text = self.zero_use()
+    self.assertEqual(text.splitlines()[0], f"{self.ZERO_USE_HEADING}（1）")
+    stable = self.item_for(text, "ZU_STABLE")
+    for absent in ("ZU_REWRITE_V1", "ZU_REWRITE_V2", "ZU_ADDED"):
+      self.assertNotIn(absent, text)
+    # 觀察期間跨過兩個規則版本，判斷用 commit 全列。
+    self.assertIn(sha_a[:12], stable)
+    self.assertIn(sha_b[:12], stable)
+    self.assertIn("2026-W37～2026-W41", stable)
+
+  def test_zero_use_missing_or_empty_state_is_an_empty_list(self):
+    text = self.zero_use(state=self.root / "no-such-state")
+    self.assertEqual(text.splitlines()[0], f"{self.ZERO_USE_HEADING}（0）")
+    self.assertIn("本週沒有候選", text)
+    self.assertFalse((self.root / "no-such-state").exists(), "唯讀指令不建 state")
+    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    empty = self.zero_use()
+    self.assertEqual(empty.splitlines()[0], f"{self.ZERO_USE_HEADING}（0）")
+    self.assertIn("本週沒有候選", empty)
+
+  def test_zero_use_ignores_sessions_dated_after_now(self):
+    self.commit_zero_rules(self.ZERO_RULES)
+    for week in ("W38", "W39", "W40", "W41"):
+      self.zero_week_session(week)
+    # 壞 timestamp 的 session 不能把「最新有資料週」拉到未來而清空清單。
+    self.zero_week_session("W41", marker="ZW_FUTURE", stamp="2099-01-05T10:00:00.000Z")
+    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    text = self.zero_use(extra=["--now", "2026-10-08T00:00:00Z"])
+    self.assertEqual(text.splitlines()[0], f"{self.ZERO_USE_HEADING}（4）")
+    self.assertIn("2026-W38～2026-W41", self.item_for(text, "ZU_NEVER"))
+
+
 def analysis_with_media(media):
   return openai(
     json.dumps(

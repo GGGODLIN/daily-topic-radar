@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -43,6 +43,10 @@ RULES_VERSION_UNAVAILABLE = "rules-version-unavailable"
 GIT_TIMEOUT_SECONDS = 10
 RULES_DIR = "rules/common/"
 LIST_ITEM_RE = re.compile(r"^(?:- |\d+\. )")
+ZERO_USE_WEEKS = 4
+ZERO_USE_HEADING = "## 🪦 零使用規則候選"
+ZERO_USE_NOTE = "連續 4 個有覆蓋的週沒遇到場合；觀察範圍內未見場合的候選，不是已證明的死碼"
+ZERO_USE_TEXT_LIMIT = 120
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 
@@ -1774,6 +1778,112 @@ def cmd_report(args):
   return 0
 
 
+def iso_week(moment):
+  iso = moment.isocalendar()
+  return f"{iso.year}-W{iso.week:02d}"
+
+
+def previous_week(week):
+  year, number = week.split("-W")
+  return iso_week(date.fromisocalendar(int(year), int(number), 1) - timedelta(days=7))
+
+
+def zero_use_facts(connection, repo, newest_week):
+  # 只讀 05 的三張表；每條規則只取 last_seen，不看逐筆標記。晚於 newest_week 的資料（對話時間在未來的壞 timestamp）不進來，
+  # 否則一筆未來時間就會讓「最新週」跑到未來、所有規則都變成沒覆蓋而靜默清空清單。
+  covering = {}
+  last_seen = {}
+  needed = ("rule_sessions", "rule_coverage", "rule_tags")
+  if not all(table_exists(connection, name) for name in needed):
+    return covering, last_seen
+  query = """
+    SELECT DISTINCT rule_coverage.week AS week, rule_sessions.commit_sha AS sha
+    FROM rule_coverage
+    JOIN sources ON sources.inode = rule_coverage.inode AND sources.generation = rule_coverage.generation
+    JOIN rule_sessions ON rule_sessions.inode = rule_coverage.inode
+    WHERE sources.included = 1 AND rule_sessions.unavailable = '' AND rule_sessions.commit_sha != ''
+  """
+  identities = {}
+  for row in connection.execute(query):
+    if row["week"] > newest_week:
+      continue
+    if row["sha"] not in identities:
+      loaded = load_rules(str(repo), row["sha"])
+      # commit 讀不到（被 gc、repo 換了）就無法知道它含哪些規則，該週對所有規則都當沒覆蓋。
+      identities[row["sha"]] = set() if loaded is None else {rule["id"] for rule in loaded["labels"].values()}
+    for rule_id in identities[row["sha"]]:
+      covering.setdefault(rule_id, {}).setdefault(row["week"], set()).add(row["sha"])
+  query = """
+    SELECT rule_tags.rule_id AS rule_id, rule_tags.conversation_time AS time
+    FROM rule_tags
+    JOIN sources ON sources.inode = rule_tags.inode AND sources.generation = rule_tags.generation
+    WHERE sources.included = 1
+  """
+  for row in connection.execute(query):
+    moment = parse_time(row["time"])
+    if moment is None or iso_week(moment) > newest_week:
+      continue
+    if row["rule_id"] not in last_seen or row["time"] > last_seen[row["rule_id"]]:
+      last_seen[row["rule_id"]] = row["time"]
+  return covering, last_seen
+
+
+def quiet_run(rule_id, newest, covering, last_seen):
+  # 從最新有資料週往回走：有覆蓋且還沒走到 last_seen 所在週才續算；沒覆蓋（不拼週）或走到 last_seen 週就停。
+  # 往回遇到的第一個有標記的週必是 last_seen 所在週，所以只靠 last_seen，不依賴逐筆 applied 列。
+  seen_at = parse_time(last_seen.get(rule_id))
+  stop = None if seen_at is None else iso_week(seen_at)
+  weeks = []
+  week = newest
+  while week in covering.get(rule_id, {}) and week != stop:
+    weeks.append(week)
+    week = previous_week(week)
+  return weeks
+
+
+def zero_use_item(rule, weeks, covering, last_seen):
+  text = " ".join(LIST_ITEM_RE.sub("", rule["text"], count=1).split())
+  text = redact_text(text)
+  if len(text) > ZERO_USE_TEXT_LIMIT:
+    text = text[: ZERO_USE_TEXT_LIMIT - 1] + "…"
+  place = rule["path"] + (f" > {rule['heading']}" if rule["heading"] else "")
+  shas = sorted({sha for week in weeks for sha in covering[rule["id"]][week]})
+  commits = "、".join(f"`{sha[:12]}`" for sha in shas)
+  seen = last_seen.get(rule["id"]) or "開始觀察後未見"
+  return (
+    f"- 「{text}」｜識別 `{rule['id']}`｜{place}｜判斷用 commit {commits}｜"
+    f"觀察期間 {weeks[-1]}～{weeks[0]}（{len(weeks)} 週）｜最近一次遇到場合：{seen}"
+  )
+
+
+def cmd_zero_use(args):
+  now = parse_time(args.now) if args.now else datetime.now(UTC)
+  if now is None:
+    fail("bad-now")
+  connection = read_connection(args)
+  items = []
+  if connection is not None:
+    repo = Path(args.rules_repo).expanduser()
+    covering, last_seen = zero_use_facts(connection, repo, iso_week(now))
+    connection.close()
+    newest = max((week for weeks in covering.values() for week in weeks), default=None)
+    if newest is not None:
+      roster = load_rules(str(repo), "HEAD")
+      if roster is None:
+        fail("rules-roster-unavailable")
+      for rule in roster["labels"].values():
+        weeks = quiet_run(rule["id"], newest, covering, last_seen)
+        if len(weeks) >= ZERO_USE_WEEKS:
+          items.append(zero_use_item(rule, weeks, covering, last_seen))
+  print(f"{ZERO_USE_HEADING}（{len(items)}）")
+  if items:
+    print(ZERO_USE_NOTE)
+    print("\n".join(items))
+  else:
+    print("本週沒有候選")
+  return 0
+
+
 def one_line(value, limit):
   return redact_text(value).replace("\n", " ").replace("\r", " ").replace('"', "'")[:limit]
 
@@ -2016,7 +2126,7 @@ def build_parser():
   parser = argparse.ArgumentParser(prog="session-audit")
   parser.add_argument(
     "command",
-    choices=("enqueue", "scan", "run", "status", "report", "promote"),
+    choices=("enqueue", "scan", "run", "status", "report", "promote", "zero-use"),
   )
   parser.add_argument("--projects", default="")
   parser.add_argument("--state", default=str(production_state()))
@@ -2027,6 +2137,8 @@ def build_parser():
   parser.add_argument("--relay-url", default="http://127.0.0.1:8317")
   parser.add_argument("--self-session", default="")
   parser.add_argument("--rules-repo", default=str(Path.home() / ".claude"))
+  # 只給 zero-use 測試固定「現在」；預設現在時間。
+  parser.add_argument("--now", default="")
   return parser
 
 
@@ -2040,6 +2152,7 @@ def main(argv=None):
     "status": cmd_status,
     "report": cmd_report,
     "promote": cmd_promote,
+    "zero-use": cmd_zero_use,
   }
   return commands[args.command](args)
 
