@@ -11,3 +11,5 @@ runner：routed-judge（opus），每情境一個 fresh agent；prompt 見 runne
 
 REFACTOR：C、D 都過，措辭不需再改。
 既有缺口（改前就有，非本票範圍）：`__SILENT__`／未超標而使用者仍要跑時「跳到 Step 3」與 Step 3「仍超標才繼續掃」互相矛盾，且跳過 Step 2 會讓 self-verify R2 必判 FAIL（A 情境 runner 改前改後都指出）。
+
+本 repo 公開：fixture 報告（引用私人規則原文）與 rules-slim.md 改前／改後快照不入庫，完整證據放在本機 `~/Desktop/projects/.claude/trials/review-evidence/2026-10-05-session-audit-rule-usage/rules-slim-eval/`（無 remote）。
