@@ -322,6 +322,22 @@ def connect(state, write):
         commit_sha TEXT NOT NULL,
         UNIQUE (inode, generation, rule_id, verdict, source_line, quote)
       );
+      CREATE TABLE IF NOT EXISTS history_batches (
+        id INTEGER PRIMARY KEY,
+        since TEXT NOT NULL,
+        until TEXT NOT NULL,
+        live_since REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        review_snapshot TEXT NOT NULL DEFAULT '',
+        is_current INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (since, until)
+      );
+      CREATE TABLE IF NOT EXISTS history_members (
+        batch_id INTEGER NOT NULL,
+        inode TEXT NOT NULL,
+        time_basis TEXT NOT NULL,
+        PRIMARY KEY (batch_id, inode)
+      );
       CREATE TABLE IF NOT EXISTS rule_last_seen (
         rule_id TEXT PRIMARY KEY,
         rule_path TEXT NOT NULL,
@@ -654,7 +670,7 @@ def consume_block(block, line, block_index, offset, line_end, parts, images, lim
     add(block["text"])
 
 
-def build_document(raw, metadata_only=False):
+def build_document(raw, metadata_only=False, time_window=None, window_info=None):
   parts = []
   images = []
   limits = set()
@@ -687,6 +703,12 @@ def build_document(raw, metadata_only=False):
       continue
     if not isinstance(obj, dict):
       continue
+    if time_window is not None and window_info is not None:
+      moment = parse_time(obj.get("timestamp"))
+      if moment is not None:
+        window_info["has_timestamp"] = True
+        if time_window[0] <= moment.timestamp() <= time_window[1]:
+          window_info["matches"] = True
     if record_synthetic(obj):
       synthetic = True
     for field in ("sessionId", "session_id"):
@@ -758,7 +780,7 @@ def parent_file(path, root):
   return None
 
 
-def discover(root, self_id):
+def discover(root, self_id, time_window=None):
   found = {}
   for directory, dirnames, filenames in os.walk(root, followlinks=False):
     dirnames[:] = [name for name in dirnames if not Path(directory, name).is_symlink()]
@@ -781,13 +803,17 @@ def discover(root, self_id):
         continue
       found.setdefault((info.st_dev, info.st_ino), target)
   records = {}
+  windows = {}
   for path in found.values():
+    windows[path] = {"has_timestamp": False, "matches": False}
     try:
       raw = path.read_bytes()
     except OSError:
       records[path] = ("", set(), set(), True)
       continue
-    _doc, _images, _limits, _thinking, synthetic, session_ids, _parts = build_document(raw, metadata_only=True)
+    _doc, _images, _limits, _thinking, synthetic, session_ids, _parts = build_document(
+      raw, metadata_only=True, time_window=time_window, window_info=windows[path]
+    )
     # 所有來源只留分類與指紋，避免把整個歷史原文一起保留在記憶體。
     records[path] = (sha256_bytes(raw) if raw else "", session_ids, synthetic, False)
   classes = {}
@@ -833,6 +859,11 @@ def discover(root, self_id):
         "mtime": info.st_mtime,
         "session_id": next(iter(session_ids), path.stem),
         "source_sha": source_sha,
+        "history_match": (
+          windows[path]["matches"] if windows[path]["has_timestamp"]
+          else time_window is not None and time_window[0] <= info.st_mtime <= time_window[1]
+        ),
+        "history_time_basis": "timestamp" if windows[path]["has_timestamp"] else "mtime-fallback",
       }
     )
   return described
@@ -976,6 +1007,123 @@ def parse_time(value):
   except ValueError:
     return None
   return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+def history_window(args, connection=None):
+  since, until = args.history_since, args.history_until
+  stored = None
+  if not since and not until and connection is not None and table_exists(connection, "history_batches"):
+    stored = connection.execute("SELECT * FROM history_batches WHERE is_current = 1").fetchone()
+    if stored is not None:
+      since, until = stored["since"], stored["until"]
+  if not since and not until:
+    return None
+  start, end = parse_time(since), parse_time(until)
+  if start is None or end is None or start >= end:
+    fail("history-window-invalid")
+  return {
+    "since": start.isoformat().replace("+00:00", "Z"),
+    "until": end.isoformat().replace("+00:00", "Z"),
+    "bounds": (start.timestamp(), end.timestamp()),
+    "live_since": stored["live_since"] if stored is not None else end.timestamp(),
+  }
+
+
+def history_snapshot(connection):
+  if not table_exists(connection, "history_batches"):
+    return None
+  batch = connection.execute("SELECT * FROM history_batches WHERE is_current = 1").fetchone()
+  if batch is None:
+    return None
+  if batch["review_snapshot"]:
+    return json.loads(batch["review_snapshot"])
+  counts = {name: 0 for name in ("complete", "partial", "failed", "missing", "pending", "excluded")}
+  uncertain_time = 0
+  rows = connection.execute(
+    """SELECT sources.status, sources.included, history_members.time_basis
+       FROM history_members LEFT JOIN sources ON sources.inode = history_members.inode
+       WHERE history_members.batch_id = ?""", (batch["id"],),
+  )
+  total = 0
+  for row in rows:
+    total += 1
+    if row["included"] is None:
+      status = "missing"
+    elif not row["included"]:
+      status = "excluded"
+    else:
+      status = row["status"] if row["status"] in counts else "pending"
+      uncertain_time += row["time_basis"] == "mtime-fallback"
+    counts[status] += 1
+  remaining = total - counts["complete"] - counts["partial"] - counts["excluded"]
+  fully_complete = remaining == 0 and counts["partial"] == 0 and uncertain_time == 0 and total > counts["excluded"]
+  start, end = parse_time(batch["since"]), parse_time(batch["until"])
+  deferred = connection.execute("SELECT COUNT(*) FROM sources WHERE included = 1 AND status = 'deferred'").fetchone()[0]
+  return {
+    "id": batch["id"], "since": batch["since"], "until": batch["until"],
+    "days": round((end - start).total_seconds() / 86400), "status": batch["status"],
+    "total": total, **counts, "remaining": remaining, "uncertain_time": uncertain_time,
+    "ready_for_review": remaining == 0, "fully_complete": fully_complete, "deferred": deferred,
+  }
+
+
+def sync_history_batch(connection, window, observed, live_since):
+  connection.execute(
+    "INSERT OR IGNORE INTO history_batches (since, until, live_since) VALUES (?, ?, ?)",
+    (window["since"], window["until"], live_since),
+  )
+  batch = connection.execute(
+    "SELECT * FROM history_batches WHERE since = ? AND until = ?", (window["since"], window["until"]),
+  ).fetchone()
+  connection.execute("UPDATE history_batches SET is_current = (id = ?)", (batch["id"],))
+  for item in observed:
+    if item["included"] and item["history_match"]:
+      inserted = connection.execute(
+        "INSERT OR IGNORE INTO history_members (batch_id, inode, time_basis) VALUES (?, ?, ?)",
+        (batch["id"], item["inode"], item["history_time_basis"]),
+      )
+      if inserted.rowcount:
+        connection.execute(
+          "UPDATE history_batches SET status = 'active', review_snapshot = '' WHERE id = ?", (batch["id"],),
+        )
+  # 窗口固定，但仍補進晚發現的窗口內來源；舊資料只延期，不刪紀錄或冒稱已分析。
+  connection.execute(
+    """UPDATE sources SET status = 'deferred'
+       WHERE included = 1 AND status = 'pending' AND mtime < ?
+         AND inode NOT IN (SELECT inode FROM history_members WHERE batch_id = ?)""",
+    (live_since, batch["id"]),
+  )
+  connection.execute(
+    """UPDATE sources SET status = 'pending'
+       WHERE included = 1 AND status = 'deferred'
+         AND (mtime >= ? OR inode IN (SELECT inode FROM history_members WHERE batch_id = ?))""",
+    (live_since, batch["id"]),
+  )
+  update_history_review(connection)
+  return {row[0] for row in connection.execute("SELECT inode FROM history_members WHERE batch_id = ?", (batch["id"],))}
+
+
+def update_history_review(connection):
+  batch = history_snapshot(connection)
+  if batch is None or batch["status"] != "active":
+    connection.commit()
+    return
+  if batch["ready_for_review"]:
+    batch["status"] = "review" if batch["fully_complete"] else "review-with-limitations"
+    batch["completed_at"] = datetime.now(UTC).isoformat()
+    rows = connection.execute(
+      """SELECT sources.inode, sources.name, sources.path, sources.session_id, sources.status, sources.generation,
+                sources.file_sha AS source_sha, sources.doc_offset, sources.limitations
+         FROM history_members JOIN sources ON sources.inode = history_members.inode
+         WHERE history_members.batch_id = ? ORDER BY sources.path""", (batch["id"],),
+    )
+    batch["completion_sources"] = [dict(row) for row in rows]
+    # 批次收據綁定完成時的快照；resume 的新內容仍更新來源水位，不拿舊批次冒充最新覆蓋。
+    connection.execute(
+      "UPDATE history_batches SET status = ?, review_snapshot = ? WHERE id = ?",
+      (batch["status"], json.dumps(batch, ensure_ascii=False), batch["id"]),
+    )
+  connection.commit()
 
 
 def conversation_time(raw):
@@ -1509,11 +1657,11 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
   return produced
 
 
-def refresh(connection, projects, self_id):
+def refresh(connection, projects, self_id, time_window=None):
   root = Path(projects)
   if not root.is_dir():
     fail("projects-missing")
-  found = list(discover(root, self_id))
+  found = list(discover(root, self_id, time_window))
   seen = set()
   for item in found:
     upsert(connection, item)
@@ -1528,6 +1676,7 @@ def refresh(connection, projects, self_id):
         (json.dumps(["missing"]), row["inode"]),
       )
   connection.commit()
+  return found
 
 
 def cmd_enqueue(args):
@@ -1555,11 +1704,16 @@ def cmd_enqueue(args):
 
 
 def cmd_scan(args):
+  requested_window = history_window(args)
   state = Path(args.state)
   guard_state(state, write=True)
   with Lock(state):
     connection = connect(state, write=True)
-    refresh(connection, args.projects, args.self_session)
+    window = requested_window if requested_window is not None else history_window(args, connection)
+    observed = refresh(connection, args.projects, args.self_session, window["bounds"] if window is not None else None)
+    if window is not None:
+      live_since = parse_time(args.started_at).timestamp() if args.started_at else window["live_since"]
+      sync_history_batch(connection, window, observed, live_since)
     count = connection.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
     connection.close()
   print(json.dumps({"command": "scan", "sources": count}))
@@ -1567,12 +1721,14 @@ def cmd_scan(args):
 
 
 def cmd_run(args):
+  requested_window = history_window(args)
   state = Path(args.state)
   guard_state(state, write=True)
   url = endpoint_for(args.relay_url)
   with Lock(state):
     connection = connect(state, write=True)
-    refresh(connection, args.projects, args.self_session)
+    window = requested_window if requested_window is not None else history_window(args, connection)
+    observed = refresh(connection, args.projects, args.self_session, window["bounds"] if window is not None else None)
     reason, model = choose_model(args.relay_config)
     key, key_error = load_key(args.keys_file)
     if reason or key_error:
@@ -1583,6 +1739,11 @@ def cmd_run(args):
     cutoff = None
     if args.started_at:
       cutoff = datetime.fromisoformat(args.started_at.replace("Z", "+00:00")).timestamp()
+    members = None
+    if window is not None:
+      if cutoff is None:
+        cutoff = window["live_since"]
+      members = sync_history_batch(connection, window, observed, cutoff)
     rows = list(connection.execute("SELECT * FROM sources WHERE included = 1 ORDER BY path"))
     rules_repo = Path(args.rules_repo).expanduser()
 
@@ -1591,7 +1752,7 @@ def cmd_run(args):
       return cutoff is not None and row["mtime"] < cutoff
 
     new_rows = [row for row in rows if not is_old(row)]
-    old_rows = [row for row in rows if is_old(row)]
+    old_rows = [row for row in rows if is_old(row) and (members is None or row["inode"] in members)]
     fragments = {"new": 0, "old": 0}
     deadline = time.monotonic() + MAX_RUN_SECONDS
 
@@ -1644,7 +1805,15 @@ def cmd_run(args):
       return budget - remaining
 
     consume_parallel(new_rows, MAX_NEW_FRAGMENTS)
-    fragments["old"] = consume_parallel(old_rows, MAX_OLD_FRAGMENTS)
+    if window is None:
+      fragments["old"] = consume_parallel(old_rows, MAX_OLD_FRAGMENTS)
+    else:
+      # 有限批次要有自己的送出機會，不能永遠被新內容用完的 deadline 擋住。
+      deadline = time.monotonic() + MAX_RUN_SECONDS
+      update_history_review(connection)
+      if history_snapshot(connection)["status"] == "active":
+        fragments["old"] = consume_parallel(old_rows, MAX_CONCURRENT_SESSIONS)
+      update_history_review(connection)
     connection.close()
   print(json.dumps({"command": "run", "fragments": fragments["new"], "concurrency": MAX_CONCURRENT_SESSIONS}))
   return 0
@@ -1731,13 +1900,17 @@ def snapshot(connection):
           "limitations": json.loads(row["limitations"] or "[]"),
         }
       )
-  return {
+  data = {
     "hints": hints,
     "sources": sources,
     "candidates": candidates,
     "segments": segments,
     "rules": rules_snapshot(connection),
   }
+  batch = history_snapshot(connection)
+  if batch is not None:
+    data["history_batch"] = batch
+  return data
 
 
 def empty_rules():
@@ -1850,7 +2023,18 @@ def cmd_report(args):
   data = {"hints": 0, "sources": [], "candidates": [], "rules": empty_rules()} if connection is None else snapshot(connection)
   if connection is not None:
     connection.close()
+  batch = data.get("history_batch")
+  if batch is not None:
+    print(
+      f"history-batch days={batch['days']} since={batch['since']} until={batch['until']} "
+      f"status={batch['status']} total={batch['total']} complete={batch['complete']} "
+      f"partial={batch['partial']} failed={batch['failed']} missing={batch['missing']} "
+      f"remaining={batch['remaining']} deferred={batch['deferred']} uncertain_time={batch['uncertain_time']}"
+    )
+    print("批次在 review 停點不自動擴窗；部分分析與時間不明的來源仍須列入 review，不能當完整覆蓋。")
   for row in data["sources"]:
+    if row["status"] == "deferred":
+      continue
     print(
       f"{row['name']} status={row['status']} included={row['included']} "
       f"classification={row['classification']} latest_complete={row['latest_complete']} "
@@ -2228,6 +2412,8 @@ def build_parser():
   parser.add_argument("--projects", default="")
   parser.add_argument("--state", default=str(production_state()))
   parser.add_argument("--started-at", default="")
+  parser.add_argument("--history-since", default="")
+  parser.add_argument("--history-until", default="")
   parser.add_argument("--relay-config", default="")
   parser.add_argument("--keys-file", default="")
   parser.add_argument("--friction-root", default="")
