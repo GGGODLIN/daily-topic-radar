@@ -24,6 +24,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -37,6 +39,7 @@ MAX_RESPONSE_BYTES = 262144
 MAX_NEW_FRAGMENTS = 16
 MAX_OLD_FRAGMENTS = 1
 MAX_RUN_SECONDS = 25
+MAX_CONCURRENT_SESSIONS = 10
 EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
 # skill-up 在 $TMPDIR/skill-up-<n>/ 跑評測，記錄本身不帶 synthetic 旗標；只認這個專案目錄樣式，不擴到整個 /var/folders。
 SKILL_UP_PROJECT_MARK = "-T-skill-up-"
@@ -434,7 +437,7 @@ def post_json(url, key, payload):
   )
   opener = urllib.request.build_opener(RefuseRedirect)
   try:
-    with opener.open(request, timeout=60) as response:
+    with opener.open(request, timeout=None) as response:
       raw = response.read(MAX_RESPONSE_BYTES + 1)
       code = response.status
   except urllib.error.HTTPError as exc:
@@ -1405,7 +1408,8 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       )
       if skipped:
         blocking.add("media-not-sent")
-      code, body = post_json(url, key, payload)
+      # 只把 HTTP 交給執行緒；回件核對、continuity 與 SQLite 都留在呼叫端主執行緒。
+      code, body = yield payload, _shrink > 0
       produced += 1
       fragments["new"] += 1
       again, error = read_source(path)
@@ -1591,26 +1595,58 @@ def cmd_run(args):
     fragments = {"new": 0, "old": 0}
     deadline = time.monotonic() + MAX_RUN_SECONDS
 
-    def consume(row, limit):
-      if limit <= 0 or time.monotonic() >= deadline:
-        return 0
-      raw, error = read_source(Path(row["path"]))
-      if error:
-        mark(connection, row["inode"], "missing", False, {"missing"}, row["excluded_thinking"])
-        connection.commit()
-        return 0
-      return analyze_one(connection, row, raw, url, key, model, fragments, deadline, limit, rules_repo)
+    def consume_parallel(rows, budget):
+      pending = deque(rows)
+      active = {}
+      sessions = set()
+      remaining = budget
 
-    budget = MAX_NEW_FRAGMENTS
-    for row in new_rows:
-      budget -= consume(row, budget)
-    old_left = MAX_OLD_FRAGMENTS
-    for row in old_rows:
-      used = consume(row, old_left)
-      old_left -= used
-      fragments["old"] += used
+      def resume(session_id, analyzer, response=None):
+        nonlocal remaining
+        try:
+          payload, shrinking = next(analyzer) if response is None else analyzer.send(response)
+        except StopIteration:
+          sessions.remove(session_id)
+          return
+        if not shrinking and (remaining <= 0 or time.monotonic() >= deadline):
+          analyzer.close()
+          sessions.remove(session_id)
+          return
+        # 已開始的 400/413 縮片保留原本的重送流程；只限制下一個新片段，不丟棄在途回件。
+        remaining -= 1
+        active[pool.submit(post_json, url, key, payload)] = (session_id, analyzer)
+
+      with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
+        while pending or active:
+          while pending and remaining > 0 and len(active) < MAX_CONCURRENT_SESSIONS and time.monotonic() < deadline:
+            for _ in range(len(pending)):
+              row = pending.popleft()
+              session_id = row["session_id"] or row["inode"]
+              if session_id not in sessions:
+                break
+              pending.append(row)
+            else:
+              break
+            raw, error = read_source(Path(row["path"]))
+            if error:
+              mark(connection, row["inode"], "missing", False, {"missing"}, row["excluded_thinking"])
+              connection.commit()
+              continue
+            analyzer = analyze_one(connection, row, raw, url, key, model, fragments, deadline, budget, rules_repo)
+            sessions.add(session_id)
+            resume(session_id, analyzer)
+          if not active:
+            break
+          done, _ = wait(active, return_when=FIRST_COMPLETED)
+          for future in done:
+            session_id, analyzer = active.pop(future)
+            resume(session_id, analyzer, future.result())
+      return budget - remaining
+
+    consume_parallel(new_rows, MAX_NEW_FRAGMENTS)
+    fragments["old"] = consume_parallel(old_rows, MAX_OLD_FRAGMENTS)
     connection.close()
-  print(json.dumps({"command": "run", "fragments": fragments["new"]}))
+  print(json.dumps({"command": "run", "fragments": fragments["new"], "concurrency": MAX_CONCURRENT_SESSIONS}))
   return 0
 
 
