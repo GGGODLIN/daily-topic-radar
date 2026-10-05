@@ -118,7 +118,8 @@ ZERO_ARGS=(zero-use)
       fi
       echo ""
       if [ -n "$ZERO_FAIL" ]; then
-        echo "零使用清單產生失敗：$ZERO_FAIL"
+        # daily-local 只原文保留含 ⚠️ 的行；沒有它，失敗行會在摘要裡消失。
+        echo "⚠️ 零使用清單產生失敗：$ZERO_FAIL"
       else
         cat "$ZERO_OUT"
       fi

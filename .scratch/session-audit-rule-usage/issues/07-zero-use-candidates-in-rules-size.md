@@ -35,3 +35,6 @@
 - worker 自報：RED 時 wrapper 尚未有路徑覆寫，曾寫入真實 `reports/local-analysis/2026-10-05-rules-size.md` 與對應 log（皆 gitignored），已刪除；main 確認該檔不存在（計數 0）。
 - Minor：舊 commit 在規則 repo 讀不到時該週全當沒覆蓋、HEAD 名冊讀不到時 exit 2，兩條沒有專門測試。
 - 2026-10-05 ticket-yagni verdict（kill 0／demote 80／keep 17）：77 條 demote 的對象是 base 既有、本票沒改的函式（審查把整檔符號都列入），不需處理。其餘 3 條都**不接受**：`cleanup`、`pass` 是 `rules-size-weekly.test.sh` 自身的測試輔助，拿掉測試就跑不動；`redact_text` 是零使用條目寫進週報前沿用的既有淨化，與其他報告一致。
+- 2026-10-05 implement 收尾 code review。本票相關：
+  - Failure-miss: F5 — zero-use 失敗行沒有 ⚠️，下游接不到。修：失敗行以 `⚠️ ` 開頭（rules-size 測試 23/0）。
+  - Failure-miss: F5 — 只有零使用段的 rules-size 報告會被排進高中低／ledger。修：daily-local 第 12 條加「零使用段只進可選欄，不進三檔、不進沉底行、不寫 ledger；只有零使用段時整份 rules-size 不排檔」（`~/.claude` ba77f12b，hook 測試 80/0，新斷言改前紅）。

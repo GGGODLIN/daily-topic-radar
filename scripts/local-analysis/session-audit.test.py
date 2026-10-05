@@ -1388,7 +1388,8 @@ class SessionAuditCliTest(unittest.TestCase):
     text = friction.read_text()
     entries = self.rule_entry_lines(text)
     self.assertEqual(len(entries), 1, text)
-    self.assertTrue(entries[0].endswith("（上次處置：已折／已否決 2026-09-30）"), entries[0])
+    # 首行 2026-09-30 是捕捉日；拍板日在 user_decision。
+    self.assertTrue(entries[0].endswith("（上次處置：已折／已否決 2026-10-01）"), entries[0])
     self.assertIn(moved, text.splitlines(), "已折段的舊行不動")
 
   def test_single_rule_violation_still_creates_entry(self):
@@ -1947,6 +1948,222 @@ class SessionAuditCliTest(unittest.TestCase):
     text = self.zero_use(extra=["--now", "2026-10-08T00:00:00Z"])
     self.assertEqual(text.splitlines()[0], f"{self.ZERO_USE_HEADING}（4）")
     self.assertIn("2026-W38～2026-W41", self.item_for(text, "ZU_NEVER"))
+
+  # review fixes 2026-10-05
+
+  def test_orphan_sublines_of_another_rule_are_not_counted_as_this_rules(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    server, url = self.violation_provider(["VIOL_B1", "VIOL_B2"])
+    self.addCleanup(stop, server)
+    hold = self.root / "viol_b2.hold"
+    (self.projects / "work" / "viol_b2.jsonl").rename(hold)
+    self.run_then_promote(url)
+    first = friction.read_text().splitlines()
+    entry = self.rule_entry_lines("\n".join(first))[0]
+    target = re.search(r"; target=(rule:[^;]+);", entry).group(1)
+    # 另一條規則的首行被 helper 搬走後，它的縮排子行會留在這個條目後面。
+    foreign = "rule:rules/common/alpha.md#Alpha@aaaaaaaaaaaaaaaa"
+    orphans = [
+      f'  - source_ref=session:orphan{n}#1:{n:016x}; target={foreign}; quote="ORPHAN_{n}"; '
+      f"conversation_time=2026-09-01T00:00:00Z; rules_commit={'0' * 40}"
+      for n in (1, 2)
+    ]
+    at = first.index(entry)
+    first[at + 2 : at + 2] = orphans
+    friction.write_text("\n".join(first) + "\n")
+    hold.rename(self.projects / "work" / "viol_b2.jsonl")
+    promoted = json.loads(self.run_then_promote(url).stdout)
+    self.assertEqual((promoted["rule_entries"], promoted["rule_sublines"]), (0, 1), promoted)
+    lines = friction.read_text().splitlines()
+    at = lines.index(entry)
+    self.assertEqual(lines[at + 3 : at + 5], orphans, "別條規則的孤兒子行一字不變，且仍在新子行之後")
+    self.assertIn("session:viol_b2#1:", lines[at + 2], "新子行接在自己的最後一個子行後")
+    self.assertRegex(lines[at + 1], r"^  - source_ref=session:viol_b1#1:[0-9a-f]{16}; target=")
+    self.assertRegex(
+      lines[at + 2],
+      r"^  - source_ref=session:viol_b2#1:[0-9a-f]{16}; target=" + re.escape(target) + r"; quote=",
+    )
+
+  MIXED_RULES = (
+    "# 全域設定\n\n## 混合段落\n\n"
+    "PARA_ONE 第一段第一行\nPARA_ONE_TAIL 第一段第二行\n\n"
+    "PARA_TWO 第二段\n\n"
+    "| TABLE_HEAD | 欄 |\n|---|---|\n| TABLE_ROW | 值 |\n\n"
+    "```\nFENCED_CODE_TEXT\n```\n\n"
+    "- LIST_ITEM_X 清單項\n"
+  )
+
+  def test_paragraphs_and_tables_under_a_heading_with_list_items_are_rules(self):
+    self.commit_zero_rules({"CLAUDE.md": self.MIXED_RULES, "rules/common/alpha.md": None})
+    for week in ("W38", "W39", "W40", "W41"):
+      self.zero_week_session(week)
+    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    system = system_text(server.bodies[0])
+    labels = {marker: label_for(server.bodies[0], marker) for marker in ("PARA_ONE ", "PARA_TWO", "TABLE_HEAD", "LIST_ITEM_X")}
+    self.assertNotIn(None, labels.values(), labels)
+    self.assertEqual(len(set(labels.values())), 4, "段落、段落、表格、清單項各自一條")
+    self.assertIn("PARA_ONE 第一段第一行\nPARA_ONE_TAIL 第一段第二行", system)
+    self.assertRegex(system, r"\[R\d+\] \| TABLE_HEAD \| 欄 \|\n\|---\|---\|\n\| TABLE_ROW \| 值 \|")
+    self.assertNotIn("FENCED_CODE_TEXT", system, "fenced code 不當規則")
+    text = self.zero_use()
+    for marker in ("PARA_ONE ", "PARA_TWO", "TABLE_HEAD", "LIST_ITEM_X"):
+      self.item_for(text, marker)
+    self.assertNotIn("FENCED_CODE_TEXT", text)
+
+  def test_response_without_rule_tags_list_is_not_coverage(self):
+    for name, marker in (("miss", "RT_MISSING"), ("bad", "RT_NOTLIST"), ("empty", "RT_EMPTY")):
+      write_jsonl(
+        self.projects / "work" / f"{name}.jsonl",
+        user_line(f"{marker} 內容", session_id=name, timestamp="2026-10-05T10:00:00.000Z"),
+      )
+
+    def reply(body):
+      text = user_text(body)
+      if "RT_MISSING" in text:
+        return analysis([finding("RT_MISSING", observation="obs-missing")]), 200
+      if "RT_NOTLIST" in text:
+        broken = {"continuity": "next", "findings": [finding("RT_NOTLIST", observation="obs-notlist")], "limitations": [], "rule_tags": "none"}
+        return openai(json.dumps(broken, ensure_ascii=False)), 200
+      return analysis([finding("RT_EMPTY", observation="obs-empty")], rule_tags=[]), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    report = self.status(url)
+    self.assertEqual(report["rules"]["weekly_segments"], [{"week": "2026-W41", "segments": 1}], "只有回了 rule_tags 清單（含空清單）的段算覆蓋")
+    self.assertEqual(sorted(item["observation"] for item in report["candidates"]), ["obs-empty", "obs-missing", "obs-notlist"])
+    for name in ("miss.jsonl", "bad.jsonl"):
+      row = self.source_named(report, name)
+      self.assertIn("rule-tags-missing", row["limitations"])
+      self.assertEqual(row["status"], "complete")
+    self.assertNotIn("rule-tags-missing", self.source_named(report, "empty.jsonl")["limitations"])
+
+  def test_context_error_with_rules_drops_the_rules_block_before_shrinking(self):
+    write_jsonl(self.projects / "work" / "s1.jsonl", user_line("CTX_QUOTE 內容", timestamp="2026-10-04T10:00:00.000Z"))
+
+    def reply(body):
+      if "<rules>" in system_text(body):
+        return "{}", 413
+      tags = [{"rule": "R1", "verdict": "violated", "source_line": 1, "quote": "CTX_QUOTE"}]
+      return analysis([finding("CTX_QUOTE", observation="kept")], rule_tags=tags), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(len(server.bodies), 2, "帶規則 413 後只重送一次")
+    self.assertEqual(user_text(server.bodies[0]), user_text(server.bodies[1]), "先拿掉規則區塊，transcript 不縮")
+    self.assertEqual(json.loads(server.bodies[1])["max_tokens"], 1500)
+    report = self.status(url)
+    row = self.source_named(report, "s1.jsonl")
+    self.assertEqual(row["status"], "complete")
+    self.assertIn("rules-dropped-context", row["limitations"])
+    self.assertEqual([item["observation"] for item in report["candidates"]], ["kept"])
+    self.assertEqual(report["rules"]["weekly_segments"], [], "拿掉規則的段不算覆蓋")
+    self.assertEqual((report["rules"]["tags"], report["rules"]["last_seen"]), ([], []), "不收這段的 rule_tags")
+
+  def test_transient_git_failure_is_not_persisted_and_is_retried(self):
+    write_jsonl(self.projects / "work" / "s1.jsonl", user_line("GIT_RETRY 內容", timestamp="2026-10-04T10:00:00.000Z"))
+
+    def reply(body):
+      label = label_for(body, "BASE_RULE_INDENT")
+      tags = [{"rule": label, "verdict": "applied", "source_line": 1, "quote": "GIT_RETRY"}] if label else []
+      return analysis([finding("GIT_RETRY", observation="once")], rule_tags=tags), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    broken = self.flags(url)
+    broken[broken.index("--rules-repo") + 1] = str(self.root / "no-such-repo")
+    self.assertEqual(self.cli(["run", *broken]).returncode, 0)
+    first = self.status(url)
+    self.assertIn("rules-version-unavailable", self.source_named(first, "s1.jsonl")["limitations"])
+    self.assertEqual(first["rules"]["sessions"], [], "git 暫時失敗不寫進 rule_sessions")
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    second = self.status(url)
+    session = second["rules"]["sessions"][0]
+    self.assertEqual((session["commit"], session["unavailable"]), (self.base_sha, None))
+    self.assertEqual([item["verdict"] for item in second["rules"]["last_seen"]], ["applied"])
+    self.assertEqual(second["rules"]["weekly_segments"], [{"week": "2026-W40", "segments": 1}])
+    self.assertNotIn("rules-version-unavailable", self.source_named(second, "s1.jsonl")["limitations"])
+    self.assertEqual([item["observation"] for item in second["candidates"]], ["once"], "重跑不重複 findings")
+
+  def test_report_names_the_reason_when_a_known_commit_cannot_be_read(self):
+    path = self.projects / "work" / "s1.jsonl"
+    write_jsonl(path, user_line("READ_ONE 內容", timestamp="2026-10-04T10:00:00.000Z"))
+    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.status(url)["rules"]["sessions"][0]["commit"], self.base_sha)
+    with path.open("a") as handle:
+      handle.write(user_line("READ_TWO 追加", timestamp="2026-10-04T11:00:00.000Z"))
+    self.rules_repo.rename(self.root / "rules-repo-away")
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    session = self.status(url)["rules"]["sessions"][0]
+    self.assertEqual(session["commit"], self.base_sha)
+    self.assertEqual(session["unavailable"], "rules-unreadable", "commit 有值但規則讀不到時要有原因")
+    line = next(item for item in self.cli(["report", *self.flags(url)]).stdout.splitlines() if item.startswith("rules-session"))
+    self.assertNotIn("unavailable=-", line)
+
+  def test_last_disposal_date_is_the_decision_date_not_the_capture_date(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    names = ("VIOL_AL", "VIOL_FB", "VIOL_IN")
+    for index, name in enumerate(names, 1):
+      write_jsonl(
+        self.projects / "work" / f"{name.lower()}.jsonl",
+        user_line(f"{name} 違規對話", session_id=name.lower(), timestamp=f"2026-10-0{index}T10:00:00.000Z"),
+      )
+    server, url = self.tagging_provider([
+      ("VIOL_AL", "ALPHA_PARAGRAPH_RULE", "violated", "VIOL_AL"),
+      ("VIOL_FB", "BASE_RULE_FALLBACK", "violated", "VIOL_FB"),
+      ("VIOL_IN", "BASE_RULE_INDENT", "violated", "VIOL_IN"),
+    ])
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    targets = {tag["quote"]: f"rule:{tag['path']}#{tag['heading']}@{tag['rule']}" for tag in self.status(url)["rules"]["tags"]}
+
+    def old_line(target, head, tail=""):
+      return (
+        f"- {head}[source_ref={target}; signal_type=agent-observation; target={target}; "
+        f'feedback_quote="x"; why="y"; flags=speculation] 常駐規則違規（session-audit 自動彙整，次數見下方子行）{tail}'
+      )
+
+    decided = "2026-10-06 [proposal_source=user@s1; user_decision=rejected@2026-11-20T08:00:00Z; implementation=N-A] "
+    seeded = self.RULE_FRICTION.replace(
+      "## 休眠\n", "## 休眠\n\n" + old_line(targets["VIOL_FB"], "2026-10-01 ", " [dormant since=2026-11-02; wake-when=需使用者主動重提]") + "\n"
+    )
+    seeded += old_line(targets["VIOL_AL"], decided) + "\n" + old_line(targets["VIOL_IN"], "2026-09-30 ") + "\n"
+    friction.write_text(seeded)
+    self.assertEqual(self.cli(["promote", *self.flags(url)]).returncode, 0)
+    pending = self.friction_sections(friction.read_text())["## 待折"]
+
+    def fresh(quote):
+      found = [line for line in pending if line.startswith("- ") and f"target={targets[quote]};" in line]
+      self.assertEqual(len(found), 1, pending)
+      return found[0]
+
+    self.assertTrue(fresh("VIOL_AL").endswith("（上次處置：已折／已否決 2026-11-20）"), fresh("VIOL_AL"))
+    self.assertTrue(fresh("VIOL_FB").endswith("（上次處置：休眠 2026-11-02）"), fresh("VIOL_FB"))
+    self.assertTrue(fresh("VIOL_IN").endswith("（上次處置：已折／已否決 2026-09-30（捕捉日））"), fresh("VIOL_IN"))
+
+  def test_future_conversation_time_does_not_overwrite_last_seen(self):
+    write_jsonl(self.projects / "work" / "a-future.jsonl", user_line("FUTURE_SESSION 內容", session_id="future", timestamp="2099-01-05T10:00:00.000Z"))
+    write_jsonl(self.projects / "work" / "b-normal.jsonl", user_line("NORMAL_SESSION 內容", session_id="normal", timestamp="2026-10-04T10:00:00.000Z"))
+    server, url = self.tagging_provider([
+      ("FUTURE_SESSION", "BASE_RULE_FALLBACK", "applied", "FUTURE_SESSION"),
+      ("FUTURE_SESSION", "BASE_RULE_INDENT", "violated", "FUTURE_SESSION"),
+      ("NORMAL_SESSION", "BASE_RULE_FALLBACK", "applied", "NORMAL_SESSION"),
+    ])
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    rules = self.status(url)["rules"]
+    self.assertEqual([item["last_seen"] for item in rules["last_seen"]], ["2026-10-04T10:00:00Z"], "未來時間不寫進 last_seen，標記本身照常驗證")
+    self.assertEqual([tag["quote"] for tag in rules["tags"]], ["FUTURE_SESSION"], "violated 逐筆仍可存")
 
 
 def analysis_with_media(media):

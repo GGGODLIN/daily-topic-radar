@@ -36,3 +36,10 @@
   - `rules_snapshot`（status 重列全部 tags）：**接受**。status 只列 violated（06 用）與彙總；applied 逐筆不列。
 - 2026-10-05 已套用接受的兩條（main 自做，不送回原 worker：它的 worktree 已移除，06／07 已建在這段狀態上，整合脈絡在 main）：新增 `rule_last_seen`（每條規則一列，只在對話時間更新時覆寫）；`rule_tags` 只存 violated；status 的 `last_seen` 改讀 `rule_last_seen`、`tags` 只剩 violated；07 的 `zero_use_facts` 改讀 `rule_last_seen`。原本斷言 applied 逐筆列的 4 條測試改成斷言 last_seen（被砍項目的測試隨項目改）。全套：`session-audit.test.py` 48 OK、regressions OK、entrypoints OK、`rules-size-weekly.test.sh` 22/0。
 - Minor：`rule_last_seen` 不跟 generation／included 綁定；來源後來被改判 self／synthetic 時，它先前留下的 last_seen 不會撤回。
+- 2026-10-05 implement 收尾 code review（/code-review，10 條）。本票相關：
+  - Failure-miss: F2 — 同一標題下有清單項時段落／表格被丟掉 → 名冊缺 32 行規則。修：段落與表格各自成條（既有清單項 identity 不變；真實 `~/.claude` 143 → 170 條）。
+  - Acceptance-miss — 「回應格式錯誤的段不算覆蓋」→ 缺 `rule_tags` 鍵仍算覆蓋。修：缺鍵或非 list 不算覆蓋、記 `rule-tags-missing`。
+  - Failure-miss: F4 — 413 縮減縮不到規則區塊 → findings 也失敗。修：先拿掉規則區塊重送、記 `rules-dropped-context`。
+  - Failure-miss: F4 — git 暫時失敗寫成永久 unavailable。修：只持久化確定性原因；暫時失敗的 session 在規則讀得到時重跑（`rules_retryable`）；commit 讀不到時 report 顯示 `rules-unreadable`。
+  - Failure-miss: F2 — 未來 timestamp 蓋掉 last_seen。修：晚於現在＋1 天不更新 last_seen。
+  - 以上由 worker（routed-impl）修，patch sha256 caaeb513…，main 重算一致，套到 main 後 57 tests OK、regressions OK、entrypoints OK、rules-size 23/0；各項 RED 原因見 worker 回報（存於本 session）。

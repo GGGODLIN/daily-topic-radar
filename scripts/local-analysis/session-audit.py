@@ -41,6 +41,10 @@ EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
 # skill-up 在 $TMPDIR/skill-up-<n>/ 跑評測，記錄本身不帶 synthetic 旗標；只認這個專案目錄樣式，不擴到整個 /var/folders。
 SKILL_UP_PROJECT_MARK = "-T-skill-up-"
 RULES_VERSION_UNAVAILABLE = "rules-version-unavailable"
+RULES_UNREADABLE = "rules-unreadable"
+RULE_TAGS_MISSING = "rule-tags-missing"
+RULES_DROPPED_CONTEXT = "rules-dropped-context"
+FUTURE_SKEW = timedelta(days=1)
 GIT_TIMEOUT_SECONDS = 10
 RULES_DIR = "rules/common/"
 LIST_ITEM_RE = re.compile(r"^(?:- |\d+\. )")
@@ -1020,27 +1024,41 @@ def markdown_sections(text):
 
 
 def section_rule_texts(lines):
-  # 條目＝頂層清單項（含縮排續行）；整段都沒有清單項時，段落文字整段算一條。
-  items = []
-  loose = []
+  # 一條規則＝頂層清單項（含縮排續行）、一段連續非空行的段落，或一張表格；fenced code 不當規則。
+  rules = []
   current = None
+  kind = None
   fenced = False
+
+  def flush():
+    nonlocal current, kind
+    if current:
+      body = "\n".join(current)
+      rules.append(body.rstrip() if kind == "item" else body.strip())
+    current = None
+    kind = None
+
   for line in lines:
     was_fenced = fenced
     if FENCE_RE.match(line):
       fenced = not fenced
     if not was_fenced and LIST_ITEM_RE.match(line):
+      flush()
       current = [line]
-      items.append(current)
-    elif current is not None and (was_fenced or not line.strip() or line[0] in " \t"):
+      kind = "item"
+    elif kind == "item" and (was_fenced or not line.strip() or line[0] in " \t"):
       current.append(line)
+    elif was_fenced or fenced or not line.strip():
+      flush()
     else:
-      current = None
-      loose.append(line)
-  if items:
-    return ["\n".join(item).rstrip() for item in items]
-  text = "\n".join(loose).strip()
-  return [text] if text else []
+      block = "table" if line.lstrip().startswith("|") else "paragraph"
+      if kind != block:
+        flush()
+        current = []
+        kind = block
+      current.append(line)
+  flush()
+  return rules
 
 
 def split_rules(path, text):
@@ -1107,6 +1125,9 @@ def session_rules(connection, row, raw, repo):
   if stored is None:
     moment = conversation_time(raw)
     sha, reason = (None, "no-timestamp") if moment is None else rules_commit(repo, moment)
+    if reason == "git-failed":
+      # 暫時性失敗只影響這次；寫進去會讓這個 session 永遠沒有規則版本。
+      return None
     connection.execute(
       "INSERT INTO rule_sessions (inode, session_id, conversation_time, commit_sha, unavailable) VALUES (?, ?, ?, ?, ?)",
       (
@@ -1154,23 +1175,27 @@ def valid_rule_tags(obj, sent, labels):
 
 
 def store_rule_tags(connection, row, generation, context, analyzed, sent, doc_start):
+  moment = parse_time(context["time"])
+  # 壞 timestamp 的未來時間若寫進 last_seen，之後所有正常時間的標記都蓋不掉它。
+  plausible = moment is not None and moment <= datetime.now(UTC) + FUTURE_SKEW
   connection.execute(
     "INSERT OR IGNORE INTO rule_coverage (inode, generation, doc_start, week) VALUES (?, ?, ?, ?)",
     (row["inode"], generation, doc_start, context["week"]),
   )
   for rule, verdict, line, quote in valid_rule_tags(analyzed, sent, context["labels"]):
     # 最小狀態：每條規則只留最後一次遇到場合；逐筆只留 violated，因為摩擦子行要每筆的出處與引文。
-    connection.execute(
-      """
-      INSERT INTO rule_last_seen (rule_id, rule_path, rule_heading, verdict, conversation_time, commit_sha)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT (rule_id) DO UPDATE SET
-        rule_path = excluded.rule_path, rule_heading = excluded.rule_heading, verdict = excluded.verdict,
-        conversation_time = excluded.conversation_time, commit_sha = excluded.commit_sha
-      WHERE excluded.conversation_time > rule_last_seen.conversation_time
-      """,
-      (rule["id"], rule["path"], rule["heading"], verdict, context["time"], context["commit"]),
-    )
+    if plausible:
+      connection.execute(
+        """
+        INSERT INTO rule_last_seen (rule_id, rule_path, rule_heading, verdict, conversation_time, commit_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (rule_id) DO UPDATE SET
+          rule_path = excluded.rule_path, rule_heading = excluded.rule_heading, verdict = excluded.verdict,
+          conversation_time = excluded.conversation_time, commit_sha = excluded.commit_sha
+        WHERE excluded.conversation_time > rule_last_seen.conversation_time
+        """,
+        (rule["id"], rule["path"], rule["heading"], verdict, context["time"], context["commit"]),
+      )
     if verdict != "violated":
       continue
     connection.execute(
@@ -1303,6 +1328,15 @@ def locate_parts(document, parts):
   return located
 
 
+def rules_retryable(connection, row):
+  # 只有暫時性原因（沒存 rule_sessions，或存了 commit 但規則讀不到）值得在規則修好後重跑；
+  # 沒 timestamp、該時間前沒 commit 這類確定性原因，重跑結果不會變。
+  if RULES_VERSION_UNAVAILABLE not in json.loads(row["limitations"] or "[]"):
+    return False
+  stored = connection.execute("SELECT unavailable FROM rule_sessions WHERE inode = ?", (row["inode"],)).fetchone()
+  return stored is None or not stored["unavailable"]
+
+
 def read_source(path):
   try:
     return path.read_bytes(), None
@@ -1334,17 +1368,32 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
     )
   if start > len(doc_bytes):
     start = 0
+  carried = row["continuity"] or ""
+  rules_ctx = None
   if start == len(doc_bytes) and row["status"] in {"complete", "partial", "failed"} and row["file_sha"] == file_sha:
-    return 0
+    if not rules_retryable(connection, row):
+      return 0
+    # 上次只是暫時讀不到規則版本；現在讀得到才整份重跑，否則維持原狀，避免規則 repo 壞著時每輪都燒模型額度。
+    rules_ctx = session_rules(connection, row, raw, rules_repo)
+    if rules_ctx is None:
+      return 0
+    generation += 1
+    connection.execute(
+      "UPDATE sources SET generation = ?, doc_offset = 0, continuity = '' WHERE inode = ?",
+      (generation, row["inode"]),
+    )
+    start = 0
+    carried = ""
   blocking = set(limits)
   noted = set()
   if images:
     noted.add("media-unredacted")
-  rules_ctx = session_rules(connection, row, raw, rules_repo)
+  if rules_ctx is None:
+    rules_ctx = session_rules(connection, row, raw, rules_repo)
   if rules_ctx is None:
     # 只標規則未分析；findings 照常，不降成 partial。
     noted.add(RULES_VERSION_UNAVAILABLE)
-  continuity = redact_text(row["continuity"] or "")
+  continuity = redact_text(carried)
   cursor = start
   produced = 0
   path = Path(row["path"])
@@ -1377,9 +1426,10 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
     accepted = None
     accepted_source = 0
     used_images = []
+    with_rules = rules_ctx is not None
     for _shrink in range(6):
       payload, sent, used_images, skipped = request_payload(
-        model, continuity[:CONTINUITY_RESERVE], attempt, images, rules_ctx["block"] if rules_ctx else None
+        model, continuity[:CONTINUITY_RESERVE], attempt, images, rules_ctx["block"] if with_rules else None
       )
       if skipped:
         blocking.add("media-not-sent")
@@ -1391,6 +1441,11 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
         mark(connection, row["inode"], "missing" if error else "pending", False, {"missing" if error else "source-changed-during-analysis"}, thinking)
         connection.commit()
         return produced
+      if code in {400, 413} and with_rules:
+        # 規則區塊可能就是超長的那一塊；先拿掉它重送、transcript 不縮，這段不算規則覆蓋。
+        with_rules = False
+        noted.add(RULES_DROPPED_CONTEXT)
+        continue
       if code in {400, 413} and len(sent) > 400:
         attempt = sent[: max(200, len(sent) // 2)]
         continue
@@ -1416,8 +1471,12 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
         mark(connection, row["inode"], "failed", False, blocking | noted | {failure}, thinking)
         connection.commit()
         return produced
-      if rules_ctx:
-        store_rule_tags(connection, row, generation, rules_ctx, analyzed, sent, cursor)
+      if with_rules:
+        if isinstance(analyzed.get("rule_tags"), list):
+          store_rule_tags(connection, row, generation, rules_ctx, analyzed, sent, cursor)
+        else:
+          # 沒回 rule_tags（空清單才代表「沒遇到場合」）就不能當成這段已被規則檢查過。
+          noted.add(RULE_TAGS_MISSING)
       active = {}
       for previous in connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? ORDER BY id', (row['inode'], generation)):
         active[previous['issue_ref']] = previous
@@ -1681,20 +1740,22 @@ def rules_snapshot(connection):
   rules = empty_rules()
   if table_exists(connection, "rule_sessions"):
     query = """
-      SELECT sources.name, rule_sessions.*
+      SELECT sources.name, sources.limitations AS source_limitations, rule_sessions.*
       FROM rule_sessions
       JOIN sources ON sources.inode = rule_sessions.inode
       WHERE sources.included = 1
       ORDER BY sources.path
     """
     for row in connection.execute(query):
+      # commit 有值但規則讀不到時，rule_sessions 沒有原因欄；從來源的 limitation 補上，報告才不會寫成沒有原因。
+      unreadable = RULES_VERSION_UNAVAILABLE in json.loads(row["source_limitations"] or "[]")
       rules["sessions"].append(
         {
           "name": row["name"],
           "session_id": row["session_id"],
           "conversation_time": row["conversation_time"] or None,
           "commit": row["commit_sha"] or None,
-          "unavailable": row["unavailable"] or None,
+          "unavailable": row["unavailable"] or (RULES_UNREADABLE if unreadable else None),
         }
       )
   # 只算當前 generation：來源改寫重跑後，舊 generation 的標記與段數不再混進來。
@@ -1959,6 +2020,9 @@ def preserved(old, new):
 
 RULE_ENTRY_MARK = "常駐規則違規（session-audit 自動彙整"
 RULE_ENTRY_TARGET_RE = re.compile(r"\btarget=(rule:[^;\]]*)[;\]]")
+# 前導日期是捕捉日；拍板日在 user_decision，休眠日在 dormant since（PROTOCOL）。
+DECISION_DATE_RE = re.compile(r"\buser_decision=[^;\]@]*@(\d{4}-\d{2}-\d{2})")
+DORMANT_DATE_RE = re.compile(r"\bdormant since=(\d{4}-\d{2}-\d{2})")
 
 
 def rule_violations(connection):
@@ -1992,7 +2056,7 @@ def rule_text(repo, violation):
 
 
 def scan_rule_entries(lines):
-  # pending: target -> 本工具寫的待折首行位置；left: target -> (首行日期, 段名)，取已離開待折的最新處置。
+  # pending: target -> 本工具寫的待折首行位置；left: target -> (處置日期, 段名, 是否退回捕捉日)，取已離開待折的最新處置。
   pending = {}
   left = {}
   section = None
@@ -2010,11 +2074,21 @@ def scan_rule_entries(lines):
         if RULE_ENTRY_MARK in line:
           pending.setdefault(target, index)
       else:
-        date = re.match(r"- (\d{4}-\d{2}-\d{2}) ", line)
-        stamp = (date.group(1) if date else "", section[3:])
+        decided = DECISION_DATE_RE.findall(line) + DORMANT_DATE_RE.findall(line)
+        if decided:
+          stamp = (max(decided), section[3:], False)
+        else:
+          date = re.match(r"- (\d{4}-\d{2}-\d{2}) ", line)
+          stamp = (date.group(1) if date else "", section[3:], bool(date))
         if target not in left or stamp[0] >= left[target][0]:
           left[target] = stamp
   return pending, left
+
+
+def subline_target(line):
+  # 舊格式子行沒有 target 欄，視為屬於它前面的條目。
+  match = RULE_ENTRY_TARGET_RE.search(line)
+  return match.group(1) if match else None
 
 
 def apply_rule_violations(text, violations, rules_repo, today):
@@ -2033,9 +2107,10 @@ def apply_rule_violations(text, violations, rules_repo, today):
   lines = text.splitlines(keepends=True)
   pending, left = scan_rule_entries(lines)
 
-  def subline(item):
+  def subline(item, target):
+    # target 欄讓子行自帶歸屬：使用者只搬走首行時，孤兒子行不會被算到相鄰的另一條規則。
     return (
-      f"  - source_ref={item['source_ref']}; quote=\"{one_line(item['quote'], 180)}\"; "
+      f"  - source_ref={item['source_ref']}; target={target}; quote=\"{one_line(item['quote'], 180)}\"; "
       f"conversation_time={item['conversation_time']}; rules_commit={item['commit_sha']}"
     )
 
@@ -2045,17 +2120,20 @@ def apply_rule_violations(text, violations, rules_repo, today):
   sublines = 0
   for target, items in groups.items():
     sublines += len(items)
-    rows = [subline(item) for item in items]
+    rows = [subline(item, target) for item in items]
     if target in pending:
       end = pending[target] + 1
-      while end < len(lines) and lines[end].startswith("  - "):
+      while end < len(lines) and lines[end].startswith("  - ") and subline_target(lines[end]) in {None, target}:
         end += 1
       inserts[end] = rows
       continue
     entries += 1
     quote = one_line(items[0]["quote"], 180) or "N-A"
     why = one_line(rule_text(rules_repo, items[0]), 160) or "unknown"
-    note = f"（上次處置：{left[target][1]} {left[target][0] or '日期不明'}）" if target in left else ""
+    note = ""
+    if target in left:
+      day, section, captured = left[target]
+      note = f"（上次處置：{section} {day or '日期不明'}{'（捕捉日）' if captured else ''}）"
     fresh.append(
       f"- {today} [source_ref={target}; signal_type=agent-observation; target={target}; "
       f"feedback_quote=\"{quote}\"; why=\"{why}\"; flags=speculation] "

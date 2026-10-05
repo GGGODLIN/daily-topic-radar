@@ -97,6 +97,8 @@ run_wrapper fail; rc=$?
 report="$(cat "$out_file" 2>/dev/null)"
 [ "$rc" -eq 0 ] && pass "zero-use failure keeps the wrapper exit 0" || fail "zero-use failure keeps the wrapper exit 0 — rc=$rc"
 assert_contains "failure line carries the reason" "零使用清單產生失敗：rules-roster-unavailable" "$report"
+# daily-local 第 5 條只原文保留含 ⚠️ 的行；失敗行不以 ⚠️ 開頭就會在摘要裡消失。
+if printf '%s\n' "$report" | grep -q '^⚠️ 零使用清單產生失敗：'; then pass "failure line starts with the warning mark"; else fail "failure line starts with the warning mark"; fi
 assert_not_contains "failure within caps does not fake the over-cap heading" "🎯 建議處理" "$report"
 run_wrapper fail 5; rc=$?
 report="$(cat "$out_file" 2>/dev/null)"
