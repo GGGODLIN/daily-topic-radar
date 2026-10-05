@@ -34,3 +34,5 @@
   - `connect`（逐段帳本 `rule_coverage`）：**不接受**。逐段列是「來源改寫重跑時只算當前 generation」的去重依據，換成每週計數器會在重跑時重複計數（Failure: F6）；07 還要依「該段 session 用的版本含不含這條規則」算有覆蓋週，需要 session→commit 的連結。`rule_sessions` 是 spec 要求的「記下用哪個 commit」。
   - `store_rule_tags`（每筆標記都存）：**部分接受**。applied 標記只需要更新 last_seen：07 往回走遇到的第一個有標記週，就是 last_seen 所在週，所以不必存逐筆 applied。violated 逐筆要留，因為 06 的子行需要每筆的 source_ref 與引文。待 07 回來確認它沒依賴逐筆 applied 後再砍。
   - `rules_snapshot`（status 重列全部 tags）：**接受**。status 只列 violated（06 用）與彙總；applied 逐筆不列。
+- 2026-10-05 已套用接受的兩條（main 自做，不送回原 worker：它的 worktree 已移除，06／07 已建在這段狀態上，整合脈絡在 main）：新增 `rule_last_seen`（每條規則一列，只在對話時間更新時覆寫）；`rule_tags` 只存 violated；status 的 `last_seen` 改讀 `rule_last_seen`、`tags` 只剩 violated；07 的 `zero_use_facts` 改讀 `rule_last_seen`。原本斷言 applied 逐筆列的 4 條測試改成斷言 last_seen（被砍項目的測試隨項目改）。全套：`session-audit.test.py` 48 OK、regressions OK、entrypoints OK、`rules-size-weekly.test.sh` 22/0。
+- Minor：`rule_last_seen` 不跟 generation／included 綁定；來源後來被改判 self／synthetic 時，它先前留下的 last_seen 不會撤回。

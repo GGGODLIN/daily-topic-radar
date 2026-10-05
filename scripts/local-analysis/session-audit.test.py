@@ -1578,12 +1578,15 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertNotIn("NEW_RULE_INDENT", old_bodies[0])
     self.assertIn("NEW_RULE_INDENT", new_bodies[0])
     self.assertNotIn("BASE_RULE_INDENT", new_bodies[0])
-    tags = self.tags_by_quote(self.status(url))
-    self.assertEqual(tags["SESSION_OLD"]["commit"], old_sha)
+    # applied 只留在 last_seen（最小狀態），violated 另有逐筆標記。
+    status = self.status(url)
+    seen = {item["commit"]: item for item in status["rules"]["last_seen"]}
+    self.assertEqual(seen[old_sha]["verdict"], "applied")
+    self.assertEqual(seen[new_sha]["verdict"], "violated")
+    self.assertNotEqual(seen[old_sha]["rule"], seen[new_sha]["rule"])
+    tags = self.tags_by_quote(status)
+    self.assertEqual(list(tags), ["SESSION_NEW"])
     self.assertEqual(tags["SESSION_NEW"]["commit"], new_sha)
-    self.assertEqual(tags["SESSION_OLD"]["verdict"], "applied")
-    self.assertEqual(tags["SESSION_NEW"]["verdict"], "violated")
-    self.assertNotEqual(tags["SESSION_OLD"]["rule"], tags["SESSION_NEW"]["rule"])
 
   def test_rule_scope_is_claude_md_plus_rules_common_files(self):
     files = dict(BASE_RULES)
@@ -1611,7 +1614,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertNotIn(None, labels)
     self.assertEqual(len(labels), 4, "每個清單項與無清單段落各自一條規則")
     self.assertRegex(system, r"BETA_COMMON_RULE 第一行\n  縮排續行 BETA_CONTINUATION")
-    tag = self.status(url)["rules"]["tags"][0]
+    tag = self.status(url)["rules"]["last_seen"][0]
     self.assertEqual(tag["path"], "CLAUDE.md")
     self.assertEqual(tag["heading"], "全域設定 > 程式碼風格")
 
@@ -1684,7 +1687,8 @@ class SessionAuditCliTest(unittest.TestCase):
     url = f"http://127.0.0.1:{server.server_address[1]}"
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
     report = self.status(url)
-    self.assertEqual([(tag["verdict"], tag["quote"]) for tag in report["rules"]["tags"]], [("applied", "VALID_QUOTE")])
+    self.assertEqual(report["rules"]["tags"], [], "applied 不留逐筆標記")
+    self.assertEqual([item["verdict"] for item in report["rules"]["last_seen"]], ["applied"])
     self.assertEqual([item["observation"] for item in report["candidates"]], ["kept-finding"])
     self.assertEqual(self.source_named(report, "s1.jsonl")["status"], "complete")
 
@@ -1847,7 +1851,7 @@ class SessionAuditCliTest(unittest.TestCase):
       self.assertRegex(item, r"`[0-9a-f]{16}`")
       for banned in ("死碼", "沒用"):
         self.assertNotIn(banned, item)
-    tag = next(t for t in self.status(url)["rules"]["tags"] if t["quote"] == "ZW_W37")
+    tag = next(t for t in self.status(url)["rules"]["last_seen"] if t["last_seen"].startswith("2026-09-08"))
     self.assertIn(f"`{tag['rule']}`", old)
 
   def test_zero_use_gap_week_restarts_the_count_without_stitching(self):

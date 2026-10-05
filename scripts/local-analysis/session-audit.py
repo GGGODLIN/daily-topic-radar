@@ -316,6 +316,14 @@ def connect(state, write):
         commit_sha TEXT NOT NULL,
         UNIQUE (inode, generation, rule_id, verdict, source_line, quote)
       );
+      CREATE TABLE IF NOT EXISTS rule_last_seen (
+        rule_id TEXT PRIMARY KEY,
+        rule_path TEXT NOT NULL,
+        rule_heading TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        conversation_time TEXT NOT NULL,
+        commit_sha TEXT NOT NULL
+      );
       """
     )
     columns = {row[1] for row in connection.execute('PRAGMA table_info(findings)')}
@@ -1146,6 +1154,20 @@ def store_rule_tags(connection, row, generation, context, analyzed, sent, doc_st
     (row["inode"], generation, doc_start, context["week"]),
   )
   for rule, verdict, line, quote in valid_rule_tags(analyzed, sent, context["labels"]):
+    # 最小狀態：每條規則只留最後一次遇到場合；逐筆只留 violated，因為摩擦子行要每筆的出處與引文。
+    connection.execute(
+      """
+      INSERT INTO rule_last_seen (rule_id, rule_path, rule_heading, verdict, conversation_time, commit_sha)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (rule_id) DO UPDATE SET
+        rule_path = excluded.rule_path, rule_heading = excluded.rule_heading, verdict = excluded.verdict,
+        conversation_time = excluded.conversation_time, commit_sha = excluded.commit_sha
+      WHERE excluded.conversation_time > rule_last_seen.conversation_time
+      """,
+      (rule["id"], rule["path"], rule["heading"], verdict, context["time"], context["commit"]),
+    )
+    if verdict != "violated":
+      continue
     connection.execute(
       """
       INSERT OR IGNORE INTO rule_tags (
@@ -1689,7 +1711,6 @@ def rules_snapshot(connection):
       WHERE sources.included = 1
       ORDER BY rule_tags.conversation_time, rule_tags.id
     """
-    latest = {}
     for row in connection.execute(query):
       rules["tags"].append(
         {
@@ -1704,17 +1725,18 @@ def rules_snapshot(connection):
           "commit": row["commit_sha"],
         }
       )
-      latest[row["rule_id"]] = rules["tags"][-1]
+  if table_exists(connection, "rule_last_seen"):
+    query = "SELECT * FROM rule_last_seen ORDER BY conversation_time, rule_id"
     rules["last_seen"] = [
       {
-        "rule": tag["rule"],
-        "path": tag["path"],
-        "heading": tag["heading"],
-        "last_seen": tag["conversation_time"],
-        "commit": tag["commit"],
-        "verdict": tag["verdict"],
+        "rule": row["rule_id"],
+        "path": row["rule_path"],
+        "heading": row["rule_heading"],
+        "last_seen": row["conversation_time"],
+        "commit": row["commit_sha"],
+        "verdict": row["verdict"],
       }
-      for tag in sorted(latest.values(), key=lambda item: (item["conversation_time"], item["rule"]))
+      for row in connection.execute(query)
     ]
   return rules
 
@@ -1793,7 +1815,7 @@ def zero_use_facts(connection, repo, newest_week):
   # 否則一筆未來時間就會讓「最新週」跑到未來、所有規則都變成沒覆蓋而靜默清空清單。
   covering = {}
   last_seen = {}
-  needed = ("rule_sessions", "rule_coverage", "rule_tags")
+  needed = ("rule_sessions", "rule_coverage", "rule_last_seen")
   if not all(table_exists(connection, name) for name in needed):
     return covering, last_seen
   query = """
@@ -1813,12 +1835,7 @@ def zero_use_facts(connection, repo, newest_week):
       identities[row["sha"]] = set() if loaded is None else {rule["id"] for rule in loaded["labels"].values()}
     for rule_id in identities[row["sha"]]:
       covering.setdefault(rule_id, {}).setdefault(row["week"], set()).add(row["sha"])
-  query = """
-    SELECT rule_tags.rule_id AS rule_id, rule_tags.conversation_time AS time
-    FROM rule_tags
-    JOIN sources ON sources.inode = rule_tags.inode AND sources.generation = rule_tags.generation
-    WHERE sources.included = 1
-  """
+  query = "SELECT rule_id, conversation_time AS time FROM rule_last_seen"
   for row in connection.execute(query):
     moment = parse_time(row["time"])
     if moment is None or iso_week(moment) > newest_week:

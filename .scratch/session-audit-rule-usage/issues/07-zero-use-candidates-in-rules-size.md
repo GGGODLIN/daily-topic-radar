@@ -34,3 +34,4 @@
 - 釐清：「違規過的規則不列入」依 spec「連續 4 個有覆蓋的週沒遇到場合」解讀為「違規落在這段連續區間內就不列」；更早以前違規、之後連續 4 週安靜的規則仍會列入。
 - worker 自報：RED 時 wrapper 尚未有路徑覆寫，曾寫入真實 `reports/local-analysis/2026-10-05-rules-size.md` 與對應 log（皆 gitignored），已刪除；main 確認該檔不存在（計數 0）。
 - Minor：舊 commit 在規則 repo 讀不到時該週全當沒覆蓋、HEAD 名冊讀不到時 exit 2，兩條沒有專門測試。
+- 2026-10-05 ticket-yagni verdict（kill 0／demote 80／keep 17）：77 條 demote 的對象是 base 既有、本票沒改的函式（審查把整檔符號都列入），不需處理。其餘 3 條都**不接受**：`cleanup`、`pass` 是 `rules-size-weekly.test.sh` 自身的測試輔助，拿掉測試就跑不動；`redact_text` 是零使用條目寫進週報前沿用的既有淨化，與其他報告一致。
