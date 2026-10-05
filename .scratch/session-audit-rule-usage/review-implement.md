@@ -41,8 +41,26 @@
 - Y4：dispute。前提「使用者手動只搬首行」不成立：PROTOCOL 唯一的搬移工具 `friction-review-state.py`（`apply_operation` 拒收多行、`replace_first_pending_item` 只換首行）每次處置都只搬首行，孤兒子行必然出現；少了 target 會把 A 的違規證據算到 B（T06-1、T06-2）。
 - Y5：accept。來源 limitation 已能看出未分析，這段只是方便閱讀。
 ### Main decisions
+- 使用者回答（2026-10-05）：S1「不用吧」→ a 不改寫歷史；S2「a」→ 折衷；S3「a」→ 保留；Y2 與其餘「照推薦吧，有真的需要我決策的再與我討論」。
 ### Dispositions
+- disposition: S1 | scope | main=CONFIRMED | user=accepted | 私人 rules-slim 副本進公開 repo；7b6a3f1 已移出最新版，使用者選擇不改寫歷史
+- disposition: S2 | scope | main=PLAUSIBLE | user=accepted | 已完成 session 整份重跑超出 spec 回填範圍；改為暫時失敗不持久化、只在追加段重試
+- disposition: S3 | scope | main=PLAUSIBLE | user=accepted | post_json 接住讀逾時／斷線是 09 真實確認的必要修正，使用者追認保留
+- disposition: Y1 | yagni | main=accept | user=accepted | 與 S2 同段，依 S2 折衷處理
+- disposition: Y2 | yagni | main=dispute | user=accepted | 只驗一條腿，拿掉規則重送保護 T05-7 既有 findings 不變；保留
+- disposition: Y3 | yagni | main=accept | user=n/a | 未來時間防護與 --now 無驗收依據且依賴牆上時鐘；刪除
+- disposition: Y4 | yagni | main=dispute | user=n/a | 摩擦 helper 每次處置都只搬首行，子行 target 防誤歸屬（T06-1、T06-2）；保留（使用者授權照推薦）
+- disposition: Y5 | yagni | main=accept | user=n/a | 來源 limitation 已能判讀；刪除
 ### Repair obligations
+- S2／Y1：刪 `rules_retryable` 與已完成 session 整份重跑；保留暫時 git 失敗不寫入 `rule_sessions`。
+- Y3：刪 `FUTURE_SKEW`、`plausible`、`zero_use_facts` 的 newest_week 過濾、`--now` 旗標與兩條專屬測試。
+- Y5：刪 `RULES_UNREADABLE` 與 report 反推原因，刪專屬測試。
+- 落地：commit 802c9ce。S2 新行為先寫測試 `test_transient_git_failure_is_not_persisted_and_new_segments_retry`，RED（已完成 session 被重送，請求數 2≠1）後修正轉綠。過程中刪測試時誤刪模組層 helper `analysis_with_media`，已以 HEAD 比對補回並驗證沒有其他定義遺失。
 ### Targeted rechecks
+- S2／Y1：pass — `rules_retryable` 0 處；剩下的 `generation += 1` 是 d3fb62d 就有的來源改寫分支（`session-audit.py:1349`）；新測試綠。
+- Y3：pass — `FUTURE_SKEW`、`"--now"`、`newest_week` 0 處。
+- Y5：pass — `RULES_UNREADABLE`、`source_limitations` 0 處。
+- final suite（head 802c9ce）：`session-audit.test.py` 54 OK、regressions OK、entrypoints OK、`rules-size-weekly.test.sh` 23/0；`scripts/local-analysis/` 全部 30 支中另 4 支失敗（beads-aging 22/4、local-analysis-workflow、rba-verify-weekly、skill-upstream-check-weekly 41/2），與 base d3fb62d 重跑結果相同，屬既有失敗。
 ### Summary
-- Run status: BLOCKED（審查進行中）
+- Run status: PASS
+- head_sha（修正後）: 802c9ce
