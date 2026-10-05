@@ -30,3 +30,4 @@
 - 2026-10-05 worker（routed-impl）patch sha256 0211a6b8…，main 重算一致；base 4ecc774，`git apply --check` 後套到 main。RED：8 條新測試中 7 條因 promote 沒有 `rule_entries` 計數、摩擦檔沒有規則條目、只有違規時不檢查鎖而紅；`test_candidate_only_promote_output_has_no_rule_keys` 是保護既有行為的測試，一開始就綠。GREEN：main 重跑 `session-audit.test.py` OK。
 - 待折掃描（`~/Desktop/projects/.claude/hooks/trial-review.sh`）worker 實跑：1 個規則條目＋3 行子行＋2 條舊待折 → 掃描算 3 項，子行沒有被算成獨立項。
 - Minor：使用者把條目搬到已折段時若只搬首行，子行會留在待折變成孤兒（有縮排、不計數）。
+- 2026-10-05 main 修正（Acceptance-miss — 「同一規則 3 筆違規 → 待折 1 個條目」→ 實作以「檔＋標題」為鍵，同標題下不同規則的違規會併成一條、why 只顯示第一條原文）：target 改為 `rule:<檔>#<標題>@<規則 identity>`。RED：新測試 `test_rules_sharing_a_heading_get_separate_entries` 得到 1 個條目而非 2。GREEN：43/43。另有 5 條 06 測試把舊 target 格式寫死，依 spec「一條規則一個條目」改成認 `@identity` 尾碼（測試斷言與 spec 不符，屬合法修測試）。

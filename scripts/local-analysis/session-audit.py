@@ -1843,10 +1843,12 @@ def rule_violations(connection):
   return [dict(row) for row in connection.execute(query)]
 
 
-def rule_target(path, heading):
+def rule_target(path, heading, rule_id):
   # target 欄以 ; 與 ] 分隔，標題裡出現就會截斷欄位，先換掉。
+  # 尾端帶規則 identity：同一標題下常有十幾條規則，只用標題會把不同規則的違規併成一條。
   clean = one_line(heading, 120).replace(";", ",").replace("]", ")")
-  return f"rule:{path}#{clean}" if clean else f"rule:{path}"
+  base = f"rule:{path}#{clean}" if clean else f"rule:{path}"
+  return f"{base}@{rule_id}"
 
 
 def rule_text(repo, violation):
@@ -1889,7 +1891,7 @@ def apply_rule_violations(text, violations, rules_repo, today):
   groups = {}
   seen = set()
   for item in violations:
-    target = rule_target(item["rule_path"], item["rule_heading"])
+    target = rule_target(item["rule_path"], item["rule_heading"], item["rule_id"])
     if item["source_ref"] in recorded or (item["source_ref"], target) in seen:
       continue
     seen.add((item["source_ref"], target))

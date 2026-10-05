@@ -1283,7 +1283,8 @@ class SessionAuditCliTest(unittest.TestCase):
   def rule_entry_lines(self, text, target=None):
     target = target or self.ALPHA_TARGET
     pending = self.friction_sections(text)["## 待折"]
-    return [line for line in pending if line.startswith("- ") and f"target={target};" in line]
+    # target 尾端是 @<規則 identity>；這裡只認檔＋標題前綴，identity 由各測試另驗。
+    return [line for line in pending if line.startswith("- ") and re.search(rf"target={re.escape(target)}@[0-9a-f]{{16}};", line)]
 
   def mixed_provider(self):
     # 同一段既有一般 finding（QUOTE_FIND）也有規則違規（QUOTE_VIOL）。
@@ -1309,7 +1310,7 @@ class SessionAuditCliTest(unittest.TestCase):
     entries = self.rule_entry_lines(text)
     self.assertEqual(len(entries), 1, text)
     entry = entries[0]
-    for expected in ("signal_type=agent-observation", "flags=speculation", 'feedback_quote="VIOL_A"', "source_ref=rule:rules/common/alpha.md#Alpha;"):
+    for expected in ("signal_type=agent-observation", "flags=speculation", 'feedback_quote="VIOL_A"', "source_ref=rule:rules/common/alpha.md#Alpha@"):
       self.assertIn(expected, entry)
     self.assertIn("ALPHA_PARAGRAPH_RULE", entry)
     at = pending.index(entry)
@@ -1350,15 +1351,20 @@ class SessionAuditCliTest(unittest.TestCase):
 
   def test_rule_entry_moved_out_of_pending_opens_new_entry_with_last_disposal(self):
     friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    server, url = self.violation_provider(["VIOL_A"])
+    self.addCleanup(stop, server)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    # 已折段的舊行要帶同一條規則的完整 target（含 identity），才算同一條規則再犯。
+    rule_id = self.status(url)["rules"]["tags"][0]["rule"]
+    target = f"{self.ALPHA_TARGET}@{rule_id}"
     moved = (
       "- 2026-09-30 [proposal_source=user@s1; user_decision=rejected@2026-10-01T00:00:00Z; implementation=N-A] "
-      f"[source_ref=rule:rules/common/alpha.md#Alpha; signal_type=agent-observation; target={self.ALPHA_TARGET}; "
+      f"[source_ref={target}; signal_type=agent-observation; target={target}; "
       'feedback_quote="x"; why="y"; flags=speculation] 常駐規則違規（session-audit 自動彙整，次數見下方子行）'
     )
     friction.write_text(self.RULE_FRICTION + moved + "\n")
-    server, url = self.violation_provider(["VIOL_A"])
-    self.addCleanup(stop, server)
-    promoted = json.loads(self.run_then_promote(url).stdout)
+    promoted = json.loads(self.cli(["promote", *self.flags(url)]).stdout)
     self.assertEqual((promoted["rule_entries"], promoted["rule_sublines"]), (1, 1), promoted)
     text = friction.read_text()
     entries = self.rule_entry_lines(text)
@@ -1376,6 +1382,32 @@ class SessionAuditCliTest(unittest.TestCase):
     text = friction.read_text()
     self.assertEqual(len(self.rule_entry_lines(text)), 1)
     self.assertNotIn("上次處置", text)
+
+  def test_rules_sharing_a_heading_get_separate_entries(self):
+    # 同一標題下常有十幾條規則；合成一條就看不出違反哪條，why 也只會是第一條的原文。
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    for index, name in enumerate(("VIOL_FB", "VIOL_IN"), 1):
+      write_jsonl(
+        self.projects / "work" / f"{name.lower()}.jsonl",
+        user_line(f"{name} 違規對話", session_id=name.lower(), timestamp=f"2026-10-0{index}T10:00:00.000Z"),
+      )
+    server, url = self.tagging_provider(
+      [("VIOL_FB", "BASE_RULE_FALLBACK", "violated", "VIOL_FB"), ("VIOL_IN", "BASE_RULE_INDENT", "violated", "VIOL_IN")]
+    )
+    promoted = json.loads(self.run_then_promote(url).stdout)
+    self.assertEqual((promoted["rule_entries"], promoted["rule_sublines"]), (2, 2), promoted)
+    pending = self.friction_sections(friction.read_text())["## 待折"]
+    entries = [line for line in pending if line.startswith("- ") and "常駐規則違規" in line]
+    self.assertEqual(len(entries), 2, pending)
+    fallback = next(line for line in entries if 'feedback_quote="VIOL_FB"' in line)
+    indent = next(line for line in entries if 'feedback_quote="VIOL_IN"' in line)
+    self.assertIn("BASE_RULE_FALLBACK", fallback)
+    self.assertNotIn("BASE_RULE_INDENT", fallback)
+    self.assertIn("BASE_RULE_INDENT", indent)
+    self.assertNotEqual(
+      re.search(r"target=([^;]+);", fallback).group(1), re.search(r"target=([^;]+);", indent).group(1)
+    )
 
   def test_rule_subline_source_ref_never_repeats(self):
     friction = self.friction / "workflow-general.md"
