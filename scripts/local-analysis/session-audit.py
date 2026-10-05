@@ -1244,7 +1244,7 @@ def cmd_run(args):
     deadline = time.monotonic() + MAX_RUN_SECONDS
 
     def consume(row, limit):
-      if limit <= 0:
+      if limit <= 0 or time.monotonic() >= deadline:
         return 0
       raw, error = read_source(Path(row["path"]))
       if error:
