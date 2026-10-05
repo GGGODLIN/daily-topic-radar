@@ -12,6 +12,7 @@ import argparse
 import fcntl
 import functools
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -439,6 +440,10 @@ def post_json(url, key, payload):
     return exc.code, b""
   except urllib.error.URLError:
     print("session-audit: relay-unreachable", file=sys.stderr)
+    return 0, b""
+  except (OSError, http.client.HTTPException):
+    # 讀回應時逾時或被斷線，urllib 不包成 URLError；不接住會讓整輪 run 當掉，其餘來源也分析不到。
+    print("session-audit: relay-dropped", file=sys.stderr)
     return 0, b""
   if len(raw) > MAX_RESPONSE_BYTES:
     print("session-audit: response-too-large", file=sys.stderr)

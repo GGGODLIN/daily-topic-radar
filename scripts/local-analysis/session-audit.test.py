@@ -165,6 +165,10 @@ class Recorder(BaseHTTPRequestHandler):
       self.server.got.set()
       self.server.release.wait(10)
     payload, code = self.server.reply(body)
+    if payload is None:
+      # 模擬上游讀完請求就斷線：client 在讀回應狀態行時收到 RemoteDisconnected，與讀逾時同一條未包裝路徑。
+      self.close_connection = True
+      return
     data = payload.encode() if isinstance(payload, str) else payload
     self.send_response(code)
     self.send_header("Content-Type", "application/json")
@@ -579,6 +583,21 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertFalse(image_row["latest_complete"])
     self.assertIn("media-not-sent", image_row["limitations"])
     self.assertIn("media-unredacted", image_row["limitations"])
+
+  def test_upstream_drop_does_not_crash_run(self):
+    # 免費腿讀逾時／斷線時，urllib 不會包成 URLError；沒接住就整輪 run 當掉、其他來源也不分析。
+    write_jsonl(self.projects / "work" / "drop.jsonl", user_line("MARKER_DROP"))
+    write_jsonl(self.projects / "work" / "fine.jsonl", user_line("MARKER_FINE"))
+    server = serve(lambda body: (None, 0) if b"MARKER_DROP" in body else (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    ran = self.cli(["run", *self.flags(url)])
+    self.assertEqual(ran.returncode, 0, ran.stderr)
+    self.assertNotIn("Traceback", ran.stderr)
+    report = self.status(url)
+    self.assertNotEqual(self.source_named(report, "drop.jsonl")["status"], "complete")
+    self.assertEqual(self.source_named(report, "fine.jsonl")["status"], "complete")
 
   def test_model_format_and_http_error_not_complete(self):
     for name, marker in (
