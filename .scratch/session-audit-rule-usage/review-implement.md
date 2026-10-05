@@ -64,3 +64,8 @@
 ### Summary
 - Run status: PASS
 - head_sha（修正後）: 802c9ce
+
+## Architecture visual gate（implement Step 8）
+- classification: candidate — 新增跨元件連線：session-audit → `~/.claude` git（取規則版本）、rules-size wrapper → session-audit zero-use、daily-local 可選欄 → rules-size 零使用段、`/rules-slim` → rules-size 零使用段。
+- decision: waived（使用者 2026-10-05 回「不用」）；reason: 四條連線單純，接點與回退已寫在 trial detail `trials/active/session-audit-rule-usage-2026-10-05.md`。
+- feature_base_sha: d3fb62d；head_sha: 802c9ce（程式）／a89f307（含報告）。
