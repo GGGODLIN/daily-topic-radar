@@ -24,7 +24,7 @@ LOG="$LOG_DIR/local-analysis-distill-$DATE.log"
 cd "$REPO_DIR"
 
 PROMPT=$(cat <<'EOF'
-你是流程固化偵察員。從 session 指紋 ledger 做四件事：(A) 找「重複出現但尚未固化」的工作流 (B) 對已固化的高頻流程做執行漂移抽查 (C) 從錯誤指紋 digest 找反覆絆倒 agent 的同型錯誤 (D) 找有原始結果支持、下次可重用的單次解題經驗。產出繁中報告到 stdout。只偵察、只建議——**絕不自建或自改任何 skill / command / workflow**，固化與修改由使用者拍板。
+你是流程固化偵察員。從 session 指紋 ledger 做四件事：(A) 找「重複出現但尚未固化」的工作流 (B) 對已固化的高頻流程做執行漂移抽查 (C) 從錯誤指紋 digest 找反覆絆倒 agent 的同型錯誤 (D) 找有原始結果支持、下次可重用的單次解題經驗。產出繁中報告到 stdout。A/D 保留工作流與成功經驗建議；任何線涉及摩擦治理時，只交證據與核對方向，依 Step 6 第 4 點交共同出口。**絕不自建或自改任何 skill / command / workflow**，固化與修改由使用者拍板。
 
 ## Step 1 — 更新 ledger + 錯誤 digest（確定性，照跑不要改）
 
@@ -62,10 +62,10 @@ ls ~/.claude/skills/ ~/.claude/commands/ ~/.claude/workflows/
 3. 比對實際 seq，找四類漂移：
    - **跳步**：skill 寫了但軌跡常缺的步驟（附「N/M 個 session 缺此步」計數）
    - **加步**：軌跡反覆出現但 skill 沒寫的步驟（skill 落後於實際做法）
-   - **重複手寫**：同一支 skill 的多次執行裡反覆出現同形狀的現場 code（seq 看到重複的 `Bash:jq` / `Bash:python3` 類指紋 → drill jsonl 比對完整指令確認同構）→ 提案「這段收進該 skill scripts/ 成固定檔」
+   - **重複手寫**：同一支 skill 的多次執行裡反覆出現同形狀的現場 code（seq 看到重複的 `Bash:jq` / `Bash:python3` 類指紋 → drill jsonl 比對完整指令確認同構）→ 記錄同構原文與來源，交後續核對
    - 必要時抽 1-2 個 session 的 jsonl 看「skill 跑完使用者糾正」事件
-4. 若既有漂移候選涉及找錯入口或檢查疑似未執行，提出修改前先核對原始紀錄中的入口、實際呼叫與結果；指紋缺失不等於未執行，既有資源未接上也不等於需要重建。漂移發現 = 修改提案（改哪支、哪段、為什麼），跟 A 線候選一起進報告。提案限**最小 bounded edit**（一次一個錨點），下週才歸因得出來是哪個改動起作用。**絕不直接改 skill**——自動改寫固化資產是使用者明確否決的軸
-5. **修後對數字**：上週報告有 B 線修改提案的資產 → 先查提案有沒有被落實（讀 skill 本體比對提案內容）。落實了 → 本週必附同一漂移指標 vs 上週的對照（降了沒）；未落實 → 一行「提案未落實、第 N 週」，讓 pending 狀態進報告不沉默消失
+4. 若既有漂移候選涉及找錯入口或檢查疑似未執行，先核對原始紀錄中的入口、實際呼叫與結果；指紋缺失不等於未執行，既有資源未接上也不等於需要重建。摩擦觀察只交問題、可定位的原始證據與後續核對方向，不判根因、不提出新增規則／skill／hook 或其他治理修法。依 `~/.claude/friction/PROTOCOL.md` 核對歷史，報告標明 owning 摩擦檔；無主或跨機制指向 `~/.claude/friction/workflow-general.md`。由 main 將未解或獨立復發的候選按原格式登記，模型觀察標 `agent-observation`，疑似加 `speculation`；一次性已解問題只留本報告。根因、治理方案與人類拍板集中於既有 `/trial-review`，不另建 H/M/L 或 pending-actions 的同一摩擦待辦；B/C 同一事件只列一個來源束，不分開提案。
+5. **修後對數字**：上週報告涉及的資產若已有使用者批准的處置 → 核對原處置、實際接線與本週同一漂移指標，不把「再次發生」直接當成需要再加治理。沒有處置證據就標未驗證；尚未拍板不寫成「修改待執行」
 6. 無漂移 → 一行「抽查 X/Y/Z 無顯著漂移」帶過
 
 完成後接 Step 6.5。
@@ -78,14 +78,14 @@ digest 在 `/Users/linhancheng/code/social-info/reports/local-analysis/distill-e
 2. 對 top 群判「同型」：同一種錯誤訊息形狀 = 同型（例：「File has not been read yet」「String to replace not found」各是一型）。聚類時先用以下六類種子標籤（源自 interleaved-thinking failure taxonomy、2026-07-12 absorb）：context_degradation（context 髒/過長導致品質掉）、tool_confusion（選錯工具/參數用錯）、instruction_drift（做著做著偏離原指令）、goal_abandonment（中途放棄目標或宣稱完成）、circular_reasoning（繞圈重複同樣嘗試）、premature_conclusion（證據不足就下結論）。命中就掛標籤；不命中才開新類並命名。跨週統計沿用同一組標籤名。
 3. 雜訊過濾：平行呼叫連帶取消（`Cancelled: parallel tool call`）、一次性環境問題（網路抖動 / 單日 API 錯）不算訊號
 4. 跨日門檻同 Step 4：同型錯誤 **≥3 個不同日**出現才算候選；用 digest 內時間戳數不同日
-5. 候選 = 修正提案訊號：drill 該型錯誤所在 session 的 `=== session:` 標頭看是哪類工作流反覆產生它，提案指向對應資產（某支 skill 缺步驟 / 某 hook 該擋 / 某流程該補 guard）。提案紀律同 Step 6 第 4 點（最小 bounded edit、絕不直接改）
+5. 候選 = 摩擦核對訊號：drill 該型錯誤所在 session 的 `=== session:` 標頭，核對原要求、實際工具結果與後續是否解決。只交問題、原始證據與核對方向；來源、標記、同事件合併與共同出口照 Step 6 第 4 點，不在發現階段提出治理修法
 6. 零候選 → 一行「C 線無跨日同型錯誤」帶過
 
 完成後接 Step 6.6。
 
 ## Step 6.6 — 單次解題經驗（D 線：有結果支持的可重用做法）
 
-單次發生即可，不套用 A／C 線的跨日門檻；A／B／C 原有行為不變。沿用本次 distill 執行，不另開排程或 channel。
+單次發生即可，不套用 A／C 線的跨日門檻；A 線保留工作流整理，B/C 摩擦沿用共同出口。沿用本次 distill 執行，不另開排程或 channel。
 
 1. 用 Step 1 回報的掃描窗口與 ledger 的 session ID 定位本輪有實際對話的自然工作紀錄；ledger 的日期與工具指紋只當線索，回查 JSONL 內訊息 timestamp，不把 mtime、注入通知或人工評測當新工作。先看意圖與對話脈絡，再定點讀解題片段，不全量重讀歷史 session，也不因尚未跨日重複就跳過。
 2. 找出非平凡的修復、替代做法或設定解法，核對 tool_use 的動作與以 tool_use_id 對應的 tool_result。結果必須直接支持該做法解決了什麼；assistant 自稱成功、無關命令 exit 0、指紋或摘要都不算。回看後續失敗或撤回，不能把曾成功的片段抽離限制後當通用方法。
@@ -100,8 +100,8 @@ digest 在 `/Users/linhancheng/code/social-info/reports/local-analysis/distill-e
 ## Step 7 — 輸出報告
 
 A 線每條候選：工作流一句話描述 + 證據（哪幾天、幾個 session、intent 樣本）+ 建議形態（skill / command / workflow / 「extend 既有 X」）+ 一句為什麼值得固化 + **可機檢性**：這個流程的成敗能自動打分嗎？能 → 附一句「固化前可拿過去 N 個 session 當考題驗證」的具體驗法；不能 → 標「靠人工判斷」即可，不硬湊。
-B 線每條漂移：哪支資產 + 漂移類型（跳步/加步/糾正）+ 計數證據 + 修改提案。
-C 線每條候選：錯誤同型描述 + 頻次與跨日計數 + 來源工作流 + 修正提案指向的資產。
+B 線每條漂移：哪支資產 + 漂移類型（跳步/加步/糾正）+ 計數與原始證據 + 後續核對方向 + owning 摩擦檔；不提出治理修法。
+C 線每條候選：錯誤同型描述 + 頻次與跨日計數 + 原始結果來源 + 是否未解／獨立復發 + 核對方向與同一摩擦出口；與 B 同事件合併，不重建待辦。
 D 線每條候選：值得留下的做法 + 原始結果來源（session 路徑、時間或 tool_use_id 及必要短引文）+ 建議補入位置；交既有每日報告排檔，不自行新增待辦或修改資產。
 **A 線零候選、B 線無漂移、C 線無同型錯誤、D 線無合格單次解題經驗 → 各明寫一行帶過，不要硬湊；資料限制另以一行揭露。**
 EOF
