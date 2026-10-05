@@ -32,6 +32,7 @@
 - **同一引擎、同一次讀取**：在 session-audit 既有的逐段分析請求裡加入規則標記，不另開一輪模型呼叫。模型回傳每段「相關規則清單」，每項含規則識別、`applied|violated`、逐字證據引文；場合沒出現的規則不回報。現有 findings 結構與 prompt 的「只做 agent-observation、不給修法」約束不變。[user: "就是用同一個引擎，輸出另一種摩擦對吧"]
 - **預設送規則全文**：每段請求附上該段時間點的常駐規則全文；`REQUEST_UTF8_BUDGET`（目前 24000，程式自註為工程預設、非容量實測）是否調整由第一張票實測決定。實測撞到 free 池某腿的上限時，才改用規則索引（編號＋一句摘要）；索引之後要不要再補送原文、怎麼補，等真的需要退回時再設計，本 spec 不預先決定。[user: "但我現在free池那些context window應該都有支援1M"；user: "可以"]
 - **第一張票＝容量實測**：用最長分段＋規則全文對 free 池實送多次，記錄回應模型、finish_reason、HTTP 狀態與 token 數；只有這張票的結果能決定 budget 與是否退回索引。[user: "可以"]
+  - 2026-10-05 實測結果：最長分段 16,884 bytes＋規則全文 39,698 bytes，free 池 5/5 成功（prompt 16,403 tokens、finish=stop）。全文可行，條件票 03 不做，`REQUEST_UTF8_BUDGET` 不調整，帶規則的請求 max_tokens 改用 4000。只驗到 `xiaomi/mimo-v2.6-flash` 這條腿；其他 free 腿未驗證。收據見 `capacity/2026-10-05-receipt.jsonl`。[evidence: 02 收據]
 - **規則版本取自 git**：常駐規則檔在 `~/.claude` repo 內，每個 session 依其對話時間取一次當時最新的 commit 版本（不必每段查）；取不到版本（檔案不在 git、git 失敗）時，該 session 的規則標記記為未分析並寫 limitation，不退回用當前版本。commit 時間不等於生效時間（規則檔可能先改、晚 commit），所以這個版本是「最佳候選」，報告與清單要標出它是用哪個 commit 判的，不宣稱確定。[evidence: backpass 抽查 #4]
 - **規則識別**：以「規則檔路徑＋所在標題路徑＋條目原文」為一條規則；條目原文被改寫即視為新規則，零使用計數重新起算。[inferred；user: "可以照推薦"（YAGNI review F15 選 a）]
 - **合成對話排除**：除既有的記錄旗標與 `eval-roots`／`synthetic-eval` 路徑段，另排除已證實的 skill-up 特徵：cwd 落在 `$TMPDIR` 下的 `skill-up-<n>/`（專案目錄名含 `-T-skill-up-`）。不擴大成整個 `/var/folders`，因為只有 skill-up 有證據。這也修正 session-audit 主分析本身的同一缺口。[evidence: session-audit.py 第 41、509–515、676 行只看旗標與路徑段；skill-up jsonl 抽查 synthetic 類欄位 0 筆]

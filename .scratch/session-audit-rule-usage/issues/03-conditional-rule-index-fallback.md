@@ -16,6 +16,10 @@
 
 **TDD seam:** session-audit 指令列 run（本機假模型 HTTP server）收到的請求內容與 status 輸出
 
-- [ ] 02 判定全文可行時，本票刪除、不留半套接線 — Source: Requirement: 預設送規則全文
+- [x] 02 判定全文可行時，本票刪除、不留半套接線（resolved：02 判定全文可行，本票不實作） — Source: Requirement: 預設送規則全文
 - [ ] 請求帶索引時大小不超過 02 測得的上限 — Source: Requirement: 預設送規則全文 — Failure: F6
 - [ ] 模型回報的編號不在索引內時丟棄該筆、不計入 — Source: Requirement: 同一引擎、同一次讀取 — Failure: F2
+
+## Verification Log
+
+- 2026-10-05 停用：02 實測判定全文可行（見 02 的 Verification Log），本票不實作、沒有任何接線。票檔保留是為了讓 implement 的決策清單（9 張）對得上；其餘兩條驗收 parked，理由同上。若之後某條 free 腿撐不住全文，再依 02 收據重開。
