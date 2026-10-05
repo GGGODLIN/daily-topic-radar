@@ -588,7 +588,7 @@ def consume_block(block, line, block_index, offset, line_end, parts, images, lim
     add(block["text"])
 
 
-def build_document(raw):
+def build_document(raw, metadata_only=False):
   parts = []
   images = []
   limits = set()
@@ -601,6 +601,8 @@ def build_document(raw):
     try:
       obj = json.loads(decoded)
     except json.JSONDecodeError:
+      if metadata_only:
+        continue
       parts.append(
         {
           "line": number,
@@ -624,6 +626,8 @@ def build_document(raw):
     for field in ("sessionId", "session_id"):
       if isinstance(obj.get(field), str):
         session_ids.add(obj[field])
+    if metadata_only:
+      continue
     message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
     role = message.get("role") if isinstance(message.get("role"), str) else (obj.get("type") or "-")
     ctx = {
@@ -717,7 +721,7 @@ def discover(root, self_id):
     except OSError:
       records[path] = ("", set(), set(), True)
       continue
-    _doc, _images, _limits, _thinking, synthetic, session_ids, _parts = build_document(raw)
+    _doc, _images, _limits, _thinking, synthetic, session_ids, _parts = build_document(raw, metadata_only=True)
     # 所有來源只留分類與指紋，避免把整個歷史原文一起保留在記憶體。
     records[path] = (sha256_bytes(raw) if raw else "", session_ids, synthetic, False)
   classes = {}
