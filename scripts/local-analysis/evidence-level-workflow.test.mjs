@@ -17,7 +17,7 @@ const challenge = '5'.repeat(64)
 const reauditNonce = '6'.repeat(64)
 const reauditHash = '7'.repeat(64)
 
-const run = async ({ withPass = false, badPrimaryIndex = false, badReauditIndex = false, copiedMembers = false } = {}) => {
+const run = async ({ withPass = false, badPrimaryIndex = false, badReauditIndex = false, copiedMembers = false, topViolations } = {}) => {
   const calls = []
   const batches = Array.from({ length: 4 }, (_, index) => ({
     index: index + 1,
@@ -61,7 +61,7 @@ const run = async ({ withPass = false, badPrimaryIndex = false, badReauditIndex 
       samples_sha256: samplesHash, samples_file_sha256: fileHash, audit_nonce: nonce,
       reaudit_sample_count: withPass ? 1 : 0, reaudit_samples_file_sha256: withPass ? reauditHash : null,
       reaudit_nonce: withPass ? reauditNonce : null,
-      top_violations: [{ type: 'unsourced-number', count: withPass ? 19 : 20 }], challenge,
+      top_violations: topViolations ?? [{ type: 'unsourced-number', count: withPass ? 19 : 20 }], challenge,
     }
     if (options.schema?.required?.includes('silent')) return { ok: true, silent: true }
     return { summary: 'fixture', report_markdown: 'fixture report', deferred_writeback: '' }
@@ -82,6 +82,21 @@ test('workflow accepts compact batches and requests only sample indices from aud
     assert.deepEqual(options.schema.properties.rows.items.required, ['sample_index', 'result', 'findings'])
     assert.equal(prompt.includes('不要回傳 timestamp、session 或 path'), true)
     assert.equal(prompt.includes('身分欄位逐字照抄'), false)
+  }
+})
+
+test('workflow accepts finalizer object keys in either order without accepting changed values', async () => {
+  const reordered = await run({ topViolations: [{ count: 20, type: 'unsourced-number' }] })
+  assert.equal(reordered.result.ran.includes('evidence-level'), true)
+  assert.equal(reordered.result.failed.includes('evidence-level'), false)
+  for (const topViolations of [
+    [],
+    [{ count: 19, type: 'unsourced-number' }],
+    [{ count: 20, type: 'unsourced-completion' }],
+    [{ count: 20, type: 'unsourced-number', extra: true }],
+  ]) {
+    const { result } = await run({ topViolations })
+    assert.equal(result.failed.includes('evidence-level'), true)
   }
 })
 
