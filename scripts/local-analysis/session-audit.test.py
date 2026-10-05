@@ -6,8 +6,10 @@
 """
 
 import hashlib
+import importlib.util
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -61,17 +63,15 @@ def finding(quote, status="unresolved", observation="obs", recurrence=False, tar
   }
 
 
-def analysis(findings, limitations=None):
-  return openai(
-    json.dumps(
-      {
-        "continuity": "next",
-        "findings": findings,
-        "limitations": limitations or [],
-      },
-      ensure_ascii=False,
-    )
-  )
+def analysis(findings, limitations=None, rule_tags=None):
+  body = {
+    "continuity": "next",
+    "findings": findings,
+    "limitations": limitations or [],
+  }
+  if rule_tags is not None:
+    body["rule_tags"] = rule_tags
+  return openai(json.dumps(body, ensure_ascii=False))
 
 
 def user_line(text, session_id="s1", cwd="/work/natural", **extra):
@@ -89,6 +89,62 @@ def user_line(text, session_id="s1", cwd="/work/natural", **extra):
 def write_jsonl(path, text):
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(text)
+
+
+def git(repo, *args, date=None):
+  env = os.environ.copy()
+  env.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"})
+  if date:
+    env["GIT_AUTHOR_DATE"] = date
+    env["GIT_COMMITTER_DATE"] = date
+  done = subprocess.run(
+    ["git", "-C", str(repo), "-c", "commit.gpgsign=false", *args],
+    capture_output=True, text=True, env=env, check=True,
+  )
+  return done.stdout.strip()
+
+
+def commit_rules(repo, files, date, message="rules"):
+  # files: {相對路徑: 內容}；內容為 None 代表刪檔。
+  repo.mkdir(parents=True, exist_ok=True)
+  if not (repo / ".git").exists():
+    git(repo, "init", "-q")
+  for name, text in files.items():
+    target = repo / name
+    if text is None:
+      target.unlink()
+      continue
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+  git(repo, "add", "-A")
+  git(repo, "commit", "-q", "-m", message, date=date)
+  return git(repo, "rev-parse", "HEAD")
+
+
+BASE_RULES = {
+  "CLAUDE.md": "# 全域設定\n\n## 程式碼風格\n\n- BASE_RULE_FALLBACK 使用 ?? 而非 || 做 value fallback\n- BASE_RULE_INDENT 使用 2 空格縮排\n",
+  "rules/common/alpha.md": "# Alpha\n\nALPHA_PARAGRAPH_RULE 這一段沒有清單，整段算一條。\n",
+}
+
+
+def system_text(body):
+  return json.loads(body)["messages"][0]["content"]
+
+
+def user_text(body):
+  content = json.loads(body)["messages"][-1]["content"]
+  return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+
+
+def label_for(body, marker):
+  match = re.search(r"\[(R\d+)\][^\n]*" + re.escape(marker), system_text(body))
+  return match.group(1) if match else None
+
+
+def no_timestamp_line(text, session_id="s1"):
+  record = json.loads(user_line(text, session_id=session_id))
+  del record["timestamp"]
+  return json.dumps(record, ensure_ascii=False) + "\n"
 
 
 class Recorder(BaseHTTPRequestHandler):
@@ -160,7 +216,11 @@ class SessionAuditCliTest(unittest.TestCase):
         ]
       )
     )
+    self.rules_repo = self.root / "rules-repo"
+    self.base_sha = commit_rules(self.rules_repo, BASE_RULES, "2026-09-01T00:00:00+00:00")
     self.env = os.environ.copy()
+    # 預設 --rules-repo 是 ~/.claude；測試不得碰真實規則。
+    self.env["HOME"] = str(self.root / "home")
     self.env.pop("CLAUDE_CODE_SESSION_ID", None)
     self.env.pop("ANTHROPIC_BASE_URL", None)
     self.env["ANTHROPIC_BASE_URL"] = "http://203.0.113.9/paid"
@@ -182,6 +242,8 @@ class SessionAuditCliTest(unittest.TestCase):
       str(self.friction),
       "--relay-url",
       url,
+      "--rules-repo",
+      str(self.rules_repo),
     ]
     if started_at is not None:
       args.extend(["--started-at", started_at])
@@ -1222,6 +1284,235 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertFalse(gone["latest_complete"])
     self.assertEqual(self.source_named(report, "keep.jsonl")["status"], "complete")
     self.assertIn("KEEP_MARKER", b"".join(server.bodies).decode())
+
+  # ---- Ticket 05：規則標記＋規則版本＋最小狀態 ----
+
+  def tagging_provider(self, plan):
+    # plan: [(session_marker, rule_marker, verdict, quote)]；規則編號每次請求不同，所以從 system 文字找。
+    def reply(body):
+      tags = []
+      for session_marker, rule_marker, verdict, quote in plan:
+        if session_marker not in user_text(body):
+          continue
+        label = label_for(body, rule_marker)
+        if label:
+          tags.append({"rule": label, "verdict": verdict, "source_line": 1, "quote": quote})
+      return analysis([], rule_tags=tags), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+  def two_version_repo(self):
+    revised = dict(BASE_RULES)
+    revised["CLAUDE.md"] = BASE_RULES["CLAUDE.md"].replace(
+      "BASE_RULE_INDENT 使用 2 空格縮排", "NEW_RULE_INDENT 使用 4 空格縮排"
+    )
+    new_sha = commit_rules(self.rules_repo, revised, "2026-10-03T00:00:00+00:00")
+    return self.base_sha, new_sha
+
+  def tags_by_quote(self, status):
+    return {tag["quote"]: tag for tag in status["rules"]["tags"]}
+
+  def test_rule_version_follows_conversation_time(self):
+    old_sha, new_sha = self.two_version_repo()
+    write_jsonl(self.projects / "work" / "old.jsonl", user_line("SESSION_OLD 舊對話", session_id="old", timestamp="2026-09-20T10:00:00.000Z"))
+    write_jsonl(self.projects / "work" / "new.jsonl", user_line("SESSION_NEW 新對話", session_id="new", timestamp="2026-10-04T10:00:00.000Z"))
+    server, url = self.tagging_provider([
+      ("SESSION_OLD", "BASE_RULE_INDENT", "applied", "SESSION_OLD"),
+      ("SESSION_NEW", "NEW_RULE_INDENT", "violated", "SESSION_NEW"),
+    ])
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    old_bodies = [system_text(body) for body in server.bodies if "SESSION_OLD" in user_text(body)]
+    new_bodies = [system_text(body) for body in server.bodies if "SESSION_NEW" in user_text(body)]
+    self.assertTrue(old_bodies and new_bodies)
+    self.assertIn("BASE_RULE_INDENT", old_bodies[0])
+    self.assertNotIn("NEW_RULE_INDENT", old_bodies[0])
+    self.assertIn("NEW_RULE_INDENT", new_bodies[0])
+    self.assertNotIn("BASE_RULE_INDENT", new_bodies[0])
+    tags = self.tags_by_quote(self.status(url))
+    self.assertEqual(tags["SESSION_OLD"]["commit"], old_sha)
+    self.assertEqual(tags["SESSION_NEW"]["commit"], new_sha)
+    self.assertEqual(tags["SESSION_OLD"]["verdict"], "applied")
+    self.assertEqual(tags["SESSION_NEW"]["verdict"], "violated")
+    self.assertNotEqual(tags["SESSION_OLD"]["rule"], tags["SESSION_NEW"]["rule"])
+
+  def test_rule_scope_is_claude_md_plus_rules_common_files(self):
+    files = dict(BASE_RULES)
+    files["rules/common/beta.md"] = (
+      "# Beta\n\n## 細則\n\n"
+      "- BETA_COMMON_RULE 第一行\n  縮排續行 BETA_CONTINUATION\n"
+      "- BETA_SECOND 第二條\n\n"
+      "1. NUMBERED_RULE 編號條目\n"
+    )
+    files["rules/common/notes.txt"] = "- TXT_NOT_RULE\n"
+    files["rules/other/gamma.md"] = "- OTHER_DIR_RULE\n"
+    files["rules/common/sub/delta.md"] = "- NESTED_RULE\n"
+    commit_rules(self.rules_repo, files, "2026-10-03T00:00:00+00:00")
+    write_jsonl(self.projects / "work" / "s1.jsonl", user_line("SESSION_SCOPE 內容", timestamp="2026-10-04T10:00:00.000Z"))
+    server, url = self.tagging_provider([
+      ("SESSION_SCOPE", "BASE_RULE_FALLBACK", "applied", "SESSION_SCOPE"),
+    ])
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    system = system_text(server.bodies[0])
+    for present in ("BASE_RULE_FALLBACK", "ALPHA_PARAGRAPH_RULE", "BETA_COMMON_RULE", "BETA_CONTINUATION", "BETA_SECOND", "NUMBERED_RULE"):
+      self.assertIn(present, system)
+    for absent in ("TXT_NOT_RULE", "OTHER_DIR_RULE", "NESTED_RULE"):
+      self.assertNotIn(absent, system)
+    labels = {label_for(server.bodies[0], name) for name in ("BETA_COMMON_RULE", "BETA_SECOND", "NUMBERED_RULE", "ALPHA_PARAGRAPH_RULE")}
+    self.assertNotIn(None, labels)
+    self.assertEqual(len(labels), 4, "每個清單項與無清單段落各自一條規則")
+    self.assertRegex(system, r"BETA_COMMON_RULE 第一行\n  縮排續行 BETA_CONTINUATION")
+    tag = self.status(url)["rules"]["tags"][0]
+    self.assertEqual(tag["path"], "CLAUDE.md")
+    self.assertEqual(tag["heading"], "全域設定 > 程式碼風格")
+
+  def test_rule_version_unavailable_is_unanalyzed_and_never_uses_current(self):
+    # 一份沒有 timestamp；一份早於規則 repo 的第一個 commit（2026-09-01）。
+    write_jsonl(self.projects / "work" / "nostamp.jsonl", no_timestamp_line("NOSTAMP_QUOTE 沒有時間", session_id="nostamp"))
+    write_jsonl(self.projects / "work" / "early.jsonl", user_line("EARLY_QUOTE 很早的對話", session_id="early", timestamp="2026-08-01T10:00:00.000Z"))
+
+    def reply(body):
+      quote = "NOSTAMP_QUOTE" if "NOSTAMP_QUOTE" in user_text(body) else "EARLY_QUOTE"
+      # 模型照樣回標記；沒送規則的請求，這些標記都不能收。
+      return analysis([finding(quote, observation=f"obs-{quote}")], rule_tags=[{"rule": "R1", "verdict": "violated", "source_line": 1, "quote": quote}]), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(len(server.bodies), 2)
+    for body in server.bodies:
+      self.assertNotIn("BASE_RULE_FALLBACK", system_text(body))
+      self.assertNotIn("ALPHA_PARAGRAPH_RULE", system_text(body))
+      self.assertEqual(json.loads(body)["max_tokens"], 1500)
+    report = self.status(url)
+    for name in ("nostamp.jsonl", "early.jsonl"):
+      row = self.source_named(report, name)
+      self.assertIn("rules-version-unavailable", row["limitations"])
+      self.assertEqual(row["status"], "complete")
+    self.assertEqual(report["rules"]["tags"], [])
+    self.assertEqual(report["rules"]["weekly_segments"], [])
+    self.assertEqual(sorted(item["observation"] for item in report["candidates"]), ["obs-EARLY_QUOTE", "obs-NOSTAMP_QUOTE"])
+    sessions = {item["name"]: item for item in report["rules"]["sessions"]}
+    self.assertTrue(sessions["nostamp.jsonl"]["unavailable"])
+    self.assertTrue(sessions["early.jsonl"]["unavailable"])
+    self.assertIsNone(sessions["early.jsonl"]["commit"])
+
+  def test_rule_version_unavailable_when_git_fails(self):
+    write_jsonl(self.projects / "work" / "s1.jsonl", user_line("GITFAIL_QUOTE", timestamp="2026-10-04T10:00:00.000Z"))
+    not_git = self.root / "not-git"
+    not_git.mkdir()
+    server = serve(lambda body: (analysis([finding("GITFAIL_QUOTE", observation="still-analyzed")]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    flags = self.flags(url)
+    flags[flags.index("--rules-repo") + 1] = str(not_git)
+    self.assertEqual(self.cli(["run", *flags]).returncode, 0)
+    self.assertNotIn("BASE_RULE", system_text(server.bodies[0]))
+    report = self.status(url)
+    row = self.source_named(report, "s1.jsonl")
+    self.assertIn("rules-version-unavailable", row["limitations"])
+    self.assertEqual(row["status"], "complete")
+    self.assertEqual([item["observation"] for item in report["candidates"]], ["still-analyzed"])
+
+  def test_invalid_rule_tags_are_dropped_without_touching_findings(self):
+    write_jsonl(self.projects / "work" / "s1.jsonl", user_line("VALID_QUOTE 與別的字", timestamp="2026-10-04T10:00:00.000Z"))
+
+    def reply(body):
+      label = label_for(body, "BASE_RULE_INDENT")
+      tags = [
+        {"rule": label, "verdict": "applied", "source_line": 1, "quote": "VALID_QUOTE"},
+        {"rule": "R999", "verdict": "violated", "source_line": 1, "quote": "VALID_QUOTE"},
+        {"rule": label, "verdict": "maybe", "source_line": 1, "quote": "VALID_QUOTE"},
+        {"rule": label, "verdict": "violated", "source_line": 1, "quote": "NOT_IN_TRANSCRIPT"},
+        {"rule": label, "verdict": "violated", "source_line": 7, "quote": "VALID_QUOTE"},
+        "not-an-object",
+      ]
+      return analysis([finding("VALID_QUOTE", observation="kept-finding")], rule_tags=tags), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    report = self.status(url)
+    self.assertEqual([(tag["verdict"], tag["quote"]) for tag in report["rules"]["tags"]], [("applied", "VALID_QUOTE")])
+    self.assertEqual([item["observation"] for item in report["candidates"]], ["kept-finding"])
+    self.assertEqual(self.source_named(report, "s1.jsonl")["status"], "complete")
+
+  def test_failed_segments_do_not_count_toward_weekly_coverage(self):
+    stamp = {"now": "2026-10-05T10:00:00.000Z", "old": "2026-09-20T10:00:00.000Z"}
+    for name, marker in (("ok-now", "OK_NOW"), ("ok-old", "OK_OLD"), ("http", "HTTP_FAIL"), ("badjson", "BAD_JSON"), ("trunc", "TRUNCATED")):
+      write_jsonl(
+        self.projects / "work" / f"{name}.jsonl",
+        user_line(f"{marker} 內容", session_id=name, timestamp=stamp["old"] if name == "ok-old" else stamp["now"]),
+      )
+
+    def reply(body):
+      text = user_text(body)
+      if "HTTP_FAIL" in text:
+        return "{}", 500
+      if "BAD_JSON" in text:
+        return openai("這不是 JSON"), 200
+      if "TRUNCATED" in text:
+        return openai("{\"continuity\":", finish="length"), 200
+      return analysis([], rule_tags=[]), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    report = self.status(url)
+    self.assertEqual(
+      report["rules"]["weekly_segments"],
+      [{"week": "2026-W38", "segments": 1}, {"week": "2026-W41", "segments": 1}],
+    )
+    self.assertEqual(self.source_named(report, "http.jsonl")["status"], "failed")
+    self.assertEqual(self.source_named(report, "badjson.jsonl")["status"], "failed")
+    self.assertEqual(self.source_named(report, "trunc.jsonl")["status"], "failed")
+
+  def test_rules_request_appends_to_unchanged_prompt_with_output_reserve(self):
+    spec = importlib.util.spec_from_file_location("session_audit_module", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    write_jsonl(self.projects / "work" / "s1.jsonl", user_line("PROMPT_QUOTE", timestamp="2026-10-04T10:00:00.000Z"))
+    server = serve(lambda body: (analysis([finding("PROMPT_QUOTE", observation="plain-finding")], rule_tags=[]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    payload = json.loads(server.bodies[0])
+    system = payload["messages"][0]["content"]
+    self.assertTrue(system.startswith(module.SYSTEM_PROMPT))
+    self.assertGreater(len(system), len(module.SYSTEM_PROMPT))
+    self.assertIn("只做 agent-observation", system)
+    self.assertIn("[R1]", system)
+    self.assertEqual(payload["max_tokens"], module.OUTPUT_RESERVE)
+    self.assertEqual([item["observation"] for item in self.status(url)["candidates"]], ["plain-finding"])
+
+  def test_status_and_report_expose_rule_state(self):
+    old_sha, new_sha = self.two_version_repo()
+    write_jsonl(self.projects / "work" / "old.jsonl", user_line("SESSION_OLD 舊對話", session_id="old", timestamp="2026-09-20T10:00:00.000Z"))
+    write_jsonl(self.projects / "work" / "new.jsonl", user_line("SESSION_NEW 新對話", session_id="new", timestamp="2026-10-04T10:00:00.000Z"))
+    server, url = self.tagging_provider([
+      ("SESSION_OLD", "ALPHA_PARAGRAPH_RULE", "applied", "SESSION_OLD"),
+      ("SESSION_NEW", "ALPHA_PARAGRAPH_RULE", "violated", "SESSION_NEW"),
+    ])
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    report = self.status(url)
+    rules = report["rules"]
+    self.assertEqual(len(rules["last_seen"]), 1, "兩次遇到的是同一條未改寫規則")
+    seen = rules["last_seen"][0]
+    self.assertEqual(seen["last_seen"], "2026-10-04T10:00:00Z")
+    self.assertEqual(seen["commit"], new_sha)
+    self.assertEqual(seen["path"], "rules/common/alpha.md")
+    self.assertEqual(rules["weekly_segments"], [{"week": "2026-W38", "segments": 1}, {"week": "2026-W40", "segments": 1}])
+    commits = {item["name"]: item["commit"] for item in rules["sessions"]}
+    self.assertEqual(commits, {"old.jsonl": old_sha, "new.jsonl": new_sha})
+    before = len(server.bodies)
+    text = self.cli(["report", *self.flags(url)]).stdout
+    self.assertEqual(len(server.bodies), before)
+    for expected in ("2026-W38", "2026-W40", old_sha, new_sha):
+      self.assertIn(expected, text)
 
 
 def analysis_with_media(media):

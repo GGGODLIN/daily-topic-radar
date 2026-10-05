@@ -16,10 +16,17 @@
 
 **TDD seam:** session-audit 指令列 run（本機假模型 HTTP server）→ status／report 輸出
 
-- [ ] 舊 session 用它對話時間前的舊版規則判，新 session 用新版 — Source: Story 9
-- [ ] 規則範圍含 `CLAUDE.md` 與 `rules/common/` 各檔 — Source: Story 11
-- [ ] 回報的每筆規則標記附判斷用的 commit — Source: Requirement: 規則版本取自 git
-- [ ] git 取不到版本時，該 session 的規則標記記為未分析並寫 limitation，不改用當前版 — Source: Requirement: 規則版本取自 git — Failure: F4
-- [ ] 模型回報不存在的規則、或引文不是原文子字串時丟棄該筆 — Source: Requirement: 同一引擎、同一次讀取 — Failure: F2
-- [ ] 模型呼叫失敗或回應格式錯誤的段不算進該週覆蓋 — Source: Requirement: 最小狀態 — Failure: F4
-- [ ] 既有 findings 欄位、prompt 的「只做 agent-observation」約束與既有測試結果不變 — Source: Requirement: 同一引擎、同一次讀取
+- [x] 舊 session 用它對話時間前的舊版規則判，新 session 用新版 — Source: Story 9
+- [x] 規則範圍含 `CLAUDE.md` 與 `rules/common/` 各檔 — Source: Story 11
+- [x] 回報的每筆規則標記附判斷用的 commit — Source: Requirement: 規則版本取自 git
+- [x] git 取不到版本時，該 session 的規則標記記為未分析並寫 limitation，不改用當前版 — Source: Requirement: 規則版本取自 git — Failure: F4
+- [x] 模型回報不存在的規則、或引文不是原文子字串時丟棄該筆 — Source: Requirement: 同一引擎、同一次讀取 — Failure: F2
+- [x] 模型呼叫失敗或回應格式錯誤的段不算進該週覆蓋 — Source: Requirement: 最小狀態 — Failure: F4
+- [x] 既有 findings 欄位、prompt 的「只做 agent-observation」約束與既有測試結果不變 — Source: Requirement: 同一引擎、同一次讀取
+
+## Verification Log
+
+- 2026-10-05 worker（routed-impl）交付 patch sha256 ff1e3056…，main 重算一致；base 3776857。RED：8 條新測試因 status 沒有 `rules` 區、prompt 沒有規則全文與 `rules-version-unavailable` 而紅（功能缺失）。GREEN：main 獨立重跑 `session-audit.test.py` 33/33、`regressions` 6/6、`entrypoints` 3/3。
+- main 唯讀 smoke：新版 `status` 讀現役 state 不報錯，`rules` 區為空（尚未有帶規則的 run）。
+- Minor：週別與 last_seen 取 session 最早 timestamp，長 session 跨週時會偏早（report 已註明）；多段 session 的逐段覆蓋計數沒有專門測試；真實 free 池回的 rule_tags 品質未知，留給 09。
+- Minor：worker 對真實 `~/.claude` 2026-10-01 commit 切出 134 條規則、規則區塊 33,785 bytes。
