@@ -1744,7 +1744,7 @@ def cmd_run(args):
       if cutoff is None:
         cutoff = window["live_since"]
       members = sync_history_batch(connection, window, observed, cutoff)
-    rows = list(connection.execute("SELECT * FROM sources WHERE included = 1 ORDER BY path"))
+    rows = list(connection.execute("SELECT * FROM sources WHERE included = 1 ORDER BY status = 'failed', path"))
     rules_repo = Path(args.rules_repo).expanduser()
 
     def is_old(row):
