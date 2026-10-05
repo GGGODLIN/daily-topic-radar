@@ -1935,22 +1935,6 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(empty.splitlines()[0], f"{self.ZERO_USE_HEADING}（0）")
     self.assertIn("本週沒有候選", empty)
 
-  def test_zero_use_ignores_sessions_dated_after_now(self):
-    self.commit_zero_rules(self.ZERO_RULES)
-    for week in ("W38", "W39", "W40", "W41"):
-      self.zero_week_session(week)
-    # 壞 timestamp 的 session 不能把「最新有資料週」拉到未來而清空清單。
-    self.zero_week_session("W41", marker="ZW_FUTURE", stamp="2099-01-05T10:00:00.000Z")
-    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
-    self.addCleanup(stop, server)
-    url = f"http://127.0.0.1:{server.server_address[1]}"
-    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
-    text = self.zero_use(extra=["--now", "2026-10-08T00:00:00Z"])
-    self.assertEqual(text.splitlines()[0], f"{self.ZERO_USE_HEADING}（4）")
-    self.assertIn("2026-W38～2026-W41", self.item_for(text, "ZU_NEVER"))
-
-  # review fixes 2026-10-05
-
   def test_orphan_sublines_of_another_rule_are_not_counted_as_this_rules(self):
     friction = self.friction / "workflow-general.md"
     friction.write_text(self.RULE_FRICTION)
@@ -2067,13 +2051,17 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(report["rules"]["weekly_segments"], [], "拿掉規則的段不算覆蓋")
     self.assertEqual((report["rules"]["tags"], report["rules"]["last_seen"]), ([], []), "不收這段的 rule_tags")
 
-  def test_transient_git_failure_is_not_persisted_and_is_retried(self):
-    write_jsonl(self.projects / "work" / "s1.jsonl", user_line("GIT_RETRY 內容", timestamp="2026-10-04T10:00:00.000Z"))
+  def test_transient_git_failure_is_not_persisted_and_new_segments_retry(self):
+    # 暫時失敗不寫成永久，但已完成的 session 不整份重送（spec：歷史回填策略不另訂）；之後追加的段才重新取規則。
+    path = self.projects / "work" / "s1.jsonl"
+    write_jsonl(path, user_line("GIT_RETRY 內容", timestamp="2026-10-04T10:00:00.000Z"))
 
     def reply(body):
       label = label_for(body, "BASE_RULE_INDENT")
-      tags = [{"rule": label, "verdict": "applied", "source_line": 1, "quote": "GIT_RETRY"}] if label else []
-      return analysis([finding("GIT_RETRY", observation="once")], rule_tags=tags), 200
+      quote = "GIT_LATER" if "GIT_LATER" in user_text(body) else "GIT_RETRY"
+      line = 2 if quote == "GIT_LATER" else 1
+      tags = [{"rule": label, "verdict": "applied", "source_line": line, "quote": quote}] if label else []
+      return analysis([finding(quote, observation=quote.lower(), source_line=line)], rule_tags=tags), 200
 
     server = serve(reply)
     self.addCleanup(stop, server)
@@ -2084,32 +2072,19 @@ class SessionAuditCliTest(unittest.TestCase):
     first = self.status(url)
     self.assertIn("rules-version-unavailable", self.source_named(first, "s1.jsonl")["limitations"])
     self.assertEqual(first["rules"]["sessions"], [], "git 暫時失敗不寫進 rule_sessions")
+    sent = len(server.bodies)
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
-    second = self.status(url)
-    session = second["rules"]["sessions"][0]
-    self.assertEqual((session["commit"], session["unavailable"]), (self.base_sha, None))
-    self.assertEqual([item["verdict"] for item in second["rules"]["last_seen"]], ["applied"])
-    self.assertEqual(second["rules"]["weekly_segments"], [{"week": "2026-W40", "segments": 1}])
-    self.assertNotIn("rules-version-unavailable", self.source_named(second, "s1.jsonl")["limitations"])
-    self.assertEqual([item["observation"] for item in second["candidates"]], ["once"], "重跑不重複 findings")
-
-  def test_report_names_the_reason_when_a_known_commit_cannot_be_read(self):
-    path = self.projects / "work" / "s1.jsonl"
-    write_jsonl(path, user_line("READ_ONE 內容", timestamp="2026-10-04T10:00:00.000Z"))
-    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
-    self.addCleanup(stop, server)
-    url = f"http://127.0.0.1:{server.server_address[1]}"
-    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
-    self.assertEqual(self.status(url)["rules"]["sessions"][0]["commit"], self.base_sha)
+    self.assertEqual(len(server.bodies), sent, "已完成的 session 不整份重送")
+    self.assertEqual(self.status(url)["rules"]["weekly_segments"], [])
     with path.open("a") as handle:
-      handle.write(user_line("READ_TWO 追加", timestamp="2026-10-04T11:00:00.000Z"))
-    self.rules_repo.rename(self.root / "rules-repo-away")
+      handle.write(user_line("GIT_LATER 追加", timestamp="2026-10-04T11:00:00.000Z"))
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
-    session = self.status(url)["rules"]["sessions"][0]
-    self.assertEqual(session["commit"], self.base_sha)
-    self.assertEqual(session["unavailable"], "rules-unreadable", "commit 有值但規則讀不到時要有原因")
-    line = next(item for item in self.cli(["report", *self.flags(url)]).stdout.splitlines() if item.startswith("rules-session"))
-    self.assertNotIn("unavailable=-", line)
+    later = self.status(url)
+    session = later["rules"]["sessions"][0]
+    self.assertEqual((session["commit"], session["unavailable"]), (self.base_sha, None))
+    self.assertEqual([item["verdict"] for item in later["rules"]["last_seen"]], ["applied"])
+    self.assertEqual(later["rules"]["weekly_segments"], [{"week": "2026-W40", "segments": 1}])
 
   def test_last_disposal_date_is_the_decision_date_not_the_capture_date(self):
     friction = self.friction / "workflow-general.md"
@@ -2151,19 +2126,6 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertTrue(fresh("VIOL_AL").endswith("（上次處置：已折／已否決 2026-11-20）"), fresh("VIOL_AL"))
     self.assertTrue(fresh("VIOL_FB").endswith("（上次處置：休眠 2026-11-02）"), fresh("VIOL_FB"))
     self.assertTrue(fresh("VIOL_IN").endswith("（上次處置：已折／已否決 2026-09-30（捕捉日））"), fresh("VIOL_IN"))
-
-  def test_future_conversation_time_does_not_overwrite_last_seen(self):
-    write_jsonl(self.projects / "work" / "a-future.jsonl", user_line("FUTURE_SESSION 內容", session_id="future", timestamp="2099-01-05T10:00:00.000Z"))
-    write_jsonl(self.projects / "work" / "b-normal.jsonl", user_line("NORMAL_SESSION 內容", session_id="normal", timestamp="2026-10-04T10:00:00.000Z"))
-    server, url = self.tagging_provider([
-      ("FUTURE_SESSION", "BASE_RULE_FALLBACK", "applied", "FUTURE_SESSION"),
-      ("FUTURE_SESSION", "BASE_RULE_INDENT", "violated", "FUTURE_SESSION"),
-      ("NORMAL_SESSION", "BASE_RULE_FALLBACK", "applied", "NORMAL_SESSION"),
-    ])
-    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
-    rules = self.status(url)["rules"]
-    self.assertEqual([item["last_seen"] for item in rules["last_seen"]], ["2026-10-04T10:00:00Z"], "未來時間不寫進 last_seen，標記本身照常驗證")
-    self.assertEqual([tag["quote"] for tag in rules["tags"]], ["FUTURE_SESSION"], "violated 逐筆仍可存")
 
 
 def analysis_with_media(media):

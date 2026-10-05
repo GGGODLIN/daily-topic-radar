@@ -41,10 +41,8 @@ EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
 # skill-up 在 $TMPDIR/skill-up-<n>/ 跑評測，記錄本身不帶 synthetic 旗標；只認這個專案目錄樣式，不擴到整個 /var/folders。
 SKILL_UP_PROJECT_MARK = "-T-skill-up-"
 RULES_VERSION_UNAVAILABLE = "rules-version-unavailable"
-RULES_UNREADABLE = "rules-unreadable"
 RULE_TAGS_MISSING = "rule-tags-missing"
 RULES_DROPPED_CONTEXT = "rules-dropped-context"
-FUTURE_SKEW = timedelta(days=1)
 GIT_TIMEOUT_SECONDS = 10
 RULES_DIR = "rules/common/"
 LIST_ITEM_RE = re.compile(r"^(?:- |\d+\. )")
@@ -1175,27 +1173,23 @@ def valid_rule_tags(obj, sent, labels):
 
 
 def store_rule_tags(connection, row, generation, context, analyzed, sent, doc_start):
-  moment = parse_time(context["time"])
-  # 壞 timestamp 的未來時間若寫進 last_seen，之後所有正常時間的標記都蓋不掉它。
-  plausible = moment is not None and moment <= datetime.now(UTC) + FUTURE_SKEW
   connection.execute(
     "INSERT OR IGNORE INTO rule_coverage (inode, generation, doc_start, week) VALUES (?, ?, ?, ?)",
     (row["inode"], generation, doc_start, context["week"]),
   )
   for rule, verdict, line, quote in valid_rule_tags(analyzed, sent, context["labels"]):
     # 最小狀態：每條規則只留最後一次遇到場合；逐筆只留 violated，因為摩擦子行要每筆的出處與引文。
-    if plausible:
-      connection.execute(
-        """
-        INSERT INTO rule_last_seen (rule_id, rule_path, rule_heading, verdict, conversation_time, commit_sha)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (rule_id) DO UPDATE SET
-          rule_path = excluded.rule_path, rule_heading = excluded.rule_heading, verdict = excluded.verdict,
-          conversation_time = excluded.conversation_time, commit_sha = excluded.commit_sha
-        WHERE excluded.conversation_time > rule_last_seen.conversation_time
-        """,
-        (rule["id"], rule["path"], rule["heading"], verdict, context["time"], context["commit"]),
-      )
+    connection.execute(
+      """
+      INSERT INTO rule_last_seen (rule_id, rule_path, rule_heading, verdict, conversation_time, commit_sha)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (rule_id) DO UPDATE SET
+        rule_path = excluded.rule_path, rule_heading = excluded.rule_heading, verdict = excluded.verdict,
+        conversation_time = excluded.conversation_time, commit_sha = excluded.commit_sha
+      WHERE excluded.conversation_time > rule_last_seen.conversation_time
+      """,
+      (rule["id"], rule["path"], rule["heading"], verdict, context["time"], context["commit"]),
+    )
     if verdict != "violated":
       continue
     connection.execute(
@@ -1328,15 +1322,6 @@ def locate_parts(document, parts):
   return located
 
 
-def rules_retryable(connection, row):
-  # 只有暫時性原因（沒存 rule_sessions，或存了 commit 但規則讀不到）值得在規則修好後重跑；
-  # 沒 timestamp、該時間前沒 commit 這類確定性原因，重跑結果不會變。
-  if RULES_VERSION_UNAVAILABLE not in json.loads(row["limitations"] or "[]"):
-    return False
-  stored = connection.execute("SELECT unavailable FROM rule_sessions WHERE inode = ?", (row["inode"],)).fetchone()
-  return stored is None or not stored["unavailable"]
-
-
 def read_source(path):
   try:
     return path.read_bytes(), None
@@ -1369,27 +1354,14 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
   if start > len(doc_bytes):
     start = 0
   carried = row["continuity"] or ""
-  rules_ctx = None
   if start == len(doc_bytes) and row["status"] in {"complete", "partial", "failed"} and row["file_sha"] == file_sha:
-    if not rules_retryable(connection, row):
-      return 0
-    # 上次只是暫時讀不到規則版本；現在讀得到才整份重跑，否則維持原狀，避免規則 repo 壞著時每輪都燒模型額度。
-    rules_ctx = session_rules(connection, row, raw, rules_repo)
-    if rules_ctx is None:
-      return 0
-    generation += 1
-    connection.execute(
-      "UPDATE sources SET generation = ?, doc_offset = 0, continuity = '' WHERE inode = ?",
-      (generation, row["inode"]),
-    )
-    start = 0
-    carried = ""
+    # 已完成的段不為補規則標記而重送；暫時讀不到規則版本的 session 只在之後追加的段重新取規則。
+    return 0
   blocking = set(limits)
   noted = set()
   if images:
     noted.add("media-unredacted")
-  if rules_ctx is None:
-    rules_ctx = session_rules(connection, row, raw, rules_repo)
+  rules_ctx = session_rules(connection, row, raw, rules_repo)
   if rules_ctx is None:
     # 只標規則未分析；findings 照常，不降成 partial。
     noted.add(RULES_VERSION_UNAVAILABLE)
@@ -1740,22 +1712,20 @@ def rules_snapshot(connection):
   rules = empty_rules()
   if table_exists(connection, "rule_sessions"):
     query = """
-      SELECT sources.name, sources.limitations AS source_limitations, rule_sessions.*
+      SELECT sources.name, rule_sessions.*
       FROM rule_sessions
       JOIN sources ON sources.inode = rule_sessions.inode
       WHERE sources.included = 1
       ORDER BY sources.path
     """
     for row in connection.execute(query):
-      # commit 有值但規則讀不到時，rule_sessions 沒有原因欄；從來源的 limitation 補上，報告才不會寫成沒有原因。
-      unreadable = RULES_VERSION_UNAVAILABLE in json.loads(row["source_limitations"] or "[]")
       rules["sessions"].append(
         {
           "name": row["name"],
           "session_id": row["session_id"],
           "conversation_time": row["conversation_time"] or None,
           "commit": row["commit_sha"] or None,
-          "unavailable": row["unavailable"] or (RULES_UNREADABLE if unreadable else None),
+          "unavailable": row["unavailable"] or None,
         }
       )
   # 只算當前 generation：來源改寫重跑後，舊 generation 的標記與段數不再混進來。
@@ -1876,9 +1846,8 @@ def previous_week(week):
   return iso_week(date.fromisocalendar(int(year), int(number), 1) - timedelta(days=7))
 
 
-def zero_use_facts(connection, repo, newest_week):
-  # 只讀 05 的三張表；每條規則只取 last_seen，不看逐筆標記。晚於 newest_week 的資料（對話時間在未來的壞 timestamp）不進來，
-  # 否則一筆未來時間就會讓「最新週」跑到未來、所有規則都變成沒覆蓋而靜默清空清單。
+def zero_use_facts(connection, repo):
+  # 只讀 05 的三張表；每條規則只取 last_seen，不看逐筆標記。
   covering = {}
   last_seen = {}
   needed = ("rule_sessions", "rule_coverage", "rule_last_seen")
@@ -1893,8 +1862,6 @@ def zero_use_facts(connection, repo, newest_week):
   """
   identities = {}
   for row in connection.execute(query):
-    if row["week"] > newest_week:
-      continue
     if row["sha"] not in identities:
       loaded = load_rules(str(repo), row["sha"])
       # commit 讀不到（被 gc、repo 換了）就無法知道它含哪些規則，該週對所有規則都當沒覆蓋。
@@ -1903,9 +1870,6 @@ def zero_use_facts(connection, repo, newest_week):
       covering.setdefault(rule_id, {}).setdefault(row["week"], set()).add(row["sha"])
   query = "SELECT rule_id, conversation_time AS time FROM rule_last_seen"
   for row in connection.execute(query):
-    moment = parse_time(row["time"])
-    if moment is None or iso_week(moment) > newest_week:
-      continue
     if row["rule_id"] not in last_seen or row["time"] > last_seen[row["rule_id"]]:
       last_seen[row["rule_id"]] = row["time"]
   return covering, last_seen
@@ -1940,14 +1904,11 @@ def zero_use_item(rule, weeks, covering, last_seen):
 
 
 def cmd_zero_use(args):
-  now = parse_time(args.now) if args.now else datetime.now(UTC)
-  if now is None:
-    fail("bad-now")
   connection = read_connection(args)
   items = []
   if connection is not None:
     repo = Path(args.rules_repo).expanduser()
-    covering, last_seen = zero_use_facts(connection, repo, iso_week(now))
+    covering, last_seen = zero_use_facts(connection, repo)
     connection.close()
     newest = max((week for weeks in covering.values() for week in weeks), default=None)
     if newest is not None:
@@ -2237,8 +2198,6 @@ def build_parser():
   parser.add_argument("--relay-url", default="http://127.0.0.1:8317")
   parser.add_argument("--self-session", default="")
   parser.add_argument("--rules-repo", default=str(Path.home() / ".claude"))
-  # 只給 zero-use 測試固定「現在」；預設現在時間。
-  parser.add_argument("--now", default="")
   return parser
 
 
