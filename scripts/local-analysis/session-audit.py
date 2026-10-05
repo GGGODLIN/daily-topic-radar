@@ -1825,15 +1825,126 @@ def preserved(old, new):
   return cursor == len(old_lines)
 
 
+RULE_ENTRY_MARK = "常駐規則違規（session-audit 自動彙整"
+RULE_ENTRY_TARGET_RE = re.compile(r"\btarget=(rule:[^;\]]*)[;\]]")
+
+
+def rule_violations(connection):
+  # 與 session candidate 同一條件：只取 complete／partial 來源；applied 標記不進摩擦檔。
+  if not table_exists(connection, "rule_tags"):
+    return []
+  query = """
+    SELECT rule_tags.*
+    FROM rule_tags
+    JOIN sources ON sources.inode = rule_tags.inode AND sources.generation = rule_tags.generation
+    WHERE sources.included = 1 AND sources.status IN ('complete', 'partial') AND rule_tags.verdict = 'violated'
+    ORDER BY rule_tags.conversation_time, rule_tags.id
+  """
+  return [dict(row) for row in connection.execute(query)]
+
+
+def rule_target(path, heading):
+  # target 欄以 ; 與 ] 分隔，標題裡出現就會截斷欄位，先換掉。
+  clean = one_line(heading, 120).replace(";", ",").replace("]", ")")
+  return f"rule:{path}#{clean}" if clean else f"rule:{path}"
+
+
+def rule_text(repo, violation):
+  loaded = load_rules(str(repo), violation["commit_sha"])
+  for rule in (loaded["labels"].values() if loaded else ()):
+    if rule["id"] == violation["rule_id"]:
+      return rule["text"]
+  return ""
+
+
+def scan_rule_entries(lines):
+  # pending: target -> 本工具寫的待折首行位置；left: target -> (首行日期, 段名)，取已離開待折的最新處置。
+  pending = {}
+  left = {}
+  section = None
+  first_pending = None
+  for index, line in enumerate(lines):
+    if line.startswith("## "):
+      section = line.rstrip("\n")
+      if section == "## 待折" and first_pending is None:
+        first_pending = index
+      continue
+    if section is None or not line.startswith("- "):
+      continue
+    for target in RULE_ENTRY_TARGET_RE.findall(line):
+      if section == "## 待折":
+        if RULE_ENTRY_MARK in line:
+          pending.setdefault(target, index)
+      else:
+        date = re.match(r"- (\d{4}-\d{2}-\d{2}) ", line)
+        stamp = (date.group(1) if date else "", section[3:])
+        if target not in left or stamp[0] >= left[target][0]:
+          left[target] = stamp
+  return pending, left
+
+
+def apply_rule_violations(text, violations, rules_repo, today):
+  # 回傳 (已追加子行的全文, 待折尾端要新增的行, 新條目數, 子行數)。首行寫好後不改，只往後加子行。
+  recorded = set(re.findall(r"\bsource_ref=([^;\s\]]+)", text))
+  groups = {}
+  seen = set()
+  for item in violations:
+    target = rule_target(item["rule_path"], item["rule_heading"])
+    if item["source_ref"] in recorded or (item["source_ref"], target) in seen:
+      continue
+    seen.add((item["source_ref"], target))
+    groups.setdefault(target, []).append(item)
+  if not groups:
+    return text, [], 0, 0
+  lines = text.splitlines(keepends=True)
+  pending, left = scan_rule_entries(lines)
+
+  def subline(item):
+    return (
+      f"  - source_ref={item['source_ref']}; quote=\"{one_line(item['quote'], 180)}\"; "
+      f"conversation_time={item['conversation_time']}; rules_commit={item['commit_sha']}"
+    )
+
+  inserts = {}
+  fresh = []
+  entries = 0
+  sublines = 0
+  for target, items in groups.items():
+    sublines += len(items)
+    rows = [subline(item) for item in items]
+    if target in pending:
+      end = pending[target] + 1
+      while end < len(lines) and lines[end].startswith("  - "):
+        end += 1
+      inserts[end] = rows
+      continue
+    entries += 1
+    quote = one_line(items[0]["quote"], 180) or "N-A"
+    why = one_line(rule_text(rules_repo, items[0]), 160) or "unknown"
+    note = f"（上次處置：{left[target][1]} {left[target][0] or '日期不明'}）" if target in left else ""
+    fresh.append(
+      f"- {today} [source_ref={target}; signal_type=agent-observation; target={target}; "
+      f"feedback_quote=\"{quote}\"; why=\"{why}\"; flags=speculation] "
+      f"{RULE_ENTRY_MARK}，次數見下方子行）{note}"
+    )
+    fresh.extend(rows)
+  for end in sorted(inserts, reverse=True):
+    if end > 0 and not lines[end - 1].endswith("\n"):
+      lines[end - 1] += "\n"
+    lines[end:end] = [f"{row}\n" for row in inserts[end]]
+  return "".join(lines), fresh, entries, sublines
+
+
 def cmd_promote(args):
   state = Path(args.state)
   if guard_state(state, write=False) == "missing":
     fail("state-missing")
   connection = connect(state, write=False)
   data = snapshot(connection)
+  violations = rule_violations(connection)
   connection.close()
   data['candidates'] = [item for item in data['candidates'] if item['source_status'] in {'complete', 'partial'}]
-  if not data["candidates"]:
+  if not data["candidates"] and not violations:
     print(json.dumps({"command": "promote", "appended": 0}))
     return 0
   root = Path(args.friction_root)
@@ -1872,10 +1983,14 @@ def cmd_promote(args):
         f"target=unknown; feedback_quote=\"{quote}\"; why=\"unknown\"; flags=speculation] "
         f"{observation} {direction}"
       )
-    if not rows:
-      print(json.dumps({"command": "promote", "appended": 0}))
+    base, fresh, rule_entries, rule_sublines = apply_rule_violations(
+      original, violations, Path(args.rules_repo).expanduser(), today
+    )
+    counts = {"rule_entries": rule_entries, "rule_sublines": rule_sublines} if violations else {}
+    if not rows and not fresh and base == original:
+      print(json.dumps({"command": "promote", "appended": 0, **counts}))
       return 0
-    updated = insert_pending(original, rows)
+    updated = insert_pending(base, [*rows, *fresh]) if rows or fresh else base
     if updated is None or not preserved(original, updated) or updated == original:
       fail("promote-refused", 3)
     temporary = target.with_name(f".{target.name}.session-audit-tmp")
@@ -1887,7 +2002,7 @@ def cmd_promote(args):
   finally:
     fcntl.flock(handle, fcntl.LOCK_UN)
     os.close(handle)
-  print(json.dumps({"command": "promote", "appended": len(rows)}))
+  print(json.dumps({"command": "promote", "appended": len(rows), **counts}))
   return 0
 
 

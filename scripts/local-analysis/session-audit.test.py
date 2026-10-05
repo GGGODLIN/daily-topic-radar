@@ -5,6 +5,7 @@
 假 provider 只在 localhost。不讀真實 transcript、keys 或 relay。
 """
 
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -1243,6 +1244,221 @@ class SessionAuditCliTest(unittest.TestCase):
     second = self.cli(["promote", *self.flags(url)])
     self.assertEqual(second.returncode, 0, second.stderr)
     self.assertEqual(friction.read_text().count("source_ref=session:sess-real#1"), 1)
+
+  RULE_FRICTION = (
+    "# 摩擦\n\n## 待折\n\n- 2026-01-01 old pending item\n\n"
+    "## 休眠\n\n## 已折／已否決\n\n- 2026-01-02 old closed item\n"
+  )
+  ALPHA_TARGET = "rule:rules/common/alpha.md#Alpha"
+
+  def violation_provider(self, names, verdicts=None):
+    # 每個 name 一個 session；規則編號每次請求不同，沿用 tagging_provider 從 system 文字找。
+    verdicts = verdicts or {}
+    for index, name in enumerate(names, 1):
+      write_jsonl(
+        self.projects / "work" / f"{name.lower()}.jsonl",
+        user_line(f"{name} 違規對話", session_id=name.lower(), timestamp=f"2026-10-0{index}T10:00:00.000Z"),
+      )
+    return self.tagging_provider(
+      [(name, "ALPHA_PARAGRAPH_RULE", verdicts.get(name, "violated"), name) for name in names]
+    )
+
+  def run_then_promote(self, url, expect=0):
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    promoted = self.cli(["promote", *self.flags(url)])
+    self.assertEqual(promoted.returncode, expect, promoted.stderr)
+    return promoted
+
+  def friction_sections(self, text):
+    sections = {}
+    title = ""
+    for line in text.splitlines():
+      if line.startswith("## "):
+        title = line
+        sections[title] = []
+      else:
+        sections.setdefault(title, []).append(line)
+    return sections
+
+  def rule_entry_lines(self, text, target=None):
+    target = target or self.ALPHA_TARGET
+    pending = self.friction_sections(text)["## 待折"]
+    return [line for line in pending if line.startswith("- ") and f"target={target};" in line]
+
+  def mixed_provider(self):
+    # 同一段既有一般 finding（QUOTE_FIND）也有規則違規（QUOTE_VIOL）。
+    def reply(body):
+      label = label_for(body, "ALPHA_PARAGRAPH_RULE")
+      tags = [{"rule": label, "verdict": "violated", "source_line": 1, "quote": "QUOTE_VIOL"}] if label else []
+      return analysis([finding("QUOTE_FIND", observation="plain-finding")], rule_tags=tags), 200
+
+    server = serve(reply)
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+  def test_rule_three_violations_make_one_entry_with_three_sublines(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    server, url = self.violation_provider(
+      ["VIOL_A", "VIOL_B", "VIOL_C", "VIOL_D"], verdicts={"VIOL_D": "applied"}
+    )
+    self.addCleanup(stop, server)
+    promoted = json.loads(self.run_then_promote(url).stdout)
+    self.assertEqual((promoted["rule_entries"], promoted["rule_sublines"]), (1, 3), promoted)
+    text = friction.read_text()
+    pending = self.friction_sections(text)["## 待折"]
+    entries = self.rule_entry_lines(text)
+    self.assertEqual(len(entries), 1, text)
+    entry = entries[0]
+    for expected in ("signal_type=agent-observation", "flags=speculation", 'feedback_quote="VIOL_A"', "source_ref=rule:rules/common/alpha.md#Alpha;"):
+      self.assertIn(expected, entry)
+    self.assertIn("ALPHA_PARAGRAPH_RULE", entry)
+    at = pending.index(entry)
+    sublines = pending[at + 1 : at + 4]
+    self.assertEqual(len(sublines), 3, pending)
+    for name, line in zip(("viol_a", "viol_b", "viol_c"), sublines):
+      self.assertTrue(line.startswith("  - source_ref=session:" + name + "#1:"), line)
+      self.assertIn('quote="VIOL_' + name[-1].upper() + '"', line)
+      self.assertIn("conversation_time=2026-10-0", line)
+      self.assertRegex(line, r"rules_commit=[0-9a-f]{40}")
+    self.assertNotIn("viol_d", text, "applied 標記不進摩擦檔")
+
+  def test_rule_entry_still_pending_only_gets_new_sublines(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    server, url = self.violation_provider(["VIOL_A", "VIOL_B", "VIOL_C"])
+    self.addCleanup(stop, server)
+    (self.projects / "work" / "viol_c.jsonl").rename(self.root / "viol_c.hold")
+    self.run_then_promote(url)
+    first = friction.read_text()
+    entry = self.rule_entry_lines(first)[0]
+    self.assertEqual(len([line for line in first.splitlines() if line.startswith("  - source_ref=")]), 2)
+    (self.root / "viol_c.hold").rename(self.projects / "work" / "viol_c.jsonl")
+    promoted = json.loads(self.run_then_promote(url).stdout)
+    self.assertEqual((promoted["rule_entries"], promoted["rule_sublines"]), (0, 1), promoted)
+    second = friction.read_text()
+    self.assertEqual(self.rule_entry_lines(second), [entry], "首行一字不變、不另開條目")
+    self.assertEqual(len([line for line in second.splitlines() if line.startswith("  - source_ref=")]), 3)
+    lines = second.splitlines()
+    at = lines.index(entry)
+    self.assertEqual([line.split("#1:")[0].split("session:")[1] for line in lines[at + 1 : at + 4]], ["viol_a", "viol_b", "viol_c"])
+    old_lines = first.splitlines()
+    cursor = 0
+    for line in lines:
+      if cursor < len(old_lines) and line == old_lines[cursor]:
+        cursor += 1
+    self.assertEqual(cursor, len(old_lines), "舊行都還在且順序不變")
+
+  def test_rule_entry_moved_out_of_pending_opens_new_entry_with_last_disposal(self):
+    friction = self.friction / "workflow-general.md"
+    moved = (
+      "- 2026-09-30 [proposal_source=user@s1; user_decision=rejected@2026-10-01T00:00:00Z; implementation=N-A] "
+      f"[source_ref=rule:rules/common/alpha.md#Alpha; signal_type=agent-observation; target={self.ALPHA_TARGET}; "
+      'feedback_quote="x"; why="y"; flags=speculation] 常駐規則違規（session-audit 自動彙整，次數見下方子行）'
+    )
+    friction.write_text(self.RULE_FRICTION + moved + "\n")
+    server, url = self.violation_provider(["VIOL_A"])
+    self.addCleanup(stop, server)
+    promoted = json.loads(self.run_then_promote(url).stdout)
+    self.assertEqual((promoted["rule_entries"], promoted["rule_sublines"]), (1, 1), promoted)
+    text = friction.read_text()
+    entries = self.rule_entry_lines(text)
+    self.assertEqual(len(entries), 1, text)
+    self.assertTrue(entries[0].endswith("（上次處置：已折／已否決 2026-09-30）"), entries[0])
+    self.assertIn(moved, text.splitlines(), "已折段的舊行不動")
+
+  def test_single_rule_violation_still_creates_entry(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    server, url = self.violation_provider(["VIOL_A"])
+    self.addCleanup(stop, server)
+    promoted = json.loads(self.run_then_promote(url).stdout)
+    self.assertEqual((promoted["appended"], promoted["rule_entries"], promoted["rule_sublines"]), (0, 1, 1), promoted)
+    text = friction.read_text()
+    self.assertEqual(len(self.rule_entry_lines(text)), 1)
+    self.assertNotIn("上次處置", text)
+
+  def test_rule_subline_source_ref_never_repeats(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    server, url = self.violation_provider(["VIOL_A", "VIOL_B"])
+    self.addCleanup(stop, server)
+    self.run_then_promote(url)
+    once = friction.read_text()
+    again = json.loads(self.cli(["promote", *self.flags(url)]).stdout)
+    self.assertEqual((again["rule_entries"], again["rule_sublines"]), (0, 0), again)
+    self.assertEqual(friction.read_text(), once)
+    # 同一 source_ref 已出現在檔案任何位置（這裡是休眠段的舊行）也不追加。
+    refs = {tag["quote"]: tag["source_ref"] for tag in self.status(url)["rules"]["tags"]}
+    seeded = self.RULE_FRICTION.replace("## 休眠\n", f"## 休眠\n\n- 2026-09-01 [source_ref={refs['VIOL_A']}; target=unknown] 舊\n")
+    friction.write_text(seeded)
+    self.cli(["promote", *self.flags(url)])
+    text = friction.read_text()
+    self.assertEqual(text.count(refs["VIOL_A"]), 1)
+    self.assertEqual(text.count(refs["VIOL_B"]), 1)
+
+  def test_rule_promote_refused_when_locked_and_leaves_nothing(self):
+    friction = self.friction / "workflow-general.md"
+    server, url = self.violation_provider(["VIOL_A", "VIOL_B"])
+    self.addCleanup(stop, server)
+    friction.write_text(self.RULE_FRICTION)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    locked = self.RULE_FRICTION.replace(
+      "## 待折\n",
+      "## 待折\n<!-- friction-review-lock:v1 session=other "
+      "claimed_at=2026-10-05T00:00:00Z expires_at=2099-10-06T00:00:00Z -->\n",
+    )
+    friction.write_text(locked)
+    refused = self.cli(["promote", *self.flags(url)])
+    self.assertNotEqual(refused.returncode, 0)
+    self.assertEqual(friction.read_text(), locked)
+    friction.write_text(self.RULE_FRICTION)
+    holder = os.open(self.friction / ".workflow-general.md.friction-review.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    self.addCleanup(os.close, holder)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    busy = self.cli(["promote", *self.flags(url)])
+    fcntl.flock(holder, fcntl.LOCK_UN)
+    self.assertEqual(busy.returncode, 3, busy.stderr)
+    self.assertEqual(friction.read_text(), self.RULE_FRICTION, "被鎖時整次拒寫，不留半套")
+
+  def test_rule_sublines_do_not_count_as_pending_items(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    server, url = self.violation_provider(["VIOL_A", "VIOL_B", "VIOL_C"])
+    self.addCleanup(stop, server)
+    self.run_then_promote(url)
+    pending = self.friction_sections(friction.read_text())["## 待折"]
+    # 摩擦待折掃描（trial-review.sh）的口徑：待折段內以 "- " 開頭的行才算一項。
+    self.assertEqual(len([line for line in pending if line.startswith("- ")]), 2, pending)
+    self.assertEqual(len([line for line in pending if line.startswith("  - ")]), 3, pending)
+
+  def test_candidate_only_promote_output_has_no_rule_keys(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    write_jsonl(self.projects / "work" / "only.jsonl", user_line("QUOTE_ONLY", session_id="only"))
+    server = serve(lambda body: (analysis([finding("QUOTE_ONLY")]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    promoted = self.run_then_promote(url)
+    self.assertEqual(promoted.stdout.strip(), json.dumps({"command": "promote", "appended": 1}))
+
+  def test_rule_entries_do_not_change_session_candidate_rows(self):
+    friction = self.friction / "workflow-general.md"
+    friction.write_text(self.RULE_FRICTION)
+    write_jsonl(self.projects / "work" / "mixed.jsonl", user_line("QUOTE_FIND QUOTE_VIOL", session_id="mixed"))
+    server, url = self.mixed_provider()
+    self.addCleanup(stop, server)
+    promoted = self.run_then_promote(url)
+    self.assertEqual(json.loads(promoted.stdout)["appended"], 1)
+    text = friction.read_text()
+    candidate = [line for line in text.splitlines() if "plain-finding" in line]
+    self.assertEqual(len(candidate), 1)
+    self.assertRegex(
+      candidate[0],
+      r'^- \d{4}-\d{2}-\d{2} \[source_ref=session:mixed#1:[0-9a-f]{16}; signal_type=agent-observation; '
+      r'target=unknown; feedback_quote="QUOTE_FIND"; why="unknown"; flags=speculation\] plain-finding 核對原文這一句$',
+    )
+    self.assertEqual(len(self.rule_entry_lines(text)), 1)
+    self.assertEqual(promoted.stdout.strip(), json.dumps({"command": "promote", "appended": 1, "rule_entries": 1, "rule_sublines": 1}))
 
   def test_daily_writes_out_without_creating_state(self):
     out_dir = self.root / "daily-out"
