@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — 前置確認：session-audit 已正式啟用；02 — 前置確認：free 池容量實測；03 — 條件票：規則索引退路（僅在 03 成立時）
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:** None — a worker can check every item unaided（假模型 server＋臨時 git repo）
 

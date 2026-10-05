@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — 規則標記＋規則版本＋最小狀態
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:** None — a worker can check every item unaided（臨時摩擦檔）
 
