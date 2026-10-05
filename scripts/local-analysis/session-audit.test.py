@@ -685,6 +685,50 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertTrue(self.source_named(report, "probe.jsonl")["included"])
     self.assertTrue(self.source_named(report, "bench.jsonl")["included"])
 
+  def test_skill_up_project_dir_is_synthetic_with_children(self):
+    skill_up = self.projects / "-private-var-folders-ab-cd-T-skill-up-3"
+    write_jsonl(
+      skill_up / "su-1.jsonl",
+      user_line("SKILL_UP_MAIN", session_id="su-1", cwd="/private/var/folders/ab/cd/T/skill-up-3"),
+    )
+    write_jsonl(
+      skill_up / "su-1" / "subagents" / "agent-su.jsonl",
+      user_line("SKILL_UP_SUB", session_id="agent-su"),
+    )
+    write_jsonl(
+      skill_up / "su-1" / "workflows" / "wf-su.jsonl",
+      user_line("SKILL_UP_WF", session_id="wf-su"),
+    )
+    write_jsonl(
+      self.projects / "-private-var-folders-ab-cd-T-other-lab" / "tmp-1.jsonl",
+      user_line("TMP_OTHER_KEEP", session_id="tmp-1", cwd="/private/var/folders/ab/cd/T/other-lab"),
+    )
+    write_jsonl(
+      self.projects / "eval-roots" / "case.jsonl",
+      user_line("EVAL_ROOT_MARKER", session_id="eval-1"),
+    )
+    write_jsonl(
+      self.projects / "work" / "flagged.jsonl",
+      user_line("FLAGGED_MARKER", session_id="flagged-1", synthetic=True),
+    )
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    sent = b"".join(server.bodies).decode()
+    for marker in ("SKILL_UP_MAIN", "SKILL_UP_SUB", "SKILL_UP_WF", "EVAL_ROOT_MARKER", "FLAGGED_MARKER"):
+      self.assertNotIn(marker, sent)
+    self.assertIn("TMP_OTHER_KEEP", sent)
+    report = self.status(url)
+    for name in ("su-1.jsonl", "agent-su.jsonl", "wf-su.jsonl", "case.jsonl", "flagged.jsonl"):
+      row = self.source_named(report, name)
+      self.assertEqual(row["classification"], "synthetic", name)
+      self.assertFalse(row["included"], name)
+    other = self.source_named(report, "tmp-1.jsonl")
+    self.assertEqual(other["classification"], "unknown")
+    self.assertTrue(other["included"])
+
   def test_source_hash_unchanged_after_read(self):
     path = self.projects / "work" / "hash.jsonl"
     write_jsonl(path, user_line("QUOTE_HASH"))

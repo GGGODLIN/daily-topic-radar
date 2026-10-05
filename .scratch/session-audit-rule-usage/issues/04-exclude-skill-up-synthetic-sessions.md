@@ -16,7 +16,12 @@
 
 **TDD seam:** session-audit 指令列 scan → status 的 classification 欄位
 
-- [ ] 專案目錄名含 `-T-skill-up-` 的對話被歸為 synthetic、不進分析 — Source: Story 10
-- [ ] `/var/folders` 底下但不是 skill-up 的對話照常分析，不被擴大排除 — Source: Requirement: 合成對話排除 — Failure: F2
-- [ ] 既有的記錄旗標與 `eval-roots`／`synthetic-eval` 判定結果不變 — Source: Requirement: 合成對話排除
-- [ ] skill-up 的 subagent／workflow 子紀錄隨父 session 一起排除 — Source: Story 10 — Failure: F5
+- [x] 專案目錄名含 `-T-skill-up-` 的對話被歸為 synthetic、不進分析 — Source: Story 10
+- [x] `/var/folders` 底下但不是 skill-up 的對話照常分析，不被擴大排除 — Source: Requirement: 合成對話排除 — Failure: F2
+- [x] 既有的記錄旗標與 `eval-roots`／`synthetic-eval` 判定結果不變 — Source: Requirement: 合成對話排除
+- [x] skill-up 的 subagent／workflow 子紀錄隨父 session 一起排除 — Source: Story 10 — Failure: F5
+
+## Verification Log
+
+- 2026-10-05 RED：`test_skill_up_project_dir_is_synthetic_with_children` 先失敗，原因是 `SKILL_UP_MAIN` 被送進模型（行為缺失，不是 harness 錯）。GREEN：`session-audit.test.py` 25/25、`session-audit-regressions.test.py` 6/6、`session-audit-entrypoints.test.py` 3/3 全過。
+- 既有佇列：scan 的 upsert 在檔案沒變時也會更新 classification／included，所以已排隊的 skill-up 來源下一輪 scan 就會改判 synthetic，不需要清 state。

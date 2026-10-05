@@ -35,6 +35,8 @@ MAX_NEW_FRAGMENTS = 16
 MAX_OLD_FRAGMENTS = 1
 MAX_RUN_SECONDS = 25
 EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
+# skill-up 在 $TMPDIR/skill-up-<n>/ 跑評測，記錄本身不帶 synthetic 旗標；只認這個專案目錄樣式，不擴到整個 /var/folders。
+SKILL_UP_PROJECT_MARK = "-T-skill-up-"
 
 PRIVATE_KEY_RE = re.compile(
   r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
@@ -675,7 +677,7 @@ def build_document(raw, metadata_only=False):
 def explicit_class(path, synthetic, session_ids, self_id):
   if self_id and (path.stem == self_id or self_id in session_ids):
     return "self"
-  if synthetic or EVAL_ROOTS.intersection(path.parts):
+  if synthetic or EVAL_ROOTS.intersection(path.parts) or any(SKILL_UP_PROJECT_MARK in part for part in path.parts):
     return "synthetic"
   return None
 
