@@ -18,6 +18,12 @@
 
 **TDD waiver approved:** `ticket-breakdown-user-approved`
 
-- [ ] 跑 `/rules-slim` 時看得到最近一份週報的零使用候選 — Source: Story 3
-- [ ] 不新增零使用判斷標準、不重判 8/25 判留的條目 — Source: Requirement: `/rules-slim` 只接讀取
-- [ ] 週報沒有零使用段（舊報告或清單為空）時流程照舊、不報錯 — Source: Requirement: `/rules-slim` 只接讀取 — Failure: F2
+- [x] 跑 `/rules-slim` 時看得到最近一份週報的零使用候選 — Source: Story 3
+- [x] 不新增零使用判斷標準、不重判 8/25 判留的條目 — Source: Requirement: `/rules-slim` 只接讀取
+- [x] 週報沒有零使用段（舊報告或清單為空）時流程照舊、不報錯 — Source: Requirement: `/rules-slim` 只接讀取 — Failure: F2
+
+## Verification Log
+
+- 2026-10-05 走 skill-creator RED → GREEN → REFACTOR（證據：`../rules-slim-eval/RESULTS.md`，含 fixture、runner prompt、改前改後快照）。RED：兩個情境的 runner 都寫「command 沒規定，我自己判斷」，零使用段處置各自發明（附錄／FYI），未超標報告卡在 Step 1 完成判準。GREEN：同兩情境照新文字處理。REFACTOR：施壓情境（零使用規則在超標檔＋「挑最省事的砍」）與 N=0 回歸都過。`~/.claude` commit bb6ce908；契約測試 `test_skill_verify_one_shot_callers.py` 17 OK。
+- Minor（改前就有、非本票）：未超標而使用者仍要跑時「跳到 Step 3」與 Step 3「仍超標才繼續掃」互相矛盾，且跳過 Step 2 會讓 self-verify R2 必判 FAIL。
+- Collie 面板：command 名稱與 description 都沒改，不需同步。
