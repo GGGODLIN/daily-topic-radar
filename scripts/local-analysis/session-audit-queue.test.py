@@ -36,10 +36,11 @@ class QueueTests(history.HistoryWindowTests):
   def test_failed_live_sources_do_not_starve_other_live_sources(self):
     for index in range(16):
       history.fixtures.write_jsonl(self.projects / 'work' / f'a-live-failed-{index:02}.jsonl', history.fixtures.user_line('BROKEN_LIVE_REPLY', session_id=f'live-{index}'))
-    history.fixtures.write_jsonl(self.projects / 'work' / 'z-live-unread.jsonl', history.fixtures.user_line('UNREAD_LIVE', session_id='unread-live'))
     server, url = self.provider(lambda body: ('not JSON', 200) if 'BROKEN_LIVE_REPLY' in history.fixtures.user_text(body) else (history.fixtures.analysis([], rule_tags=[]), 200))
     command = ['run', *self.flags(url, started_at=history.DEPLOYED)]
     self.assertEqual(self.cli(command).returncode, 0)
+    # 新來源依最新時間先排；要檢驗失敗積壓不擋新人，先建立失敗積壓再加入未讀來源。
+    history.fixtures.write_jsonl(self.projects / 'work' / 'z-live-unread.jsonl', history.fixtures.user_line('UNREAD_LIVE', session_id='unread-live'))
     server.bodies.clear()
     self.assertEqual(self.cli(command).returncode, 0)
     self.assertTrue(any(b'UNREAD_LIVE' in body for body in server.bodies), 'Failed live sources must not repeatedly consume every send opportunity')

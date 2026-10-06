@@ -1794,7 +1794,10 @@ def cmd_run(args):
       # doc_offset>0 的 pending 仍是 old，不能下輪升成 new 把 1 fragment 上限吃掉。
       return cutoff is not None and row["mtime"] < cutoff
 
-    new_rows = [row for row in rows if not is_old(row)]
+    new_rows = sorted(
+      (row for row in rows if not is_old(row)),
+      key=lambda row: (row["status"] == "failed", -row["mtime"], row["path"]),
+    )
     old_rows = [row for row in rows if is_old(row) and (members is None or row["inode"] in members)]
     fragments = {"new": 0, "old": 0}
     deadline = time.monotonic() + MAX_RUN_SECONDS
@@ -1848,13 +1851,18 @@ def cmd_run(args):
       return budget - remaining
 
     consume_parallel(new_rows, MAX_NEW_FRAGMENTS)
+    # 新片段還沒排空就另開歷史預算，會讓回填擋住新工作；失敗來源保留重試，但不永久堵住歷史。
+    new_pending = cutoff is not None and connection.execute(
+      "SELECT 1 FROM sources WHERE included = 1 AND status = 'pending' AND mtime >= ? LIMIT 1",
+      (cutoff,),
+    ).fetchone() is not None
     if window is None:
-      fragments["old"] = consume_parallel(old_rows, MAX_OLD_FRAGMENTS)
+      if not new_pending:
+        fragments["old"] = consume_parallel(old_rows, MAX_OLD_FRAGMENTS)
     else:
-      # 有限批次要有自己的送出機會，不能永遠被新內容用完的 deadline 擋住。
-      deadline = time.monotonic() + MAX_RUN_SECONDS
       update_history_review(connection)
-      if history_snapshot(connection)["status"] == "active":
+      if not new_pending and history_snapshot(connection)["status"] == "active":
+        deadline = time.monotonic() + MAX_RUN_SECONDS
         fragments["old"] = consume_parallel(old_rows, MAX_CONCURRENT_SESSIONS)
       update_history_review(connection)
     connection.close()
