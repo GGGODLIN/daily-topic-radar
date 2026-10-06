@@ -35,6 +35,9 @@ import yaml
 REQUEST_UTF8_BUDGET = 24000
 OUTPUT_RESERVE = 4000
 CONTINUITY_RESERVE = 1500
+# 輸出上限包含推理；4000 時 MiMo 5%、Grok 26% 的回覆被推理吃光而截斷（2026-10-07 帳本 12 小時）。
+# 上限只是天花板，模型寫完就停；三條腿實測都接受到 131072，取 32768 留足推理又不碰模型上限。
+MAX_OUTPUT_TOKENS = 32768
 MAX_RESPONSE_BYTES = 262144
 MAX_NEW_FRAGMENTS = 48
 MAX_OLD_FRAGMENTS = 1
@@ -1110,8 +1113,7 @@ def request_payload(model, continuity, chunk, images, rules_block=None):
   payload = {
     "model": model,
     "temperature": 0,
-    # 帶規則時 rule_tags 會多吃輸出；02 實測最高 1,151 completion tokens，1500 太緊。
-    "max_tokens": 1500 if rules_block is None else OUTPUT_RESERVE,
+    "max_tokens": MAX_OUTPUT_TOKENS,
     "messages": [
       {"role": "system", "content": SYSTEM_PROMPT if rules_block is None else f"{SYSTEM_PROMPT}\n\n{rules_block}"},
       {"role": "user", "content": content if used else text},

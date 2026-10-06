@@ -1686,7 +1686,7 @@ class SessionAuditCliTest(unittest.TestCase):
     for body in server.bodies:
       self.assertNotIn("BASE_RULE_FALLBACK", system_text(body))
       self.assertNotIn("ALPHA_PARAGRAPH_RULE", system_text(body))
-      self.assertEqual(json.loads(body)["max_tokens"], 1500)
+      self.assertEqual(json.loads(body)["max_tokens"], 32768)
     report = self.status(url)
     for name in ("nostamp.jsonl", "early.jsonl"):
       row = self.source_named(report, name)
@@ -1788,7 +1788,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertGreater(len(system), len(module.SYSTEM_PROMPT))
     self.assertIn("只做 agent-observation", system)
     self.assertIn("[R1]", system)
-    self.assertEqual(payload["max_tokens"], module.OUTPUT_RESERVE)
+    self.assertEqual(payload["max_tokens"], 32768)
     self.assertEqual([item["observation"] for item in self.status(url)["candidates"]], ["plain-finding"])
 
   def test_status_and_report_expose_rule_state(self):
@@ -2072,7 +2072,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
     self.assertEqual(len(server.bodies), 2, "帶規則 413 後只重送一次")
     self.assertEqual(user_text(server.bodies[0]), user_text(server.bodies[1]), "先拿掉規則區塊，transcript 不縮")
-    self.assertEqual(json.loads(server.bodies[1])["max_tokens"], 1500)
+    self.assertEqual(json.loads(server.bodies[1])["max_tokens"], 32768)
     report = self.status(url)
     row = self.source_named(report, "s1.jsonl")
     self.assertEqual(row["status"], "complete")
