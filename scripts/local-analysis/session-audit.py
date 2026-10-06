@@ -293,6 +293,17 @@ def connect(state, write):
         status TEXT NOT NULL,
         limitations TEXT NOT NULL DEFAULT '[]'
       );
+      CREATE TABLE IF NOT EXISTS model_replies (
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        doc_start INTEGER NOT NULL,
+        doc_end INTEGER NOT NULL,
+        source_sha TEXT NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL,
+        limitations TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (inode, generation, doc_start, source_sha)
+      );
       CREATE TABLE IF NOT EXISTS rule_sessions (
         inode TEXT PRIMARY KEY,
         session_id TEXT NOT NULL DEFAULT '',
@@ -482,7 +493,8 @@ def message_from_response(raw):
   if isinstance(obj.get("choices"), list) and obj["choices"]:
     choice = obj["choices"][0] if isinstance(obj["choices"][0], dict) else {}
     finish = choice.get("finish_reason")
-    content = (choice.get("message") or {}).get("content")
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
   elif isinstance(obj.get("content"), list):
     finish = obj.get("stop_reason")
     parts = [
@@ -493,11 +505,41 @@ def message_from_response(raw):
     content = "\n".join(parts)
   else:
     return None, "bad-model-json"
+  if not isinstance(finish, str):
+    return None, "finish-unconfirmed"
   if finish in {"length", "max_tokens"}:
     return None, "finish-length"
   if not isinstance(content, str):
     return None, "bad-model-json"
+  if not content.strip():
+    return None, "empty-model-content"
+  if finish not in {"stop", "end_turn", "stop_sequence"}:
+    return None, "finish-unconfirmed"
   return content, None
+
+
+def finding_failure(item, chunk_text):
+  if not isinstance(item, dict):
+    return "missing-required"
+  if not isinstance(item.get("status"), str) or item["status"] not in {"unresolved", "resolved", "uncertain"}:
+    return "missing-required"
+  if not isinstance(item.get("independent_recurrence"), bool):
+    return "missing-required"
+  for field in ("target", "observation", "check_direction"):
+    if not isinstance(item.get(field), str):
+      return "missing-required"
+  evidence = item.get("evidence")
+  if not isinstance(evidence, list) or not evidence:
+    return "missing-required"
+  for entry in evidence:
+    if not isinstance(entry, dict):
+      return "missing-required"
+    quote = entry.get("quote")
+    if not isinstance(quote, str) or not quote or not isinstance(entry.get("source_line"), int):
+      return "missing-required"
+    if not quote_on_line(chunk_text, entry["source_line"], quote):
+      return "quote-not-in-snapshot"
+  return None
 
 
 def parse_analysis(content, chunk_text):
@@ -516,28 +558,16 @@ def parse_analysis(content, chunk_text):
     return None, "missing-required"
   if not all(isinstance(note, str) for note in obj['limitations']):
     return None, "missing-required"
+  kept = []
+  failures = set()
   for item in obj["findings"]:
-    if not isinstance(item, dict):
-      return None, "missing-required"
-    if item.get("status") not in {"unresolved", "resolved", "uncertain"}:
-      return None, "missing-required"
-    if not isinstance(item.get("independent_recurrence"), bool):
-      return None, "missing-required"
-    for field in ("target", "observation", "check_direction"):
-      if not isinstance(item.get(field), str):
-        return None, "missing-required"
-    evidence = item.get("evidence")
-    if not isinstance(evidence, list) or not evidence:
-      return None, "missing-required"
-    for entry in evidence:
-      if not isinstance(entry, dict):
-        return None, "missing-required"
-      quote = entry.get("quote")
-      if not isinstance(quote, str) or not quote or not isinstance(entry.get("source_line"), int):
-        return None, "missing-required"
-      if not quote_on_line(chunk_text, entry["source_line"], quote):
-        return None, "quote-not-in-snapshot"
-  return obj, None
+    failure = finding_failure(item, chunk_text)
+    if failure:
+      failures.add(failure)
+    else:
+      kept.append(item)
+  obj["findings"] = kept
+  return obj, failures
 
 
 def quote_on_line(text, source_line, quote):
@@ -1357,7 +1387,7 @@ def valid_rule_tags(obj, sent, labels):
     if not isinstance(item, dict):
       continue
     label, verdict, quote, line = (item.get(key) for key in ("rule", "verdict", "quote", "source_line"))
-    if not isinstance(label, str) or label not in labels or verdict not in {"applied", "violated"}:
+    if not isinstance(label, str) or label not in labels or not isinstance(verdict, str) or verdict not in {"applied", "violated"}:
       continue
     if not isinstance(quote, str) or not quote or isinstance(line, bool) or not isinstance(line, int):
       continue
@@ -1367,11 +1397,14 @@ def valid_rule_tags(obj, sent, labels):
 
 
 def store_rule_tags(connection, row, generation, context, analyzed, sent, doc_start):
-  connection.execute(
-    "INSERT OR IGNORE INTO rule_coverage (inode, generation, doc_start, week) VALUES (?, ?, ?, ?)",
-    (row["inode"], generation, doc_start, context["week"]),
-  )
-  for rule, verdict, line, quote in valid_rule_tags(analyzed, sent, context["labels"]):
+  tags = valid_rule_tags(analyzed, sent, context["labels"])
+  unverified = len(tags) != len(analyzed["rule_tags"])
+  if not unverified:
+    connection.execute(
+      "INSERT OR IGNORE INTO rule_coverage (inode, generation, doc_start, week) VALUES (?, ?, ?, ?)",
+      (row["inode"], generation, doc_start, context["week"]),
+    )
+  for rule, verdict, line, quote in tags:
     # 最小狀態：每條規則只留最後一次遇到場合；逐筆只留 violated，因為摩擦子行要每筆的出處與引文。
     connection.execute(
       """
@@ -1407,6 +1440,7 @@ def store_rule_tags(connection, row, generation, context, analyzed, sent, doc_st
         context["commit"],
       ),
     )
+  return unverified
 
 
 def event_ref(session_id, source_line, quote):
@@ -1419,11 +1453,13 @@ def store_findings(connection, inode, generation, findings):
   prior = list(connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? ORDER BY id', (inode, generation)))
   known = {row['issue_ref'] or event_ref(session, row['source_line'], row['quote']) for row in prior}
   prepared = []
+  failure = None
   for item in findings:
     evidence = item['evidence'][0]
     requested = item.get('issue_ref') or ''
     if requested and (not isinstance(requested, str) or requested not in known):
-      return 'unknown-issue-ref'
+      failure = 'unknown-issue-ref'
+      continue
     reference = requested
     if not reference:
       same_quote = [row for row in prior if row['quote'] == evidence['quote']]
@@ -1442,7 +1478,7 @@ def store_findings(connection, inode, generation, findings):
     'INSERT INTO findings (inode, generation, status, independent_recurrence, target, observation, check_direction, quote, source_line, issue_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     prepared,
   )
-  return None
+  return failure
 
 
 def mark(connection, inode, status, latest, limitations, thinking, **fields):
@@ -1552,6 +1588,12 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
     # 已完成的段不為補規則標記而重送；暫時讀不到規則版本的 session 只在之後追加的段重新取規則。
     return 0
   blocking = set(limits)
+  # 下一段格式正確不能把同一版本先前待整理的回覆洗成完整分析。
+  for saved in connection.execute(
+    "SELECT limitations FROM model_replies WHERE inode = ? AND generation = ? AND status = 'review'",
+    (row["inode"], generation),
+  ):
+    blocking.update(json.loads(saved["limitations"]))
   noted = set()
   if images:
     noted.add("media-unredacted")
@@ -1626,23 +1668,23 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
         connection.commit()
         return produced
       analyzed, failure = parse_analysis(content, sent)
-      if failure:
-        mark(connection, row["inode"], "failed", False, blocking | noted | {failure}, thinking)
-        connection.commit()
-        return produced
+      review_failures = {failure} if isinstance(failure, str) else failure
+      if analyzed is None:
+        analyzed = {"continuity": "前段完整回覆待整理；未解析的發現與規則仍未知。", "findings": [], "limitations": []}
       blocking.update(redact_text(note) for note in analyzed['limitations'] if note.strip())
       if used_images and not media_verified(analyzed, used_images):
         blocking.add("media-not-read")
       failure = store_findings(connection, row["inode"], generation, analyzed["findings"])
       if failure:
-        mark(connection, row["inode"], "failed", False, blocking | noted | {failure}, thinking)
-        connection.commit()
-        return produced
+        review_failures.add(failure)
+      if review_failures:
+        blocking.update(review_failures | {"response-needs-review"})
       if with_rules:
-        if isinstance(analyzed.get("rule_tags"), list):
-          store_rule_tags(connection, row, generation, rules_ctx, analyzed, sent, cursor)
+        if not review_failures and isinstance(analyzed.get("rule_tags"), list):
+          if store_rule_tags(connection, row, generation, rules_ctx, analyzed, sent, cursor):
+            noted.add("rule-tags-unverified")
         else:
-          # 沒回 rule_tags（空清單才代表「沒遇到場合」）就不能當成這段已被規則檢查過。
+          # 未解析不能當成「沒遇到規則」；明確空清單才有機會計入覆蓋。
           noted.add(RULE_TAGS_MISSING)
       active = {}
       for previous in connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? ORDER BY id', (row['inode'], generation)):
@@ -1655,13 +1697,23 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       else:
         accepted_source = len(sent_bytes)
       accepted = sent
+      reply_status = "review" if review_failures else "parsed"
+      connection.execute(
+        "INSERT OR REPLACE INTO model_replies "
+        "(inode, generation, doc_start, doc_end, source_sha, content, status, limitations) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (row["inode"], generation, cursor, cursor + accepted_source, file_sha,
+         redact_text(content), reply_status,
+         json.dumps(sorted(review_failures | {"response-needs-review"} if review_failures else set()))),
+      )
       break
     if accepted is None or accepted_source <= 0:
       mark(connection, row["inode"], "failed", False, blocking | noted | {"context-failed"}, thinking)
       connection.commit()
       return produced
     advance = accepted_source
-    record_segments(connection, row, generation, parts, raw, cursor, cursor + advance, "analyzed", blocking | noted)
+    record_segments(connection, row, generation, parts, raw, cursor, cursor + advance,
+                    "review" if reply_status == "review" else "analyzed", blocking | noted)
     cursor += advance
     mark(
       connection,
@@ -1951,11 +2003,25 @@ def snapshot(connection):
           "limitations": json.loads(row["limitations"] or "[]"),
         }
       )
+  replies = []
+  if table_exists(connection, "model_replies"):
+    query = """
+      SELECT model_replies.*, sources.name, sources.session_id
+      FROM model_replies
+      JOIN sources ON sources.inode = model_replies.inode AND sources.generation = model_replies.generation
+      WHERE sources.included = 1
+      ORDER BY sources.path, model_replies.doc_start
+    """
+    for row in connection.execute(query):
+      reply = dict(row)
+      reply["limitations"] = json.loads(reply["limitations"])
+      replies.append(reply)
   data = {
     "hints": hints,
     "sources": sources,
     "candidates": candidates,
     "segments": segments,
+    "retained_replies": replies,
     "rules": rules_snapshot(connection),
   }
   batch = history_snapshot(connection)
@@ -2055,7 +2121,7 @@ def read_connection(args):
 def cmd_status(args):
   connection = read_connection(args)
   if connection is None:
-    print(json.dumps({"hints": 0, "sources": [], "candidates": [], "segments": [], "rules": empty_rules()}))
+    print(json.dumps({"hints": 0, "sources": [], "candidates": [], "segments": [], "retained_replies": [], "rules": empty_rules()}))
     return 0
   print(json.dumps(snapshot(connection), ensure_ascii=False))
   connection.close()
@@ -2074,6 +2140,11 @@ def cmd_report(args):
   data = {"hints": 0, "sources": [], "candidates": [], "rules": empty_rules()} if connection is None else snapshot(connection)
   if connection is not None:
     connection.close()
+  replies = data.get("retained_replies", [])
+  parsed = sum(reply["status"] == "parsed" for reply in replies)
+  review = sum(reply["status"] == "review" for reply in replies)
+  print(f"retained-replies parsed={parsed} review={review}")
+  print("完整回覆已保留；review 是待整理，不是沒有摩擦，也不計入規則零使用覆蓋。")
   batch = data.get("history_batch")
   if batch is not None:
     print(

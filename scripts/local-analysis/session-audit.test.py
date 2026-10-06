@@ -1767,7 +1767,7 @@ class SessionAuditCliTest(unittest.TestCase):
       [{"week": "2026-W38", "segments": 1}, {"week": "2026-W41", "segments": 1}],
     )
     self.assertEqual(self.source_named(report, "http.jsonl")["status"], "failed")
-    self.assertEqual(self.source_named(report, "badjson.jsonl")["status"], "failed")
+    self.assertEqual(self.source_named(report, "badjson.jsonl")["status"], "partial")
     self.assertEqual(self.source_named(report, "trunc.jsonl")["status"], "failed")
 
   def test_rules_request_appends_to_unchanged_prompt_with_output_reserve(self):
