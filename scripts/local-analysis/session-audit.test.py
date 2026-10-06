@@ -274,6 +274,9 @@ class SessionAuditCliTest(unittest.TestCase):
       url,
       "--rules-repo",
       str(self.rules_repo),
+      # fixture 剛寫完的檔一律算已關閉；寫入中跳過的行為由 throughput 測試單獨覆蓋。
+      "--quiet-seconds",
+      "0",
     ]
     if started_at is not None:
       args.extend(["--started-at", started_at])

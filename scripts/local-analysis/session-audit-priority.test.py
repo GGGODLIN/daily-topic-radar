@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run/status 公共入口：最新新來源先送，新待辦排空才回填歷史。"""
+"""run/status 公共入口：最新新來源先送；歷史保留名額的契約在 throughput 測試。"""
 
 import importlib.util
 import unittest
@@ -30,24 +30,6 @@ class PriorityTests(population.PopulationTests):
     status = self.status(url)
     self.assertTrue(self.source_named(status, 'z-newest.jsonl')['latest_complete'])
     self.assertEqual(sum(r['status'] == 'pending' for r in status['sources'] if r['included']), 1)
-
-  def test_history_waits_for_new_backlog_then_runs_when_new_is_drained(self):
-    fixtures.ThreadingHTTPServer.request_queue_size = 32
-    self.history_source('a-history.jsonl', 'HISTORY_WAITING', '2026-10-02T00:00:00Z')
-    for index in range(17):
-      self.source(f'work/z-new-{index:02}.jsonl', f'NEW_BACKLOG_{index:02}', timestamp='2026-10-06T00:00:00Z')
-    server, url = self.provider()
-    self.assertEqual(self.run_window(url).returncode, 0)
-    self.assertFalse(b'HISTORY_WAITING' in b''.join(server.bodies), 'History must wait while normal new work remains')
-    status = self.status(url)
-    new = [r for r in status['sources'] if r['name'].startswith('z-new-')]
-    self.assertEqual(sum(r['status'] == 'pending' for r in new), 1)
-    self.assertEqual(self.source_named(status, 'a-history.jsonl')['status'], 'pending')
-    server.bodies.clear()
-    self.assertEqual(self.run_window(url).returncode, 0)
-    self.assertIn(b'HISTORY_WAITING', b''.join(server.bodies))
-    status = self.status(url)
-    self.assertTrue(all(r['latest_complete'] for r in status['sources'] if r['included']))
 
   def test_failed_new_source_does_not_block_idle_history_forever(self):
     self.history_source('old.jsonl', 'HISTORY_IDLE', '2026-10-02T00:00:00Z')

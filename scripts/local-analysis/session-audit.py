@@ -38,8 +38,14 @@ CONTINUITY_RESERVE = 1500
 MAX_RESPONSE_BYTES = 262144
 MAX_NEW_FRAGMENTS = 16
 MAX_OLD_FRAGMENTS = 1
-MAX_RUN_SECONDS = 25
+MAX_HISTORY_FRAGMENTS = 40
+# 只限制「何時停止開新片段」，不取消在途請求；排程每 300 秒一輪，留尾巴給在途回件。
+MAX_RUN_SECONDS = 240
 MAX_CONCURRENT_SESSIONS = 10
+# 新工作清不完時，歷史若要等新組排空就永遠輪不到；保留幾個槽給歷史。
+HISTORY_RESERVED_SLOTS = 3
+# SessionEnd 之後 CC 可能還補寫最後幾行；容許這段誤差仍算已關閉。
+SESSION_END_SLACK_SECONDS = 60
 EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
 # skill-up 在 $TMPDIR/skill-up-<n>/ 跑評測，記錄本身不帶 synthetic 旗標；只認這個專案目錄樣式，不擴到整個 /var/folders。
 SKILL_UP_PROJECT_MARK = "-T-skill-up-"
@@ -56,6 +62,8 @@ ZERO_USE_TEXT_LIMIT = 120
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 
+# Python json 的物件必須以 " 或 } 接續，陣列以值或 ] 接續；空白只認 JSON 的四種。
+JSON_START_RE = re.compile(r"\{(?=[ \t\n\r]*[\"}])|\[(?=[ \t\n\r]*[\[{\"\-0-9tfnNI\]])")
 PRIVATE_KEY_RE = re.compile(
   r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
   re.DOTALL,
@@ -143,7 +151,9 @@ def redact_text(value):
   decoder = json.JSONDecoder()
   pieces = []
   cursor = 0
-  for match in re.finditer(r"[\{\[]", value):
+  # 只在下一個非空白字元可能開出合法 JSON 時才試解析：失敗的嘗試會從文件開頭數換行，大檔上隨長度平方成長。
+  # 被略過的位置本來就必定解析失敗，所以遮敏結果不變。
+  for match in JSON_START_RE.finditer(value):
     if match.start() < cursor:
       continue
     try:
@@ -348,6 +358,10 @@ def connect(state, write):
         inode TEXT NOT NULL,
         time_basis TEXT NOT NULL,
         PRIMARY KEY (batch_id, inode)
+      );
+      CREATE TABLE IF NOT EXISTS scan_cache (
+        inode TEXT PRIMARY KEY,
+        entry TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS rule_last_seen (
         rule_id TEXT PRIMARY KEY,
@@ -834,8 +848,9 @@ def parent_file(path, root):
   return None
 
 
-def discover(root, self_id, time_window=None):
+def discover(root, self_id, time_window=None, cache=None, updates=None):
   found = {}
+  stats = {}
   for directory, dirnames, filenames in os.walk(root, followlinks=False):
     dirnames[:] = [name for name in dirnames if not Path(directory, name).is_symlink()]
     for name in filenames:
@@ -855,11 +870,26 @@ def discover(root, self_id, time_window=None):
         info = target.stat()
       except OSError:
         continue
-      found.setdefault((info.st_dev, info.st_ino), target)
+      if (info.st_dev, info.st_ino) not in found:
+        found[(info.st_dev, info.st_ino)] = target
+        stats[(info.st_dev, info.st_ino)] = info
   records = {}
   windows = {}
   populations = {}
-  for path in found.values():
+  window_key = json.dumps(time_window)
+  for key, path in found.items():
+    info = stats[key]
+    stamp = {"path": str(path), "size": info.st_size, "mtime_ns": info.st_mtime_ns, "window": window_key}
+    cached = (cache or {}).get(f"{key[0]}:{key[1]}")
+    # 每輪全庫重讀要數分鐘、吃掉大半排程；大小與修改時間都沒變就沿用上次的分類材料。
+    if cached is not None and all(cached.get(name) == value for name, value in stamp.items()):
+      windows[path] = {"has_timestamp": cached["has_timestamp"], "matches": cached["matches"]}
+      populations[path] = {
+        "main_id": path.stem, "conversation": cached["conversation"], "human": cached["human"],
+        "agent_ids": set(cached["agent_ids"]), "sidechain": cached["sidechain"],
+      }
+      records[path] = (cached["sha"], set(cached["session_ids"]), cached["synthetic"], False)
+      continue
     windows[path] = {"has_timestamp": False, "matches": False}
     populations[path] = {"main_id": path.stem, "conversation": False, "human": False, "agent_ids": set(), "sidechain": False}
     try:
@@ -872,6 +902,12 @@ def discover(root, self_id, time_window=None):
     )
     # 所有來源只留分類與指紋，避免把整個歷史原文一起保留在記憶體。
     records[path] = (sha256_bytes(raw) if raw else "", session_ids, synthetic, False)
+    if updates is not None:
+      updates[f"{key[0]}:{key[1]}"] = {
+        **stamp, "sha": records[path][0], "session_ids": sorted(session_ids), "synthetic": bool(synthetic),
+        **windows[path], "conversation": populations[path]["conversation"], "human": populations[path]["human"],
+        "agent_ids": sorted(populations[path]["agent_ids"]), "sidechain": populations[path]["sidechain"],
+      }
   classes = {}
   for path, (_source_sha, session_ids, synthetic, unreadable) in records.items():
     if unreadable:
@@ -1545,10 +1581,17 @@ def locate_parts(document, parts):
     part = dict(part)
     part["doc_start"] = start
     located.append(part)
+  # 起點只會往後走，逐段累加 byte 位移；每段都從文件開頭重新 encode 會隨長度平方成長。
+  starts = [part["doc_start"] for part in located] + [len(document)]
+  offsets = []
+  char_at = byte_at = 0
+  for char in starts:
+    byte_at += len(document[char_at:char].encode())
+    char_at = char
+    offsets.append(byte_at)
   for index, part in enumerate(located):
-    nxt = located[index + 1]["doc_start"] if index + 1 < len(located) else len(document)
-    part["doc_end"] = len(document[:nxt].encode())
-    part["doc_start"] = len(document[: part["doc_start"]].encode())
+    part["doc_start"] = offsets[index]
+    part["doc_end"] = offsets[index + 1]
   return located
 
 
@@ -1756,11 +1799,18 @@ def refresh(connection, projects, self_id, time_window=None):
   root = Path(projects)
   if not root.is_dir():
     fail("projects-missing")
-  found = list(discover(root, self_id, time_window))
+  cache = {row["inode"]: json.loads(row["entry"]) for row in connection.execute("SELECT inode, entry FROM scan_cache")}
+  updates = {}
+  found = list(discover(root, self_id, time_window, cache, updates))
   seen = set()
   for item in found:
     upsert(connection, item)
     seen.add(item["inode"])
+  connection.executemany(
+    "INSERT OR REPLACE INTO scan_cache (inode, entry) VALUES (?, ?)",
+    [(inode, json.dumps(entry)) for inode, entry in updates.items()],
+  )
+  connection.executemany("DELETE FROM scan_cache WHERE inode = ?", [(inode,) for inode in cache.keys() - seen])
   if table_exists(connection, "sources"):
     for row in connection.execute("SELECT inode, path FROM sources"):
       if row["inode"] in seen:
@@ -1772,6 +1822,17 @@ def refresh(connection, projects, self_id, time_window=None):
       )
   connection.commit()
   return found
+
+
+def session_end_times(connection):
+  # 續接的 session 在 hook 裡是另一個執行 ID；用逐字稿檔名對回主檔，子 agent 也沿用父 main 的 ID。
+  ended = {}
+  for row in connection.execute("SELECT session_id, transcript_path, received_at FROM hints"):
+    main_id = Path(row["transcript_path"]).stem if row["transcript_path"] else row["session_id"]
+    moment = parse_time(row["received_at"])
+    if main_id and moment is not None:
+      ended[main_id] = max(ended.get(main_id, 0), moment.timestamp())
+  return ended
 
 
 def cmd_enqueue(args):
@@ -1846,76 +1907,87 @@ def cmd_run(args):
       # doc_offset>0 的 pending 仍是 old，不能下輪升成 new 把 1 fragment 上限吃掉。
       return cutoff is not None and row["mtime"] < cutoff
 
+    ended = session_end_times(connection)
+    now = time.time()
+
+    def closed(row):
+      moment = ended.get(row["session_id"])
+      return moment is not None and moment + SESSION_END_SLACK_SECONDS >= row["mtime"]
+
+    # 還在寫的 session 回件回來時原文多半已變，整段會被丟掉；等 SessionEnd 或安靜一段時間再送。
     new_rows = sorted(
-      (row for row in rows if not is_old(row)),
-      key=lambda row: (row["status"] == "failed", -row["mtime"], row["path"]),
+      (row for row in rows if not is_old(row) and (closed(row) or now - row["mtime"] >= args.quiet_seconds)),
+      key=lambda row: (row["status"] == "failed", not closed(row), -row["mtime"], row["path"]),
     )
     old_rows = [row for row in rows if is_old(row) and (members is None or row["inode"] in members)]
-    fragments = {"new": 0, "old": 0}
-    deadline = time.monotonic() + MAX_RUN_SECONDS
-
-    def consume_parallel(rows, budget):
-      pending = deque(rows)
-      active = {}
-      sessions = set()
-      remaining = budget
-
-      def resume(session_id, analyzer, response=None):
-        nonlocal remaining
-        try:
-          payload, shrinking = next(analyzer) if response is None else analyzer.send(response)
-        except StopIteration:
-          sessions.remove(session_id)
-          return
-        if not shrinking and (remaining <= 0 or time.monotonic() >= deadline):
-          analyzer.close()
-          sessions.remove(session_id)
-          return
-        # 已開始的 400/413 縮片保留原本的重送流程；只限制下一個新片段，不丟棄在途回件。
-        remaining -= 1
-        active[pool.submit(post_json, url, key, payload)] = (session_id, analyzer)
-
-      with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
-        while pending or active:
-          while pending and remaining > 0 and len(active) < MAX_CONCURRENT_SESSIONS and time.monotonic() < deadline:
-            for _ in range(len(pending)):
-              row = pending.popleft()
-              session_id = row["session_id"] or row["inode"]
-              if session_id not in sessions:
-                break
-              pending.append(row)
-            else:
-              break
-            raw, error = read_source(Path(row["path"]))
-            if error:
-              mark(connection, row["inode"], "missing", False, {"missing"}, row["excluded_thinking"])
-              connection.commit()
-              continue
-            analyzer = analyze_one(connection, row, raw, url, key, model, fragments, deadline, budget, rules_repo)
-            sessions.add(session_id)
-            resume(session_id, analyzer)
-          if not active:
-            break
-          done, _ = wait(active, return_when=FIRST_COMPLETED)
-          for future in done:
-            session_id, analyzer = active.pop(future)
-            resume(session_id, analyzer, future.result())
-      return budget - remaining
-
-    consume_parallel(new_rows, MAX_NEW_FRAGMENTS)
-    # 新片段還沒排空就另開歷史預算，會讓回填擋住新工作；失敗來源保留重試，但不永久堵住歷史。
-    new_pending = cutoff is not None and connection.execute(
-      "SELECT 1 FROM sources WHERE included = 1 AND status = 'pending' AND mtime >= ? LIMIT 1",
-      (cutoff,),
-    ).fetchone() is not None
     if window is None:
-      if not new_pending:
-        fragments["old"] = consume_parallel(old_rows, MAX_OLD_FRAGMENTS)
+      old_budget = MAX_OLD_FRAGMENTS
     else:
       update_history_review(connection)
-      if not new_pending and history_snapshot(connection)["status"] == "active":
-        deadline = time.monotonic() + MAX_RUN_SECONDS
-        fragments["old"] = consume_parallel(old_rows, MAX_CONCURRENT_SESSIONS)
+      old_budget = MAX_HISTORY_FRAGMENTS if history_snapshot(connection)["status"] == "active" else 0
+    fragments = {"new": 0, "old": 0}
+    deadline = time.monotonic() + MAX_RUN_SECONDS
+    queues = {"new": deque(new_rows), "old": deque(old_rows)}
+    remaining = {"new": MAX_NEW_FRAGMENTS, "old": old_budget}
+    active = {}
+    sessions = set()
+
+    def take(group):
+      queue = queues[group]
+      for _ in range(len(queue)):
+        row = queue.popleft()
+        if (row["session_id"] or row["inode"]) not in sessions:
+          return row
+        queue.append(row)
+      return None
+
+    def next_group():
+      busy_new = sum(1 for _, _, group in active.values() if group == "new")
+      old_waiting = remaining["old"] > 0 and bool(queues["old"])
+      # 新工作先佔槽，但歷史還有事時保留幾槽給它，避免新組永遠清不完時歷史一直排不到。
+      if remaining["new"] > 0 and queues["new"] and (not old_waiting or busy_new < MAX_CONCURRENT_SESSIONS - HISTORY_RESERVED_SLOTS):
+        return "new"
+      return "old" if old_waiting else None
+
+    def resume(session_id, group, analyzer, response=None):
+      try:
+        payload, shrinking = next(analyzer) if response is None else analyzer.send(response)
+      except StopIteration:
+        sessions.remove(session_id)
+        return
+      if not shrinking and (remaining[group] <= 0 or time.monotonic() >= deadline):
+        analyzer.close()
+        sessions.remove(session_id)
+        return
+      # 已開始的 400/413 縮片保留原本的重送流程；只限制下一個新片段，不丟棄在途回件。
+      remaining[group] -= 1
+      active[pool.submit(post_json, url, key, payload)] = (session_id, analyzer, group)
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
+      while queues["new"] or queues["old"] or active:
+        while len(active) < MAX_CONCURRENT_SESSIONS and time.monotonic() < deadline:
+          group = next_group()
+          row = take(group) if group else None
+          if row is None and group == "new" and remaining["old"] > 0 and queues["old"]:
+            group, row = "old", take("old")
+          if row is None:
+            break
+          raw, error = read_source(Path(row["path"]))
+          if error:
+            mark(connection, row["inode"], "missing", False, {"missing"}, row["excluded_thinking"])
+            connection.commit()
+            continue
+          session_id = row["session_id"] or row["inode"]
+          analyzer = analyze_one(connection, row, raw, url, key, model, fragments, deadline, remaining[group], rules_repo)
+          sessions.add(session_id)
+          resume(session_id, group, analyzer)
+        if not active:
+          break
+        done, _ = wait(active, return_when=FIRST_COMPLETED)
+        for future in done:
+          session_id, analyzer, group = active.pop(future)
+          resume(session_id, group, analyzer, future.result())
+    if window is not None:
       update_history_review(connection)
     connection.close()
   print(json.dumps({"command": "run", "fragments": fragments["new"], "concurrency": MAX_CONCURRENT_SESSIONS}))
@@ -2542,6 +2614,8 @@ def build_parser():
   parser.add_argument("--relay-url", default="http://127.0.0.1:8317")
   parser.add_argument("--self-session", default="")
   parser.add_argument("--rules-repo", default=str(Path.home() / ".claude"))
+  # SessionEnd 漏報時的兜底：多久沒寫入才視為已關閉。
+  parser.add_argument("--quiet-seconds", type=int, default=600)
   return parser
 
 
