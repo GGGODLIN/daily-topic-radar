@@ -54,6 +54,16 @@ RULE_TAGS_MISSING = "rule-tags-missing"
 RULES_DROPPED_CONTEXT = "rules-dropped-context"
 GIT_TIMEOUT_SECONDS = 10
 RULES_DIR = "rules/common/"
+# CC 每個 session 都會寫的系統資訊附件（環境、日期、清單、hook 注入、檔案快照等），不含對話事件；
+# 當成「讀不到」會讓每份都停在 partial。沒列在這裡的新種類仍標 unreadable-attachment，寧可保守。
+METADATA_ATTACHMENTS = frozenset({
+  "agent_listing_delta", "auto_mode", "bash_output_audience_note", "command_permissions", "compact_file_reference",
+  "credential_org", "date", "deferred_tools_delta", "deferred_tools_record", "edited_text_file", "environment", "file",
+  "hook_additional_context", "hook_blocking_error", "hook_system_message", "instructions", "invoked_skills", "language",
+  "mcp_instructions_delta", "nested_memory", "output_style", "output_style_instructions", "prompt_snapshot",
+  "read_truncation_notice", "session_context", "skill_listing", "skill_mention", "structured_output", "task_reminder",
+  "task_status", "ultra_effort_enter", "ultra_effort_exit",
+})
 LIST_ITEM_RE = re.compile(r"^(?:- |\d+\. )")
 ZERO_USE_WEEKS = 4
 ZERO_USE_HEADING = "## 🪦 零使用規則候選"
@@ -798,9 +808,12 @@ def build_document(raw, metadata_only=False, time_window=None, window_info=None,
         for key in ("stdout", "stderr", "text", "command")
         if isinstance(attachment.get(key), str)
       ]
-      if blobs:
+      if attachment.get("type") == "queued_command" and isinstance(attachment.get("prompt"), str):
+        # agent 忙時使用者先打好的訊息，送達時只存成附件；跳過它就漏掉使用者原話。
+        consume_block(attachment["prompt"], number, 0, offset, end, parts, images, limits, {**ctx, "role": "user-queued"})
+      elif blobs:
         consume_block("\n".join(blobs), number, 0, offset, end, parts, images, limits, ctx)
-      else:
+      elif attachment.get("type") not in METADATA_ATTACHMENTS:
         limits.add("unreadable-attachment")
     if isinstance(obj.get("hookAdditionalContext"), str):
       consume_block(obj["hookAdditionalContext"], number, 0, offset, end, parts, images, limits, ctx)
