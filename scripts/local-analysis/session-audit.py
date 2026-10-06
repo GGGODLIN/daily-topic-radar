@@ -50,8 +50,8 @@ MAX_CONCURRENT_SESSIONS = 21
 LEG_PAUSE_SECONDS = 1800
 # 只有直連腿設等待上限：它們的上游沒有 relay 的備援，一個不回的請求會一直佔住名額。free 刻意不設。
 DIRECT_LEG_TIMEOUT_SECONDS = 900
-GROK_PAUSE_PERCENT = 90
-# Grok 有 90% 額度鎖兜底，偶發錯誤只把該段改送 free；連續錯到這個次數才當成真的壞掉而暫停。
+GROK_PAUSE_PERCENT = 95
+# Grok 有 95% 額度鎖兜底，偶發錯誤只把該段改送 free；連續錯到這個次數才當成真的壞掉而暫停。
 # 其他直連腿沒有用量可查，錯一次就暫停（WorkBuddy 額度用完時每發都秒回錯誤）。
 LEG_FAILURES_BEFORE_PAUSE = {"grok-4.7": 3}
 # 取樣器每 5 分鐘一筆；太久沒更新等於不知道用量，寧可不用。
