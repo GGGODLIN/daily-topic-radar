@@ -134,6 +134,31 @@ class ReplyClassificationTests(fixtures.SessionAuditCliTest):
     self.assertEqual(report['rules']['last_seen'], [])
     self.assertIn('rule-tags-unverified', self.source_named(report, 's1.jsonl')['limitations'])
 
+  def test_truncated_reply_is_retried_with_a_smaller_fragment(self):
+    seen = []
+    def reply(body):
+      seen.append(len(fixtures.user_text(body)))
+      # 輸出被截斷通常是這段要寫的發現太多；切小後同一段能完整回覆。
+      if len(fixtures.user_text(body)) > 6000:
+        return fixtures.openai('{"continuity": "cut', finish='length'), 200
+      return fixtures.analysis([], rule_tags=[]), 200
+    _, url = self.provider(reply)
+    fixtures.write_jsonl(self.projects / 'work' / 's1.jsonl', fixtures.user_line('LONG_PROSE ' * 1000))
+    for _ in range(4):
+      self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
+    row = self.source_named(self.status(url), 's1.jsonl')
+    self.assertNotEqual(row['status'], 'failed', row)
+    self.assertNotIn('finish-length', row['limitations'])
+    self.assertTrue(any(size <= 6000 for size in seen), 'A truncated fragment must be resent smaller')
+
+  def test_reply_still_truncated_after_shrinking_stays_failed_as_truncated(self):
+    _, url = self.provider(lambda body: (fixtures.openai('{"continuity": "cut', finish='length'), 200))
+    fixtures.write_jsonl(self.projects / 'work' / 's1.jsonl', fixtures.user_line('ALWAYS_TOO_LONG ' * 1000))
+    self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
+    row = self.source_named(self.status(url), 's1.jsonl')
+    self.assertEqual(row['status'], 'failed')
+    self.assertIn('finish-length', row['limitations'])
+
   def test_http_failure_and_dropped_connection_are_not_complete_responses(self):
     fixtures.write_jsonl(self.projects / 'work' / 'http.jsonl', fixtures.user_line('HTTP_FAILURE'))
     fixtures.write_jsonl(self.projects / 'work' / 'dropped.jsonl', fixtures.user_line('DROPPED_CONNECTION'))

@@ -16,6 +16,7 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
   --started-at "$STARTED_AT" \
   --relay-config "${SESSION_AUDIT_RELAY_CONFIG:-$HOME/.cli-proxy-api/config.yaml}" \
   --keys-file "${SESSION_AUDIT_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}"
+# 分析器的發現量大且未經 review；放在 ~/.claude/friction 外，避免跟其他機制的摩擦混在一起、灌爆 trial-review。
 "$PY" "$DIR/session-audit.py" promote \
   --state "$STATE" \
-  --friction-root "${SESSION_AUDIT_FRICTION_ROOT:-$HOME/.claude/friction}"
+  --friction-root "${SESSION_AUDIT_FRICTION_ROOT:-$STATE/friction}"

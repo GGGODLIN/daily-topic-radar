@@ -14,25 +14,25 @@ history.fixtures.ThreadingHTTPServer.request_queue_size = 32
 
 class QueueTests(history.HistoryWindowTests):
   def test_failed_history_does_not_starve_unread_history_and_still_blocks_review(self):
-    # 失敗數要等於每輪歷史片段上限 40，第一輪才會剩下未讀來源。
-    for index in range(40):
+    # 失敗數要等於每輪歷史片段上限 120，第一輪才會剩下未讀來源。
+    for index in range(120):
       self.history_source(f'a-failed-{index:02}.jsonl', 'BROKEN_REPLY', '2026-10-02T00:00:00Z')
     self.history_source('z-unread.jsonl', 'UNREAD_HISTORY', '2026-10-02T00:00:00Z')
     server, url = self.provider(lambda body: ('not JSON', 200) if 'BROKEN_REPLY' in history.fixtures.user_text(body) else (history.fixtures.analysis([], rule_tags=[]), 200))
     self.assertEqual(self.run_window(url).returncode, 0)
     initial = self.status(url)['history_batch']
-    self.assertEqual(initial['failed'], 40)
+    self.assertEqual(initial['failed'], 120)
     self.assertEqual(initial['pending'], 1)
     server.bodies.clear()
     self.assertEqual(self.run_window(url).returncode, 0)
     self.assertTrue(any(b'UNREAD_HISTORY' in body for body in server.bodies), 'Failed sources must leave a send opportunity for unread history')
     batch = self.status(url)['history_batch']
     self.assertEqual(batch['complete'], 1)
-    self.assertEqual(batch['failed'], 40)
+    self.assertEqual(batch['failed'], 120)
     self.assertFalse(batch['ready_for_review'])
     server.bodies.clear()
     self.assertEqual(self.run_window(url).returncode, 0)
-    self.assertEqual(len(server.bodies), 40, 'Failed sources remain eligible; they were not silently dropped')
+    self.assertEqual(len(server.bodies), 120, 'Failed sources remain eligible; they were not silently dropped')
 
   def test_failed_live_sources_do_not_starve_other_live_sources(self):
     for index in range(16):

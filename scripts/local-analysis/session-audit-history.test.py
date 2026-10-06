@@ -65,15 +65,15 @@ class HistoryWindowTests(fixtures.SessionAuditCliTest):
     self.assertEqual(server.bodies, [], 'Reaching review must not automatically schedule older history')
 
   def test_history_progresses_without_rolling_the_window_and_missed_sources_are_added(self):
-    # 每輪歷史片段上限 40；多兩份才看得出「本輪沒做完、窗口不滾動」。
-    for index in range(42):
+    # 每輪歷史片段上限 120；多兩份才看得出「本輪沒做完、窗口不滾動」。
+    for index in range(122):
       self.history_source(f'old-{index:02}.jsonl', f'BATCH_MEMBER_{index:02}', '2026-10-02T00:00:00Z')
     server, url = self.provider()
     done = self.run_window(url)
     self.assertEqual(done.returncode, 0, done.stderr)
     first = self.status(url)['history_batch']
-    self.assertEqual(first['total'], 42)
-    self.assertEqual(first['complete'], 40)
+    self.assertEqual(first['total'], 122)
+    self.assertEqual(first['complete'], 120)
     self.assertEqual(first['remaining'], 2)
     self.assertFalse(first['ready_for_review'])
     self.history_source('late.jsonl', 'LATE_DISCOVERY', '2026-10-03T00:00:00Z')
@@ -81,8 +81,8 @@ class HistoryWindowTests(fixtures.SessionAuditCliTest):
     final = self.status(url)['history_batch']
     self.assertEqual(final['since'], SINCE)
     self.assertEqual(final['until'], UNTIL)
-    self.assertEqual(final['total'], 43)
-    self.assertEqual(final['complete'], 43)
+    self.assertEqual(final['total'], 123)
+    self.assertEqual(final['complete'], 123)
     self.assertEqual(final['status'], 'review')
     self.assertEqual(final['remaining'], 0)
     self.assertIn(b'LATE_DISCOVERY', b''.join(server.bodies))

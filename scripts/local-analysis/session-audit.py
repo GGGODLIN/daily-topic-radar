@@ -38,7 +38,7 @@ CONTINUITY_RESERVE = 1500
 MAX_RESPONSE_BYTES = 262144
 MAX_NEW_FRAGMENTS = 16
 MAX_OLD_FRAGMENTS = 1
-MAX_HISTORY_FRAGMENTS = 40
+MAX_HISTORY_FRAGMENTS = 120
 # 只限制「何時停止開新片段」，不取消在途請求；排程每 300 秒一輪，留尾巴給在途回件。
 MAX_RUN_SECONDS = 240
 MAX_CONCURRENT_SESSIONS = 10
@@ -1678,6 +1678,7 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
     accepted_source = 0
     used_images = []
     with_rules = rules_ctx is not None
+    exhausted = "context-failed"
     for _shrink in range(6):
       payload, sent, used_images, skipped = request_payload(
         model, continuity[:CONTINUITY_RESERVE], attempt, images, rules_ctx["block"] if with_rules else None
@@ -1706,6 +1707,11 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
         connection.commit()
         return produced
       content, failure = message_from_response(body)
+      if failure == "finish-length" and len(sent) > 400:
+        # 截斷多半是這段要寫的發現太多；原樣重送只會再被截一次，改送前半段。
+        exhausted = failure
+        attempt = sent[: max(200, len(sent) // 2)]
+        continue
       if failure:
         mark(connection, row["inode"], "failed", False, blocking | noted | {failure}, thinking)
         connection.commit()
@@ -1751,7 +1757,7 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       )
       break
     if accepted is None or accepted_source <= 0:
-      mark(connection, row["inode"], "failed", False, blocking | noted | {"context-failed"}, thinking)
+      mark(connection, row["inode"], "failed", False, blocking | noted | {exhausted}, thinking)
       connection.commit()
       return produced
     advance = accepted_source
