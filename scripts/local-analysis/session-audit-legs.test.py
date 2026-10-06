@@ -68,8 +68,6 @@ class DirectLegTests(population.PopulationTests):
       seen.append(self.model_of(body))
       if self.model_of(body) == 'workbuddy-v41':
         return '{"error": "insufficient credits"}', 402
-      if self.model_of(body) == 'grok-4.7':
-        return None, 200
       return fixtures.analysis([], rule_tags=[]), 200
 
     _, url = self.provider(reply)
@@ -78,11 +76,58 @@ class DirectLegTests(population.PopulationTests):
     rows = [row for row in self.status(url)['sources'] if row['included']]
     self.assertTrue(all(row['status'] == 'complete' for row in rows), rows)
     self.assertIn('workbuddy-v41', seen)
-    self.assertIn('grok-4.7', seen)
-    self.source('work/later.jsonl', 'AFTER_PAUSE')
+    for index in range(3):
+      self.source(f'work/later-{index}.jsonl', f'AFTER_PAUSE_{index}')
     seen.clear()
     self.assertEqual(self.cli(['run', *flags]).returncode, 0)
-    self.assertEqual(set(seen), {'free'}, 'Failed legs stay paused instead of failing every request again')
+    self.assertNotIn('workbuddy-v41', seen, 'Failed legs stay paused instead of failing every request again')
+
+  def test_grok_keeps_its_slots_after_an_isolated_error(self):
+    self.sessions(3)
+    seen = []
+    lock = threading.Lock()
+
+    def reply(body):
+      model = self.model_of(body)
+      with lock:
+        seen.append(model)
+        first_grok = model == 'grok-4.7' and seen.count('grok-4.7') == 1
+      if first_grok:
+        return '{"error": "upstream"}', 500
+      return fixtures.analysis([], rule_tags=[]), 200
+
+    _, url = self.provider(reply)
+    flags = self.leg_flags(url, self.grok_usage(40))
+    self.assertEqual(self.cli(['run', *flags]).returncode, 0)
+    rows = [row for row in self.status(url)['sources'] if row['included']]
+    self.assertTrue(all(row['status'] == 'complete' for row in rows), rows)
+    for index in range(3):
+      self.source(f'work/later-{index}.jsonl', f'AFTER_BLIP_{index}')
+    seen.clear()
+    self.assertEqual(self.cli(['run', *flags]).returncode, 0)
+    self.assertIn('grok-4.7', seen, 'Below the quota line one Grok error must not cost it 30 minutes of slots')
+
+  def test_grok_pauses_after_repeated_errors(self):
+    self.sessions(12)
+    seen = []
+
+    def reply(body):
+      seen.append(self.model_of(body))
+      if self.model_of(body) == 'grok-4.7':
+        return '{"error": "upstream"}', 500
+      return fixtures.analysis([], rule_tags=[]), 200
+
+    _, url = self.provider(reply)
+    flags = self.leg_flags(url, self.grok_usage(40))
+    self.assertEqual(self.cli(['run', *flags]).returncode, 0)
+    rows = [row for row in self.status(url)['sources'] if row['included']]
+    self.assertTrue(all(row['status'] == 'complete' for row in rows), rows)
+    self.assertGreaterEqual(seen.count('grok-4.7'), 3)
+    for index in range(3):
+      self.source(f'work/later-{index}.jsonl', f'AFTER_OUTAGE_{index}')
+    seen.clear()
+    self.assertEqual(self.cli(['run', *flags]).returncode, 0)
+    self.assertNotIn('grok-4.7', seen, 'A Grok that keeps failing is paused instead of eating every request')
 
   def test_grok_is_skipped_at_ninety_percent_or_when_usage_is_unknown(self):
     self.sessions(3)

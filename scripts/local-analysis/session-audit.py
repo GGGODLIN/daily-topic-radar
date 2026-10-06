@@ -50,6 +50,9 @@ LEG_PAUSE_SECONDS = 1800
 # 只有直連腿設等待上限：它們的上游沒有 relay 的備援，一個不回的請求會一直佔住名額。free 刻意不設。
 DIRECT_LEG_TIMEOUT_SECONDS = 900
 GROK_PAUSE_PERCENT = 90
+# Grok 有 90% 額度鎖兜底，偶發錯誤只把該段改送 free；連續錯到這個次數才當成真的壞掉而暫停。
+# 其他直連腿沒有用量可查，錯一次就暫停（WorkBuddy 額度用完時每發都秒回錯誤）。
+LEG_FAILURES_BEFORE_PAUSE = {"grok-4.7": 3}
 # 取樣器每 5 分鐘一筆；太久沒更新等於不知道用量，寧可不用。
 GROK_SAMPLE_MAX_AGE_SECONDS = 1800
 LEG_FALLBACK_FAILURES = frozenset({"bad-model-json", "empty-model-content", "finish-unconfirmed"})
@@ -2031,6 +2034,8 @@ def cmd_run(args):
         future = pool.submit(post_json, url, key, {**payload, "model": leg}, DIRECT_LEG_TIMEOUT_SECONDS)
       active[future] = (session_id, analyzer, group, leg, payload)
 
+    consecutive_failures = {}
+
     def pause_leg(leg):
       # 這條腿暫停期間的名額讓回 free；下一輪起由 leg_pauses 擋住，不反覆撞同一個額度牆。
       connection.execute(
@@ -2080,10 +2085,12 @@ def cmd_run(args):
           if leg != "free" and (code != 200 or message_from_response(body)[1] in LEG_FALLBACK_FAILURES):
             # 直連腿額度用完、斷線或回空時，同一段改送 free；不讓那條腿的狀況變成來源失敗。
             print(f"session-audit: leg-fallback {leg} http-{code}", file=sys.stderr)
-            if leg in capacity:
+            consecutive_failures[leg] = consecutive_failures.get(leg, 0) + 1
+            if leg in capacity and consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE.get(leg, 1):
               pause_leg(leg)
             send(session_id, analyzer, group, "free", payload)
             continue
+          consecutive_failures[leg] = 0
           resume(session_id, group, analyzer, (code, body))
     if window is not None:
       update_history_review(connection)
