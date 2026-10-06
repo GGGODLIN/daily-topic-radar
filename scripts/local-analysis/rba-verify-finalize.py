@@ -143,6 +143,7 @@ def validate_sampler_binding(primary, trusted):
   )
 
 
+# batch_id 是識別鍵（同日同批的身分與去重），不是防竄改驗證；不要拿它回驗自己寫出的 manifest。
 def digest(value):
   encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
   return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -154,10 +155,6 @@ def batch_id(date, samples):
     key=lambda item: (item["session"], item["invoke"]),
   )
   return digest({"date": date, "samples": identities})
-
-
-def content_id(date, eligible, samples):
-  return digest({"date": date, "eligible": eligible, "samples": samples})
 
 
 def merge_verifier(samples, verifier):
@@ -234,7 +231,7 @@ def json_line(value):
   return encoded.replace(" ", "\\u2028").replace(" ", "\\u2029")
 
 
-def canonical_row(date, packet, content, eligible, sample):
+def canonical_row(date, packet, eligible, sample):
   return {
     "date": date,
     "eligible": eligible,
@@ -245,7 +242,6 @@ def canonical_row(date, packet, content, eligible, sample):
     "R3": sample["R3"],
     "note": sample["note"],
     "packet": packet,
-    "content": content,
   }
 
 
@@ -262,7 +258,7 @@ def single_line(value):
   return flattened.replace("⚠", "").replace("🚨", "").strip()
 
 
-def render_report(date, eligible, samples, ledger_count, packet, content, escalate):
+def render_report(date, eligible, samples, ledger_count, packet, escalate):
   fail_count = sum(sample[rubric] == "FAIL" for sample in samples for rubric in RUBRICS)
   lines = [
     "## 掃描範圍",
@@ -271,7 +267,6 @@ def render_report(date, eligible, samples, ledger_count, packet, content, escala
     f"本週抽驗：{len(samples)} 個",
     f"ledger 累計抽驗數：{ledger_count}",
     f"<!-- rba-packet:{packet} -->",
-    f"<!-- rba-content:{content} -->",
     "",
     "## 抽驗結果",
   ]
@@ -298,29 +293,24 @@ def render_report(date, eligible, samples, ledger_count, packet, content, escala
 
 def report_receipt(path):
   if not path.exists():
-    return None, None
+    return None
   report = path.read_text(encoding="utf-8")
   packet_match = re.search(r"<!-- rba-packet:([0-9a-f]{64}) -->", report)
-  content_match = re.search(r"<!-- rba-content:([0-9a-f]{64}) -->", report)
-  return (
-    packet_match.group(1) if packet_match else None,
-    content_match.group(1) if content_match else None,
-  )
+  return packet_match.group(1) if packet_match else None
 
 
 def read_manifest(path):
   if not path.exists():
     return None
   manifest = json.loads(path.read_text(encoding="utf-8"))
-  require(exact_keys(manifest, {"date", "eligible", "samples", "packet", "content"}), "invalid manifest")
+  # 舊 manifest 多帶一個 content 摘要欄；讀到時忽略、不驗。
+  manifest = {key: value for key, value in manifest.items() if key != "content"}
+  require(exact_keys(manifest, {"date", "eligible", "samples", "packet"}), "invalid manifest")
   validate_packets(
     {"eligible": manifest["eligible"], "samples": manifest["samples"]},
     {"missed_claims": [], "false_greens": []},
   )
   require(re.fullmatch(r"[0-9a-f]{64}", manifest["packet"]) is not None, "invalid manifest packet")
-  require(re.fullmatch(r"[0-9a-f]{64}", manifest["content"]) is not None, "invalid manifest content")
-  require(batch_id(manifest["date"], manifest["samples"]) == manifest["packet"], "manifest packet mismatch")
-  require(content_id(manifest["date"], manifest["eligible"], manifest["samples"]) == manifest["content"], "manifest content mismatch")
   return manifest
 
 
@@ -417,32 +407,25 @@ def main():
 
     samples = preserve_existing_failures(samples, current_rows)
     packet = batch_id(options.date, samples)
-    content = content_id(options.date, eligible, samples)
     manifest = {
       "date": options.date,
       "eligible": eligible,
       "samples": samples,
       "packet": packet,
-      "content": content,
     }
     existing_packets = {row.get("packet") for row in current_rows if row.get("packet")}
-    existing_contents = {row.get("content") for row in current_rows if row.get("content")}
     if current_rows and not existing_packets:
       existing_packets.add(batch_id(options.date, current_rows))
-    existing_report_packet, existing_report_content = report_receipt(report_path)
+    existing_report_packet = report_receipt(report_path)
     if existing_report_packet:
       existing_packets.add(existing_report_packet)
-    if existing_report_content:
-      existing_contents.add(existing_report_content)
     if any(existing != packet for existing in existing_packets):
       raise SystemExit("rba finalizer refused a different batch for the same date")
-    if any(existing != content for existing in existing_contents):
-      raise SystemExit("rba finalizer refused changed content for the same packet")
-    rows = [canonical_row(options.date, packet, content, eligible, sample) for sample in samples]
+    rows = [canonical_row(options.date, packet, eligible, sample) for sample in samples]
     ledger_lines = historical + [json_line(row) for row in rows]
     ledger_content = "\n".join(ledger_lines) + ("\n" if ledger_lines else "")
     escalate = previous_week_failed(parsed_rows, options.date)
-    report_content = render_report(options.date, eligible, samples, historical_reviews + len(rows), packet, content, escalate)
+    report_content = render_report(options.date, eligible, samples, historical_reviews + len(rows), packet, escalate)
     manifest_content = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     replace_file(manifest_path, manifest_content)
     replace_file(ledger_path, ledger_content)

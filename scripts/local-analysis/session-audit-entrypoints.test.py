@@ -34,7 +34,7 @@ class ReportEntrypointTest(unittest.TestCase):
     result = self.run_reader()
     self.assertEqual(result.returncode, 0, result.stderr)
     self.assertTrue(self.out.is_file())
-    self.assertTrue(Path(str(self.out) + '.complete.sha256').is_file())
+    self.assertTrue(Path(str(self.out) + '.complete').is_file())
     self.assertFalse(self.state.exists())
     self.assertIn('sources=0', self.out.read_text())
 
@@ -43,7 +43,7 @@ class ReportEntrypointTest(unittest.TestCase):
     result = self.run_reader()
     self.assertNotEqual(result.returncode, 0)
     self.assertFalse(self.out.exists())
-    self.assertFalse(Path(str(self.out) + '.complete.sha256').exists())
+    self.assertFalse(Path(str(self.out) + '.complete').exists())
 
   def test_corrupt_state_does_not_publish_zero_as_a_successful_report(self):
     self.state.mkdir()

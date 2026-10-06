@@ -502,7 +502,8 @@ if python3 - "$TMP/baseline.json" <<'PY'
 import json
 import sys
 data = json.load(open(sys.argv[1]))
-assert data.get("terms_sha256")
+assert data.get("terms_text")
+assert not any("sha" in key or "hash" in key for key in data)
 assert "stealth/new-alpha" in data.get("candidate_ids", [])
 assert data.get("issue") == "active-model-missing"
 PY
@@ -635,19 +636,20 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 data = json.loads(path.read_text())
-data.pop("terms_hash_scope", None)
+data.pop("terms_text", None)
+data["terms_hash_scope"] = "article-v1"
 data["terms_sha256"] = "legacy-whole-page-hash"
 path.write_text(json.dumps(data))
 PY
 set_scenario "healthy"
 rm -f "$TMP/report.md" "$TMP/stdout" "$TMP/stderr"
 run_wrapper_expect_success
-if grep -q '^# ccp-free baseline 遷移' "$TMP/report.md" && grep -q '舊 hash 與新 hash 不可直接比較' "$TMP/report.md" && ! grep -q 'Stealth terms 已變更' "$TMP/report.md"; then
-  pass "Stealth hash scope migration 明示不可比較"
+if grep -q '^# ccp-free baseline 遷移' "$TMP/report.md" && grep -q '舊 baseline 沒有條款原文' "$TMP/report.md" && ! grep -q 'Stealth terms 已變更' "$TMP/report.md"; then
+  pass "舊 hash baseline 視為尚無 baseline 並明示不可比較"
 else
-  fail "Stealth hash scope migration 缺少一次性資訊 finding"
+  fail "舊 hash baseline 缺少一次性資訊 finding"
 fi
-assert_eq "Stealth baseline 記錄 article scope" "article-v1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["terms_hash_scope"])' "$TMP/baseline.json")"
+assert_eq "Stealth baseline 改存條款原文且不留舊 hash 欄" "terms-v1 none" "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["terms_text"], "none" if not any("sha" in k or "hash" in k for k in d) else "leftover")' "$TMP/baseline.json")"
 set_scenario "terms-shell-change"
 rm -f "$TMP/report.md" "$TMP/stdout" "$TMP/stderr"
 run_wrapper_expect_success
@@ -656,9 +658,9 @@ set_scenario "terms-change"
 rm -f "$TMP/report.md" "$TMP/stdout" "$TMP/stderr"
 run_wrapper_expect_success
 if grep -q '^# ccp-free 需要處理' "$TMP/report.md" && grep -q 'Stealth terms 已變更' "$TMP/report.md"; then
-  pass "Stealth terms hash 變更產生 finding"
+  pass "Stealth terms 原文變更產生 finding"
 else
-  fail "Stealth terms hash 變更缺少 finding"
+  fail "Stealth terms 原文變更缺少 finding"
 fi
 
 set_scenario "healthy"

@@ -11,11 +11,8 @@ const date = '2026-09-27'
 const out = '/Users/linhancheng/code/social-info/reports/local-analysis'
 const nonce = '1'.repeat(64)
 const attempt = '2'.repeat(64)
-const samplesHash = '3'.repeat(64)
-const fileHash = '4'.repeat(64)
 const challenge = '5'.repeat(64)
 const reauditNonce = '6'.repeat(64)
-const reauditHash = '7'.repeat(64)
 
 const run = async ({ withPass = false, badPrimaryIndex = false, badReauditIndex = false, copiedMembers = false, topViolations } = {}) => {
   const calls = []
@@ -23,8 +20,6 @@ const run = async ({ withPass = false, badPrimaryIndex = false, badReauditIndex 
     index: index + 1,
     range: { start: index * 5 + 1, end: index * 5 + 5 },
     path: `${out}/${date}-evidence-level-samples-batch-${index + 1}.txt`,
-    batch_sha256: String(index + 1).repeat(64),
-    samples_sha256: samplesHash,
     audit_nonce: nonce,
   }))
   if (copiedMembers) batches[0].members = [{ path: '/model-invented/path' }]
@@ -34,14 +29,12 @@ const run = async ({ withPass = false, badPrimaryIndex = false, badReauditIndex 
     if (label === 'evidence-level-due') return { date, due: true, last_success_date: null, days_since: null }
     if (label === 'evidence-level-sampler') return {
       date, due: true, last_success_date: null, days_since: null, eligible: 20, sample_count: 20,
-      samples_sha256: samplesHash, samples_file_sha256: fileHash, audit_nonce: nonce, attempt_nonce: attempt,
-      batches, manifest_hash: '8'.repeat(64), challenge,
+      audit_nonce: nonce, attempt_nonce: attempt, batches, challenge,
     }
     if (label.startsWith('evidence-level-audit-batch-')) {
       const batch = batches[Number(label.at(-1)) - 1]
       return {
         audit_nonce: nonce, attempt_nonce: attempt, batch_index: batch.index, range: batch.range,
-        batch_sha256: batch.batch_sha256, samples_sha256: samplesHash,
         rows: Array.from({ length: 5 }, (_, index) => {
           const sampleIndex = batch.range.start + index
           const pass = withPass && sampleIndex === 6
@@ -53,13 +46,13 @@ const run = async ({ withPass = false, badPrimaryIndex = false, badReauditIndex 
         }),
       }
     }
-    if (label === 'evidence-level-reaudit-preparer') return { date, reaudit_sample_count: 1, reaudit_samples_file_sha256: reauditHash, reaudit_nonce: reauditNonce }
+    if (label === 'evidence-level-reaudit-preparer') return { date, reaudit_sample_count: 1, reaudit_nonce: reauditNonce }
     if (label === 'evidence-level-reaudit') return { audit_nonce: reauditNonce, rows: [{ sample_index: badReauditIndex ? 6 : 1, result: 'PASS', findings: [] }] }
     if (label === 'evidence-level-finalizer') return {
       date, ok: true, report_path: `${out}/${date}-evidence-level.md`, manifest_path: `${out}/${date}-evidence-level-manifest.json`,
       eligible: 20, sample_count: 20, tp_style_violation_count: withPass ? 19 : 20,
-      samples_sha256: samplesHash, samples_file_sha256: fileHash, audit_nonce: nonce,
-      reaudit_sample_count: withPass ? 1 : 0, reaudit_samples_file_sha256: withPass ? reauditHash : null,
+      audit_nonce: nonce,
+      reaudit_sample_count: withPass ? 1 : 0,
       reaudit_nonce: withPass ? reauditNonce : null,
       top_violations: topViolations ?? [{ type: 'unsourced-number', count: withPass ? 19 : 20 }], challenge,
     }

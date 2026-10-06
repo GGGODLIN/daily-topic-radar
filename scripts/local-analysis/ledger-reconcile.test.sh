@@ -171,10 +171,9 @@ check "next_due 空白 -> 非 0 退出" 1 "$?"
 
 echo "== 沒有 --apply 不得改動 ledger =="
 cp "$TMP/gates.jsonl" "$TMP/untouched.jsonl"
-BEFORE=$(shasum -a 256 < "$TMP/untouched.jsonl")
+cp "$TMP/untouched.jsonl" "$TMP/untouched.before"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/untouched.jsonl" --findings "$TMP/f1.json" --no-health >/dev/null 2>&1
-AFTER=$(shasum -a 256 < "$TMP/untouched.jsonl")
-check "dry-run ledger 位元不變" "$BEFORE" "$AFTER"
+check "dry-run ledger 位元不變" 0 "$(cmp -s "$TMP/untouched.before" "$TMP/untouched.jsonl" && printf 0 || printf 1)"
 check "dry-run 不建立 sibling lock" 0 "$([ ! -e "$TMP/untouched.jsonl.lock" ] && printf 0 || printf 1)"
 
 echo "== findings channel 白名單：旁路要 fail-closed =="
@@ -192,12 +191,11 @@ cat > "$TMP/near-channel.json" <<'EOF'
 EOF
 for case_name in missing-channel unknown-channel beads-channel near-channel; do
   cp "$TMP/gates.jsonl" "$TMP/$case_name.jsonl"
-  BEFORE=$(shasum -a 256 < "$TMP/$case_name.jsonl")
+  cp "$TMP/$case_name.jsonl" "$TMP/$case_name.before"
   python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/$case_name.jsonl" --findings "$TMP/$case_name.json" --apply --no-health >/dev/null 2>&1
   STATUS=$?
-  AFTER=$(shasum -a 256 < "$TMP/$case_name.jsonl")
   check "$case_name -> 非 0 退出" 1 "$STATUS"
-  check "$case_name -> ledger 位元不變" "$BEFORE" "$AFTER"
+  check "$case_name -> ledger 位元不變" 0 "$(cmp -s "$TMP/$case_name.before" "$TMP/$case_name.jsonl" && printf 0 || printf 1)"
 done
 
 cat > "$TMP/ledger-lifecycle-channel.json" <<'EOF'

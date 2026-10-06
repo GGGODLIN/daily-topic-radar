@@ -5,17 +5,12 @@ WRAPPER="$1"
 OUT="$2"
 ANALYSIS_DATE="$3"
 FORCE="${4:-false}"
-MARKER="$OUT.complete.sha256"
-OUT_DIR="$(dirname "$OUT")"
-OUT_NAME="$(basename "$OUT")"
-MARKER_NAME="$(basename "$MARKER")"
+# 完成標記只表示這份報告由本 runner 寫完；沒有它的報告（被中斷或手寫）不重用。
+MARKER="$OUT.complete"
 
-mkdir -p "$OUT_DIR"
+mkdir -p "$(dirname "$OUT")"
 
-if [ "$FORCE" != "true" ] && [ -s "$OUT" ] && [ -s "$MARKER" ] && (
-  cd "$OUT_DIR"
-  shasum -a 256 -c "$MARKER_NAME" >/dev/null 2>&1
-); then
+if [ "$FORCE" != "true" ] && [ -s "$OUT" ] && [ -s "$MARKER" ]; then
   exit 0
 fi
 
@@ -33,9 +28,6 @@ if [ ! -s "$OUT" ]; then
   rm -f "$OUT"
   exit 1
 fi
-(
-  cd "$OUT_DIR"
-  shasum -a 256 "$OUT_NAME" > "$MARKER_NAME.tmp"
-  mv "$MARKER_NAME.tmp" "$MARKER_NAME"
-)
+printf '%s\n' "$ANALYSIS_DATE" > "$MARKER.tmp"
+mv "$MARKER.tmp" "$MARKER"
 rm -f "$BACKUP"

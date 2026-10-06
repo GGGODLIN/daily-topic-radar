@@ -6,7 +6,6 @@
 """
 
 import fcntl
-import hashlib
 import importlib.util
 import json
 import os
@@ -839,10 +838,10 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(other["classification"], "human-main")
     self.assertTrue(other["included"])
 
-  def test_source_hash_unchanged_after_read(self):
+  def test_source_bytes_unchanged_after_read(self):
     path = self.projects / "work" / "hash.jsonl"
     write_jsonl(path, user_line("QUOTE_HASH"))
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    original = path.read_bytes()
     server = serve(lambda body: (analysis([finding("QUOTE_HASH")]), 200))
     self.addCleanup(stop, server)
     url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -852,7 +851,7 @@ class SessionAuditCliTest(unittest.TestCase):
         stdin = json.dumps({"hook_event_name": "SessionEnd", "session_id": "s1"})
       proc = self.cli([command, *self.flags(url)], stdin=stdin)
       self.assertEqual(proc.returncode, 0, proc.stderr)
-    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+    self.assertEqual(path.read_bytes(), original)
 
   def test_state_symlink_hardlink_fifo_refuse_without_hanging(self):
     real = self.root / "real-state"
@@ -1580,7 +1579,7 @@ class SessionAuditCliTest(unittest.TestCase):
       check=False,
     )
     self.assertEqual(ran.returncode, 0, ran.stderr)
-    self.assertTrue(Path(str(out_file) + ".complete.sha256").is_file())
+    self.assertTrue(Path(str(out_file) + ".complete").is_file())
 
   def test_deleted_source_does_not_abort_the_rest(self):
     write_jsonl(self.projects / "work" / "gone.jsonl", user_line("GONE_MARKER"))

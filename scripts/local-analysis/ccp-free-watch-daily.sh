@@ -22,7 +22,6 @@ mkdir -p "$(dirname "$CCP_FREE_WATCH_OUT")" "$(dirname "$CCP_FREE_WATCH_LOG")" "
 python3 - <<'PY' >> "$CCP_FREE_WATCH_LOG" 2>&1
 import datetime
 import decimal
-import hashlib
 import html
 import json
 import math
@@ -48,7 +47,6 @@ date = os.environ["CCP_FREE_WATCH_DATE"]
 now = None
 min_context = 0
 secrets = []
-TERMS_HASH_SCOPE = "article-v1"
 
 
 def safe_output(value):
@@ -105,6 +103,7 @@ def request(url, token=None):
     return response.read()
 
 
+# 只留條款 article 的純文字；頁面外框改版不算條款變更。
 def normalize_terms(raw):
   text = raw.decode("utf-8", "replace")
   article = re.search(r"<article\b[^>]*>(.*?)</article>", text, flags=re.S | re.I)
@@ -113,7 +112,7 @@ def normalize_terms(raw):
   text = re.sub(r"<(script|style)\b.*?</\1>", " ", article.group(1), flags=re.S | re.I)
   text = re.sub(r"<[^>]+>", " ", text)
   text = html.unescape(text)
-  return re.sub(r"\s+", " ", text).strip().encode("utf-8")
+  return re.sub(r"\s+", " ", text).strip()
 
 
 def request_json(url, token=None):
@@ -454,7 +453,7 @@ try:
         "- 建議：建立新的限額 key並重新驗證 route。",
         "- 拍板：處理／忽略／延後",
       ]
-  terms_hash = hashlib.sha256(normalize_terms(request(terms_url))).hexdigest()
+  terms_text = normalize_terms(request(terms_url))
   qualified = []
   candidate_diagnostics = []
   for model in models:
@@ -519,20 +518,13 @@ try:
     "key_limit": key_data.get("limit"),
     "key_limit_remaining": key_data.get("limit_remaining"),
     "is_free_tier": key_data.get("is_free_tier"),
-    "terms_sha256": terms_hash,
-    "terms_hash_scope": TERMS_HASH_SCOPE,
+    "terms_text": terms_text,
     "candidate_ids": sorted((previous_candidates & set(qualified)) | set(passed_candidates)),
     "checked_on": date,
   }
-  terms_scope_migrated = bool(
-    previous.get("terms_sha256") and
-    previous.get("terms_hash_scope") != TERMS_HASH_SCOPE
-  )
-  terms_changed = bool(
-    previous.get("terms_hash_scope") == TERMS_HASH_SCOPE and
-    previous.get("terms_sha256") and
-    previous.get("terms_sha256") != terms_hash
-  )
+  # 舊 baseline 只存條款摘要、沒有原文可比，視為尚無 baseline：本輪重建，不宣稱條款有變或沒變。
+  terms_scope_migrated = bool(previous.get("terms_sha256") and not previous.get("terms_text"))
+  terms_changed = bool(previous.get("terms_text") and previous["terms_text"] != terms_text)
   credential_changed = bool(credential_issue and (
     previous.get("credential_issue") != credential_issue or previous.get("key_expires_at") != expires_at
   ))
@@ -565,10 +557,10 @@ try:
     lines.extend(credential_lines + [""])
   if terms_scope_migrated:
     lines.extend([
-      "## 🛠 Stealth terms hash scope 已遷移",
+      "## 🛠 Stealth terms baseline 已重建",
       "",
-      "- 現象：舊 baseline 沒有 article-v1 scope；舊 hash 與新 hash 不可直接比較。",
-      "- 影響：本輪只建立 article-only baseline，不宣稱條款有變或沒變。",
+      "- 現象：舊 baseline 沒有條款原文，無法與本輪條款比對。",
+      "- 影響：本輪只建立 article-only 原文 baseline，不宣稱條款有變或沒變。",
       "- 後續：下一輪開始才做 article-to-article 比較。",
       "",
     ])
@@ -576,7 +568,7 @@ try:
     lines.extend([
       "## ⚠️ Stealth terms 已變更",
       "",
-      "- 現象：OpenRouter Stealth Terms 內容 hash 與前次 baseline 不同。",
+      "- 現象：OpenRouter Stealth Terms 條款原文與前次 baseline 不同。",
       "- 根因：未查",
       "- 建議：重新閱讀條款後決定是否維持 active preview。",
       "- 拍板：處理／忽略／延後",

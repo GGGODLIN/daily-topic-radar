@@ -10,6 +10,8 @@ WORKFLOW="/Users/linhancheng/.claude/workflows/local-analysis.js"
 HOOK="/Users/linhancheng/.claude/hooks/daily-local-analysis-trigger.sh"
 TMP="$(mktemp -d)"
 trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
+SNAP="$TMP/snapshots"
+mkdir -p "$SNAP"
 PROJECTS="$TMP/projects"
 LEDGER="$TMP/ledger.jsonl"
 
@@ -192,6 +194,18 @@ test "$(jq -s '[.[] | select(.date == "2026-08-04")] | length' "$FINAL_LEDGER")"
 test "$(jq -s '[.[] | select(.date == "2026-08-04" and (has("eligible") or has("packet")))] | length' "$FINAL_LEDGER")" = "0"
 test "$(jq -s '[.[] | select(.date == "2026-08-05")] | length' "$FINAL_LEDGER")" = "3"
 grep -F '共 6 個 rubric FAIL' "$FINAL_REPORT" >/dev/null
+# 自產 manifest／ledger／report 不再帶 content 摘要；packet 是識別鍵，保留。
+test "$(jq 'has("content") or (has("packet") | not)' "$FINAL_MANIFEST")" = "false"
+test "$(jq -s '[.[] | select(.date == "2026-08-05" and (has("content") or (has("packet") | not)))] | length' "$FINAL_LEDGER")" = "0"
+test "$(grep -c 'rba-content' "$FINAL_REPORT")" = "0"
+# 舊 manifest 帶 content 摘要欄時照常讀取、不驗。
+LEGACY_MANIFEST_CASE="$TMP/legacy-manifest-case"
+mkdir -p "$LEGACY_MANIFEST_CASE"
+cp "$FINAL_LEDGER" "$LEGACY_MANIFEST_CASE/ledger.jsonl"
+cp "$FINAL_REPORT" "$LEGACY_MANIFEST_CASE/report.md"
+jq -c '. + {content: ("f" * 64)}' "$FINAL_MANIFEST" > "$LEGACY_MANIFEST_CASE/report.json"
+python3 "$FINALIZER" "${FINALIZER_COMMON[@]}" --date 2026-08-05 --primary-b64 "$primary_b64" --verifier-b64 "$verifier_b64" --ledger "$LEGACY_MANIFEST_CASE/ledger.jsonl" --report "$LEGACY_MANIFEST_CASE/report.md" >/dev/null
+test "$(jq 'has("content")' "$LEGACY_MANIFEST_CASE/report.json")" = "false"
 test "$(python3 -c 'from pathlib import Path; print(Path(__import__("sys").argv[1]).read_bytes().startswith("## 掃描範圍".encode()))' "$FINAL_REPORT")" = 'True'
 
 MERGE_CASE="$TMP/merge-case"
@@ -208,20 +222,20 @@ test "$(jq -r '.R1 + ":" + .R2 + ":" + .R3' "$MERGE_CASE/ledger.jsonl")" = "FAIL
 grep -F 'primary fail' "$MERGE_CASE/ledger.jsonl" >/dev/null
 grep -F 'missed-one' "$MERGE_CASE/report.md" >/dev/null
 grep -F 'missed-two' "$MERGE_CASE/report.md" >/dev/null
-merge_ledger_hash="$(shasum -a 256 "$MERGE_CASE/ledger.jsonl" | cut -d ' ' -f 1)"
-merge_report_hash="$(shasum -a 256 "$MERGE_CASE/report.md" | cut -d ' ' -f 1)"
-merge_manifest_hash="$(shasum -a 256 "$MERGE_CASE/report.json" | cut -d ' ' -f 1)"
+cp "$MERGE_CASE/ledger.jsonl" "$SNAP/merge_ledger_copy"
+cp "$MERGE_CASE/report.md" "$SNAP/merge_report_copy"
+cp "$MERGE_CASE/report.json" "$SNAP/merge_manifest_copy"
 python3 "$FINALIZER" --sampler "$HELPER" --projects "$MERGE_PROJECTS" --date 2026-08-05 --primary-b64 "$merge_primary_b64" --verifier-b64 "$merge_verifier_b64" --ledger "$MERGE_CASE/ledger.jsonl" --report "$MERGE_CASE/report.md" >/dev/null
-test "$(shasum -a 256 "$MERGE_CASE/ledger.jsonl" | cut -d ' ' -f 1)" = "$merge_ledger_hash"
-test "$(shasum -a 256 "$MERGE_CASE/report.md" | cut -d ' ' -f 1)" = "$merge_report_hash"
-test "$(shasum -a 256 "$MERGE_CASE/report.json" | cut -d ' ' -f 1)" = "$merge_manifest_hash"
+cmp -s "$MERGE_CASE/ledger.jsonl" "$SNAP/merge_ledger_copy"
+cmp -s "$MERGE_CASE/report.md" "$SNAP/merge_report_copy"
+cmp -s "$MERGE_CASE/report.json" "$SNAP/merge_manifest_copy"
 
-ledger_hash_before="$(shasum -a 256 "$FINAL_LEDGER" | cut -d ' ' -f 1)"
-report_hash_before="$(shasum -a 256 "$FINAL_REPORT" | cut -d ' ' -f 1)"
-manifest_hash_before="$(shasum -a 256 "$FINAL_MANIFEST" | cut -d ' ' -f 1)"
+cp "$FINAL_LEDGER" "$SNAP/ledger_copy_before"
+cp "$FINAL_REPORT" "$SNAP/report_copy_before"
+cp "$FINAL_MANIFEST" "$SNAP/manifest_copy_before"
 python3 "$FINALIZER" "${FINALIZER_COMMON[@]}" --date 2026-08-05 --primary-b64 "$primary_b64" --verifier-b64 "$verifier_b64" --ledger "$FINAL_LEDGER" --report "$FINAL_REPORT" >/dev/null
-test "$(shasum -a 256 "$FINAL_LEDGER" | cut -d ' ' -f 1)" = "$ledger_hash_before"
-test "$(shasum -a 256 "$FINAL_REPORT" | cut -d ' ' -f 1)" = "$report_hash_before"
+cmp -s "$FINAL_LEDGER" "$SNAP/ledger_copy_before"
+cmp -s "$FINAL_REPORT" "$SNAP/report_copy_before"
 test "$(jq -s '[.[] | select(.date == "2026-08-05")] | length' "$FINAL_LEDGER")" = "3"
 jq '(.samples[] | .R1, .R2, .R3) = "PASS" | (.samples[] | .note) = ""' "$PRIMARY_JSON" > "$FINALIZER_CASE/changed-primary.json"
 changed_primary_b64="$(base64 < "$FINALIZER_CASE/changed-primary.json" | tr -d '\n')"
@@ -233,13 +247,13 @@ printf '%s\n' \
   '{"date":"2026-08-05","session":"s1","invoke":"2026-08-01T12:00:00.000Z","R1":"FAIL","R2":"PASS","R3":"PASS","note":"legacy fail"}' \
   '{"date":"2026-08-05","session":"s2","invoke":"2026-08-02T12:00:00.000Z","R1":"PASS","R2":"PASS","R3":"PASS","note":""}' \
   '{"date":"2026-08-05","session":"s3","invoke":"2026-08-03T12:00:00.000Z","R1":"PASS","R2":"PASS","R3":"PASS","note":""}' > "$LEGACY_CASE/ledger.jsonl"
-legacy_hash="$(shasum -a 256 "$LEGACY_CASE/ledger.jsonl" | cut -d ' ' -f 1)"
+cp "$LEGACY_CASE/ledger.jsonl" "$SNAP/legacy_copy"
 set +e
 python3 "$FINALIZER" "${FINALIZER_COMMON[@]}" --date 2026-08-05 --primary-b64 "$changed_primary_b64" --verifier-b64 "$verifier_b64" --ledger "$LEGACY_CASE/ledger.jsonl" --report "$LEGACY_CASE/report.md" >/dev/null 2>&1
 legacy_rc=$?
 set -e
 test "$legacy_rc" -ne 0
-test "$(shasum -a 256 "$LEGACY_CASE/ledger.jsonl" | cut -d ' ' -f 1)" = "$legacy_hash"
+cmp -s "$LEGACY_CASE/ledger.jsonl" "$SNAP/legacy_copy"
 test ! -e "$LEGACY_CASE/report.md"
 test ! -e "$LEGACY_CASE/report.json"
 set +e
@@ -247,8 +261,8 @@ python3 "$FINALIZER" "${FINALIZER_COMMON[@]}" --date 2026-08-05 --primary-b64 "$
 changed_rc=$?
 set -e
 test "$changed_rc" -eq 0
-test "$(shasum -a 256 "$FINAL_LEDGER" | cut -d ' ' -f 1)" = "$ledger_hash_before"
-test "$(shasum -a 256 "$FINAL_REPORT" | cut -d ' ' -f 1)" = "$report_hash_before"
+cmp -s "$FINAL_LEDGER" "$SNAP/ledger_copy_before"
+cmp -s "$FINAL_REPORT" "$SNAP/report_copy_before"
 OTHER_PROJECTS="$FINALIZER_CASE/other-projects"
 PROJECTS="$OTHER_PROJECTS"
 add_session other other-1 research-before-answer 2026-08-01T13:00:00.000Z
@@ -269,17 +283,17 @@ python3 "$FINALIZER" --sampler "$HELPER" --projects "$OTHER_PROJECTS" --date 202
 conflict_rc=$?
 set -e
 test "$conflict_rc" -ne 0
-test "$(shasum -a 256 "$FINAL_LEDGER" | cut -d ' ' -f 1)" = "$ledger_hash_before"
-test "$(shasum -a 256 "$FINAL_REPORT" | cut -d ' ' -f 1)" = "$report_hash_before"
+cmp -s "$FINAL_LEDGER" "$SNAP/ledger_copy_before"
+cmp -s "$FINAL_REPORT" "$SNAP/report_copy_before"
 
 LEDGER_ONLY="$TMP/ledger-only"
 mkdir -p "$LEDGER_ONLY"
 cp "$FINAL_LEDGER" "$LEDGER_ONLY/ledger.jsonl"
 cp "$FINAL_MANIFEST" "$LEDGER_ONLY/report.json"
 python3 "$FINALIZER" "${FINALIZER_COMMON[@]}" --date 2026-08-05 --primary-b64 "$rephrased_primary_b64" --verifier-b64 "$verifier_b64" --ledger "$LEDGER_ONLY/ledger.jsonl" --report "$LEDGER_ONLY/report.md" >/dev/null
-test "$(shasum -a 256 "$LEDGER_ONLY/ledger.jsonl" | cut -d ' ' -f 1)" = "$ledger_hash_before"
-test "$(shasum -a 256 "$LEDGER_ONLY/report.md" | cut -d ' ' -f 1)" = "$report_hash_before"
-test "$(shasum -a 256 "$LEDGER_ONLY/report.json" | cut -d ' ' -f 1)" = "$manifest_hash_before"
+cmp -s "$LEDGER_ONLY/ledger.jsonl" "$SNAP/ledger_copy_before"
+cmp -s "$LEDGER_ONLY/report.md" "$SNAP/report_copy_before"
+cmp -s "$LEDGER_ONLY/report.json" "$SNAP/manifest_copy_before"
 
 REPORT_ONLY="$TMP/report-only"
 mkdir -p "$REPORT_ONLY"
@@ -293,9 +307,9 @@ printf '%s\n' \
 cp "$FINAL_REPORT" "$REPORT_ONLY/report.md"
 cp "$FINAL_MANIFEST" "$REPORT_ONLY/report.json"
 python3 "$FINALIZER" "${FINALIZER_COMMON[@]}" --date 2026-08-05 --primary-b64 "$rephrased_primary_b64" --verifier-b64 "$verifier_b64" --ledger "$REPORT_ONLY/ledger.jsonl" --report "$REPORT_ONLY/report.md" >/dev/null
-test "$(shasum -a 256 "$REPORT_ONLY/ledger.jsonl" | cut -d ' ' -f 1)" = "$ledger_hash_before"
-test "$(shasum -a 256 "$REPORT_ONLY/report.md" | cut -d ' ' -f 1)" = "$report_hash_before"
-test "$(shasum -a 256 "$REPORT_ONLY/report.json" | cut -d ' ' -f 1)" = "$manifest_hash_before"
+cmp -s "$REPORT_ONLY/ledger.jsonl" "$SNAP/ledger_copy_before"
+cmp -s "$REPORT_ONLY/report.md" "$SNAP/report_copy_before"
+cmp -s "$REPORT_ONLY/report.json" "$SNAP/manifest_copy_before"
 
 MANIFEST_ONLY="$TMP/manifest-only"
 mkdir -p "$MANIFEST_ONLY"
@@ -308,9 +322,9 @@ printf '%s\n' \
   '{"date":"2026-08-04","session":"old-6","invoke":"old-i6","R1":"PASS","R2":"PASS","R3":"PASS","note":""}' > "$MANIFEST_ONLY/ledger.jsonl"
 cp "$FINAL_MANIFEST" "$MANIFEST_ONLY/report.json"
 python3 "$FINALIZER" "${FINALIZER_COMMON[@]}" --date 2026-08-05 --primary-b64 "$rephrased_primary_b64" --verifier-b64 "$verifier_b64" --ledger "$MANIFEST_ONLY/ledger.jsonl" --report "$MANIFEST_ONLY/report.md" >/dev/null
-test "$(shasum -a 256 "$MANIFEST_ONLY/ledger.jsonl" | cut -d ' ' -f 1)" = "$ledger_hash_before"
-test "$(shasum -a 256 "$MANIFEST_ONLY/report.md" | cut -d ' ' -f 1)" = "$report_hash_before"
-test "$(shasum -a 256 "$MANIFEST_ONLY/report.json" | cut -d ' ' -f 1)" = "$manifest_hash_before"
+cmp -s "$MANIFEST_ONLY/ledger.jsonl" "$SNAP/ledger_copy_before"
+cmp -s "$MANIFEST_ONLY/report.md" "$SNAP/report_copy_before"
+cmp -s "$MANIFEST_ONLY/report.json" "$SNAP/manifest_copy_before"
 
 ESCALATE_CASE="$TMP/escalate-case"
 mkdir -p "$ESCALATE_CASE"

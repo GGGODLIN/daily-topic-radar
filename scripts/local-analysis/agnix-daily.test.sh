@@ -73,10 +73,10 @@ if [ "$(grep -Fc 'SEMBLE_SCOPE_WRAPPER=/Users/linhancheng/.claude/scripts/semble
   exit 1
 fi
 
-BASELINE_HASH="$(shasum -a 256 "$BASELINE" | cut -d' ' -f1)"
+cp "$BASELINE" "$TMP/baseline.before"
 run_case
 test "$(cat "$OUT")" = '__SILENT__'
-test "$BASELINE_HASH" = "$(shasum -a 256 "$BASELINE" | cut -d' ' -f1)"
+cmp -s "$TMP/baseline.before" "$BASELINE"
 
 python3 - "$INPUT" <<'PY'
 import json, sys
@@ -111,11 +111,11 @@ PREFIX="$(python3 -c "print('x' * 160)")"
 test "$(grep -Fc "$PREFIX" "$OUT")" -eq 1
 test "$(grep -Fc 'CC-HK-008' "$OUT")" -eq 2
 
-BASELINE_HASH="$(shasum -a 256 "$BASELINE" | cut -d' ' -f1)"
+cp "$BASELINE" "$TMP/baseline.before"
 printf '{invalid' > "$INPUT"
 run_case
 grep -F '## 🚨 掃描器輸出不是合法 JSON' "$OUT" >/dev/null
-test "$BASELINE_HASH" = "$(shasum -a 256 "$BASELINE" | cut -d' ' -f1)"
+cmp -s "$TMP/baseline.before" "$BASELINE"
 
 printf '' > "$BASELINE"
 cat > "$INPUT" <<'JSON'

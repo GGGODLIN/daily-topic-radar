@@ -43,8 +43,12 @@ const MAX_READ_OFFSET = 1_000_000
 const MAX_READ_LIMIT = 100_000
 const MAX_RECONSTRUCTED_LINES = 100_000
 
-const digestText = (value) => crypto.createHash('sha256').update(value).digest('hex')
-const digestFile = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+// Artefacts written before digests were removed still carry per-file digest fields and a manifest self-digest;
+// they are dropped before shape checks so an old receipt loads instead of being read as forged.
+const isLegacyDigestKey = (key) => /_sha\d+$/.test(key) || key === 'manifest_hash'
+const withoutLegacyDigests = (value) => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.fromEntries(Object.entries(value).filter(([key]) => !isLegacyDigestKey(key)))
+  : value
 const manifestPathFor = (reports, date) => path.join(reports, `${date}-evidence-level-manifest.json`)
 const samplesTextPathFor = (reports, date) => path.join(reports, `${date}-evidence-level-samples.txt`)
 const batchSamplesTextPathFor = (reports, date, index) => path.join(reports, `${date}-evidence-level-samples-batch-${index}.txt`)
@@ -66,12 +70,9 @@ const hasVerifiedReport = (reports, date) => {
   const receiptPath = receiptPathFor(reports, date)
   if (![reportPath, manifestPath, publicationPath, receiptPath].every((file) => fs.existsSync(file) && isPrivateFile(file))) return false
   try {
-    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'))
-    const publication = JSON.parse(fs.readFileSync(publicationPath, 'utf8'))
-    const packetValid = receipt.date === date &&
-      receipt.report_sha256 === digestFile(reportPath) &&
-      receipt.manifest_sha256 === digestFile(manifestPath) &&
-      receipt.publication_sha256 === digestFile(publicationPath)
+    const receipt = withoutLegacyDigests(JSON.parse(fs.readFileSync(receiptPath, 'utf8')))
+    const publication = withoutLegacyDigests(JSON.parse(fs.readFileSync(publicationPath, 'utf8')))
+    const packetValid = receipt.date === date
     const receiptVersion = Object.hasOwn(receipt, 'schema_version') ? receipt.schema_version : 1
     const publicationVersion = Object.hasOwn(publication, 'schema_version') ? publication.schema_version : 1
     const expectedVersion = date >= EVIDENCE_V2_START_DATE ? 2 : receiptVersion
@@ -79,10 +80,10 @@ const hasVerifiedReport = (reports, date) => {
     if (receiptVersion === 1) return true
     if (Object.hasOwn(receipt, 'attempt_nonce') && !isNonce(receipt.attempt_nonce)) return false
     const samplesTextPath = samplesTextPathFor(reports, date)
-    if (!fs.existsSync(samplesTextPath) || !isPrivateFile(samplesTextPath) || receipt.samples_file_sha256 !== digestFile(samplesTextPath)) return false
-    if (receipt.reaudit_sample_count === 0) return receipt.reaudit_samples_file_sha256 === null && receipt.reaudit_nonce === null
+    if (!fs.existsSync(samplesTextPath) || !isPrivateFile(samplesTextPath)) return false
+    if (receipt.reaudit_sample_count === 0) return receipt.reaudit_nonce === null
     const reauditSamplesTextPath = reauditSamplesTextPathFor(reports, date, receipt.attempt_nonce ?? null)
-    return fs.existsSync(reauditSamplesTextPath) && isPrivateFile(reauditSamplesTextPath) && receipt.reaudit_samples_file_sha256 === digestFile(reauditSamplesTextPath)
+    return fs.existsSync(reauditSamplesTextPath) && isPrivateFile(reauditSamplesTextPath)
   } catch {
     return false
   }
@@ -348,7 +349,6 @@ const sampleEvenly = (items, limit = 20) => {
 const sameKeys = (value, keys) =>
   value && typeof value === 'object' && !Array.isArray(value) &&
   JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort())
-const hashJson = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const isNonce = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 const batchRangeFor = (index) => ({
   start: (index - 1) * PRIMARY_BATCH_SIZE + 1,
@@ -367,8 +367,8 @@ const parseVersionCommitment = (reports, date) => {
   if (!fs.existsSync(file)) return null
   if (!isPrivateFile(file)) return false
   try {
-    const commitment = JSON.parse(fs.readFileSync(file, 'utf8'))
-    return sameKeys(commitment, ['date', 'schema_version', 'manifest_hash']) && commitment.date === date && commitment.schema_version === 2 && /^[a-f0-9]{64}$/.test(commitment.manifest_hash) ? commitment : false
+    const commitment = withoutLegacyDigests(JSON.parse(fs.readFileSync(file, 'utf8')))
+    return sameKeys(commitment, ['date', 'schema_version']) && commitment.date === date && commitment.schema_version === 2 ? commitment : false
   } catch {
     return false
   }
@@ -391,10 +391,10 @@ const validSampleRecords = (samples) => {
 const parseManifest = (file, date) => {
   if (!fs.existsSync(file) || !isPrivateFile(file)) return null
   try {
-    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'))
-    const v1Keys = ['date', 'eligible', 'samples', 'challenge', 'manifest_hash']
-    const v2Keys = ['schema_version', 'date', 'eligible', 'samples', 'challenge', 'manifest_hash']
-    const batchedV2Keys = ['schema_version', 'date', 'eligible', 'samples', 'challenge', 'audit_nonce', 'batches', 'manifest_hash']
+    const manifest = withoutLegacyDigests(JSON.parse(fs.readFileSync(file, 'utf8')))
+    const v1Keys = ['date', 'eligible', 'samples', 'challenge']
+    const v2Keys = ['schema_version', 'date', 'eligible', 'samples', 'challenge']
+    const batchedV2Keys = ['schema_version', 'date', 'eligible', 'samples', 'challenge', 'audit_nonce', 'batches']
     const isV2 = Object.hasOwn(manifest, 'schema_version')
     const isBatched = Object.hasOwn(manifest, 'batches') || Object.hasOwn(manifest, 'audit_nonce')
     const commitment = parseVersionCommitment(path.dirname(file), date)
@@ -407,10 +407,10 @@ const parseManifest = (file, date) => {
     if (!validSampleRecords(manifest.samples)) return null
     if (isBatched) {
       if (manifest.samples.length !== PRIMARY_SAMPLE_COUNT || !/^[a-f0-9]{64}$/.test(manifest.audit_nonce) || !Array.isArray(manifest.batches) || manifest.batches.length !== PRIMARY_BATCH_COUNT) return null
-      const wholeSamplesHash = digestText(JSON.stringify(manifest.samples))
       const indices = new Set()
+      manifest.batches = manifest.batches.map(withoutLegacyDigests)
       const batchesValid = manifest.batches.every((batch) => {
-        if (!sameKeys(batch, ['index', 'range', 'members', 'path', 'batch_sha256', 'samples_sha256', 'audit_nonce'])) return false
+        if (!sameKeys(batch, ['index', 'range', 'members', 'path', 'audit_nonce'])) return false
         if (!Number.isInteger(batch.index) || batch.index < 1 || batch.index > PRIMARY_BATCH_COUNT || indices.has(batch.index)) return false
         indices.add(batch.index)
         const expectedRange = batchRangeFor(batch.index)
@@ -424,44 +424,29 @@ const parseManifest = (file, date) => {
           member.row_index !== expectedSamples[index].row_index
         )) return false
         if (batch.path !== batchSamplesTextPathFor(path.dirname(file), date, batch.index)) return false
-        if (!/^[a-f0-9]{64}$/.test(batch.batch_sha256) || batch.samples_sha256 !== wholeSamplesHash || batch.audit_nonce !== manifest.audit_nonce) return false
-        return true
+        return batch.audit_nonce === manifest.audit_nonce
       })
       if (!batchesValid || indices.size !== PRIMARY_BATCH_COUNT) return null
     }
-    const payload = {
-      ...(isV2 ? { schema_version: 2 } : {}),
-      date: manifest.date,
-      eligible: manifest.eligible,
-      samples: manifest.samples,
-      challenge: manifest.challenge,
-      ...(isBatched ? { audit_nonce: manifest.audit_nonce, batches: manifest.batches } : {}),
-    }
-    if (manifest.manifest_hash !== hashJson(payload)) return null
-    if (isV2 && commitment.manifest_hash !== manifest.manifest_hash) return null
     return manifest
   } catch {
     return null
   }
 }
 const buildBatchedManifest = (reports, date, eligible, samples, challenge, auditNonce) => {
-  const wholeSamplesHash = digestText(JSON.stringify(samples))
   const batches = Array.from({ length: PRIMARY_BATCH_COUNT }, (_, index) => {
     const batchIndex = index + 1
     const range = batchRangeFor(batchIndex)
     const batchSamples = samples.slice(range.start - 1, range.end)
-    const batchText = renderSampleRowsText(batchSamples, challenge, range.start - 1, PRIMARY_SAMPLE_COUNT)
     return {
       index: batchIndex,
       range,
       members: batchSamples.map(sampleIdentity),
       path: batchSamplesTextPathFor(reports, date, batchIndex),
-      batch_sha256: digestText(batchText),
-      samples_sha256: wholeSamplesHash,
       audit_nonce: auditNonce,
     }
   })
-  const payload = {
+  return {
     schema_version: 2,
     date,
     eligible,
@@ -470,7 +455,6 @@ const buildBatchedManifest = (reports, date, eligible, samples, challenge, audit
     audit_nonce: auditNonce,
     batches,
   }
-  return { ...payload, manifest_hash: hashJson(payload) }
 }
 const readPersistedManifest = (file, date) => {
   const signal = new Int32Array(new SharedArrayBuffer(4))
@@ -496,16 +480,13 @@ const loadOrCreateManifest = (root, reports, date) => {
   const challenge = crypto.randomBytes(32).toString('hex')
   const manifest = samples.length === PRIMARY_SAMPLE_COUNT
     ? buildBatchedManifest(reports, date, eligibleAnswers.length, samples, challenge, crypto.randomBytes(32).toString('hex'))
-    : (() => {
-      const payload = {
-        schema_version: 2,
-        date,
-        eligible: eligibleAnswers.length,
-        samples,
-        challenge,
-      }
-      return { ...payload, manifest_hash: hashJson(payload) }
-    })()
+    : {
+      schema_version: 2,
+      date,
+      eligible: eligibleAnswers.length,
+      samples,
+      challenge,
+    }
   const temporary = `${file}.${process.pid}.tmp`
   fs.rmSync(temporary, { force: true })
   fs.writeFileSync(temporary, `${JSON.stringify(manifest)}\n`, { flag: 'wx', mode: 0o600 })
@@ -523,7 +504,7 @@ const loadOrCreateManifest = (root, reports, date) => {
     if (persisted == null) throw new Error('evidence-level manifest persistence failed')
     return { file, manifest: persisted }
   }
-  const commitment = { date, schema_version: 2, manifest_hash: manifest.manifest_hash }
+  const commitment = { date, schema_version: 2 }
   publishFirstWins(versionPathFor(reports, date), `${JSON.stringify(commitment)}\n`)
   const persisted = parseManifest(file, date)
   if (persisted == null) throw new Error('evidence-level manifest persistence failed')
@@ -585,10 +566,11 @@ const parseAudit = (value, manifest) => {
 }
 const parseBatchAuditObject = (audit, manifest, batch, attemptNonce) => {
   if (!isNonce(attemptNonce)) return null
-  if (!sameKeys(audit, ['audit_nonce', 'attempt_nonce', 'batch_index', 'range', 'batch_sha256', 'samples_sha256', 'rows'])) return null
-  if (audit.attempt_nonce !== attemptNonce) return null
-  if (audit.audit_nonce !== manifest.audit_nonce || audit.batch_index !== batch.index || !sameKeys(audit.range, ['start', 'end']) || audit.range.start !== batch.range.start || audit.range.end !== batch.range.end || audit.batch_sha256 !== batch.batch_sha256 || audit.samples_sha256 !== batch.samples_sha256) return null
-  return parseAuditObject({ audit_nonce: audit.audit_nonce, rows: audit.rows }, batchSamplesFor(manifest.samples, batch), batch.range.start)
+  const packet = withoutLegacyDigests(audit)
+  if (!sameKeys(packet, ['audit_nonce', 'attempt_nonce', 'batch_index', 'range', 'rows'])) return null
+  if (packet.attempt_nonce !== attemptNonce) return null
+  if (packet.audit_nonce !== manifest.audit_nonce || packet.batch_index !== batch.index || !sameKeys(packet.range, ['start', 'end']) || packet.range.start !== batch.range.start || packet.range.end !== batch.range.end) return null
+  return parseAuditObject({ audit_nonce: packet.audit_nonce, rows: packet.rows }, batchSamplesFor(manifest.samples, batch), batch.range.start)
 }
 const violationCounts = (rows) => {
   const counts = new Map()
@@ -633,35 +615,31 @@ const packetFor = (date, reportPath, manifestPath, manifest, violationCount, top
   sample_count: manifest?.samples.length ?? null,
   tp_style_violation_count: violationCount,
   top_violations: topViolations,
-  samples_sha256: ok && manifest != null ? digestText(JSON.stringify(manifest.samples)) : null,
-  samples_file_sha256: ok ? null : null,
   audit_nonce: null,
   reaudit_sample_count: 0,
-  reaudit_samples_file_sha256: null,
   reaudit_nonce: null,
   challenge: ok ? manifest?.challenge ?? null : null,
 })
-const parsePublication = (file, date, manifestPath, manifest) => {
+const parsePublication = (file, date, manifest) => {
   if (!fs.existsSync(file) || !isPrivateFile(file)) return null
   try {
-    const publication = JSON.parse(fs.readFileSync(file, 'utf8'))
-    const v1Keys = ['date', 'manifest_sha256', 'samples_sha256', 'report', 'report_sha256', 'eligible', 'sample_count', 'tp_style_violation_count', 'challenge']
-    const v2Keys = ['schema_version', 'date', 'manifest_sha256', 'samples_sha256', 'samples_file_sha256', 'report', 'report_sha256', 'eligible', 'sample_count', 'tp_style_violation_count', 'top_violations', 'audit_nonce', 'reaudit_sample_count', 'reaudit_samples_file_sha256', 'reaudit_nonce', 'challenge']
+    const publication = withoutLegacyDigests(JSON.parse(fs.readFileSync(file, 'utf8')))
+    const v1Keys = ['date', 'report', 'eligible', 'sample_count', 'tp_style_violation_count', 'challenge']
+    const v2Keys = ['schema_version', 'date', 'report', 'eligible', 'sample_count', 'tp_style_violation_count', 'top_violations', 'audit_nonce', 'reaudit_sample_count', 'reaudit_nonce', 'challenge']
     const batchedV2Keys = [...v2Keys, 'attempt_nonce']
     const isV2 = Object.hasOwn(publication, 'schema_version')
     const expectedV2Keys = isBatchedManifest(manifest) ? batchedV2Keys : v2Keys
     if (isV2 ? !sameKeys(publication, expectedV2Keys) || publication.schema_version !== 2 : !sameKeys(publication, v1Keys) || date >= EVIDENCE_V2_START_DATE) return null
     if ((Object.hasOwn(manifest, 'schema_version') ? 2 : 1) !== (isV2 ? 2 : 1)) return null
     if (publication.date !== date || publication.challenge !== manifest.challenge) return null
-    if (publication.manifest_sha256 !== digestFile(manifestPath) || publication.samples_sha256 !== digestText(JSON.stringify(manifest.samples))) return null
-    if (publication.report_sha256 !== digestText(publication.report)) return null
+    if (typeof publication.report !== 'string') return null
     if (publication.eligible !== manifest.eligible || publication.sample_count !== manifest.samples.length) return null
     if (!Number.isInteger(publication.tp_style_violation_count) || publication.tp_style_violation_count < 0 || publication.tp_style_violation_count > manifest.samples.length) return null
     if (isV2) {
-      if (!/^[a-f0-9]{64}$/.test(publication.samples_file_sha256) || !/^[a-f0-9]{64}$/.test(publication.audit_nonce)) return null
+      if (!isNonce(publication.audit_nonce)) return null
       if (isBatchedManifest(manifest) && (!isNonce(publication.attempt_nonce) || publication.audit_nonce !== manifest.audit_nonce)) return null
       if (!Number.isInteger(publication.reaudit_sample_count) || publication.reaudit_sample_count < 0 || publication.reaudit_sample_count > publication.sample_count) return null
-      if (publication.reaudit_sample_count === 0 ? publication.reaudit_samples_file_sha256 !== null || publication.reaudit_nonce !== null : !/^[a-f0-9]{64}$/.test(publication.reaudit_samples_file_sha256) || !/^[a-f0-9]{64}$/.test(publication.reaudit_nonce) || publication.reaudit_nonce === publication.audit_nonce) return null
+      if (publication.reaudit_sample_count === 0 ? publication.reaudit_nonce !== null : !isNonce(publication.reaudit_nonce) || publication.reaudit_nonce === publication.audit_nonce) return null
       if (!Array.isArray(publication.top_violations) || publication.top_violations.length > 2) return null
       if (!publication.top_violations.every((item) => sameKeys(item, ['type', 'count']) && VIOLATION_TYPES.has(item.type) && Number.isInteger(item.count) && item.count > 0 && item.count <= publication.tp_style_violation_count)) return null
       if (new Set(publication.top_violations.map((item) => item.type)).size !== publication.top_violations.length) return null
@@ -685,34 +663,28 @@ const verifiedPacket = (reports, date, expectedAttemptNonce = null) => {
   const receiptPath = receiptPathFor(reports, date)
   const manifest = parseManifest(manifestPath, date)
   if (manifest == null || !batchArtifactsValid(reports, date, manifest)) return null
-  const publication = parsePublication(publicationPath, date, manifestPath, manifest)
+  const publication = parsePublication(publicationPath, date, manifest)
   if (publication == null) return null
   if (isBatchedManifest(manifest) && expectedAttemptNonce != null && publication.attempt_nonce !== expectedAttemptNonce) return null
   try {
-    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'))
-    const v1Keys = ['date', 'report_sha256', 'manifest_sha256', 'samples_sha256', 'publication_sha256', 'eligible', 'sample_count', 'tp_style_violation_count', 'challenge']
-    const v2Keys = ['schema_version', 'date', 'report_sha256', 'manifest_sha256', 'samples_sha256', 'samples_file_sha256', 'publication_sha256', 'eligible', 'sample_count', 'tp_style_violation_count', 'top_violations', 'audit_nonce', 'reaudit_sample_count', 'reaudit_samples_file_sha256', 'reaudit_nonce', 'challenge']
+    const receipt = withoutLegacyDigests(JSON.parse(fs.readFileSync(receiptPath, 'utf8')))
+    const v1Keys = ['date', 'eligible', 'sample_count', 'tp_style_violation_count', 'challenge']
+    const v2Keys = ['schema_version', 'date', 'eligible', 'sample_count', 'tp_style_violation_count', 'top_violations', 'audit_nonce', 'reaudit_sample_count', 'reaudit_nonce', 'challenge']
     const batchedV2Keys = [...v2Keys, 'attempt_nonce']
     const isV2 = Object.hasOwn(receipt, 'schema_version')
     const expectedV2Keys = isBatchedManifest(manifest) ? batchedV2Keys : v2Keys
     if (isV2 ? !sameKeys(receipt, expectedV2Keys) || receipt.schema_version !== 2 : !sameKeys(receipt, v1Keys) || date >= EVIDENCE_V2_START_DATE) return null
     if ((Object.hasOwn(publication, 'schema_version') ? 2 : 1) !== (isV2 ? 2 : 1)) return null
     if (receipt.date !== date || receipt.challenge !== publication.challenge) return null
-    if (receipt.report_sha256 !== publication.report_sha256 || receipt.manifest_sha256 !== publication.manifest_sha256) return null
-    if (receipt.samples_sha256 !== publication.samples_sha256) return null
-    if (receipt.schema_version === 2 && (publication.schema_version !== 2 || (isBatchedManifest(manifest) && (receipt.attempt_nonce !== publication.attempt_nonce || !isNonce(receipt.attempt_nonce))) || receipt.samples_file_sha256 !== publication.samples_file_sha256 || receipt.audit_nonce !== publication.audit_nonce || receipt.reaudit_sample_count !== publication.reaudit_sample_count || receipt.reaudit_samples_file_sha256 !== publication.reaudit_samples_file_sha256 || receipt.reaudit_nonce !== publication.reaudit_nonce || JSON.stringify(receipt.top_violations) !== JSON.stringify(publication.top_violations))) return null
-    if (receipt.publication_sha256 !== digestFile(publicationPath)) return null
+    if (receipt.schema_version === 2 && (publication.schema_version !== 2 || (isBatchedManifest(manifest) && (receipt.attempt_nonce !== publication.attempt_nonce || !isNonce(receipt.attempt_nonce))) || receipt.audit_nonce !== publication.audit_nonce || receipt.reaudit_sample_count !== publication.reaudit_sample_count || receipt.reaudit_nonce !== publication.reaudit_nonce || JSON.stringify(receipt.top_violations) !== JSON.stringify(publication.top_violations))) return null
     if (receipt.eligible !== publication.eligible || receipt.sample_count !== publication.sample_count) return null
     if (receipt.tp_style_violation_count !== publication.tp_style_violation_count) return null
     if (fs.readFileSync(reportPath, 'utf8') !== publication.report) return null
-    const samplesTextPath = samplesTextPathFor(reports, date)
+    if (receipt.schema_version === 2 && fs.readFileSync(samplesTextPathFor(reports, date), 'utf8') !== renderSamplesText(manifest)) return null
     return {
       ...packetFor(date, reportPath, manifestPath, manifest, receipt.tp_style_violation_count, publication.top_violations ?? topViolationsFromReport(publication.report), true),
-      samples_sha256: publication.samples_sha256,
-      samples_file_sha256: publication.samples_file_sha256 ?? (fs.existsSync(samplesTextPath) ? digestFile(samplesTextPath) : null),
       audit_nonce: publication.audit_nonce ?? null,
       reaudit_sample_count: publication.reaudit_sample_count ?? 0,
-      reaudit_samples_file_sha256: publication.reaudit_samples_file_sha256 ?? null,
       reaudit_nonce: publication.reaudit_nonce ?? null,
     }
   } catch {
@@ -747,18 +719,12 @@ const publishFirstWins = (file, content) => {
 }
 const materializePublication = (reports, date, publication) => {
   const manifestPath = manifestPathFor(reports, date)
-  const publicationPath = publicationPathFor(reports, date)
   const reportPath = reportPathFor(reports, date)
   const receiptPath = receiptPathFor(reports, date)
   replaceFile(reportPath, publication.report)
   replaceFile(receiptPath, `${JSON.stringify({
     ...(publication.schema_version === 2 ? { schema_version: 2 } : {}),
     date,
-    report_sha256: publication.report_sha256,
-    manifest_sha256: publication.manifest_sha256,
-    samples_sha256: publication.samples_sha256,
-    ...(publication.schema_version === 2 ? { samples_file_sha256: publication.samples_file_sha256 } : {}),
-    publication_sha256: digestFile(publicationPath),
     eligible: publication.eligible,
     sample_count: publication.sample_count,
     tp_style_violation_count: publication.tp_style_violation_count,
@@ -767,7 +733,6 @@ const materializePublication = (reports, date, publication) => {
       audit_nonce: publication.audit_nonce,
       ...(Object.hasOwn(publication, 'attempt_nonce') ? { attempt_nonce: publication.attempt_nonce } : {}),
       reaudit_sample_count: publication.reaudit_sample_count,
-      reaudit_samples_file_sha256: publication.reaudit_samples_file_sha256,
       reaudit_nonce: publication.reaudit_nonce,
     } : {}),
     challenge: publication.challenge,
@@ -1118,7 +1083,7 @@ const batchAuditsFromSnapshot = (snapshots, manifest, attemptNonce) => {
     .flatMap(({ packet }) => packet.rows)
   return parseAuditObject({ audit_nonce: manifest.audit_nonce, rows }, manifest.samples)
 }
-const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce = null) => {
+const prepareReaudit = (reports, date, transcriptsRoot, auditNonce, attemptNonce = null) => {
   ensurePrivateDirectory(reports)
   const manifest = parseManifest(manifestPathFor(reports, date), date)
   const batched = isBatchedManifest(manifest)
@@ -1133,13 +1098,13 @@ const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFi
       const nonceFile = `${existingPath}.nonce`
       if (fs.existsSync(nonceFile) && isPrivateFile(nonceFile)) {
         const nonce = fs.readFileSync(nonceFile, 'utf8').trim()
-        if (/^[a-f0-9]{64}$/.test(nonce) && nonce.startsWith(marker)) return { date, reaudit_sample_count: count, reaudit_samples_file_sha256: digestFile(existingPath), reaudit_nonce: nonce }
+        if (/^[a-f0-9]{64}$/.test(nonce) && nonce.startsWith(marker)) return { date, reaudit_sample_count: count, reaudit_nonce: nonce }
       }
     }
     return null
   }
   const samplesTextPath = samplesTextPathFor(reports, date)
-  if (manifest == null || transcriptsRoot == null || samplesSha256 !== digestText(JSON.stringify(manifest.samples)) || !fs.existsSync(samplesTextPath) || samplesFileSha256 !== digestFile(samplesTextPath) || !batchArtifactsValid(reports, date, manifest)) return null
+  if (manifest == null || transcriptsRoot == null || !fs.existsSync(samplesTextPath) || !batchArtifactsValid(reports, date, manifest)) return null
   const snapshots = batched && auditNonce !== manifest.audit_nonce
     ? []
     : batched
@@ -1154,16 +1119,15 @@ const prepareReaudit = (reports, date, transcriptsRoot, samplesSha256, samplesFi
   const reauditNonce = crypto.randomBytes(32).toString('hex')
   const reauditText = renderSampleRowsText(passSamples, reauditNonce)
   const reauditSamplesTextPath = expectedReauditPath
-  if (!publishFirstWins(reauditSamplesTextPath, reauditText)) return prepareReaudit(reports, date, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce)
+  if (!publishFirstWins(reauditSamplesTextPath, reauditText)) return prepareReaudit(reports, date, transcriptsRoot, auditNonce, attemptNonce)
   publishFirstWins(`${reauditSamplesTextPath}.nonce`, `${reauditNonce}\n`)
   return {
     date,
     reaudit_sample_count: passSamples.length,
-    reaudit_samples_file_sha256: digestFile(reauditSamplesTextPath),
     reaudit_nonce: reauditNonce,
   }
 }
-const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256, samplesFileSha256, auditNonce, attemptNonce, reauditSamplesFileSha256, reauditNonce) => {
+const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, attemptNonce, reauditNonce) => {
   ensurePrivateDirectory(reports)
   const existing = verifiedPacket(reports, date, attemptNonce)
   if (existing != null) return existing
@@ -1176,17 +1140,14 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
   const expectedReauditPath = reauditSamplesTextPathFor(reports, date, batched ? attemptNonce : null)
   if (batched && !batchArtifactsValid(reports, date, manifest)) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
 
-  const published = parsePublication(publicationPath, date, manifestPath, manifest)
+  const published = parsePublication(publicationPath, date, manifest)
   if (published != null) {
     if (batched && published.attempt_nonce !== attemptNonce) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
     return materializePublication(reports, date, published)
   }
   if (fs.existsSync(publicationPath)) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
-  if (samplesSha256 !== digestText(JSON.stringify(manifest.samples))) {
-    return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
-  }
   const samplesTextPath = samplesTextPathFor(reports, date)
-  if (!fs.existsSync(samplesTextPath) || samplesFileSha256 !== digestFile(samplesTextPath)) {
+  if (!fs.existsSync(samplesTextPath) || fs.readFileSync(samplesTextPath, 'utf8') !== renderSamplesText(manifest)) {
     return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   }
 
@@ -1203,14 +1164,13 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
     : parseAudit(transcriptsRoot == null ? auditB64 : auditB64FromSnapshot(snapshots, samplesTextPath, renderSamplesText(manifest), auditNonce), manifest)
   if (auditPacket == null || auditPacket.auditNonce !== auditNonce) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   const primaryPassSamples = manifest.samples.filter((sample, index) => auditPacket.rows[index].result === 'PASS')
-  const reauditDeclared = reauditSamplesFileSha256 != null || reauditNonce != null
+  const reauditDeclared = reauditNonce != null
   let reauditPacket = null
-  let reauditSamplesFileHash = null
   let reauditAuditNonce = null
   if (primaryPassSamples.length > 0 && Object.hasOwn(manifest, 'schema_version') && !reauditDeclared) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   if (primaryPassSamples.length > 0 && reauditDeclared) {
     const reauditSamplesTextPath = expectedReauditPath
-    if (transcriptsRoot == null || !/^[a-f0-9]{64}$/.test(reauditNonce ?? '') || reauditNonce === auditNonce || !fs.existsSync(reauditSamplesTextPath) || reauditSamplesFileSha256 !== digestFile(reauditSamplesTextPath)) {
+    if (transcriptsRoot == null || !/^[a-f0-9]{64}$/.test(reauditNonce ?? '') || reauditNonce === auditNonce || !fs.existsSync(reauditSamplesTextPath)) {
       return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
     }
     const expectedReauditText = renderSampleRowsText(primaryPassSamples, reauditNonce)
@@ -1225,9 +1185,8 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
     const reauditAuditB64 = auditB64FromSnapshot(snapshots, reauditSamplesTextPath, expectedReauditText, reauditNonce)
     reauditPacket = parseAudit(reauditAuditB64, reauditManifest)
     if (reauditPacket == null || reauditPacket.auditNonce !== reauditNonce) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
-    reauditSamplesFileHash = reauditSamplesFileSha256
     reauditAuditNonce = reauditNonce
-  } else if (primaryPassSamples.length === 0 && reauditDeclared && (reauditSamplesFileSha256 !== '0' || reauditNonce !== '0')) {
+  } else if (primaryPassSamples.length === 0 && reauditDeclared && reauditNonce !== '0') {
     return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   }
   let passIndex = 0
@@ -1244,11 +1203,7 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
   const publication = {
     ...(isV2 ? { schema_version: 2 } : {}),
     date,
-    manifest_sha256: digestFile(manifestPath),
-    samples_sha256: samplesSha256,
-    ...(isV2 ? { samples_file_sha256: samplesFileSha256 } : {}),
     report,
-    report_sha256: digestText(report),
     eligible: manifest.eligible,
     sample_count: manifest.samples.length,
     tp_style_violation_count: violationCount,
@@ -1257,13 +1212,12 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, samplesSha256,
       audit_nonce: auditNonce,
       ...(batched ? { attempt_nonce: attemptNonce } : {}),
       reaudit_sample_count: reauditPacket == null ? 0 : primaryPassSamples.length,
-      reaudit_samples_file_sha256: reauditSamplesFileHash,
       reaudit_nonce: reauditAuditNonce,
     } : {}),
     challenge: manifest.challenge,
   }
   publishFirstWins(publicationPath, `${JSON.stringify(publication)}\n`)
-  const winner = parsePublication(publicationPath, date, manifestPath, manifest)
+  const winner = parsePublication(publicationPath, date, manifest)
   return winner == null
     ? packetFor(date, reportPath, manifestPath, manifest, null, [], false)
     : materializePublication(reports, date, winner)
@@ -1289,12 +1243,11 @@ const batchArtifactsValid = (reports, date, manifest) => {
     if (!fs.existsSync(combinedFile) || !isPrivateFile(combinedFile)) return false
     const combinedText = fs.readFileSync(combinedFile, 'utf8')
     const expectedCombinedText = renderSamplesText(manifest)
-    if (combinedText !== expectedCombinedText || digestText(combinedText) !== digestText(expectedCombinedText)) return false
+    if (combinedText !== expectedCombinedText) return false
     return manifest.batches.every((batch) => {
       const file = batchSamplesTextPathFor(reports, date, batch.index)
       if (batch.path !== file || !fs.existsSync(file) || !isPrivateFile(file)) return false
-      const text = fs.readFileSync(file, 'utf8')
-      return batch.batch_sha256 === digestText(text) && text === renderBatchText(manifest, batch)
+      return fs.readFileSync(file, 'utf8') === renderBatchText(manifest, batch)
     })
   } catch {
     return false
@@ -1311,14 +1264,14 @@ const main = () => {
   if (typeof root !== 'string' || typeof reports !== 'string') throw new Error('root and reports are required')
   if (!['due', 'sample', 'prepare-reaudit', 'finalize'].includes(mode)) throw new Error('mode must be due, sample, prepare-reaudit, or finalize')
   if (mode === 'prepare-reaudit') {
-    const packet = prepareReaudit(reports, date, options['audit-from-transcripts'], options['samples-sha256'], options['samples-file-sha256'], options['audit-nonce'], options['attempt-nonce'])
-    process.stdout.write(`${JSON.stringify(packet ?? { date, reaudit_sample_count: 0, reaudit_samples_file_sha256: null, reaudit_nonce: null })}\n`)
+    const packet = prepareReaudit(reports, date, options['audit-from-transcripts'], options['audit-nonce'], options['attempt-nonce'])
+    process.stdout.write(`${JSON.stringify(packet ?? { date, reaudit_sample_count: 0, reaudit_nonce: null })}\n`)
     return
   }
   if (mode === 'finalize') {
     const transcriptsRoot = options['audit-from-transcripts']
     if (transcriptsRoot != null && options['audit-b64'] != null) throw new Error('audit-from-transcripts excludes audit-b64')
-    process.stdout.write(`${JSON.stringify(finalizeReport(reports, date, options['audit-b64'], transcriptsRoot, options['samples-sha256'], options['samples-file-sha256'], options['audit-nonce'], options['attempt-nonce'], options['reaudit-samples-file-sha256'], options['reaudit-nonce']))}\n`)
+    process.stdout.write(`${JSON.stringify(finalizeReport(reports, date, options['audit-b64'], transcriptsRoot, options['audit-nonce'], options['attempt-nonce'], options['reaudit-nonce']))}\n`)
     return
   }
 
@@ -1342,10 +1295,7 @@ const main = () => {
     audit_nonce: auditNonce,
     eligible: manifest.eligible,
     sample_count: manifest.samples.length,
-    samples_sha256: digestText(JSON.stringify(manifest.samples)),
-    samples_file_sha256: digestFile(samplesTextPath),
     ...(batched ? { attempt_nonce: attemptNonce, batches: manifest.batches.map(({ members, ...batch }) => batch) } : {}),
-    manifest_hash: manifest.manifest_hash,
     challenge: manifest.challenge,
   })}\n`)
 }
