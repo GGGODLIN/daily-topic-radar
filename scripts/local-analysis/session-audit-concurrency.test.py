@@ -76,11 +76,11 @@ class ConcurrencyCliTests(fixtures.SessionAuditCliTest):
 
   def test_sources_with_same_session_id_never_overlap(self):
     fixtures.write_jsonl(
-      self.projects / 'work' / 'a.jsonl',
+      self.projects / 'work-a' / 'shared-session.jsonl',
       fixtures.user_line('SAME_SESSION_A', session_id='shared-session'),
     )
     fixtures.write_jsonl(
-      self.projects / 'work' / 'b.jsonl',
+      self.projects / 'work-b' / 'shared-session.jsonl',
       fixtures.user_line('SAME_SESSION_B', session_id='shared-session'),
     )
     fixtures.write_jsonl(

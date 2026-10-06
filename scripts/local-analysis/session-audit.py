@@ -670,7 +670,7 @@ def consume_block(block, line, block_index, offset, line_end, parts, images, lim
     add(block["text"])
 
 
-def build_document(raw, metadata_only=False, time_window=None, window_info=None):
+def build_document(raw, metadata_only=False, time_window=None, window_info=None, population=None):
   parts = []
   images = []
   limits = set()
@@ -711,9 +711,33 @@ def build_document(raw, metadata_only=False, time_window=None, window_info=None)
           window_info["matches"] = True
     if record_synthetic(obj):
       synthetic = True
-    for field in ("sessionId", "session_id"):
-      if isinstance(obj.get(field), str):
-        session_ids.add(obj[field])
+    # sessionId 是主檔歸屬；續接紀錄的 session_id 可能是另一個執行 ID，不能混成兩個父來源。
+    session_id = obj.get("sessionId", obj.get("session_id"))
+    if isinstance(session_id, str):
+      session_ids.add(session_id)
+    if population is not None:
+      if obj.get("type") in {"user", "assistant"}:
+        population["conversation"] = True
+      if isinstance(obj.get("agentId"), str):
+        population["agent_ids"].add(obj["agentId"])
+        population["sidechain"] |= obj.get("isSidechain") is True
+      message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+      content = message.get("content", "")
+      text = content if isinstance(content, str) else ""
+      if isinstance(content, list):
+        text = "\n".join(block["text"] for block in content if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
+      origin = obj.get("origin") if isinstance(obj.get("origin"), dict) else {}
+      # SDK 也會寫 human；轉送與系統包裝不算本人輸入，不能只看 user 角色。
+      population["human"] |= (
+        obj.get("type") == "user"
+        and obj.get("promptSource") == "typed"
+        and origin.get("kind", "not-recorded") in {"human", "not-recorded"}
+        and obj.get("isMeta") is not True
+        and obj.get("isSidechain") is not True
+        and session_id == population["main_id"]
+        and bool(text.strip())
+        and not text.lstrip().startswith(("[main]", "<task-notification>", "<system-reminder>", "<local-command-stdout>", "<command-name>", "<cross-session-message"))
+      )
     if metadata_only:
       continue
     message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
@@ -804,15 +828,17 @@ def discover(root, self_id, time_window=None):
       found.setdefault((info.st_dev, info.st_ino), target)
   records = {}
   windows = {}
+  populations = {}
   for path in found.values():
     windows[path] = {"has_timestamp": False, "matches": False}
+    populations[path] = {"main_id": path.stem, "conversation": False, "human": False, "agent_ids": set(), "sidechain": False}
     try:
       raw = path.read_bytes()
     except OSError:
       records[path] = ("", set(), set(), True)
       continue
     _doc, _images, _limits, _thinking, synthetic, session_ids, _parts = build_document(
-      raw, metadata_only=True, time_window=time_window, window_info=windows[path]
+      raw, metadata_only=True, time_window=time_window, window_info=windows[path], population=populations[path]
     )
     # 所有來源只留分類與指紋，避免把整個歷史原文一起保留在記憶體。
     records[path] = (sha256_bytes(raw) if raw else "", session_ids, synthetic, False)
@@ -822,6 +848,10 @@ def discover(root, self_id, time_window=None):
       classes[path] = "unknown"
     else:
       classes[path] = explicit_class(path, synthetic, session_ids, self_id)
+      if classes[path] is None and not populations[path]["conversation"]:
+        classes[path] = "nonconversation"
+      if classes[path] is None and any("config-backpass-user" in part or part.startswith("-private-tmp") for part in path.relative_to(root).parts):
+        classes[path] = "unconfirmed"
   resolved = {}
 
   def resolve(path, stack):
@@ -831,7 +861,7 @@ def discover(root, self_id, time_window=None):
       resolved[path] = "unknown"
       return "unknown"
     kind = classes.get(path)
-    if kind in {"self", "synthetic", "unknown"}:
+    if kind is not None:
       resolved[path] = kind
       return kind
     parent = parent_file(path, root)
@@ -840,7 +870,20 @@ def discover(root, self_id, time_window=None):
       if parent_kind in {"self", "synthetic"}:
         resolved[path] = parent_kind
         return parent_kind
-    # 沒有明示 synthetic / eval root 時保守留著，但不把 sdk、system 或一般來源說成 natural。
+      parent_id = parent.stem
+      if (
+        parent_kind == "human-main"
+        and records[parent][1] == {parent_id}
+        and records[path][1] == {parent_id}
+        and populations[path]["agent_ids"] == {path.stem.removeprefix("agent-")}
+        and populations[path]["sidechain"]
+      ):
+        resolved[path] = "human-subagent"
+        return "human-subagent"
+    elif parent is None and populations[path]["human"]:
+      resolved[path] = "human-main"
+      return "human-main"
+    # 未確認的來源只留本機；後來有本人輸入或可核對的父 main 才取得準入。
     resolved[path] = "unknown"
     return "unknown"
 
@@ -855,9 +898,9 @@ def discover(root, self_id, time_window=None):
         "path": str(path),
         "name": path.name,
         "classification": kind,
-        "included": kind not in {"self", "synthetic"},
+        "included": kind in {"human-main", "human-subagent"},
         "mtime": info.st_mtime,
-        "session_id": next(iter(session_ids), path.stem),
+        "session_id": parent_file(path, root).stem if kind == "human-subagent" else path.stem if kind == "human-main" else next(iter(session_ids), path.stem),
         "source_sha": source_sha,
         "history_match": (
           windows[path]["matches"] if windows[path]["has_timestamp"]

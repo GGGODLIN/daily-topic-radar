@@ -80,6 +80,8 @@ def user_line(text, session_id="s1", cwd="/work/natural", **extra):
     "type": "user",
     "sessionId": session_id,
     "cwd": cwd,
+    "promptSource": "typed",
+    "origin": {"kind": "human"},
     "timestamp": "2026-10-05T00:00:00.000Z",
     "message": {"role": "user", "content": text},
   }
@@ -87,8 +89,31 @@ def user_line(text, session_id="s1", cwd="/work/natural", **extra):
   return json.dumps(record, ensure_ascii=False) + "\n"
 
 
-def write_jsonl(path, text):
+def write_jsonl(path, text, bind_session=True):
   path.parent.mkdir(parents=True, exist_ok=True)
+  if bind_session:
+    # 舊 fixture 隨意填 sessionId；有效來源現在必須對得上主檔與子 agent，負例用原樣寫入。
+    parent = None
+    for marker in ("subagents", "workflows"):
+      if marker in path.parts:
+        parent = Path(*path.parts[:path.parts.index(marker)]).with_suffix(".jsonl")
+        break
+    lines = []
+    for line in text.splitlines():
+      try:
+        record = json.loads(line)
+      except ValueError:
+        lines.append(line)
+        continue
+      if isinstance(record, dict) and "sessionId" in record:
+        record["sessionId"] = parent.stem if parent is not None else path.stem
+        if record.get("type") == "user":
+          record.setdefault("promptSource", "typed")
+          record.setdefault("origin", {"kind": "human"})
+        if parent is not None:
+          record.update(agentId=path.stem.removeprefix("agent-"), isSidechain=True)
+      lines.append(json.dumps(record, ensure_ascii=False))
+    text = "\n".join(lines) + "\n"
   path.write_text(text)
 
 
@@ -432,7 +457,7 @@ class SessionAuditCliTest(unittest.TestCase):
         ],
       },
     }
-    write_jsonl(self.projects / "work" / "huge.jsonl", json.dumps(record) + "\n")
+    write_jsonl(self.projects / "work" / "huge.jsonl", user_line("檢查工具輸出", session_id="huge") + json.dumps(record) + "\n")
     server = serve(lambda body: (analysis([]), 200))
     self.addCleanup(stop, server)
     url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -495,9 +520,9 @@ class SessionAuditCliTest(unittest.TestCase):
         }
       ),
     ]
-    write_jsonl(self.projects / "work" / "tools.jsonl", "\n".join(lines) + "\n")
-    # QUOTE_TOOL 在第二筆 tool_result，JSONL 第 2 行。
-    server = serve(lambda body: (analysis([finding("QUOTE_TOOL", source_line=2)]), 200))
+    write_jsonl(self.projects / "work" / "tools.jsonl", user_line("核對工具結果", session_id="tools") + "\n".join(lines) + "\n")
+    # 真人輸入在第一行，QUOTE_TOOL 的 tool_result 現在位於第三行。
+    server = serve(lambda body: (analysis([finding("QUOTE_TOOL", source_line=3)]), 200))
     self.addCleanup(stop, server)
     url = f"http://127.0.0.1:{server.server_address[1]}"
     self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
@@ -763,7 +788,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertFalse(self.source_named(report, "case.jsonl")["included"])
     self.assertEqual(self.source_named(report, "self-session-id.jsonl")["classification"], "self")
     self.assertFalse(self.source_named(report, "self-session-id.jsonl")["included"])
-    self.assertEqual(self.source_named(report, "probe.jsonl")["classification"], "unknown")
+    self.assertEqual(self.source_named(report, "probe.jsonl")["classification"], "human-main")
     self.assertTrue(self.source_named(report, "probe.jsonl")["included"])
     self.assertTrue(self.source_named(report, "bench.jsonl")["included"])
 
@@ -808,7 +833,7 @@ class SessionAuditCliTest(unittest.TestCase):
       self.assertEqual(row["classification"], "synthetic", name)
       self.assertFalse(row["included"], name)
     other = self.source_named(report, "tmp-1.jsonl")
-    self.assertEqual(other["classification"], "unknown")
+    self.assertEqual(other["classification"], "human-main")
     self.assertTrue(other["included"])
 
   def test_source_hash_unchanged_after_read(self):
@@ -948,11 +973,12 @@ class SessionAuditCliTest(unittest.TestCase):
         cursor += 1
     self.assertEqual(cursor, len(old_lines))
 
+    expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
     locked = original.replace(
       "## 待折\n",
       "## 待折\n"
       "<!-- friction-review-lock:v1 session=other "
-      "claimed_at=2026-10-05T00:00:00Z expires_at=2026-10-06T00:00:00Z -->\n",
+      f"claimed_at=2026-10-05T00:00:00Z expires_at={expires} -->\n",
     )
     friction.write_text(locked)
     refused = self.cli(["promote", *self.flags(url)])
@@ -1012,7 +1038,7 @@ class SessionAuditCliTest(unittest.TestCase):
     )
     write_jsonl(
       self.projects / "work" / "vis.jsonl",
-      "\n".join(
+      user_line("核對附件與 hook 內容", session_id="vis") + "\n".join(
         [
           json.dumps(
             {
@@ -1079,7 +1105,8 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertNotIn("leakauthjson", sent)
     report = self.status(url)
     self.assertEqual(self.source_named(report, "sdk.jsonl")["classification"], "unknown")
-    self.assertTrue(self.source_named(report, "sdk.jsonl")["included"])
+    self.assertFalse(self.source_named(report, "sdk.jsonl")["included"])
+    self.assertNotIn("SDK_MARKER", sent)
     role_segments = [item for item in report["segments"] if item["name"] == "role.jsonl"]
     self.assertTrue(any(item["tool_use_id"] == "toolu_read" and item["source_sha"] for item in role_segments))
 
@@ -1248,7 +1275,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertNotIn("IMGHUGE_", b"".join(server.bodies).decode())
 
   def test_promote_uses_real_source_ref_and_skips_duplicates(self):
-    write_jsonl(self.projects / "work" / "promo2.jsonl", user_line("QUOTE_PROMOTE_REAL", session_id="sess-real"))
+    write_jsonl(self.projects / "work" / "sess-real.jsonl", user_line("QUOTE_PROMOTE_REAL", session_id="sess-real"))
     friction = self.friction / "workflow-general.md"
     friction.write_text("# 摩擦\n\n## 待折\n\n- old\n\n## 已折／已否決\n\n- closed\n")
     server = serve(lambda body: (analysis([finding("QUOTE_PROMOTE_REAL", observation="needs-real")]), 200))
@@ -1335,7 +1362,7 @@ class SessionAuditCliTest(unittest.TestCase):
     at = pending.index(entry)
     sublines = pending[at + 1 : at + 4]
     self.assertEqual(len(sublines), 3, pending)
-    for name, line in zip(("viol_a", "viol_b", "viol_c"), sublines):
+    for name, line in zip(("viol_a", "viol_b", "viol_c"), sublines, strict=True):
       self.assertTrue(line.startswith("  - source_ref=session:" + name + "#1:"), line)
       self.assertIn('quote="VIOL_' + name[-1].upper() + '"', line)
       self.assertIn("conversation_time=2026-10-0", line)
