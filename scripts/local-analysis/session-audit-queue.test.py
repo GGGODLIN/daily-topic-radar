@@ -35,7 +35,7 @@ class QueueTests(history.HistoryWindowTests):
     self.assertEqual(len(server.bodies), 120, 'Failed sources remain eligible; they were not silently dropped')
 
   def test_failed_live_sources_do_not_starve_other_live_sources(self):
-    for index in range(16):
+    for index in range(48):
       history.fixtures.write_jsonl(self.projects / 'work' / f'a-live-failed-{index:02}.jsonl', history.fixtures.user_line('BROKEN_LIVE_REPLY', session_id=f'live-{index}'))
     server, url = self.provider(lambda body: ('not JSON', 200) if 'BROKEN_LIVE_REPLY' in history.fixtures.user_text(body) else (history.fixtures.analysis([], rule_tags=[]), 200))
     command = ['run', *self.flags(url, started_at=history.DEPLOYED)]

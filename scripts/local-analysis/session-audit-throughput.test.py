@@ -23,7 +23,7 @@ class ThroughputTests(population.PopulationTests):
   def test_history_gets_reserved_slots_while_new_backlog_remains(self):
     fixtures.ThreadingHTTPServer.request_queue_size = 32
     self.history_source('a-history.jsonl', 'HISTORY_RESERVED', '2026-10-02T00:00:00Z')
-    for index in range(17):
+    for index in range(49):
       self.source(f'work/z-new-{index:02}.jsonl', f'NEW_BACKLOG_{index:02}', timestamp='2026-10-06T00:00:00Z')
     server, url = self.provider()
     self.assertEqual(self.run_window(url).returncode, 0)
@@ -45,7 +45,7 @@ class ThroughputTests(population.PopulationTests):
   def test_recently_closed_session_goes_before_quiet_unclosed_backlog(self):
     fixtures.ThreadingHTTPServer.request_queue_size = 32
     cutoff = 1_760_000_000
-    for index in range(16):
+    for index in range(48):
       backlog = self.source(f'work/b-quiet-{index:02}.jsonl', f'QUIET_BACKLOG_{index:02}')
       os.utime(backlog, (cutoff + 50, cutoff + 50))
     closed = self.source('work/a-closed.jsonl', 'JUST_CLOSED')

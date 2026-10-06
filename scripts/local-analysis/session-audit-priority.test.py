@@ -16,7 +16,7 @@ class PriorityTests(population.PopulationTests):
   def test_newest_pending_session_gets_a_slot_before_older_new_backlog(self):
     fixtures.ThreadingHTTPServer.request_queue_size = 32
     cutoff = 1_760_000_000
-    for index in range(16):
+    for index in range(48):
       older_new = self.source(f'work/a-older-{index:02}.jsonl', f'OLDER_NEW_{index:02}')
       fixtures.os.utime(older_new, (cutoff + 10, cutoff + 10))
     newest = self.source('work/z-newest.jsonl', 'NEWEST_CLOSED')
