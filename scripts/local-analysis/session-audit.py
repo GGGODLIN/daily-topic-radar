@@ -41,7 +41,15 @@ MAX_OLD_FRAGMENTS = 1
 MAX_HISTORY_FRAGMENTS = 120
 # 只限制「何時停止開新片段」，不取消在途請求；排程每 300 秒一輪，留尾巴給在途回件。
 MAX_RUN_SECONDS = 240
-MAX_CONCURRENT_SESSIONS = 20
+MAX_CONCURRENT_SESSIONS = 21
+# 直連腿（free 之外、會吃訂閱或單帳號額度）出錯就暫停一段時間，名額讓回 free；用完時不會反覆撞牆。
+LEG_PAUSE_SECONDS = 1800
+# 只有直連腿設等待上限：它們的上游沒有 relay 的備援，一個不回的請求會一直佔住名額。free 刻意不設。
+DIRECT_LEG_TIMEOUT_SECONDS = 900
+GROK_PAUSE_PERCENT = 90
+# 取樣器每 5 分鐘一筆；太久沒更新等於不知道用量，寧可不用。
+GROK_SAMPLE_MAX_AGE_SECONDS = 1800
+LEG_FALLBACK_FAILURES = frozenset({"bad-model-json", "empty-model-content", "finish-unconfirmed"})
 # 新工作清不完時，歷史若要等新組排空就永遠輪不到；保留幾個槽給歷史。
 HISTORY_RESERVED_SLOTS = 6
 # SessionEnd 之後 CC 可能還補寫最後幾行；容許這段誤差仍算已關閉。
@@ -369,6 +377,10 @@ def connect(state, write):
         time_basis TEXT NOT NULL,
         PRIMARY KEY (batch_id, inode)
       );
+      CREATE TABLE IF NOT EXISTS leg_pauses (
+        alias TEXT PRIMARY KEY,
+        until REAL NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS scan_cache (
         inode TEXT PRIMARY KEY,
         entry TEXT NOT NULL
@@ -475,7 +487,7 @@ class RefuseRedirect(urllib.request.HTTPRedirectHandler):
     raise urllib.error.HTTPError(req.full_url, code, "redirect-refused", headers, fp)
 
 
-def post_json(url, key, payload):
+def post_json(url, key, payload, timeout=None):
   body = json.dumps(payload).encode()
   request = urllib.request.Request(
     url,
@@ -488,7 +500,7 @@ def post_json(url, key, payload):
   )
   opener = urllib.request.build_opener(RefuseRedirect)
   try:
-    with opener.open(request, timeout=None) as response:
+    with opener.open(request, timeout=timeout) as response:
       raw = response.read(MAX_RESPONSE_BYTES + 1)
       code = response.status
   except urllib.error.HTTPError as exc:
@@ -1843,6 +1855,37 @@ def refresh(connection, projects, self_id, time_window=None):
   return found
 
 
+def parse_legs(text):
+  legs = []
+  for item in filter(None, (part.strip() for part in text.split(","))):
+    alias, _, slots = item.rpartition(":")
+    if not alias or not slots.isdigit() or int(slots) <= 0:
+      fail("direct-legs-invalid")
+    legs.append((alias, int(slots)))
+  return legs
+
+
+def grok_usage_allows(path):
+  try:
+    lines = Path(path).read_text().splitlines()
+    latest = json.loads(lines[-1])
+  except (OSError, IndexError, ValueError):
+    return False
+  moment = parse_time(latest.get("at")) if isinstance(latest, dict) else None
+  pct = latest.get("pct") if isinstance(latest, dict) else None
+  if moment is None or not isinstance(pct, (int, float)):
+    return False
+  return time.time() - moment.timestamp() <= GROK_SAMPLE_MAX_AGE_SECONDS and pct < GROK_PAUSE_PERCENT
+
+
+def available_legs(connection, legs, quota_file):
+  paused = {row["alias"] for row in connection.execute("SELECT alias FROM leg_pauses WHERE until > ?", (time.time(),))}
+  return [
+    (alias, slots) for alias, slots in legs
+    if alias not in paused and ("grok" not in alias.lower() or grok_usage_allows(quota_file))
+  ]
+
+
 def session_end_times(connection):
   # 續接的 session 在 hook 裡是另一個執行 ID；用逐字稿檔名對回主檔，子 agent 也沿用父 main 的 ID。
   ended = {}
@@ -1961,12 +2004,37 @@ def cmd_run(args):
       return None
 
     def next_group():
-      busy_new = sum(1 for _, _, group in active.values() if group == "new")
+      busy_new = sum(1 for _, _, group, _, _ in active.values() if group == "new")
       old_waiting = remaining["old"] > 0 and bool(queues["old"])
       # 新工作先佔槽，但歷史還有事時保留幾槽給它，避免新組永遠清不完時歷史一直排不到。
       if remaining["new"] > 0 and queues["new"] and (not old_waiting or busy_new < MAX_CONCURRENT_SESSIONS - HISTORY_RESERVED_SLOTS):
         return "new"
       return "old" if old_waiting else None
+
+    legs = available_legs(connection, parse_legs(args.direct_legs), args.grok_quota_file)
+    capacity = {"free": MAX_CONCURRENT_SESSIONS - sum(slots for _, slots in legs), **dict(legs)}
+
+    def pick_leg():
+      busy = {}
+      for _, _, _, leg, _ in active.values():
+        busy[leg] = busy.get(leg, 0) + 1
+      open_legs = [leg for leg in capacity if busy.get(leg, 0) < capacity[leg]]
+      return min(open_legs, key=lambda leg: busy.get(leg, 0)) if open_legs else "free"
+
+    def send(session_id, analyzer, group, leg, payload):
+      if leg == "free":
+        future = pool.submit(post_json, url, key, payload)
+      else:
+        future = pool.submit(post_json, url, key, {**payload, "model": leg}, DIRECT_LEG_TIMEOUT_SECONDS)
+      active[future] = (session_id, analyzer, group, leg, payload)
+
+    def pause_leg(leg):
+      # 這條腿暫停期間的名額讓回 free；下一輪起由 leg_pauses 擋住，不反覆撞同一個額度牆。
+      connection.execute(
+        "INSERT OR REPLACE INTO leg_pauses (alias, until) VALUES (?, ?)", (leg, time.time() + LEG_PAUSE_SECONDS),
+      )
+      connection.commit()
+      capacity["free"] += capacity.pop(leg, 0)
 
     def resume(session_id, group, analyzer, response=None):
       try:
@@ -1980,7 +2048,7 @@ def cmd_run(args):
         return
       # 已開始的 400/413 縮片保留原本的重送流程；只限制下一個新片段，不丟棄在途回件。
       remaining[group] -= 1
-      active[pool.submit(post_json, url, key, payload)] = (session_id, analyzer, group)
+      send(session_id, analyzer, group, pick_leg(), payload)
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
       while queues["new"] or queues["old"] or active:
@@ -2004,8 +2072,16 @@ def cmd_run(args):
           break
         done, _ = wait(active, return_when=FIRST_COMPLETED)
         for future in done:
-          session_id, analyzer, group = active.pop(future)
-          resume(session_id, group, analyzer, future.result())
+          session_id, analyzer, group, leg, payload = active.pop(future)
+          code, body = future.result()
+          if leg != "free" and (code != 200 or message_from_response(body)[1] in LEG_FALLBACK_FAILURES):
+            # 直連腿額度用完、斷線或回空時，同一段改送 free；不讓那條腿的狀況變成來源失敗。
+            print(f"session-audit: leg-fallback {leg} http-{code}", file=sys.stderr)
+            if leg in capacity:
+              pause_leg(leg)
+            send(session_id, analyzer, group, "free", payload)
+            continue
+          resume(session_id, group, analyzer, (code, body))
     if window is not None:
       update_history_review(connection)
     connection.close()
@@ -2635,6 +2711,9 @@ def build_parser():
   parser.add_argument("--rules-repo", default=str(Path.home() / ".claude"))
   # SessionEnd 漏報時的兜底：多久沒寫入才視為已關閉。
   parser.add_argument("--quiet-seconds", type=int, default=600)
+  # free 之外的直連腿，格式 alias:名額,alias:名額；預設不開，只走 free。
+  parser.add_argument("--direct-legs", default="")
+  parser.add_argument("--grok-quota-file", default=str(Path.home() / ".cli-proxy-api" / "grok-quota-samples.jsonl"))
   return parser
 
 
