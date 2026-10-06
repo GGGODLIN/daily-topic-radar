@@ -985,7 +985,8 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
   for inode, path in found.items():
     source_sha, session_ids, _synthetic, _unreadable = records[path]
     kind = resolve(path, set())
-    info = path.stat()
+    # 沿用列檔時的 stat：重新 stat 時檔案可能已被刪掉，整輪會因此中斷。
+    info = stats[inode]
     described.append(
       {
         "inode": f"{inode[0]}:{inode[1]}",

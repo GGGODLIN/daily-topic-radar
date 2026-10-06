@@ -71,6 +71,28 @@ class ThroughputTests(population.PopulationTests):
     self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
     self.assertIn(b'APPENDED_LATER', b''.join(server.bodies))
 
+  def test_source_deleted_mid_scan_does_not_abort_the_round(self):
+    # 2026-10-07 02:52 正式環境：測試用 session 在列出後、讀取前被刪掉，整輪當掉。
+    kept = self.source('work/kept.jsonl', 'KEPT')
+    gone = self.source('work/gone.jsonl', 'GONE')
+    analyzer_spec = importlib.util.spec_from_file_location('analyzer', Path(__file__).with_name('session-audit.py'))
+    analyzer = importlib.util.module_from_spec(analyzer_spec)
+    analyzer_spec.loader.exec_module(analyzer)
+    real_walk = os.walk
+
+    def walk_then_delete(*args, **kwargs):
+      yield from real_walk(*args, **kwargs)
+      gone.unlink()
+
+    analyzer.os.walk = walk_then_delete
+    try:
+      described = analyzer.discover(self.projects, None)
+    finally:
+      analyzer.os.walk = real_walk
+    rows = {row['name']: row for row in described}
+    self.assertTrue(rows[kept.name]['included'])
+    self.assertFalse(rows.get(gone.name, {}).get('included'), 'A source that vanished cannot be analysed')
+
 
 if __name__ == '__main__':
   suite = unittest.TestSuite(ThroughputTests(name) for name in ThroughputTests.__dict__ if name.startswith('test_'))
