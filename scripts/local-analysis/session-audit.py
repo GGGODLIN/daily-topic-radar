@@ -42,7 +42,8 @@ MAX_RESPONSE_BYTES = 262144
 MAX_NEW_FRAGMENTS = 48
 MAX_OLD_FRAGMENTS = 1
 MAX_HISTORY_FRAGMENTS = 120
-# 只限制「何時停止開新片段」，不取消在途請求；排程每 300 秒一輪，留尾巴給在途回件。
+# 只限制「何時停止開新片段」，不取消在途請求。每輪開頭才掃描新 session，這個窗口決定新 session 最久等多久被看到。
+# 排程每 10 秒觸發（launchd 不會讓同一 job 重疊）：每 300 秒時一輪跑超過 5 分鐘就錯過下一個整點，名額約七成時間閒置（2026-10-07 帳本）。
 MAX_RUN_SECONDS = 240
 MAX_CONCURRENT_SESSIONS = 21
 # 直連腿（free 之外、會吃訂閱或單帳號額度）出錯就暫停一段時間，名額讓回 free；用完時不會反覆撞牆。
