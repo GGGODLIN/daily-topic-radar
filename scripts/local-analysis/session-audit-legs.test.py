@@ -60,8 +60,8 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(done.returncode, 0, done.stderr)
     self.assertEqual(peak, {'free': 16, 'workbuddy-v41': 7, 'grok-4.7': 7})
 
-  def test_failed_direct_leg_falls_back_to_free_and_pauses(self):
-    self.sessions(3)
+  def test_leg_pauses_only_after_repeated_failures(self):
+    self.sessions(12)
     seen = []
 
     def reply(body):
@@ -75,12 +75,71 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(self.cli(['run', *flags]).returncode, 0)
     rows = [row for row in self.status(url)['sources'] if row['included']]
     self.assertTrue(all(row['status'] == 'complete' for row in rows), rows)
-    self.assertIn('workbuddy-v41', seen)
+    self.assertGreaterEqual(seen.count('workbuddy-v41'), 3)
     for index in range(3):
       self.source(f'work/later-{index}.jsonl', f'AFTER_PAUSE_{index}')
     seen.clear()
     self.assertEqual(self.cli(['run', *flags]).returncode, 0)
-    self.assertNotIn('workbuddy-v41', seen, 'Failed legs stay paused instead of failing every request again')
+    self.assertNotIn('workbuddy-v41', seen, 'A leg that keeps failing stays paused instead of failing every request again')
+
+  def pinned_flags(self, url):
+    return self.flags(url) + ['--direct-legs', 'mimo26-pool:15,workbuddy-v41:15']
+
+  def test_pinned_legs_never_touch_the_free_chain(self):
+    self.sessions(40)
+    seen = []
+
+    def reply(body):
+      seen.append(self.model_of(body))
+      return fixtures.analysis([], rule_tags=[]), 200
+
+    _, url = self.provider(reply)
+    self.assertEqual(self.cli(['run', *self.pinned_flags(url)], timeout=30).returncode, 0)
+    self.assertNotIn('free', seen, 'With every slot pinned the run must not fall through to unvetted free-chain legs')
+    self.assertEqual(set(seen), {'mimo26-pool', 'workbuddy-v41'})
+
+  def test_isolated_failure_moves_the_fragment_to_the_other_leg(self):
+    self.sessions(4)
+    seen = []
+    lock = threading.Lock()
+
+    def reply(body):
+      model = self.model_of(body)
+      with lock:
+        seen.append((model, fixtures.user_text(body)))
+        first_mimo = model == 'mimo26-pool' and [m for m, _ in seen].count('mimo26-pool') == 1
+      if first_mimo:
+        return '{"error": "upstream"}', 500
+      return fixtures.analysis([], rule_tags=[]), 200
+
+    _, url = self.provider(reply)
+    self.assertEqual(self.cli(['run', *self.pinned_flags(url)]).returncode, 0)
+    failed_text = next(text for model, text in seen if model == 'mimo26-pool')
+    marker = next(word for word in failed_text.split() if word.startswith('LEG_WORK_'))
+    self.assertTrue(any(model == 'workbuddy-v41' and marker in text for model, text in seen), 'The failed fragment is resent on the other leg')
+    rows = [row for row in self.status(url)['sources'] if row['included']]
+    self.assertTrue(all(row['status'] == 'complete' for row in rows), rows)
+    self.source('work/later.jsonl', 'AFTER_BLIP')
+    seen.clear()
+    self.assertEqual(self.cli(['run', *self.pinned_flags(url)]).returncode, 0)
+    self.assertIn('mimo26-pool', [model for model, _ in seen], 'One error does not pause a leg')
+
+  def test_both_legs_down_leaves_work_pending_not_failed(self):
+    self.sessions(6)
+    seen = []
+
+    def reply(body):
+      seen.append(self.model_of(body))
+      return '{"error": "upstream"}', 500
+
+    _, url = self.provider(reply)
+    self.assertEqual(self.cli(['run', *self.pinned_flags(url)]).returncode, 0)
+    self.assertNotIn('free', seen)
+    rows = [row for row in self.status(url)['sources'] if row['included']]
+    self.assertTrue(all(row['status'] == 'pending' for row in rows), 'Dead pools are not a fault of the sessions: ' + str([row['status'] for row in rows]))
+    seen.clear()
+    self.assertEqual(self.cli(['run', *self.pinned_flags(url)]).returncode, 0)
+    self.assertEqual(seen, [], 'Both legs stay paused, so the next run waits instead of sending')
 
   def test_grok_keeps_its_slots_after_an_isolated_error(self):
     self.sessions(3)

@@ -45,14 +45,16 @@ MAX_RUN_SECONDS = 900
 # 跑到一半多久重新掃一次目錄：新 session 安靜夠久後最多再等這麼久就插到隊伍最前面。
 RESCAN_SECONDS = 120
 MAX_CONCURRENT_SESSIONS = 30
-# 直連腿（free 之外、會吃訂閱或單帳號額度）出錯就暫停一段時間，名額讓回 free；用完時不會反覆撞牆。
+# 直連腿連續出錯就暫停一段時間，時間到自動再試；池真的死掉時每輪只浪費幾發，不會反覆撞牆。
 LEG_PAUSE_SECONDS = 1800
 # 只有直連腿設等待上限：它們的上游沒有 relay 的備援，一個不回的請求會一直佔住名額。free 刻意不設。
 DIRECT_LEG_TIMEOUT_SECONDS = 900
 GROK_PAUSE_PERCENT = 95
-# Grok 有 95% 額度鎖兜底，偶發錯誤只把該段改送 free；連續錯到這個次數才當成真的壞掉而暫停。
-# 其他直連腿沒有用量可查，錯一次就暫停（WorkBuddy 額度用完時每發都秒回錯誤）。
-LEG_FAILURES_BEFORE_PAUSE = {"grok-4.7": 3}
+# 2api 服務會自己換帳號、也會把單一帳號的 402 改寫成 500，回應碼分不出「一個帳號壞」還是「整池死」；
+# 所以不看碼，連續失敗到這個次數才當成整池不可用。單次失敗只把那段改送別條腿。
+LEG_FAILURES_BEFORE_PAUSE = 3
+# 同一段最多改送幾次；都失敗就先放下，來源維持待分析，下一輪再送。
+LEG_RESENDS = 2
 # 取樣器每 5 分鐘一筆；太久沒更新等於不知道用量，寧可不用。
 GROK_SAMPLE_MAX_AGE_SECONDS = 1800
 LEG_FALLBACK_FAILURES = frozenset({"bad-model-json", "empty-model-content", "finish-unconfirmed"})
@@ -2104,22 +2106,30 @@ def cmd_run(args):
             return group, row
       return None, None
 
-    legs = available_legs(connection, parse_legs(args.direct_legs), args.grok_quota_file)
-    capacity = {"free": MAX_CONCURRENT_SESSIONS - sum(slots for _, slots in legs), **dict(legs)}
+    configured = parse_legs(args.direct_legs)
+    legs = available_legs(connection, configured, args.grok_quota_file)
+    # 名額全部指定給直連腿時不碰 free 鏈：鏈尾的腿沒驗證過（Muse 8 個摩擦只抓到 2 個），暫停時寧可少跑也不靜默換品質。
+    # 有用 free 時，暫停或額度到線的腿把名額讓給 free。
+    uses_free = sum(slots for _, slots in configured) < MAX_CONCURRENT_SESSIONS
+    free_slots = MAX_CONCURRENT_SESSIONS - sum(slots for _, slots in legs) if uses_free else 0
+    capacity = {**({"free": free_slots} if free_slots > 0 else {}), **dict(legs)}
 
-    def pick_leg():
+    def pick_leg(avoid=None):
       busy = {}
-      for _, _, _, leg, _ in active.values():
+      for _, _, _, leg, _, _ in active.values():
         busy[leg] = busy.get(leg, 0) + 1
-      open_legs = [leg for leg in capacity if busy.get(leg, 0) < capacity[leg]]
-      return min(open_legs, key=lambda leg: busy.get(leg, 0)) if open_legs else "free"
+      candidates = [leg for leg in capacity if leg != avoid]
+      if not candidates:
+        return None
+      open_legs = [leg for leg in candidates if busy.get(leg, 0) < capacity[leg]]
+      return min(open_legs or candidates, key=lambda leg: busy.get(leg, 0))
 
-    def send(session_id, analyzer, group, leg, payload):
+    def send(session_id, analyzer, group, leg, payload, resends=0):
       if leg == "free":
         future = pool.submit(post_json, url, key, payload)
       else:
         future = pool.submit(post_json, url, key, {**payload, "model": leg}, DIRECT_LEG_TIMEOUT_SECONDS)
-      active[future] = (session_id, analyzer, group, leg, payload)
+      active[future] = (session_id, analyzer, group, leg, payload, resends)
 
     consecutive_failures = {}
 
@@ -2129,7 +2139,9 @@ def cmd_run(args):
         "INSERT OR REPLACE INTO leg_pauses (alias, until) VALUES (?, ?)", (leg, time.time() + LEG_PAUSE_SECONDS),
       )
       connection.commit()
-      capacity["free"] += capacity.pop(leg, 0)
+      slots = capacity.pop(leg, 0)
+      if "free" in capacity:
+        capacity["free"] += slots
 
     def resume(session_id, group, analyzer, response=None):
       try:
@@ -2141,9 +2153,14 @@ def cmd_run(args):
         analyzer.close()
         sessions.remove(session_id)
         return
+      leg = pick_leg()
+      if leg is None:
+        analyzer.close()
+        sessions.remove(session_id)
+        return
       # 已開始的 400/413 縮片保留原本的重送流程；到期只擋下一個新片段，不丟棄在途回件。
       remaining[group] -= 1
-      send(session_id, analyzer, group, pick_leg(), payload)
+      send(session_id, analyzer, group, leg, payload)
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
       while True:
@@ -2151,7 +2168,7 @@ def cmd_run(args):
         if open_for_work and time.monotonic() >= next_scan:
           scan()
           next_scan = time.monotonic() + args.rescan_seconds
-        while open_for_work and len(active) < MAX_CONCURRENT_SESSIONS:
+        while open_for_work and capacity and len(active) < MAX_CONCURRENT_SESSIONS:
           group, row = next_row()
           if row is None:
             break
@@ -2173,15 +2190,23 @@ def cmd_run(args):
         timeout = max(0.0, next_scan - time.monotonic()) if open_for_work else None
         done, _ = wait(active, timeout=timeout, return_when=FIRST_COMPLETED)
         for future in done:
-          session_id, analyzer, group, leg, payload = active.pop(future)
+          session_id, analyzer, group, leg, payload, resends = active.pop(future)
           code, body = future.result()
           if leg != "free" and (code != 200 or message_from_response(body)[1] in LEG_FALLBACK_FAILURES):
-            # 直連腿額度用完、斷線或回空時，同一段改送 free；不讓那條腿的狀況變成來源失敗。
+            # 直連腿額度用完、斷線或回空時，同一段改送別條腿；不讓那條腿的狀況變成來源失敗。
             print(f"session-audit: leg-fallback {leg} http-{code}", file=sys.stderr)
             consecutive_failures[leg] = consecutive_failures.get(leg, 0) + 1
-            if leg in capacity and consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE.get(leg, 1):
+            if leg in capacity and consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE:
               pause_leg(leg)
-            send(session_id, analyzer, group, "free", payload)
+            other = pick_leg(avoid=leg) if resends < LEG_RESENDS else None
+            if other is None and resends < LEG_RESENDS and leg in capacity:
+              other = leg
+            if other is None:
+              # 沒有腿可送：先放下這段，來源維持原狀態，下一輪再送；池死掉不是 session 的錯。
+              analyzer.close()
+              sessions.remove(session_id)
+              continue
+            send(session_id, analyzer, group, other, payload, resends + 1)
             continue
           consecutive_failures[leg] = 0
           resume(session_id, group, analyzer, (code, body))
