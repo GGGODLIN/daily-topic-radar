@@ -57,7 +57,7 @@ POOL_HEALTH = {
 POOL_HEALTH_CACHE_SECONDS = 15
 # 只有直連腿設等待上限：它們的上游沒有 relay 的備援，一個不回的請求會一直佔住名額。free 刻意不設。
 DIRECT_LEG_TIMEOUT_SECONDS = 900
-GROK_PAUSE_PERCENT = 95
+GROK_PAUSE_PERCENT = 50
 # 2api 服務會自己換帳號、也會把單一帳號的 402 改寫成 500，回應碼分不出「一個帳號壞」還是「整池死」。
 # 出錯時先問號池健康度，確認沒有活帳號才暫停；健康度讀不到或看起來正常（例如轉收費時帳號不冷卻），
 # 連續失敗到這個次數才暫停。單次失敗只把那段改送別條腿。
@@ -2165,6 +2165,8 @@ def cmd_run(args):
     uses_free = sum(slots for _, slots in configured) < MAX_CONCURRENT_SESSIONS
     free_slots = MAX_CONCURRENT_SESSIONS - sum(slots for _, slots in legs) if uses_free else 0
     capacity = {**({"free": free_slots} if free_slots > 0 else {}), **dict(legs)}
+    # 指定的池名額加總超過 30 時（例如 Grok 額外加 10），總量跟著名額走；30 只是 free 補位的基準。
+    concurrency = max(MAX_CONCURRENT_SESSIONS, sum(slots for _, slots in configured))
     try:
       pool_specs = json.loads(args.pool_health)
     except ValueError:
@@ -2264,7 +2266,7 @@ def cmd_run(args):
       remaining[group] -= 1
       send(session_id, analyzer, group, leg, payload)
 
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
       review_legs()
       next_review = time.monotonic() + LEG_REVIEW_SECONDS
       while True:
@@ -2275,7 +2277,8 @@ def cmd_run(args):
         if open_for_work and time.monotonic() >= next_review:
           review_legs()
           next_review = time.monotonic() + LEG_REVIEW_SECONDS
-        while open_for_work and capacity and len(active) < MAX_CONCURRENT_SESSIONS:
+        # 總量照各腿名額加總：暫停的腿名額空著，不把它的量壓到其他池上。
+        while open_for_work and capacity and len(active) < min(concurrency, sum(capacity.values())):
           group, row = next_row()
           if row is None:
             break
@@ -2328,7 +2331,7 @@ def cmd_run(args):
       update_history_review(connection)
     connection.commit()
     connection.close()
-  print(json.dumps({"command": "run", "fragments": fragments["new"], "concurrency": MAX_CONCURRENT_SESSIONS}))
+  print(json.dumps({"command": "run", "fragments": fragments["new"], "concurrency": concurrency}))
   return 0
 
 def snapshot(connection):

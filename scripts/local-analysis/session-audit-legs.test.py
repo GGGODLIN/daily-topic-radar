@@ -15,6 +15,7 @@ spec.loader.exec_module(population)
 fixtures = population.fixtures
 
 LEGS = 'workbuddy-v41:7,grok-4.7:7'
+PRODUCTION_LEGS = 'mimo26-pool:15,workbuddy-v41:15,grok-4.7:10'
 
 
 class DirectLegTests(population.PopulationTests):
@@ -35,8 +36,11 @@ class DirectLegTests(population.PopulationTests):
     return json.loads(body)['model']
 
   def test_each_leg_carries_its_share_of_slots(self):
+    self.assertEqual(self.peaks(LEGS, self.grok_usage(40), full=30), {'free': 16, 'workbuddy-v41': 7, 'grok-4.7': 7})
+
+  def peaks(self, legs, quota, full, sessions=48):
     fixtures.ThreadingHTTPServer.request_queue_size = 64
-    self.sessions(32)
+    self.sessions(sessions)
     lock = threading.Lock()
     active, peak = {}, {}
     arrived = threading.Event()
@@ -46,7 +50,7 @@ class DirectLegTests(population.PopulationTests):
       with lock:
         active[model] = active.get(model, 0) + 1
         peak[model] = max(peak.get(model, 0), active[model])
-        if sum(active.values()) == 30:
+        if sum(active.values()) == full:
           arrived.set()
       try:
         arrived.wait(5)
@@ -56,9 +60,17 @@ class DirectLegTests(population.PopulationTests):
           active[model] -= 1
 
     _, url = self.provider(reply)
-    done = self.cli(['run', *self.leg_flags(url, self.grok_usage(40))], timeout=30)
+    done = self.cli(['run', *self.flags(url), '--direct-legs', legs, '--grok-quota-file', str(quota)], timeout=30)
     self.assertEqual(done.returncode, 0, done.stderr)
-    self.assertEqual(peak, {'free': 16, 'workbuddy-v41': 7, 'grok-4.7': 7})
+    return peak
+
+  def test_production_legs_add_ten_grok_slots_on_top_of_the_two_pools(self):
+    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(10), full=40)
+    self.assertEqual(peak, {'mimo26-pool': 15, 'workbuddy-v41': 15, 'grok-4.7': 10})
+
+  def test_grok_over_its_line_leaves_its_slots_empty_instead_of_overloading_the_pools(self):
+    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(50), full=30)
+    self.assertEqual(peak, {'mimo26-pool': 15, 'workbuddy-v41': 15}, 'Each pool keeps the 15 slots the user set even while Grok sits out')
 
   def pinned_flags(self, url):
     return self.flags(url) + ['--direct-legs', 'mimo26-pool:15,workbuddy-v41:15']
@@ -168,7 +180,7 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(self.cli(['run', *flags]).returncode, 0)
     self.assertNotIn('grok-4.7', seen, 'A Grok that keeps failing is paused instead of eating every request')
 
-  def test_grok_is_skipped_at_ninety_five_percent_or_when_usage_is_unknown(self):
+  def test_grok_is_skipped_at_fifty_percent_or_when_usage_is_unknown(self):
     self.sessions(3)
     seen = []
 
@@ -177,12 +189,12 @@ class DirectLegTests(population.PopulationTests):
       return fixtures.analysis([], rule_tags=[]), 200
 
     _, url = self.provider(reply)
-    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(94))]).returncode, 0)
-    self.assertIn('grok-4.7', seen, 'Below 95% Grok still takes its slots')
+    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(49))]).returncode, 0)
+    self.assertIn('grok-4.7', seen, 'Below 50% Grok still takes its slots')
     seen.clear()
     for index in range(3):
       self.source(f'work/full-{index}.jsonl', f'NEAR_LIMIT_{index}')
-    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(95))]).returncode, 0)
+    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(50))]).returncode, 0)
     self.source('work/stale.jsonl', 'STALE_SAMPLE')
     stale = self.grok_usage(10, at=datetime.fromtimestamp(time.time() - 3600, UTC))
     self.assertEqual(self.cli(['run', *self.leg_flags(url, stale)]).returncode, 0)

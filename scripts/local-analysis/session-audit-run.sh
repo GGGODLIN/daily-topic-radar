@@ -12,14 +12,14 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
 # 舊紀錄慢慢回填，但上線後的新／續跑來源不能隨日子過去降成歷史。
 # 預設只走兩條驗證過的池（MiMo、WorkBuddy 各 15 槽），不走 free 鏈：鏈尾的腿品質差很多（2026-10-07 同題盲評）。
 # 兩條都暫停時分析器停下來等，不換腿。SESSION_AUDIT_DIRECT_LEGS 設成空字串即改回只走 free。
-# Grok 2026-10-07 依使用者決定停用（週額度用完），之後要用再明確加回 grok-4.7:N，不隨額度重置自動恢復。
+# Grok 額外 10 槽、總量 40；週額度用到 50% 就讓出（GROK_PAUSE_PERCENT），名額空著不壓到另外兩池。
 "$PY" "$DIR/session-audit.py" run \
   --projects "$PROJECTS" \
   --state "$STATE" \
   --started-at "$STARTED_AT" \
   --relay-config "${SESSION_AUDIT_RELAY_CONFIG:-$HOME/.cli-proxy-api/config.yaml}" \
   --keys-file "${SESSION_AUDIT_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}" \
-  --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-mimo26-pool:15,workbuddy-v41:15}"
+  --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-mimo26-pool:15,workbuddy-v41:15,grok-4.7:10}"
 # 分析器的發現量大且未經 review；放在 ~/.claude/friction 外，避免跟其他機制的摩擦混在一起、灌爆 trial-review。
 "$PY" "$DIR/session-audit.py" promote \
   --state "$STATE" \
