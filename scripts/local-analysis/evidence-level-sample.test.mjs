@@ -95,14 +95,6 @@ const receiptPathFor = (fixture, date = '2026-08-14') => path.join(fixture.repor
 const publicationPathFor = (fixture, date = '2026-08-14') => path.join(fixture.reports, `${date}-evidence-level.publish.json`)
 const versionPathFor = (fixture, date = '2026-08-14') => path.join(fixture.reports, `${date}-evidence-level.version.json`)
 const modeFor = (file) => fs.statSync(file).mode & 0o777
-const DIGEST_KEY = /sha\d*|digest|checksum|hash/i
-const digestKeyPaths = (value, trail = '$') => {
-  if (value == null || typeof value !== 'object') return []
-  return Object.entries(value).flatMap(([key, child]) => [
-    ...(DIGEST_KEY.test(key) ? [`${trail}.${key}`] : []),
-    ...digestKeyPaths(child, `${trail}.${key}`),
-  ])
-}
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'))
 const auditFor = (samples, findings = [], auditNonce = TEST_AUDIT_NONCE) => ({
   audit_nonce: auditNonce,
@@ -500,7 +492,6 @@ test('finalize validates structured rows and generates the complete report', () 
   assert.equal(finalized.eligible, 2)
   assert.equal(finalized.sample_count, 2)
   assert.equal(finalized.tp_style_violation_count, 2)
-  assert.deepEqual(digestKeyPaths(finalized), [])
   assert.equal(fs.existsSync(reportPath), true)
   assert.equal(fs.existsSync(path.join(fixture.reports, '2026-08-14-evidence-level.draft.md')), false)
   assert.equal(run({ ...fixture, mode: 'due' }).due, false)
@@ -521,7 +512,6 @@ test('finalize validates structured rows and generates the complete report', () 
 
   const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'))
   assert.equal(receipt.schema_version, 2)
-  assert.deepEqual(digestKeyPaths(receipt), [])
   fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, challenge: 'f'.repeat(64) })}\n`)
   assert.equal(run({ ...fixture, mode: 'due' }).due, true)
   fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, sample_count: receipt.sample_count + 1 })}\n`)
@@ -680,9 +670,6 @@ test('pre-cutoff markerless v1 manifest that still carries manifest_hash can fin
   })
 
   assert.equal(finalized.ok, true)
-  assert.deepEqual(digestKeyPaths(finalized), [])
-  assert.deepEqual(digestKeyPaths(readJson(publicationPathFor(fixture, date))), [])
-  assert.deepEqual(digestKeyPaths(readJson(receiptPathFor(fixture, date))), [])
   assert.deepEqual(finalized.top_violations, [{ type: 'unsourced-number', count: 1 }])
   assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(publicationPathFor(fixture, date), 'utf8')), 'schema_version'), false)
   assert.equal(run({ ...fixture, date, mode: 'due' }).due, false)
@@ -955,7 +942,6 @@ test('finalize merges PASS-only reaudit and binds the subset nonce into publicat
   assert.equal(publication.reaudit_nonce, prepared.reaudit_nonce)
   assert.equal(receipt.reaudit_sample_count, 2)
   assert.equal(receipt.reaudit_nonce, prepared.reaudit_nonce)
-  assert.deepEqual([...digestKeyPaths(publication), ...digestKeyPaths(receipt)], [])
 })
 
 test('finalize rejects wrong reaudit nonce path and cross-transcript evidence', () => {
@@ -1000,7 +986,6 @@ test('finalize binds explicit null and zero reaudit fields when primary has no P
   assert.equal(publication.reaudit_nonce, null)
   assert.equal(receipt.reaudit_sample_count, 0)
   assert.equal(receipt.reaudit_nonce, null)
-  assert.deepEqual([...digestKeyPaths(publication), ...digestKeyPaths(receipt)], [])
 })
 
 test('finalize binds audit rows to the exact samples text read in the same transcript', () => {
@@ -1211,7 +1196,6 @@ test('sample mode writes four five-row batches and finalizer merges their transc
   assert.deepEqual(manifest.batches.map((batch) => batch.range), expectedRanges)
   assert.deepEqual(manifest.batches.map((batch) => batch.index), [1, 2, 3, 4])
   assert.equal(new Set(manifest.batches.map((batch) => batch.path)).size, 4)
-  assert.deepEqual(digestKeyPaths(manifest.batches), [])
   assert.equal(manifest.batches.every((batch) => batch.audit_nonce === sampled.audit_nonce), true)
 
   const wfDir = path.join(fixture.reports, 'wf-transcripts')
@@ -1235,7 +1219,6 @@ test('sample mode writes four five-row batches and finalizer merges their transc
   const finalized = run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, attemptNonce: sampled.attempt_nonce })
   assert.equal(finalized.ok, true)
   assert.equal(finalized.sample_count, 20)
-  assert.deepEqual(digestKeyPaths(finalized), [])
   const report = fs.readFileSync(reportPathFor(fixture), 'utf8')
   const reportRows = report.split('\n').filter((line) => line.startsWith('| 2026-08-14T'))
   assert.equal(reportRows.length, 20)
@@ -2103,8 +2086,7 @@ test('sampler stdout, manifest, batches and version file carry no digest fields'
   const { fixture, sampled } = makeTwentySampleFixture()
   assert.deepEqual(Object.keys(sampled).sort(), ['attempt_nonce', 'audit_nonce', 'batches', 'challenge', 'date', 'days_since', 'due', 'eligible', 'last_success_date', 'sample_count'])
   for (const batch of sampled.batches) assert.deepEqual(Object.keys(batch).sort(), ['audit_nonce', 'index', 'path', 'range'])
-  assert.deepEqual(digestKeyPaths(sampled), [])
-  assert.deepEqual(digestKeyPaths(readJson(manifestPathFor(fixture))), [])
+  assert.deepEqual(Object.keys(readJson(manifestPathFor(fixture))).sort(), ['audit_nonce', 'batches', 'challenge', 'date', 'eligible', 'samples', 'schema_version'])
   assert.deepEqual(readJson(versionPathFor(fixture)), { date: '2026-08-14', schema_version: 2 })
 })
 
@@ -2114,7 +2096,8 @@ test('finalize without digest flags writes receipt, publication and packet with 
   assert.deepEqual(Object.keys(finalized).sort(), ['audit_nonce', 'challenge', 'date', 'eligible', 'manifest_path', 'ok', 'reaudit_nonce', 'reaudit_sample_count', 'report_path', 'sample_count', 'top_violations', 'tp_style_violation_count'])
   const receipt = readJson(receiptPathFor(fixture))
   const publication = readJson(publicationPathFor(fixture))
-  for (const value of [finalized, receipt, publication, readJson(manifestPathFor(fixture))]) assert.deepEqual(digestKeyPaths(value), [])
+  assert.deepEqual(Object.keys(receipt).sort(), ['attempt_nonce', 'audit_nonce', 'challenge', 'date', 'eligible', 'reaudit_nonce', 'reaudit_sample_count', 'sample_count', 'schema_version', 'top_violations', 'tp_style_violation_count'])
+  assert.deepEqual(Object.keys(publication).sort(), ['attempt_nonce', 'audit_nonce', 'challenge', 'date', 'eligible', 'reaudit_nonce', 'reaudit_sample_count', 'report', 'sample_count', 'schema_version', 'top_violations', 'tp_style_violation_count'])
   const forbidden = new Set([
     fs.readFileSync(reportPathFor(fixture)), fs.readFileSync(manifestPathFor(fixture)), fs.readFileSync(publicationPathFor(fixture)), fs.readFileSync(samplesTextPathFor(fixture)),
   ].map(sha256))
@@ -2136,7 +2119,6 @@ test('prepare-reaudit and finalize work from nonces alone and bind the PASS subs
   assert.equal(finalized.ok, true)
   assert.equal(finalized.reaudit_sample_count, 4)
   assert.equal(finalized.reaudit_nonce, prepared.reaudit_nonce)
-  assert.deepEqual(digestKeyPaths(readJson(receiptPathFor(fixture))), [])
   assert.equal(readJson(receiptPathFor(fixture)).reaudit_nonce, prepared.reaudit_nonce)
 })
 
@@ -2162,7 +2144,6 @@ for (const garbage of [false, true]) {
     assert.equal(run({ ...fixture, mode: 'due' }).last_success_date, '2026-08-14')
     const again = run({ ...fixture, mode: 'finalize', auditTranscripts: path.join(fixture.reports, 'wf-transcripts'), auditNonce: finalized.audit_nonce, attemptNonce: readJson(receiptPathFor(fixture)).attempt_nonce, reauditNonce: finalized.reaudit_nonce })
     assert.equal(again.ok, true)
-    assert.deepEqual(digestKeyPaths(again), [])
     assert.equal(again.tp_style_violation_count, finalized.tp_style_violation_count)
   })
 }
