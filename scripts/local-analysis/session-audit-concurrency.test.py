@@ -32,10 +32,10 @@ class ConcurrencyCliTests(fixtures.SessionAuditCliTest):
       proc.kill()
     proc.communicate(timeout=5)
 
-  def test_distinct_sessions_overlap_up_to_twenty_one_slots(self):
-    # 測試服務的等待佇列要容得下二十路同時連線，否則拒收會被誤認成併發不足。
-    fixtures.ThreadingHTTPServer.request_queue_size = 32
-    for index in range(22):
+  def test_distinct_sessions_overlap_up_to_thirty_slots(self):
+    # 測試服務的等待佇列要容得下三十路同時連線，否則拒收會被誤認成併發不足。
+    fixtures.ThreadingHTTPServer.request_queue_size = 48
+    for index in range(31):
       fixtures.write_jsonl(
         self.projects / 'work' / f's-{index:02}.jsonl',
         fixtures.user_line(f'CONCURRENT_{index:02}', session_id=f'session-{index}'),
@@ -49,7 +49,7 @@ class ConcurrencyCliTests(fixtures.SessionAuditCliTest):
       with lock:
         counts['active'] += 1
         counts['peak'] = max(counts['peak'], counts['active'])
-        if counts['active'] == 21:
+        if counts['active'] == 30:
           ten_arrived.set()
       try:
         release.wait(10)
@@ -65,12 +65,12 @@ class ConcurrencyCliTests(fixtures.SessionAuditCliTest):
       release.set()
       out, err = proc.communicate(timeout=12)
       self.assertEqual(proc.returncode, 0, err)
-      self.assertTrue(reached, f'Expected twenty-one simultaneous requests, peak={counts["peak"]}')
-      self.assertEqual(counts['peak'], 21)
-      self.assertEqual(len(server.bodies), 22)
-      self.assertEqual(json.loads(out)['fragments'], 22)
+      self.assertTrue(reached, f'Expected thirty simultaneous requests, peak={counts["peak"]}')
+      self.assertEqual(counts['peak'], 30)
+      self.assertEqual(len(server.bodies), 31)
+      self.assertEqual(json.loads(out)['fragments'], 31)
       status = self.status(url)
-      self.assertEqual(len(status['sources']), 22)
+      self.assertEqual(len(status['sources']), 31)
       self.assertTrue(all(row['latest_complete'] for row in status['sources']), status)
     finally:
       release.set()

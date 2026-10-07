@@ -36,7 +36,7 @@ class DirectLegTests(population.PopulationTests):
 
   def test_each_leg_carries_its_share_of_slots(self):
     fixtures.ThreadingHTTPServer.request_queue_size = 64
-    self.sessions(24)
+    self.sessions(32)
     lock = threading.Lock()
     active, peak = {}, {}
     arrived = threading.Event()
@@ -46,7 +46,7 @@ class DirectLegTests(population.PopulationTests):
       with lock:
         active[model] = active.get(model, 0) + 1
         peak[model] = max(peak.get(model, 0), active[model])
-        if sum(active.values()) == 21:
+        if sum(active.values()) == 30:
           arrived.set()
       try:
         arrived.wait(5)
@@ -58,7 +58,7 @@ class DirectLegTests(population.PopulationTests):
     _, url = self.provider(reply)
     done = self.cli(['run', *self.leg_flags(url, self.grok_usage(40))], timeout=30)
     self.assertEqual(done.returncode, 0, done.stderr)
-    self.assertEqual(peak, {'free': 7, 'workbuddy-v41': 7, 'grok-4.7': 7})
+    self.assertEqual(peak, {'free': 16, 'workbuddy-v41': 7, 'grok-4.7': 7})
 
   def test_failed_direct_leg_falls_back_to_free_and_pauses(self):
     self.sessions(3)
