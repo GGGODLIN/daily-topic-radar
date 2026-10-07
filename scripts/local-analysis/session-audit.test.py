@@ -1502,6 +1502,21 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(busy.returncode, 3, busy.stderr)
     self.assertEqual(friction.read_text(), self.RULE_FRICTION, "被鎖時整次拒寫，不留半套")
 
+  def test_entry_quoting_the_lock_marker_does_not_block_promote(self):
+    # 2026-10-07 正式環境：一條發現引用了 session 原文裡的鎖標記，之後每輪 promote 都判成 lock-malformed。
+    friction = self.friction / "workflow-general.md"
+    server, url = self.violation_provider(["VIOL_A"])
+    self.addCleanup(stop, server)
+    quoting = self.RULE_FRICTION.replace(
+      "## 待折\n",
+      "## 待折\n- 2026-10-06 [source_ref=session:x] 第 4 行留著 `friction-review-lock:v1 session=7c97a30b…`（已到期）\n",
+    )
+    friction.write_text(quoting)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    promoted = self.cli(["promote", *self.flags(url)])
+    self.assertEqual(promoted.returncode, 0, promoted.stderr)
+    self.assertIn("VIOL_A", friction.read_text())
+
   def test_rule_sublines_do_not_count_as_pending_items(self):
     friction = self.friction / "workflow-general.md"
     friction.write_text(self.RULE_FRICTION)

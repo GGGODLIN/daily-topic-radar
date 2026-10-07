@@ -2460,7 +2460,8 @@ def lock_state(text):
       continue
     if pending and line.startswith("## "):
       break
-    if not pending or "friction-review-lock:" not in line:
+    # 只認獨立成行的鎖標記；條目內文可能引用 session 原文裡的同一串字，不能當成鎖。
+    if not pending or not line.strip().startswith("<!-- friction-review-lock:"):
       continue
     match = LOCK_RE.fullmatch(line.strip())
     if not match:
