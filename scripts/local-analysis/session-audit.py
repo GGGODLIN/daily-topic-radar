@@ -157,6 +157,58 @@ def sha256_bytes(data):
   return hashlib.sha256(data).hexdigest()
 
 
+TAIL_BYTES = 4096
+
+
+def prefix_tail(data, end):
+  # 記已分析前綴的最後一段原文；下次拿同位置的位元組直接比，不算 digest。
+  return bytes(data[max(0, end - TAIL_BYTES):end])
+
+
+def source_mtime_ns(path):
+  try:
+    return os.stat(path).st_mtime_ns
+  except OSError:
+    return None
+
+
+def table_columns(connection, table):
+  return [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
+
+
+def migrate_hash_free(connection):
+  # 舊 state 用 sha256 記「分析到哪裡」，現在改記前綴尾段與 mtime；舊欄位就地拆掉、資料列保留，否則五萬筆來源要全部重掃。
+  columns = table_columns(connection, "sources")
+  for column in ("file_sha", "doc_sha"):
+    if column in columns:
+      connection.execute(f"ALTER TABLE sources DROP COLUMN {column}")
+  for column, kind in (("file_tail", "BLOB"), ("doc_tail", "BLOB"), ("file_mtime_ns", "INTEGER")):
+    if column not in columns:
+      connection.execute(f"ALTER TABLE sources ADD COLUMN {column} {kind}")
+  if "source_sha" in table_columns(connection, "segments"):
+    connection.execute("ALTER TABLE segments DROP COLUMN source_sha")
+  if "source_sha" in table_columns(connection, "model_replies"):
+    # 主鍵含舊 digest，SQLite 改不了主鍵，只能整表重建；同 (inode, generation, doc_start) 的回覆留最後一筆。
+    connection.executescript(
+      """
+      CREATE TABLE model_replies_hash_free (
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        doc_start INTEGER NOT NULL,
+        doc_end INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL,
+        limitations TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (inode, generation, doc_start)
+      );
+      INSERT OR REPLACE INTO model_replies_hash_free (inode, generation, doc_start, doc_end, content, status, limitations)
+        SELECT inode, generation, doc_start, doc_end, content, status, limitations FROM model_replies ORDER BY rowid;
+      DROP TABLE model_replies;
+      ALTER TABLE model_replies_hash_free RENAME TO model_replies;
+      """
+    )
+
+
 def sensitive_key(name):
   key = re.sub(r"[^A-Za-z0-9]+", "_", name).upper().strip("_")
   return any(key == suffix or key.endswith(f"_{suffix}") for suffix in SENSITIVE_SUFFIXES)
@@ -285,9 +337,10 @@ def connect(state, write):
         latest_complete INTEGER NOT NULL,
         generation INTEGER NOT NULL,
         file_size INTEGER,
-        file_sha TEXT,
+        file_tail BLOB,
         doc_offset INTEGER NOT NULL DEFAULT 0,
-        doc_sha TEXT,
+        doc_tail BLOB,
+        file_mtime_ns INTEGER,
         limitations TEXT NOT NULL DEFAULT '[]',
         excluded_thinking INTEGER NOT NULL DEFAULT 0,
         continuity TEXT NOT NULL DEFAULT '',
@@ -313,7 +366,6 @@ def connect(state, write):
         generation INTEGER NOT NULL,
         doc_start INTEGER NOT NULL,
         doc_end INTEGER NOT NULL,
-        source_sha TEXT NOT NULL,
         line INTEGER NOT NULL,
         block INTEGER NOT NULL,
         byte_offset INTEGER NOT NULL,
@@ -330,11 +382,10 @@ def connect(state, write):
         generation INTEGER NOT NULL,
         doc_start INTEGER NOT NULL,
         doc_end INTEGER NOT NULL,
-        source_sha TEXT NOT NULL,
         content TEXT NOT NULL,
         status TEXT NOT NULL,
         limitations TEXT NOT NULL DEFAULT '[]',
-        PRIMARY KEY (inode, generation, doc_start, source_sha)
+        PRIMARY KEY (inode, generation, doc_start)
       );
       CREATE TABLE IF NOT EXISTS rule_sessions (
         inode TEXT PRIMARY KEY,
@@ -402,6 +453,7 @@ def connect(state, write):
     columns = {row[1] for row in connection.execute('PRAGMA table_info(findings)')}
     if 'issue_ref' not in columns:
       connection.execute("ALTER TABLE findings ADD COLUMN issue_ref TEXT NOT NULL DEFAULT ''")
+    migrate_hash_free(connection)
   return connection
 
 
@@ -917,28 +969,28 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
         "main_id": path.stem, "conversation": cached["conversation"], "human": cached["human"],
         "agent_ids": set(cached["agent_ids"]), "sidechain": cached["sidechain"],
       }
-      records[path] = (cached["sha"], set(cached["session_ids"]), cached["synthetic"], False)
+      records[path] = (set(cached["session_ids"]), cached["synthetic"], False)
       continue
     windows[path] = {"has_timestamp": False, "matches": False}
     populations[path] = {"main_id": path.stem, "conversation": False, "human": False, "agent_ids": set(), "sidechain": False}
     try:
       raw = path.read_bytes()
     except OSError:
-      records[path] = ("", set(), set(), True)
+      records[path] = (set(), set(), True)
       continue
     _doc, _images, _limits, _thinking, synthetic, session_ids, _parts = build_document(
       raw, metadata_only=True, time_window=time_window, window_info=windows[path], population=populations[path]
     )
-    # 所有來源只留分類與指紋，避免把整個歷史原文一起保留在記憶體。
-    records[path] = (sha256_bytes(raw) if raw else "", session_ids, synthetic, False)
+    # 所有來源只留分類材料，避免把整個歷史原文一起保留在記憶體。
+    records[path] = (session_ids, synthetic, False)
     if updates is not None:
       updates[f"{key[0]}:{key[1]}"] = {
-        **stamp, "sha": records[path][0], "session_ids": sorted(session_ids), "synthetic": bool(synthetic),
+        **stamp, "session_ids": sorted(session_ids), "synthetic": bool(synthetic),
         **windows[path], "conversation": populations[path]["conversation"], "human": populations[path]["human"],
         "agent_ids": sorted(populations[path]["agent_ids"]), "sidechain": populations[path]["sidechain"],
       }
   classes = {}
-  for path, (_source_sha, session_ids, synthetic, unreadable) in records.items():
+  for path, (session_ids, synthetic, unreadable) in records.items():
     if unreadable:
       classes[path] = "unknown"
     else:
@@ -968,8 +1020,8 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
       parent_id = parent.stem
       if (
         parent_kind == "human-main"
-        and records[parent][1] == {parent_id}
-        and records[path][1] == {parent_id}
+        and records[parent][0] == {parent_id}
+        and records[path][0] == {parent_id}
         and populations[path]["agent_ids"] == {path.stem.removeprefix("agent-")}
         and populations[path]["sidechain"]
       ):
@@ -984,7 +1036,7 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
 
   described = []
   for inode, path in found.items():
-    source_sha, session_ids, _synthetic, _unreadable = records[path]
+    session_ids, _synthetic, _unreadable = records[path]
     kind = resolve(path, set())
     # 沿用列檔時的 stat：重新 stat 時檔案可能已被刪掉，整輪會因此中斷。
     info = stats[inode]
@@ -997,7 +1049,8 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
         "included": kind in {"human-main", "human-subagent"},
         "mtime": info.st_mtime,
         "session_id": parent_file(path, root).stem if kind == "human-subagent" else path.stem if kind == "human-main" else next(iter(session_ids), path.stem),
-        "source_sha": source_sha,
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
         "history_match": (
           windows[path]["matches"] if windows[path]["has_timestamp"]
           else time_window is not None and time_window[0] <= info.st_mtime <= time_window[1]
@@ -1010,10 +1063,9 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
 
 def upsert(connection, item):
   current = connection.execute(
-    "SELECT file_sha FROM sources WHERE inode = ?",
+    "SELECT file_size, file_mtime_ns FROM sources WHERE inode = ?",
     (item["inode"],),
   ).fetchone()
-  observed = item["source_sha"]
   if current is None:
     connection.execute(
       """
@@ -1033,9 +1085,13 @@ def upsert(connection, item):
       ),
     )
     return
-  changed = bool(current["file_sha"]) and current["file_sha"] != observed
+  # 只拿上次分析時記下的大小與 mtime 判「變了沒」；舊列沒有 mtime 就只看大小，免得 migration 當天全庫重掃。
+  changed = current["file_size"] is not None and (
+    item["size"] != current["file_size"]
+    or (current["file_mtime_ns"] is not None and item["mtime_ns"] != current["file_mtime_ns"])
+  )
   if changed:
-    # 來源變了就立刻撤銷 latest。file_sha 留著，讓 run 還能對前綴續跑；append 前的 segments 不刪。
+    # 來源變了就立刻撤銷 latest。file_size／file_tail 留著，讓 run 還能對前綴續跑；append 前的 segments 不刪。
     connection.execute(
       """
       UPDATE sources
@@ -1251,7 +1307,7 @@ def update_history_review(connection):
     batch["completed_at"] = datetime.now(UTC).isoformat()
     rows = connection.execute(
       """SELECT sources.inode, sources.name, sources.path, sources.session_id, sources.status, sources.generation,
-                sources.file_sha AS source_sha, sources.doc_offset, sources.limitations
+                sources.file_size AS source_size, sources.doc_offset, sources.limitations
          FROM history_members JOIN sources ON sources.inode = history_members.inode
          WHERE history_members.batch_id = ? ORDER BY sources.path""", (batch["id"],),
     )
@@ -1556,25 +1612,23 @@ def mark(connection, inode, status, latest, limitations, thinking, **fields):
   connection.execute(f"UPDATE sources SET {', '.join(assignments)} WHERE inode = ?", values)
 
 
-def record_segments(connection, row, generation, parts, raw, doc_start, doc_end, status, limitations):
+def record_segments(connection, row, generation, parts, doc_start, doc_end, status, limitations):
   for part in parts:
     # 只記這次實際送出範圍涵蓋到的來源段。巨大單塊的每一片都帶同一段的 tool id。
     if part["doc_start"] >= doc_end or part["doc_end"] <= doc_start:
       continue
-    source = raw[part["offset"] : part["line_end"]]
     connection.execute(
       """
       INSERT INTO segments (
-        inode, generation, doc_start, doc_end, source_sha, line, block, byte_offset,
+        inode, generation, doc_start, doc_end, line, block, byte_offset,
         role, record_type, record_uuid, tool_name, tool_use_id, status, limitations
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
       (
         row["inode"],
         generation,
         max(part["doc_start"], doc_start),
         min(part["doc_end"], doc_end),
-        sha256_bytes(source),
         part["line"],
         part["block"],
         part["offset"],
@@ -1635,19 +1689,28 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
   document, images, limits, thinking, _synthetic, _session_ids, parts = build_document(raw)
   parts = locate_parts(document, parts)
   doc_bytes = document.encode()
-  file_sha = sha256_bytes(raw)
+  mtime_ns = source_mtime_ns(row["path"])
   start = 0
   generation = row["generation"]
-  appended = (
-    row["file_size"]
-    and len(raw) > row["file_size"]
-    and sha256_bytes(raw[: row["file_size"]]) == row["file_sha"]
-    and row["doc_sha"]
-    and sha256_bytes(doc_bytes[: row["doc_offset"] or 0]) == row["doc_sha"]
+  analyzed_size = row["file_size"]
+  analyzed_offset = row["doc_offset"] or 0
+  # hash 時代的列只有大小沒有尾段：信它一次，這輪 mark 會補上尾段，之後照常比對。
+  legacy = analyzed_size is not None and row["file_tail"] is None
+  prefix_intact = (
+    analyzed_size is not None
+    and len(raw) >= analyzed_size
+    and analyzed_offset <= len(doc_bytes)
+    and (
+      legacy
+      or (
+        prefix_tail(raw, analyzed_size) == row["file_tail"]
+        and prefix_tail(doc_bytes, analyzed_offset) == row["doc_tail"]
+      )
+    )
   )
-  if row["file_sha"] == file_sha or appended:
-    start = row["doc_offset"] or 0
-  elif row["file_sha"]:
+  if prefix_intact:
+    start = analyzed_offset
+  elif analyzed_size is not None:
     generation += 1
     connection.execute(
       "UPDATE sources SET generation = ?, doc_offset = 0, continuity = '' WHERE inode = ?",
@@ -1656,7 +1719,7 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
   if start > len(doc_bytes):
     start = 0
   carried = row["continuity"] or ""
-  if start == len(doc_bytes) and row["status"] in {"complete", "partial", "failed"} and row["file_sha"] == file_sha:
+  if start == len(doc_bytes) and row["status"] in {"complete", "partial", "failed"} and prefix_intact and len(raw) == analyzed_size:
     # 已完成的段不為補規則標記而重送；暫時讀不到規則版本的 session 只在之後追加的段重新取規則。
     return 0
   blocking = set(limits)
@@ -1778,9 +1841,9 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       reply_status = "review" if review_failures else "parsed"
       connection.execute(
         "INSERT OR REPLACE INTO model_replies "
-        "(inode, generation, doc_start, doc_end, source_sha, content, status, limitations) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (row["inode"], generation, cursor, cursor + accepted_source, file_sha,
+        "(inode, generation, doc_start, doc_end, content, status, limitations) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (row["inode"], generation, cursor, cursor + accepted_source,
          redact_text(content), reply_status,
          json.dumps(sorted(review_failures | {"response-needs-review"} if review_failures else set()))),
       )
@@ -1790,7 +1853,7 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       connection.commit()
       return produced
     advance = accepted_source
-    record_segments(connection, row, generation, parts, raw, cursor, cursor + advance,
+    record_segments(connection, row, generation, parts, cursor, cursor + advance,
                     "review" if reply_status == "review" else "analyzed", blocking | noted)
     cursor += advance
     mark(
@@ -1801,9 +1864,10 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       blocking | noted,
       thinking,
       doc_offset=cursor,
-      doc_sha=sha256_bytes(doc_bytes[:cursor]),
+      doc_tail=prefix_tail(doc_bytes, cursor),
       file_size=len(raw),
-      file_sha=file_sha,
+      file_tail=prefix_tail(raw, len(raw)),
+      file_mtime_ns=mtime_ns,
       continuity=continuity[:CONTINUITY_RESERVE],
       generation=generation,
     )
@@ -1821,9 +1885,10 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       blocking | noted,
       thinking,
       doc_offset=len(doc_bytes),
-      doc_sha=sha256_bytes(doc_bytes),
+      doc_tail=prefix_tail(doc_bytes, len(doc_bytes)),
       file_size=len(raw),
-      file_sha=file_sha,
+      file_tail=prefix_tail(raw, len(raw)),
+      file_mtime_ns=mtime_ns,
       generation=generation,
     )
     connection.commit()
@@ -1834,8 +1899,14 @@ def refresh(connection, projects, self_id, time_window=None):
   root = Path(projects)
   if not root.is_dir():
     fail("projects-missing")
-  cache = {row["inode"]: json.loads(row["entry"]) for row in connection.execute("SELECT inode, entry FROM scan_cache")}
+  cache = {}
   updates = {}
+  for row in connection.execute("SELECT inode, entry FROM scan_cache"):
+    entry = json.loads(row["entry"])
+    # 舊快取夾著整檔 digest；讀到就拿掉並回寫一次，state 裡才不會一直留著沒人讀的 hash。
+    if entry.pop("sha", None) is not None:
+      updates[row["inode"]] = entry
+    cache[row["inode"]] = entry
   found = list(discover(root, self_id, time_window, cache, updates))
   seen = set()
   for item in found:
@@ -2127,7 +2198,8 @@ def snapshot(connection):
           "name": row["name"],
           "path": row['path'],
           "generation": row['generation'],
-          "source_sha": row['file_sha'],
+          "source_size": row["file_size"],
+          "doc_offset": row["doc_offset"],
           "included": bool(row["included"]),
           "classification": row["classification"],
           "status": row["status"],
@@ -2188,7 +2260,6 @@ def snapshot(connection):
           "offset": row["byte_offset"],
           "doc_start": row["doc_start"],
           "doc_end": row["doc_end"],
-          "source_sha": row["source_sha"],
           "role": row["role"],
           "record_type": row["record_type"],
           "record_uuid": row['record_uuid'],

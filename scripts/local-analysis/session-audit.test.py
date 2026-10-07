@@ -11,6 +11,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,69 @@ openai-compatibility:
       - name: grok-3
         alias: free
 """
+
+# hash 時代的 state schema：migration 測試用它建舊庫，再確認新程式能原地升級並保住資料。
+LEGACY_STATE_SCHEMA = """
+CREATE TABLE sources (
+  inode TEXT PRIMARY KEY,
+  path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  classification TEXT NOT NULL,
+  included INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  latest_complete INTEGER NOT NULL,
+  generation INTEGER NOT NULL,
+  file_size INTEGER,
+  file_sha TEXT,
+  doc_offset INTEGER NOT NULL DEFAULT 0,
+  doc_sha TEXT,
+  limitations TEXT NOT NULL DEFAULT '[]',
+  excluded_thinking INTEGER NOT NULL DEFAULT 0,
+  continuity TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  mtime REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE segments (
+  id INTEGER PRIMARY KEY,
+  inode TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  doc_start INTEGER NOT NULL,
+  doc_end INTEGER NOT NULL,
+  source_sha TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  block INTEGER NOT NULL,
+  byte_offset INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  record_type TEXT NOT NULL,
+  record_uuid TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  tool_use_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  limitations TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE model_replies (
+  inode TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  doc_start INTEGER NOT NULL,
+  doc_end INTEGER NOT NULL,
+  source_sha TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL,
+  limitations TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (inode, generation, doc_start, source_sha)
+);
+"""
+
+
+def state_query(database, sql, params=(), fetch=None):
+  db = sqlite3.connect(database)
+  try:
+    cursor = db.execute(sql, params)
+    result = cursor.fetchall() if fetch == "all" else cursor.fetchone() if fetch == "one" else None
+    db.commit()
+    return result
+  finally:
+    db.close()
 
 
 def openai(content, finish="stop"):
@@ -996,8 +1060,8 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
     before = self.status(url)
-    segment_shas = [item["source_sha"] for item in before["segments"]]
-    self.assertTrue(segment_shas)
+    segment_keys = [(item["record_uuid"], item["doc_start"]) for item in before["segments"]]
+    self.assertTrue(segment_keys)
     self.assertTrue(self.source_named(before, "grow.jsonl")["latest_complete"])
     with path.open("a") as handle:
       handle.write(user_line("QUOTE_SCAN_NEW"))
@@ -1006,7 +1070,121 @@ class SessionAuditCliTest(unittest.TestCase):
     row = self.source_named(after, "grow.jsonl")
     self.assertEqual(row["status"], "pending")
     self.assertFalse(row["latest_complete"])
-    self.assertTrue(any(item["source_sha"] in segment_shas for item in after["segments"]))
+    self.assertTrue(any((item["record_uuid"], item["doc_start"]) in segment_keys for item in after["segments"]))
+
+  def test_rewritten_prefix_restarts_generation_without_digests(self):
+    path = self.projects / "work" / "rewrite.jsonl"
+    write_jsonl(path, user_line("QUOTE_REWRITE_OLD"))
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    status = self.status(url)
+    before = self.source_named(status, "rewrite.jsonl")
+    self.assertEqual(before["generation"], 1)
+    self.assertTrue(before["latest_complete"])
+    self.assertEqual(before["source_size"], path.stat().st_size)
+    self.assertNotIn("source_sha", before)
+    self.assertTrue(status["segments"])
+    self.assertTrue(all("source_sha" not in item for item in status["segments"]))
+    # 同一個 inode、同樣長度，只有已分析的前綴內容變了：這是改寫不是續寫，要從頭算第二代。
+    write_jsonl(path, user_line("QUOTE_REWRITE_NEW"))
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    after = self.source_named(self.status(url), "rewrite.jsonl")
+    self.assertEqual(after["generation"], 2)
+    self.assertTrue(after["latest_complete"])
+    self.assertIn(b"QUOTE_REWRITE_NEW", server.bodies[-1])
+
+  def test_legacy_rows_without_prefix_tails_are_trusted_once(self):
+    path = self.projects / "work" / "legacy.jsonl"
+    write_jsonl(path, user_line("QUOTE_LEGACY_FIRST"))
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(len(server.bodies), 1)
+    database = self.state / "state.sqlite"
+    # hash 時代留下的列：知道分析到哪裡，但沒有前綴尾段可比。
+    state_query(database, "UPDATE sources SET file_tail = NULL, doc_tail = NULL, file_mtime_ns = NULL")
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(len(server.bodies), 1, "an unchanged legacy source is not re-sent")
+    with path.open("a") as handle:
+      handle.write(user_line("QUOTE_LEGACY_SECOND"))
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(len(server.bodies), 2)
+    self.assertIn(b"QUOTE_LEGACY_SECOND", server.bodies[-1])
+    self.assertNotIn(b"QUOTE_LEGACY_FIRST", server.bodies[-1], "the legacy prefix is trusted; only the appended part is sent")
+    row = self.source_named(self.status(url), "legacy.jsonl")
+    self.assertEqual(row["generation"], 1)
+    self.assertTrue(row["latest_complete"])
+    recorded = state_query(database, "SELECT file_tail, doc_tail, file_mtime_ns FROM sources", fetch="one")
+    self.assertTrue(all(value is not None for value in recorded), recorded)
+
+  def test_old_state_schema_is_migrated_in_place(self):
+    self.state.mkdir()
+    database = self.state / "state.sqlite"
+    db = sqlite3.connect(database)
+    db.executescript(LEGACY_STATE_SCHEMA)
+    db.execute(
+      "INSERT INTO sources (inode, path, name, classification, included, status, latest_complete, generation,"
+      " file_size, file_sha, doc_offset, doc_sha) VALUES ('7:7', '/gone/a.jsonl', 'a.jsonl', 'human-main', 1,"
+      " 'complete', 1, 1, 10, 'legacy-file-digest', 10, 'legacy-doc-digest')"
+    )
+    db.execute(
+      "INSERT INTO segments (inode, generation, doc_start, doc_end, source_sha, line, block, byte_offset, role,"
+      " record_type, record_uuid, tool_name, tool_use_id, status, limitations)"
+      " VALUES ('7:7', 1, 0, 10, 'legacy-segment-digest', 1, 0, 0, 'user', 'user', 'rec-1', '', '', 'analyzed', '[]')"
+    )
+    db.execute(
+      "INSERT INTO model_replies (inode, generation, doc_start, doc_end, source_sha, content, status)"
+      " VALUES ('7:7', 1, 0, 10, 'legacy-file-digest', 'kept body', 'parsed')"
+    )
+    db.commit()
+    db.close()
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    columns = {
+      table: [row[1] for row in state_query(database, f"PRAGMA table_info({table})", fetch="all")]
+      for table in ("sources", "segments", "model_replies")
+    }
+    self.assertNotIn("file_sha", columns["sources"])
+    self.assertNotIn("doc_sha", columns["sources"])
+    for column in ("file_tail", "doc_tail", "file_mtime_ns"):
+      self.assertIn(column, columns["sources"])
+    self.assertNotIn("source_sha", columns["segments"])
+    self.assertNotIn("source_sha", columns["model_replies"])
+    self.assertEqual(
+      state_query(database, "SELECT file_size, doc_offset, generation FROM sources WHERE inode = '7:7'", fetch="one"),
+      (10, 10, 1),
+    )
+    self.assertEqual(state_query(database, "SELECT record_uuid FROM segments", fetch="one"), ("rec-1",))
+    self.assertEqual(state_query(database, "SELECT content, status FROM model_replies", fetch="one"), ("kept body", "parsed"))
+
+  def test_scan_cache_entries_drop_the_legacy_digest(self):
+    path = self.projects / "work" / "cached.jsonl"
+    write_jsonl(path, user_line("QUOTE_CACHE"))
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    database = self.state / "state.sqlite"
+    rows = state_query(database, "SELECT inode, entry FROM scan_cache", fetch="all")
+    self.assertEqual(len(rows), 1, rows)
+    for inode, entry in rows:
+      data = json.loads(entry)
+      data["sha"] = "legacy-whole-file-digest"
+      state_query(database, "UPDATE scan_cache SET entry = ? WHERE inode = ?", (json.dumps(data), inode))
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    entries = [json.loads(row[0]) for row in state_query(database, "SELECT entry FROM scan_cache", fetch="all")]
+    self.assertEqual([entry.get("size") for entry in entries], [path.stat().st_size])
+    self.assertTrue(all("sha" not in entry for entry in entries), entries)
 
   def test_roles_tools_and_visible_attachment_not_dropped(self):
     role_lines = [
@@ -1110,7 +1288,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertFalse(self.source_named(report, "sdk.jsonl")["included"])
     self.assertNotIn("SDK_MARKER", sent)
     role_segments = [item for item in report["segments"] if item["name"] == "role.jsonl"]
-    self.assertTrue(any(item["tool_use_id"] == "toolu_read" and item["source_sha"] for item in role_segments))
+    self.assertTrue(any(item["tool_use_id"] == "toolu_read" and item["doc_end"] > item["doc_start"] for item in role_segments))
 
   def test_old_fragment_cap_and_no_silent_age(self):
     old = self.projects / "work" / "old.jsonl"

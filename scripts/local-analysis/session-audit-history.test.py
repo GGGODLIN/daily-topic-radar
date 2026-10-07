@@ -126,7 +126,7 @@ class HistoryWindowTests(fixtures.SessionAuditCliTest):
     initial = self.status(url)['history_batch']
     self.assertEqual(initial['status'], 'review')
     certificate = initial.get('completion_sources')
-    self.assertTrue(certificate, 'Review needs source hash receipts, not only a zero pending count')
+    self.assertTrue(certificate, 'Review needs completion-source receipts, not only a zero pending count')
     with path.open('a') as handle:
       handle.write(fixtures.user_line('RESUME_AFTER_WINDOW', session_id='resumed.jsonl', timestamp='2026-10-06T00:00:00Z'))
     server.bodies.clear()
@@ -140,7 +140,7 @@ class HistoryWindowTests(fixtures.SessionAuditCliTest):
     self.assertEqual(batch['completion_sources'], certificate)
     latest = self.source_named(status, 'resumed.jsonl')
     self.assertTrue(latest['latest_complete'])
-    self.assertNotEqual(latest['source_sha'], certificate[0]['source_sha'])
+    self.assertNotEqual(latest['source_size'], certificate[0]['source_size'])
 
   def test_failure_blocks_review_and_media_limits_are_not_full_coverage(self):
     self.history_source('failed.jsonl', 'FAILED_MEMBER', '2026-10-02T00:00:00Z')
