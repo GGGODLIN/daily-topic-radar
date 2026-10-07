@@ -45,14 +45,23 @@ MAX_RUN_SECONDS = 900
 # 跑到一半多久重新掃一次目錄：新 session 安靜夠久後最多再等這麼久就插到隊伍最前面。
 RESCAN_SECONDS = 120
 MAX_CONCURRENT_SESSIONS = 30
-# 直連腿連續出錯就暫停一段時間，時間到自動再試；池真的死掉時每輪只浪費幾發，不會反覆撞牆。
-LEG_PAUSE_SECONDS = 1800
+# 暫停中的腿每隔這麼久試打一發真實片段；號池健康度顯示有活帳號時不等這個時間直接恢復。
+LEG_PROBE_SECONDS = 180
+# 暫停與恢復的檢查頻率；也決定試打最快多久輪到一次。
+LEG_REVIEW_SECONDS = 30
+# 2api 管理介面的帳號狀態。健康度是暫停的主要依據；讀不到時只靠連續失敗門檻。
+POOL_HEALTH = {
+  "mimo26-pool": {"kind": "cline2api", "url": "http://127.0.0.1:3457/admin/api/accounts", "model": "cline-free/mimo-v2.6-flash"},
+  "workbuddy-v41": {"kind": "cli2api", "url": "http://127.0.0.1:3010/api/accounts", "provider": "workbuddy"},
+}
+POOL_HEALTH_CACHE_SECONDS = 15
 # 只有直連腿設等待上限：它們的上游沒有 relay 的備援，一個不回的請求會一直佔住名額。free 刻意不設。
 DIRECT_LEG_TIMEOUT_SECONDS = 900
 GROK_PAUSE_PERCENT = 95
-# 2api 服務會自己換帳號、也會把單一帳號的 402 改寫成 500，回應碼分不出「一個帳號壞」還是「整池死」；
-# 所以不看碼，連續失敗到這個次數才當成整池不可用。單次失敗只把那段改送別條腿。
-LEG_FAILURES_BEFORE_PAUSE = 3
+# 2api 服務會自己換帳號、也會把單一帳號的 402 改寫成 500，回應碼分不出「一個帳號壞」還是「整池死」。
+# 出錯時先問號池健康度，確認沒有活帳號才暫停；健康度讀不到或看起來正常（例如轉收費時帳號不冷卻），
+# 連續失敗到這個次數才暫停。單次失敗只把那段改送別條腿。
+LEG_FAILURES_BEFORE_PAUSE = 30
 # 同一段最多改送幾次；都失敗就先放下，來源維持待分析，下一輪再送。
 LEG_RESENDS = 2
 # 取樣器每 5 分鐘一筆；太久沒更新等於不知道用量，寧可不用。
@@ -438,6 +447,12 @@ def connect(state, write):
         alias TEXT PRIMARY KEY,
         until REAL NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS leg_health (
+        alias TEXT PRIMARY KEY,
+        usable INTEGER NOT NULL,
+        total INTEGER NOT NULL,
+        checked_at REAL NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS scan_cache (
         inode TEXT PRIMARY KEY,
         entry TEXT NOT NULL
@@ -473,7 +488,7 @@ class Lock:
     os.close(self.handle)
 
 
-def load_key(path):
+def read_env(path, name):
   if not path or not Path(path).is_file():
     return None, "keys-missing"
   # 逐行讀值，不 source / eval。CLIPROXY_BASE_URL 故意不用。
@@ -481,7 +496,7 @@ def load_key(path):
     if not line or line.lstrip().startswith("#") or "=" not in line:
       continue
     key, value = line.split("=", 1)
-    if key.strip() != "CLIPROXY_KEY_CC":
+    if key.strip() != name:
       continue
     if "$(" in value or "`" in value:
       return None, "keys-unsafe"
@@ -490,6 +505,14 @@ def load_key(path):
       return None, "keys-missing"
     return cleaned, None
   return None, "keys-missing"
+
+
+def load_key(path):
+  return read_env(path, "CLIPROXY_KEY_CC")
+
+
+def env_value(path, name):
+  return read_env(path, name)[0]
 
 
 def choose_model(path):
@@ -1955,12 +1978,38 @@ def grok_usage_allows(path):
   return time.time() - moment.timestamp() <= GROK_SAMPLE_MAX_AGE_SECONDS and pct < GROK_PAUSE_PERCENT
 
 
-def available_legs(connection, legs, quota_file):
-  paused = {row["alias"] for row in connection.execute("SELECT alias FROM leg_pauses WHERE until > ?", (time.time(),))}
-  return [
-    (alias, slots) for alias, slots in legs
-    if alias not in paused and ("grok" not in alias.lower() or grok_usage_allows(quota_file))
-  ]
+def eligible_legs(legs, quota_file):
+  return [(alias, slots) for alias, slots in legs if "grok" not in alias.lower() or grok_usage_allows(quota_file)]
+
+
+def read_pool_health(spec, cli2api_key):
+  """回 (可用帳號數, 帳號總數)；讀不到或格式不對回 None，呼叫端當成「不知道」。只數數，不保留任何帳號內容。"""
+  headers = {"Authorization": f"Bearer {cli2api_key}"} if spec.get("kind") == "cli2api" and cli2api_key else {}
+  try:
+    with urllib.request.urlopen(urllib.request.Request(spec["url"], headers=headers), timeout=3) as response:
+      payload = json.loads(response.read(MAX_RESPONSE_BYTES * 16))
+  except (OSError, ValueError, KeyError):
+    return None
+  accounts = payload.get("data") if isinstance(payload, dict) else None
+  # cline2api 包成 {"data": {"accounts": [...]}}；cli2api 直接是 {"data": [...]}。
+  if isinstance(accounts, dict):
+    accounts = accounts.get("accounts")
+  if not isinstance(accounts, list):
+    return None
+  accounts = [item for item in accounts if isinstance(item, dict)]
+  if spec.get("kind") == "cline2api":
+    now = datetime.now(UTC)
+
+    def cooling(item):
+      moment = parse_time((item.get("modelCooldowns") or {}).get(spec.get("model")))
+      return item.get("status") != "active" or (moment is not None and moment > now)
+
+    pool = [item for item in accounts if item.get("status") in {"active", "cooldown"}]
+    return sum(not cooling(item) for item in pool), len(pool)
+  if spec.get("kind") == "cli2api":
+    pool = [item for item in accounts if item.get("provider") == spec.get("provider") and item.get("enabled")]
+    return sum(bool(item.get("ready")) for item in pool), len(pool)
+  return None
 
 
 def session_end_times(connection):
@@ -2107,12 +2156,24 @@ def cmd_run(args):
       return None, None
 
     configured = parse_legs(args.direct_legs)
-    legs = available_legs(connection, configured, args.grok_quota_file)
+    eligible = eligible_legs(configured, args.grok_quota_file)
+    slots_of = dict(configured)
+    paused_now = {alias for (alias,) in connection.execute("SELECT alias FROM leg_pauses")}
+    legs = [(alias, slots) for alias, slots in eligible if alias not in paused_now]
     # 名額全部指定給直連腿時不碰 free 鏈：鏈尾的腿沒驗證過（Muse 8 個摩擦只抓到 2 個），暫停時寧可少跑也不靜默換品質。
     # 有用 free 時，暫停或額度到線的腿把名額讓給 free。
     uses_free = sum(slots for _, slots in configured) < MAX_CONCURRENT_SESSIONS
     free_slots = MAX_CONCURRENT_SESSIONS - sum(slots for _, slots in legs) if uses_free else 0
     capacity = {**({"free": free_slots} if free_slots > 0 else {}), **dict(legs)}
+    try:
+      pool_specs = json.loads(args.pool_health)
+    except ValueError:
+      fail("pool-health-invalid")
+    if not isinstance(pool_specs, dict):
+      fail("pool-health-invalid")
+    cli2api_key = env_value(args.keys_file, "CLI2API_API_KEY")
+    health_cache = {}
+    probing = set()
 
     def pick_leg(avoid=None):
       busy = {}
@@ -2133,15 +2194,56 @@ def cmd_run(args):
 
     consecutive_failures = {}
 
+    def health(leg, max_age=POOL_HEALTH_CACHE_SECONDS):
+      spec = pool_specs.get(leg)
+      if not isinstance(spec, dict):
+        return None
+      cached = health_cache.get(leg)
+      if cached is not None and time.monotonic() - cached[0] < max_age:
+        return cached[1]
+      value = read_pool_health(spec, cli2api_key)
+      health_cache[leg] = (time.monotonic(), value)
+      if value is not None:
+        connection.execute(
+          "INSERT OR REPLACE INTO leg_health (alias, usable, total, checked_at) VALUES (?, ?, ?, ?)", (leg, *value, time.time()),
+        )
+        connection.commit()
+      return value
+
     def pause_leg(leg):
-      # 這條腿暫停期間的名額讓回 free；下一輪起由 leg_pauses 擋住，不反覆撞同一個額度牆。
+      # leg_pauses 有列就是暫停中，until 是下一次試打的時間；名額有用 free 時讓回 free。
       connection.execute(
-        "INSERT OR REPLACE INTO leg_pauses (alias, until) VALUES (?, ?)", (leg, time.time() + LEG_PAUSE_SECONDS),
+        "INSERT OR REPLACE INTO leg_pauses (alias, until) VALUES (?, ?)", (leg, time.time() + args.leg_probe_seconds),
       )
       connection.commit()
+      probing.discard(leg)
+      consecutive_failures[leg] = 0
       slots = capacity.pop(leg, 0)
       if "free" in capacity:
         capacity["free"] += slots
+
+    def resume_leg(leg):
+      connection.execute("DELETE FROM leg_pauses WHERE alias = ?", (leg,))
+      connection.commit()
+      probing.discard(leg)
+      if "free" in capacity:
+        capacity["free"] = max(0, capacity["free"] - slots_of[leg])
+      capacity[leg] = slots_of[leg]
+
+    def review_legs():
+      paused = {alias: until for alias, until in connection.execute("SELECT alias, until FROM leg_pauses")}
+      for leg, _slots in eligible:
+        value = health(leg)
+        if leg in paused:
+          if value is not None and value[0] > 0:
+            resume_leg(leg)
+          elif paused[leg] <= time.time() and leg not in probing:
+            # 號池看不出活帳號：只給一個名額試打一發真實片段，成功才恢復整份名額。
+            connection.execute("UPDATE leg_pauses SET until = ? WHERE alias = ?", (time.time() + args.leg_probe_seconds, leg))
+            connection.commit()
+            probing.add(leg)
+            capacity[leg] = 1
+        # 正常中的腿只記錄健康度、不據此暫停：健康度與實際回應衝突時（顯示 0 但打得通）以回應為準。
 
     def resume(session_id, group, analyzer, response=None):
       try:
@@ -2163,11 +2265,16 @@ def cmd_run(args):
       send(session_id, analyzer, group, leg, payload)
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
+      review_legs()
+      next_review = time.monotonic() + LEG_REVIEW_SECONDS
       while True:
         open_for_work = time.monotonic() < lifetime
         if open_for_work and time.monotonic() >= next_scan:
           scan()
           next_scan = time.monotonic() + args.rescan_seconds
+        if open_for_work and time.monotonic() >= next_review:
+          review_legs()
+          next_review = time.monotonic() + LEG_REVIEW_SECONDS
         while open_for_work and capacity and len(active) < MAX_CONCURRENT_SESSIONS:
           group, row = next_row()
           if row is None:
@@ -2187,7 +2294,7 @@ def cmd_run(args):
         if not active:
           # 沒有在途也沒有可送的：結束讓 runner 寫出發現，排程 10 秒後重開並重新掃描，不在這裡空轉。
           break
-        timeout = max(0.0, next_scan - time.monotonic()) if open_for_work else None
+        timeout = max(0.0, min(next_scan, next_review) - time.monotonic()) if open_for_work else None
         done, _ = wait(active, timeout=timeout, return_when=FIRST_COMPLETED)
         for future in done:
           session_id, analyzer, group, leg, payload, resends = active.pop(future)
@@ -2195,9 +2302,14 @@ def cmd_run(args):
           if leg != "free" and (code != 200 or message_from_response(body)[1] in LEG_FALLBACK_FAILURES):
             # 直連腿額度用完、斷線或回空時，同一段改送別條腿；不讓那條腿的狀況變成來源失敗。
             print(f"session-audit: leg-fallback {leg} http-{code}", file=sys.stderr)
-            consecutive_failures[leg] = consecutive_failures.get(leg, 0) + 1
-            if leg in capacity and consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE:
+            if leg in probing:
               pause_leg(leg)
+            else:
+              consecutive_failures[leg] = consecutive_failures.get(leg, 0) + 1
+              value = health(leg, max_age=0)
+              dead = value is not None and value[0] == 0
+              if leg in capacity and (dead or consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE):
+                pause_leg(leg)
             other = pick_leg(avoid=leg) if resends < LEG_RESENDS else None
             if other is None and resends < LEG_RESENDS and leg in capacity:
               other = leg
@@ -2209,6 +2321,8 @@ def cmd_run(args):
             send(session_id, analyzer, group, other, payload, resends + 1)
             continue
           consecutive_failures[leg] = 0
+          if leg in probing:
+            resume_leg(leg)
           resume(session_id, group, analyzer, (code, body))
     if window is not None:
       update_history_review(connection)
@@ -2844,6 +2958,8 @@ def build_parser():
   parser.add_argument("--rescan-seconds", type=float, default=RESCAN_SECONDS)
   # free 之外的直連腿，格式 alias:名額,alias:名額；預設不開，只走 free。
   parser.add_argument("--direct-legs", default="")
+  parser.add_argument("--pool-health", default=json.dumps(POOL_HEALTH))
+  parser.add_argument("--leg-probe-seconds", type=float, default=LEG_PROBE_SECONDS)
   parser.add_argument("--grok-quota-file", default=str(Path.home() / ".cli-proxy-api" / "grok-quota-samples.jsonl"))
   return parser
 

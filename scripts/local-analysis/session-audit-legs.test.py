@@ -60,28 +60,6 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(done.returncode, 0, done.stderr)
     self.assertEqual(peak, {'free': 16, 'workbuddy-v41': 7, 'grok-4.7': 7})
 
-  def test_leg_pauses_only_after_repeated_failures(self):
-    self.sessions(12)
-    seen = []
-
-    def reply(body):
-      seen.append(self.model_of(body))
-      if self.model_of(body) == 'workbuddy-v41':
-        return '{"error": "insufficient credits"}', 402
-      return fixtures.analysis([], rule_tags=[]), 200
-
-    _, url = self.provider(reply)
-    flags = self.leg_flags(url, self.grok_usage(40))
-    self.assertEqual(self.cli(['run', *flags]).returncode, 0)
-    rows = [row for row in self.status(url)['sources'] if row['included']]
-    self.assertTrue(all(row['status'] == 'complete' for row in rows), rows)
-    self.assertGreaterEqual(seen.count('workbuddy-v41'), 3)
-    for index in range(3):
-      self.source(f'work/later-{index}.jsonl', f'AFTER_PAUSE_{index}')
-    seen.clear()
-    self.assertEqual(self.cli(['run', *flags]).returncode, 0)
-    self.assertNotIn('workbuddy-v41', seen, 'A leg that keeps failing stays paused instead of failing every request again')
-
   def pinned_flags(self, url):
     return self.flags(url) + ['--direct-legs', 'mimo26-pool:15,workbuddy-v41:15']
 
@@ -125,7 +103,8 @@ class DirectLegTests(population.PopulationTests):
     self.assertIn('mimo26-pool', [model for model, _ in seen], 'One error does not pause a leg')
 
   def test_both_legs_down_leaves_work_pending_not_failed(self):
-    self.sessions(6)
+    # 健康度讀不到時兩條腿都要各自連錯 30 次才停，所以要夠多工作。
+    self.sessions(40)
     seen = []
 
     def reply(body):
@@ -167,7 +146,8 @@ class DirectLegTests(population.PopulationTests):
     self.assertIn('grok-4.7', seen, 'Below the quota line one Grok error must not cost it 30 minutes of slots')
 
   def test_grok_pauses_after_repeated_errors(self):
-    self.sessions(12)
+    # Grok 沒有號池健康度可讀，只靠連續失敗門檻（30 次）；它只分到 7 槽，要夠多工作才錯得到 30 次。
+    self.sessions(160)
     seen = []
 
     def reply(body):
@@ -181,7 +161,7 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(self.cli(['run', *flags]).returncode, 0)
     rows = [row for row in self.status(url)['sources'] if row['included']]
     self.assertTrue(all(row['status'] == 'complete' for row in rows), rows)
-    self.assertGreaterEqual(seen.count('grok-4.7'), 3)
+    self.assertGreaterEqual(seen.count('grok-4.7'), 30)
     for index in range(3):
       self.source(f'work/later-{index}.jsonl', f'AFTER_OUTAGE_{index}')
     seen.clear()
