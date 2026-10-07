@@ -39,12 +39,11 @@ CONTINUITY_RESERVE = 1500
 # 上限只是天花板，模型寫完就停；三條腿實測都接受到 131072，取 32768 留足推理又不碰模型上限。
 MAX_OUTPUT_TOKENS = 32768
 MAX_RESPONSE_BYTES = 262144
-MAX_NEW_FRAGMENTS = 48
 MAX_OLD_FRAGMENTS = 1
-MAX_HISTORY_FRAGMENTS = 120
-# 只限制「何時停止開新片段」，不取消在途請求。每輪開頭才掃描新 session，這個窗口決定新 session 最久等多久被看到。
-# 排程每 10 秒觸發（launchd 不會讓同一 job 重疊）：每 300 秒時一輪跑超過 5 分鐘就錯過下一個整點，名額約七成時間閒置（2026-10-07 帳本）。
-MAX_RUN_SECONDS = 240
+# 一輪最長活多久才收尾：結束後 runner 才把發現寫進摩擦檔、也才換上新部署的程式；收尾只等在途回件，佔一輪的小部分。
+MAX_RUN_SECONDS = 900
+# 跑到一半多久重新掃一次目錄：新 session 安靜夠久後最多再等這麼久就插到隊伍最前面。
+RESCAN_SECONDS = 120
 MAX_CONCURRENT_SESSIONS = 30
 # 直連腿（free 之外、會吃訂閱或單帳號額度）出錯就暫停一段時間，名額讓回 free；用完時不會反覆撞牆。
 LEG_PAUSE_SECONDS = 1800
@@ -57,8 +56,6 @@ LEG_FAILURES_BEFORE_PAUSE = {"grok-4.7": 3}
 # 取樣器每 5 分鐘一筆；太久沒更新等於不知道用量，寧可不用。
 GROK_SAMPLE_MAX_AGE_SECONDS = 1800
 LEG_FALLBACK_FAILURES = frozenset({"bad-model-json", "empty-model-content", "finish-unconfirmed"})
-# 新工作清不完時，歷史若要等新組排空就永遠輪不到；保留幾個槽給歷史。
-HISTORY_RESERVED_SLOTS = 6
 # SessionEnd 之後 CC 可能還補寫最後幾行；容許這段誤差仍算已關閉。
 SESSION_END_SLACK_SECONDS = 60
 EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
@@ -1953,51 +1950,64 @@ def cmd_run(args):
   with Lock(state):
     connection = connect(state, write=True)
     window = requested_window if requested_window is not None else history_window(args, connection)
-    observed = refresh(connection, args.projects, args.self_session, window["bounds"] if window is not None else None)
+    # 沒有明示 --started-at 時，不把未讀來源依 mtime 悄悄降成 old。
+    cutoff = None
+    if args.started_at:
+      cutoff = datetime.fromisoformat(args.started_at.replace("Z", "+00:00")).timestamp()
+    if window is not None and cutoff is None:
+      cutoff = window["live_since"]
+    # 沒開歷史窗口時舊來源每輪只涓流一段；開了窗口就跟新來源一樣補滿空位，窗口進 review 後整批停送。
+    remaining = {"new": float("inf"), "old": MAX_OLD_FRAGMENTS if window is None else float("inf")}
+    queues = {"new": deque(), "old": deque()}
+    # 失敗的來源本輪不再排回去；否則每次重新掃描都會再送一次，把名額耗在同一個壞回覆上。
+    attempted = set()
+
+    def is_old(row):
+      # doc_offset>0 的 pending 仍是 old，不能下輪升成 new。
+      return cutoff is not None and row["mtime"] < cutoff
+
+    def scan():
+      observed = refresh(connection, args.projects, args.self_session, window["bounds"] if window is not None else None)
+      members = None
+      history_open = True
+      if window is not None:
+        members = sync_history_batch(connection, window, observed, cutoff)
+        update_history_review(connection)
+        history_open = history_snapshot(connection)["status"] == "active"
+      connection.commit()
+      ended = session_end_times(connection)
+      now = time.time()
+
+      def closed(row):
+        moment = ended.get(row["session_id"])
+        return moment is not None and moment + SESSION_END_SLACK_SECONDS >= row["mtime"]
+
+      rows = [
+        row for row in connection.execute(
+          "SELECT * FROM sources WHERE included = 1 AND status IN ('pending', 'failed') ORDER BY status = 'failed', path"
+        )
+        if row["inode"] not in attempted
+      ]
+      # 還在寫的 session 回件回來時原文多半已變，整段會被丟掉；等 SessionEnd 或安靜一段時間再送。
+      queues["new"] = deque(sorted(
+        (row for row in rows if not is_old(row) and (closed(row) or now - row["mtime"] >= args.quiet_seconds)),
+        key=lambda row: (row["status"] == "failed", not closed(row), -row["mtime"], row["path"]),
+      ))
+      queues["old"] = deque(
+        row for row in rows if history_open and is_old(row) and (members is None or row["inode"] in members)
+      )
+
+    scan()
     reason, model = choose_model(args.relay_config)
     key, key_error = load_key(args.keys_file)
     if reason or key_error:
       print(reason or key_error)
       connection.close()
       return 0
-    # 沒有明示 --started-at 時，不把未讀來源依 mtime 悄悄降成 old。
-    cutoff = None
-    if args.started_at:
-      cutoff = datetime.fromisoformat(args.started_at.replace("Z", "+00:00")).timestamp()
-    members = None
-    if window is not None:
-      if cutoff is None:
-        cutoff = window["live_since"]
-      members = sync_history_batch(connection, window, observed, cutoff)
-    rows = list(connection.execute("SELECT * FROM sources WHERE included = 1 ORDER BY status = 'failed', path"))
     rules_repo = Path(args.rules_repo).expanduser()
-
-    def is_old(row):
-      # doc_offset>0 的 pending 仍是 old，不能下輪升成 new 把 1 fragment 上限吃掉。
-      return cutoff is not None and row["mtime"] < cutoff
-
-    ended = session_end_times(connection)
-    now = time.time()
-
-    def closed(row):
-      moment = ended.get(row["session_id"])
-      return moment is not None and moment + SESSION_END_SLACK_SECONDS >= row["mtime"]
-
-    # 還在寫的 session 回件回來時原文多半已變，整段會被丟掉；等 SessionEnd 或安靜一段時間再送。
-    new_rows = sorted(
-      (row for row in rows if not is_old(row) and (closed(row) or now - row["mtime"] >= args.quiet_seconds)),
-      key=lambda row: (row["status"] == "failed", not closed(row), -row["mtime"], row["path"]),
-    )
-    old_rows = [row for row in rows if is_old(row) and (members is None or row["inode"] in members)]
-    if window is None:
-      old_budget = MAX_OLD_FRAGMENTS
-    else:
-      update_history_review(connection)
-      old_budget = MAX_HISTORY_FRAGMENTS if history_snapshot(connection)["status"] == "active" else 0
-    fragments = {"new": 0, "old": 0}
-    deadline = time.monotonic() + MAX_RUN_SECONDS
-    queues = {"new": deque(new_rows), "old": deque(old_rows)}
-    remaining = {"new": MAX_NEW_FRAGMENTS, "old": old_budget}
+    fragments = {"new": 0}
+    lifetime = time.monotonic() + args.max_run_seconds
+    next_scan = time.monotonic() + args.rescan_seconds
     active = {}
     sessions = set()
 
@@ -2010,13 +2020,14 @@ def cmd_run(args):
         queue.append(row)
       return None
 
-    def next_group():
-      busy_new = sum(1 for _, _, group, _, _ in active.values() if group == "new")
-      old_waiting = remaining["old"] > 0 and bool(queues["old"])
-      # 新工作先佔槽，但歷史還有事時保留幾槽給它，避免新組永遠清不完時歷史一直排不到。
-      if remaining["new"] > 0 and queues["new"] and (not old_waiting or busy_new < MAX_CONCURRENT_SESSIONS - HISTORY_RESERVED_SLOTS):
-        return "new"
-      return "old" if old_waiting else None
+    def next_row():
+      # 新 session 嚴格優先；歷史只在沒有可送的新工作時補位。
+      for group in ("new", "old"):
+        if remaining[group] > 0:
+          row = take(group)
+          if row is not None:
+            return group, row
+      return None, None
 
     legs = available_legs(connection, parse_legs(args.direct_legs), args.grok_quota_file)
     capacity = {"free": MAX_CONCURRENT_SESSIONS - sum(slots for _, slots in legs), **dict(legs)}
@@ -2051,35 +2062,41 @@ def cmd_run(args):
       except StopIteration:
         sessions.remove(session_id)
         return
-      if not shrinking and (remaining[group] <= 0 or time.monotonic() >= deadline):
+      if not shrinking and (remaining[group] <= 0 or time.monotonic() >= lifetime):
         analyzer.close()
         sessions.remove(session_id)
         return
-      # 已開始的 400/413 縮片保留原本的重送流程；只限制下一個新片段，不丟棄在途回件。
+      # 已開始的 400/413 縮片保留原本的重送流程；到期只擋下一個新片段，不丟棄在途回件。
       remaining[group] -= 1
       send(session_id, analyzer, group, pick_leg(), payload)
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SESSIONS) as pool:
-      while queues["new"] or queues["old"] or active:
-        while len(active) < MAX_CONCURRENT_SESSIONS and time.monotonic() < deadline:
-          group = next_group()
-          row = take(group) if group else None
-          if row is None and group == "new" and remaining["old"] > 0 and queues["old"]:
-            group, row = "old", take("old")
+      while True:
+        open_for_work = time.monotonic() < lifetime
+        if open_for_work and time.monotonic() >= next_scan:
+          scan()
+          next_scan = time.monotonic() + args.rescan_seconds
+        while open_for_work and len(active) < MAX_CONCURRENT_SESSIONS:
+          group, row = next_row()
           if row is None:
             break
+          attempted.add(row["inode"])
           raw, error = read_source(Path(row["path"]))
           if error:
             mark(connection, row["inode"], "missing", False, {"missing"}, row["excluded_thinking"])
             connection.commit()
             continue
           session_id = row["session_id"] or row["inode"]
-          analyzer = analyze_one(connection, row, raw, url, key, model, fragments, deadline, remaining[group], rules_repo)
+          analyzer = analyze_one(connection, row, raw, url, key, model, fragments, lifetime, remaining[group], rules_repo)
           sessions.add(session_id)
           resume(session_id, group, analyzer)
+        # 回件可能要等好幾分鐘；等之前先交出寫入交易，SessionEnd hook 才寫得進 hints（它不拿 run.lock）。
+        connection.commit()
         if not active:
+          # 沒有在途也沒有可送的：結束讓 runner 寫出發現，排程 10 秒後重開並重新掃描，不在這裡空轉。
           break
-        done, _ = wait(active, return_when=FIRST_COMPLETED)
+        timeout = max(0.0, next_scan - time.monotonic()) if open_for_work else None
+        done, _ = wait(active, timeout=timeout, return_when=FIRST_COMPLETED)
         for future in done:
           session_id, analyzer, group, leg, payload = active.pop(future)
           code, body = future.result()
@@ -2095,10 +2112,10 @@ def cmd_run(args):
           resume(session_id, group, analyzer, (code, body))
     if window is not None:
       update_history_review(connection)
+    connection.commit()
     connection.close()
   print(json.dumps({"command": "run", "fragments": fragments["new"], "concurrency": MAX_CONCURRENT_SESSIONS}))
   return 0
-
 
 def snapshot(connection):
   hints = connection.execute("SELECT COUNT(*) FROM hints").fetchone()[0] if table_exists(connection, "hints") else 0
@@ -2723,6 +2740,8 @@ def build_parser():
   parser.add_argument("--rules-repo", default=str(Path.home() / ".claude"))
   # SessionEnd 漏報時的兜底：多久沒寫入才視為已關閉。
   parser.add_argument("--quiet-seconds", type=int, default=600)
+  parser.add_argument("--max-run-seconds", type=float, default=MAX_RUN_SECONDS)
+  parser.add_argument("--rescan-seconds", type=float, default=RESCAN_SECONDS)
   # free 之外的直連腿，格式 alias:名額,alias:名額；預設不開，只走 free。
   parser.add_argument("--direct-legs", default="")
   parser.add_argument("--grok-quota-file", default=str(Path.home() / ".cli-proxy-api" / "grok-quota-samples.jsonl"))

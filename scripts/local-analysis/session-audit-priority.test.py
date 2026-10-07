@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run/status 公共入口：最新新來源先送；歷史保留名額的契約在 throughput 測試。"""
+"""run/status 公共入口：最新新來源先送；新優先於歷史的契約在 scheduler 測試。"""
 
 import importlib.util
 import unittest
@@ -25,11 +25,9 @@ class PriorityTests(population.PopulationTests):
     server, url = self.provider()
     done = self.cli(['run', *self.flags(url, started_at=started)])
     self.assertEqual(done.returncode, 0, done.stderr)
-    sent = b''.join(server.bodies)
-    self.assertTrue(b'NEWEST_CLOSED' in sent, 'The latest session must not wait behind the existing new backlog')
-    status = self.status(url)
-    self.assertTrue(self.source_named(status, 'z-newest.jsonl')['latest_complete'])
-    self.assertEqual(sum(r['status'] == 'pending' for r in status['sources'] if r['included']), 1)
+    first_wave = b''.join(server.bodies[:30])
+    self.assertIn(b'NEWEST_CLOSED', first_wave, 'The latest session must not wait behind the existing new backlog')
+    self.assertTrue(self.source_named(self.status(url), 'z-newest.jsonl')['latest_complete'])
 
   def test_failed_new_source_does_not_block_idle_history_forever(self):
     self.history_source('old.jsonl', 'HISTORY_IDLE', '2026-10-02T00:00:00Z')

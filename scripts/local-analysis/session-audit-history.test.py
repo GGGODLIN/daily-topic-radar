@@ -65,10 +65,20 @@ class HistoryWindowTests(fixtures.SessionAuditCliTest):
     self.assertEqual(server.bodies, [], 'Reaching review must not automatically schedule older history')
 
   def test_history_progresses_without_rolling_the_window_and_missed_sources_are_added(self):
-    # 每輪歷史片段上限 120；多兩份才看得出「本輪沒做完、窗口不滾動」。
+    # 兩份第一輪回壞格式，才看得出「本輪沒做完、窗口不滾動」；失敗的下一輪重試會成功。
     for index in range(122):
-      self.history_source(f'old-{index:02}.jsonl', f'BATCH_MEMBER_{index:02}', '2026-10-02T00:00:00Z')
-    server, url = self.provider()
+      self.history_source(f'old-{index:03}.jsonl', f'BATCH_MEMBER_{index:03}', '2026-10-02T00:00:00Z')
+    flaky = {'BATCH_MEMBER_000': 1, 'BATCH_MEMBER_001': 1}
+
+    def reply(body):
+      text = fixtures.user_text(body)
+      for marker, left in flaky.items():
+        if marker in text and left:
+          flaky[marker] = 0
+          return 'not JSON', 200
+      return fixtures.analysis([], rule_tags=[]), 200
+
+    server, url = self.provider(reply)
     done = self.run_window(url)
     self.assertEqual(done.returncode, 0, done.stderr)
     first = self.status(url)['history_batch']

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run/scan 公共入口：歷史保留名額、寫入中的 session 先不送、未變來源不重讀。"""
+"""run/scan 公共入口：寫入中的 session 先不送、剛結束的先送、未變來源不重讀、掃描中檔案消失不中斷。"""
 
 import importlib.util
 import json
@@ -19,17 +19,6 @@ class ThroughputTests(population.PopulationTests):
     hook = json.dumps({'hook_event_name': 'SessionEnd', 'session_id': 'runtime-id', 'transcript_path': str(path)})
     done = self.cli(['enqueue', *self.flags(url)], stdin=hook)
     self.assertEqual(done.returncode, 0, done.stderr)
-
-  def test_history_gets_reserved_slots_while_new_backlog_remains(self):
-    fixtures.ThreadingHTTPServer.request_queue_size = 32
-    self.history_source('a-history.jsonl', 'HISTORY_RESERVED', '2026-10-02T00:00:00Z')
-    for index in range(49):
-      self.source(f'work/z-new-{index:02}.jsonl', f'NEW_BACKLOG_{index:02}', timestamp='2026-10-06T00:00:00Z')
-    server, url = self.provider()
-    self.assertEqual(self.run_window(url).returncode, 0)
-    sent = b''.join(server.bodies)
-    self.assertIn(b'HISTORY_RESERVED', sent, 'History must not wait for a new backlog that never drains')
-    self.assertIn(b'NEW_BACKLOG_', sent)
 
   def test_session_still_being_written_waits_until_it_ends(self):
     path = self.source('work/live.jsonl', 'STILL_TYPING')
@@ -54,7 +43,7 @@ class ThroughputTests(population.PopulationTests):
     self.end_session(url, closed)
     started = datetime.fromtimestamp(cutoff, UTC).isoformat()
     self.assertEqual(self.cli(['run', *self.flags(url, started_at=started)]).returncode, 0)
-    self.assertIn(b'JUST_CLOSED', b''.join(server.bodies), 'A session that just ended must not wait behind older open work')
+    self.assertIn(b'JUST_CLOSED', b''.join(server.bodies[:30]), 'A session that just ended must not wait behind older open work')
 
   def test_unchanged_sources_are_not_reread_and_changes_are_picked_up(self):
     path = self.source('work/stable.jsonl', 'FIRST_PASS')

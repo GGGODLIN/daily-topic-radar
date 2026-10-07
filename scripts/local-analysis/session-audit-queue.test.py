@@ -14,18 +14,16 @@ history.fixtures.ThreadingHTTPServer.request_queue_size = 32
 
 class QueueTests(history.HistoryWindowTests):
   def test_failed_history_does_not_starve_unread_history_and_still_blocks_review(self):
-    # 失敗數要等於每輪歷史片段上限 120，第一輪才會剩下未讀來源。
+    # 失敗的排在後面，未讀的歷史同一輪就送得到。
     for index in range(120):
-      self.history_source(f'a-failed-{index:02}.jsonl', 'BROKEN_REPLY', '2026-10-02T00:00:00Z')
+      self.history_source(f'a-failed-{index:03}.jsonl', 'BROKEN_REPLY', '2026-10-02T00:00:00Z')
+    self.assertEqual(self.run_window(self.provider(lambda body: ('not JSON', 200))[1]).returncode, 0)
     self.history_source('z-unread.jsonl', 'UNREAD_HISTORY', '2026-10-02T00:00:00Z')
     server, url = self.provider(lambda body: ('not JSON', 200) if 'BROKEN_REPLY' in history.fixtures.user_text(body) else (history.fixtures.analysis([], rule_tags=[]), 200))
     self.assertEqual(self.run_window(url).returncode, 0)
-    initial = self.status(url)['history_batch']
-    self.assertEqual(initial['failed'], 120)
-    self.assertEqual(initial['pending'], 1)
-    server.bodies.clear()
-    self.assertEqual(self.run_window(url).returncode, 0)
-    self.assertTrue(any(b'UNREAD_HISTORY' in body for body in server.bodies), 'Failed sources must leave a send opportunity for unread history')
+    unread = [index for index, body in enumerate(server.bodies) if b'UNREAD_HISTORY' in body]
+    self.assertTrue(unread, 'Failed sources must leave a send opportunity for unread history')
+    self.assertLess(unread[0], 30, 'Unread history goes before the failed backlog is retried')
     batch = self.status(url)['history_batch']
     self.assertEqual(batch['complete'], 1)
     self.assertEqual(batch['failed'], 120)
