@@ -2082,11 +2082,15 @@ def cmd_run(args):
     active = {}
     sessions = set()
 
+    def transcript(row):
+      # 同一份對話被複製到兩個目錄時不能同時送（接續狀態會互相覆蓋）；subagent 檔共用父 session id，但各是獨立對話。
+      return (row["session_id"] or row["inode"], row["name"])
+
     def take(group):
       queue = queues[group]
       for _ in range(len(queue)):
         row = queue.popleft()
-        if (row["session_id"] or row["inode"]) not in sessions:
+        if transcript(row) not in sessions:
           return row
         queue.append(row)
       return None
@@ -2157,7 +2161,7 @@ def cmd_run(args):
             mark(connection, row["inode"], "missing", False, {"missing"}, row["excluded_thinking"])
             connection.commit()
             continue
-          session_id = row["session_id"] or row["inode"]
+          session_id = transcript(row)
           analyzer = analyze_one(connection, row, raw, url, key, model, fragments, lifetime, remaining[group], rules_repo)
           sessions.add(session_id)
           resume(session_id, group, analyzer)

@@ -95,6 +95,28 @@ class SchedulerTests(population.PopulationTests):
     self.assertEqual(finished, len(server.bodies), 'Every request already sent is accepted when the run winds down')
     self.assertLess(finished, 40, 'No new work starts after the lifetime')
 
+  def test_subagents_of_one_session_run_side_by_side(self):
+    # 2026-10-07 正式環境：一個 workflow 的 210 個 agent 共用父 session id，被排成一次一個。
+    parent = self.source('work/parent.jsonl', 'PARENT_WORK')
+    for index in range(4):
+      self.child(parent, f'a{index}', f'SUB_WORK_{index}')
+    lock = threading.Lock()
+    counts = {'now': 0, 'peak': 0}
+
+    def reply(body):
+      sub = 'SUB_WORK_' in fixtures.user_text(body)
+      with lock:
+        counts['now'] += sub
+        counts['peak'] = max(counts['peak'], counts['now'])
+      time.sleep(1)
+      with lock:
+        counts['now'] -= sub
+      return fixtures.analysis([], rule_tags=[]), 200
+
+    _, url = self.provider(reply)
+    self.assertEqual(self.cli(['run', *self.flags(url)], timeout=30).returncode, 0)
+    self.assertEqual(counts['peak'], 4, 'Separate subagent transcripts are separate work even under one parent session')
+
   def test_session_end_hook_is_not_blocked_while_replies_are_pending(self):
     path = self.source('work/rewritten.jsonl', 'FIRST_VERSION')
     hold = threading.Event()
