@@ -53,6 +53,7 @@ done
   printf 'anthropic_model=%s\n' "${ANTHROPIC_MODEL-}"
   printf 'opus=%s\n' "${ANTHROPIC_DEFAULT_OPUS_MODEL-}"
   printf 'subagent=%s\n' "${CLAUDE_CODE_SUBAGENT_MODEL-}"
+  printf 'go_available=%s\n' "$(go version >/dev/null 2>&1 && printf yes || printf no)"
 } > "$RECAP_CAPTURE_FILE"
 printf '# Daily Recap fixture\n'
 EOF
@@ -94,6 +95,7 @@ run_case() {
   assert_line "$capture" "anthropic_model=$luna"
   assert_line "$capture" "opus=$luna"
   assert_line "$capture" "subagent=$luna"
+  assert_line "$capture" 'go_available=yes'
   assert_line "$out/2026-09-08-recap.md" '# Daily Recap fixture'
 }
 
@@ -108,6 +110,7 @@ assert_line "$native_capture" 'api_key_set=yes'
 assert_line "$native_capture" 'anthropic_model='
 assert_line "$native_capture" 'opus='
 assert_line "$native_capture" 'subagent='
+assert_line "$native_capture" 'go_available=yes'
 assert_line "$fixture/native.out/2026-09-08-recap.md" '# Daily Recap fixture'
 
 for vendor in deepseek glm mimo mimo-payg bruce rapid-mlx relay gpt gemini-pro gemini-flash free mix-gpt mix; do

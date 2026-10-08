@@ -7,7 +7,7 @@ fi
 cd /
 set -euo pipefail
 
-PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
+PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin:/opt/homebrew/bin"
 export PATH
 
 PARENT_CC_VENDOR="${CC_VENDOR-}"
