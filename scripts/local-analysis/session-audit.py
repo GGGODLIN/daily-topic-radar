@@ -40,6 +40,8 @@ CONTINUITY_RESERVE = 1500
 MAX_OUTPUT_TOKENS = 32768
 MAX_RESPONSE_BYTES = 262144
 MAX_OLD_FRAGMENTS = 1
+# 對話文字超過這個量就切成多塊同時送，塊內照舊接續；約 100 段。依賴多在 50 段內解掉，100 段一塊時斷掉的連結約占發現 3%（2026-10-08 實測 46538 條）。
+BLOCK_BYTES = 1_300_000
 # 一輪最長活多久才收尾：結束後 runner 才把發現寫進摩擦檔、也才換上新部署的程式；收尾只等在途回件，佔一輪的小部分。
 MAX_RUN_SECONDS = 900
 # 跑到一半多久重新掃一次目錄：新 session 安靜夠久後最多再等這麼久就插到隊伍最前面。
@@ -455,6 +457,17 @@ def connect(state, write):
         usable INTEGER NOT NULL,
         total INTEGER NOT NULL,
         checked_at REAL NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS doc_blocks (
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        block_start INTEGER NOT NULL,
+        block_end INTEGER NOT NULL,
+        cursor INTEGER NOT NULL,
+        continuity TEXT NOT NULL DEFAULT '',
+        blocking TEXT NOT NULL DEFAULT '[]',
+        noted TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (inode, generation, block_start)
       );
       CREATE TABLE IF NOT EXISTS scan_cache (
         inode TEXT PRIMARY KEY,
@@ -1713,7 +1726,7 @@ def read_source(path):
     return None, "missing"
 
 
-def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag_limit, rules_repo):
+def prepare_source(connection, row, raw, rules_repo):
   document, images, limits, thinking, _synthetic, _session_ids, parts = build_document(raw)
   parts = locate_parts(document, parts)
   doc_bytes = document.encode()
@@ -1749,8 +1762,80 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
   carried = row["continuity"] or ""
   if start == len(doc_bytes) and row["status"] in {"complete", "partial", "failed"} and prefix_intact and len(raw) == analyzed_size:
     # 已完成的段不為補規則標記而重送；暫時讀不到規則版本的 session 只在之後追加的段重新取規則。
+    return None
+  return {
+    "raw": raw, "doc_bytes": doc_bytes, "parts": parts, "images": images, "limits": limits, "thinking": thinking,
+    "mtime_ns": mtime_ns, "generation": generation, "start": start, "carried": carried,
+    "rules_ctx": session_rules(connection, row, raw, rules_repo),
+  }
+
+
+def unfinished_blocks(connection, row, prep, block_bytes):
+  doc_bytes, start, generation = prep["doc_bytes"], prep["start"], prep["generation"]
+  columns = "block_start, block_end, cursor, continuity"
+  existing = [dict(item) for item in connection.execute(
+    f"SELECT {columns} FROM doc_blocks WHERE inode = ? AND generation = ? AND block_end > ? ORDER BY block_start",
+    (row["inode"], generation, start),
+  )]
+  if existing:
+    return [item for item in existing if item["cursor"] < item["block_end"]]
+  if len(doc_bytes) - start <= block_bytes:
+    return []
+  # 切在記錄開頭，每塊的第一段不必再補上一筆記錄的標頭。
+  cuts = [start]
+  for boundary in sorted(item["doc_start"] for item in prep["parts"]):
+    if boundary >= cuts[-1] + block_bytes and boundary < len(doc_bytes):
+      cuts.append(boundary)
+  if len(cuts) == 1:
+    return []
+  blocks = []
+  for block_start, block_end in zip(cuts, cuts[1:] + [len(doc_bytes)]):
+    # 第一塊接著原本的交接摘要；其餘各塊從零開始，跨塊的同一問題可能各記一次（約占發現 3%）。
+    continuity = prep["carried"] if block_start == start else ""
+    connection.execute(
+      "INSERT INTO doc_blocks (inode, generation, block_start, block_end, cursor, continuity) VALUES (?, ?, ?, ?, ?, ?)",
+      (row["inode"], generation, block_start, block_end, block_start, continuity),
+    )
+    blocks.append({"block_start": block_start, "block_end": block_end, "cursor": block_start, "continuity": continuity})
+  # 原文前綴要記到整份，之後的輪次才認得這些塊還對得上同一份內容。
+  mark(
+    connection, row["inode"], "pending", False, set(prep["limits"]), prep["thinking"],
+    doc_offset=start, doc_tail=prefix_tail(doc_bytes, start), file_size=len(prep["raw"]),
+    file_tail=prefix_tail(prep["raw"], len(prep["raw"])), file_mtime_ns=prep["mtime_ns"], generation=generation,
+  )
+  connection.commit()
+  return blocks
+
+
+def finish_blocks(connection, row, prep):
+  current = connection.execute("SELECT doc_offset FROM sources WHERE inode = ?", (row["inode"],)).fetchone()
+  blocks = connection.execute(
+    "SELECT * FROM doc_blocks WHERE inode = ? AND generation = ? AND block_end > ? ORDER BY block_start",
+    (row["inode"], prep["generation"], current["doc_offset"]),
+  ).fetchall()
+  if not blocks or any(item["cursor"] < item["block_end"] for item in blocks):
+    return
+  blocking = set().union(*(json.loads(item["blocking"]) for item in blocks))
+  noted = set().union(*(json.loads(item["noted"]) for item in blocks))
+  end = blocks[-1]["block_end"]
+  doc_bytes, raw = prep["doc_bytes"], prep["raw"]
+  status = ("partial" if blocking else "complete") if end >= len(doc_bytes) else "pending"
+  mark(
+    connection, row["inode"], status, status == "complete", blocking | noted, prep["thinking"],
+    doc_offset=end, doc_tail=prefix_tail(doc_bytes, end), file_size=len(raw), file_tail=prefix_tail(raw, len(raw)),
+    file_mtime_ns=prep["mtime_ns"], continuity=blocks[-1]["continuity"], generation=prep["generation"],
+  )
+  connection.commit()
+
+
+def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag_limit, rules_repo, prep=None, block=None):
+  if prep is None:
+    prep = prepare_source(connection, row, raw, rules_repo)
+  if prep is None:
     return 0
-  blocking = set(limits)
+  doc_bytes, parts, images, thinking = prep["doc_bytes"], prep["parts"], prep["images"], prep["thinking"]
+  generation, mtime_ns, rules_ctx = prep["generation"], prep["mtime_ns"], prep["rules_ctx"]
+  blocking = set(prep["limits"])
   # 下一段格式正確不能把同一版本先前待整理的回覆洗成完整分析。
   for saved in connection.execute(
     "SELECT limitations FROM model_replies WHERE inode = ? AND generation = ? AND status = 'review'",
@@ -1760,27 +1845,31 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
   noted = set()
   if images:
     noted.add("media-unredacted")
-  rules_ctx = session_rules(connection, row, raw, rules_repo)
   if rules_ctx is None:
     # 只標規則未分析；findings 照常，不降成 partial。
     noted.add(RULES_VERSION_UNAVAILABLE)
+  if block is None:
+    cursor, limit, carried, lines = prep["start"], len(doc_bytes), prep["carried"], None
+  else:
+    cursor, limit, carried = block["cursor"], block["block_end"], block["continuity"]
+    # 塊內只追蹤自己範圍的未解問題；別塊的問題各自接續，不混進這塊的交接摘要。
+    lines = {part["line"] for part in parts if block["block_start"] <= part["doc_start"] < block["block_end"]}
   continuity = redact_text(carried)
-  cursor = start
   produced = 0
   path = Path(row["path"])
-  while cursor < len(doc_bytes) and produced < frag_limit and time.monotonic() <= deadline:
+  while cursor < limit and produced < frag_limit and time.monotonic() <= deadline:
     current, error = read_source(path)
     if error or current != raw:
       mark(connection, row["inode"], "missing" if error else "pending", False, {"missing" if error else "source-changed-during-analysis"}, thinking)
       connection.commit()
       return produced
-    window = doc_bytes[cursor : cursor + instruction_budget()]
+    window = doc_bytes[cursor : min(cursor + instruction_budget(), limit)]
     # 切在 UTF-8 邊界，並盡量沿換行，避免把一個字切開。
     end = len(window)
     while end > 0 and end < len(window) and window[end] & 0xC0 == 0x80:
       end -= 1
     # 整段塞得進預算就不要在標題後面的換行切開，否則 quote 留在沒送出的半段。
-    if cursor + instruction_budget() < len(doc_bytes):
+    if cursor + instruction_budget() < limit:
       newline = window.rfind(b"\n")
       if newline >= len(window) // 2:
         end = newline + 1
@@ -1858,7 +1947,10 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       active = {}
       for previous in connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? ORDER BY id', (row['inode'], generation)):
         active[previous['issue_ref']] = previous
-      pointers = [f"open issue_ref={previous['issue_ref']} {previous['quote'][:80]}" for previous in active.values() if previous['status'] in {'unresolved', 'uncertain'}]
+      pointers = [
+        f"open issue_ref={previous['issue_ref']} {previous['quote'][:80]}" for previous in active.values()
+        if previous['status'] in {'unresolved', 'uncertain'} and (lines is None or previous['source_line'] in lines)
+      ]
       continuity = redact_text(("\n".join(pointers) + "\n" + analyzed["continuity"]).strip())
       sent_bytes = sent.encode()
       if inherited and sent_bytes.startswith(inherited):
@@ -1884,6 +1976,14 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
     record_segments(connection, row, generation, parts, cursor, cursor + advance,
                     "review" if reply_status == "review" else "analyzed", blocking | noted)
     cursor += advance
+    if block is not None:
+      connection.execute(
+        "UPDATE doc_blocks SET cursor = ?, continuity = ?, blocking = ?, noted = ? WHERE inode = ? AND generation = ? AND block_start = ?",
+        (cursor, continuity[:CONTINUITY_RESERVE], json.dumps(sorted(blocking), ensure_ascii=False),
+         json.dumps(sorted(noted), ensure_ascii=False), row["inode"], generation, block["block_start"]),
+      )
+      connection.commit()
+      continue
     mark(
       connection,
       row["inode"],
@@ -1900,6 +2000,10 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       generation=generation,
     )
     connection.commit()
+  if block is not None:
+    if cursor >= limit:
+      finish_blocks(connection, row, prep)
+    return produced
   current = connection.execute("SELECT doc_offset, status FROM sources WHERE inode = ?", (row["inode"],)).fetchone()
   if current["status"] in {"failed", "missing"}:
     return produced
@@ -2140,6 +2244,18 @@ def cmd_run(args):
       # 同一份對話被複製到兩個目錄時不能同時送（接續狀態會互相覆蓋）；subagent 檔共用父 session id，但各是獨立對話。
       return (row["session_id"] or row["inode"], row["name"])
 
+    # 超大 session 的其他塊排在同組最前面，名額一空就補上；重新掃描只重建來源佇列，不會丟掉這些塊。
+    block_items = {"new": deque(), "old": deque()}
+
+    def take_block(group):
+      queue = block_items[group]
+      for _ in range(len(queue)):
+        item = queue.popleft()
+        if (transcript(item[0]), item[2]["block_start"]) not in sessions:
+          return item
+        queue.append(item)
+      return None
+
     def take(group):
       queue = queues[group]
       for _ in range(len(queue)):
@@ -2153,10 +2269,19 @@ def cmd_run(args):
       # 新 session 嚴格優先；歷史只在沒有可送的新工作時補位。
       for group in ("new", "old"):
         if remaining[group] > 0:
+          item = take_block(group)
+          if item is not None:
+            return group, item
           row = take(group)
           if row is not None:
             return group, row
       return None, None
+
+    def start(group, row, raw, prep=None, block=None):
+      session_key = transcript(row) if block is None else (transcript(row), block["block_start"])
+      analyzer = analyze_one(connection, row, raw, url, key, model, fragments, lifetime, remaining[group], rules_repo, prep, block)
+      sessions.add(session_key)
+      resume(session_key, group, analyzer)
 
     configured = parse_legs(args.direct_legs)
     eligible = eligible_legs(configured, args.grok_quota_file)
@@ -2285,16 +2410,30 @@ def cmd_run(args):
           group, row = next_row()
           if row is None:
             break
+          if isinstance(row, tuple):
+            start(group, row[0], row[1], row[3], row[2])
+            continue
           attempted.add(row["inode"])
           raw, error = read_source(Path(row["path"]))
           if error:
             mark(connection, row["inode"], "missing", False, {"missing"}, row["excluded_thinking"])
             connection.commit()
             continue
-          session_id = transcript(row)
-          analyzer = analyze_one(connection, row, raw, url, key, model, fragments, lifetime, remaining[group], rules_repo)
-          sessions.add(session_id)
-          resume(session_id, group, analyzer)
+          prep = prepare_source(connection, row, raw, rules_repo)
+          if prep is None:
+            continue
+          blocks = unfinished_blocks(connection, row, prep, args.block_bytes)
+          if not blocks and connection.execute(
+            "SELECT 1 FROM doc_blocks WHERE inode = ? AND generation = ? AND block_end > ?", (row["inode"], prep["generation"], prep["start"]),
+          ).fetchone():
+            # 各塊都送完但上一輪來不及收尾：補收尾，剩下的追加內容下一輪照常接續。
+            finish_blocks(connection, row, prep)
+            continue
+          if not blocks:
+            start(group, row, raw, prep)
+            continue
+          block_items[group].extendleft((row, raw, block, prep) for block in reversed(blocks[1:]))
+          start(group, row, raw, prep, blocks[0])
         # 回件可能要等好幾分鐘；等之前先交出寫入交易，SessionEnd hook 才寫得進 hints（它不拿 run.lock）。
         connection.commit()
         if not active:
@@ -2966,6 +3105,7 @@ def build_parser():
   parser.add_argument("--direct-legs", default="")
   parser.add_argument("--pool-health", default=json.dumps(POOL_HEALTH))
   parser.add_argument("--leg-probe-seconds", type=float, default=LEG_PROBE_SECONDS)
+  parser.add_argument("--block-bytes", type=int, default=BLOCK_BYTES)
   parser.add_argument("--grok-quota-file", default=str(Path.home() / ".cli-proxy-api" / "grok-quota-samples.jsonl"))
   return parser
 
