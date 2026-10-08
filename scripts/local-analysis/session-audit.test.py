@@ -510,6 +510,8 @@ class SessionAuditCliTest(unittest.TestCase):
       + "http://user:leakuserinfo@example.com/a\n"
       + "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.UNIQUEJWTTAIL99\n"
       + "+19998887766\n"
+      + "MONGO_PASS=leakmongopass\n"
+      + "DB_PWD=leakdbpwd\n"
     )
     record = {
       "type": "assistant",
@@ -545,6 +547,8 @@ class SessionAuditCliTest(unittest.TestCase):
       "UNIQUEJWTTAIL99",
       "19998887766",
       "BEGIN PRIVATE KEY",
+      "leakmongopass",
+      "leakdbpwd",
     ):
       self.assertNotIn(secret, sent)
     row = self.source_named(self.status(url), "huge.jsonl")

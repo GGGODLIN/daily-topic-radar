@@ -140,6 +140,9 @@ SENSITIVE_SUFFIXES = (
   "PRIVATE_KEY",
   "PASSWORD",
   "PASSWD",
+  # 只列 PASSWORD 時，公司 .dev.env 的 MONGO_PASS 原樣送進外部號池（2026-10-08 發現）。
+  "PASS",
+  "PWD",
   "SECRET",
   "TOKEN",
   "COOKIE",
