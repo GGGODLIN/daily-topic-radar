@@ -227,7 +227,36 @@ def migrate_hash_free(connection):
 
 def sensitive_key(name):
   key = re.sub(r"[^A-Za-z0-9]+", "_", name).upper().strip("_")
-  return any(key == suffix or key.endswith(f"_{suffix}") for suffix in SENSITIVE_SUFFIXES)
+  # PASS／PWD 單獨出現多半是測試結果（「PASS: 測試名」），只在有前綴時才算憑證名。
+  return any(
+    (key == suffix and suffix not in {"PASS", "PWD"}) or key.endswith(f"_{suffix}")
+    for suffix in SENSITIVE_SUFFIXES
+  )
+
+
+PLACEHOLDER_RE = re.compile(r"^(?:\$|<|\[REDACTED|\*{3}|x{3,}$|your[-_])", re.IGNORECASE)
+# 偵測比遮罩嚴：遮罩寧可多遮，偵測要少誤報。只認 env 檔寫法（大寫名、等號、帶前綴的憑證字尾），
+# 「token: 說明文字」「PASS: 測試名」這類冒號寫法在歷史資料裡幾乎都是誤報（2026-10-08 量到 1347 行、106 個 session）。
+ENV_SECRET_RE = re.compile(
+  r"(?m)(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:PASS|PWD|PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY))"
+  r"\s*=\s*[\"']?([^\s\"'`]+)"
+)
+
+
+def credential_names(text):
+  # 模型看到的是遮過的文字，憑證外洩只能在遮之前用固定規則抓；佔位字（$VAR、<your-password>、[REDACTED]）是範例不是外洩。
+  names = set()
+  for match in ENV_SECRET_RE.finditer(text):
+    value = match.group(2)
+    if len(value) >= 8 and not PLACEHOLDER_RE.match(value):
+      names.add(match.group(1))
+  if PRIVATE_KEY_RE.search(text):
+    names.add("PRIVATE_KEY")
+  if TOKEN_RE.search(text):
+    names.add("API_TOKEN")
+  if any(not PLACEHOLDER_RE.match(match.group(3)) for match in URI_USERINFO_RE.finditer(text)):
+    names.add("URI_PASSWORD")
+  return names
 
 
 def redact_text(value):
@@ -460,6 +489,13 @@ def connect(state, write):
         usable INTEGER NOT NULL,
         total INTEGER NOT NULL,
         checked_at REAL NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS secret_exposures (
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        line INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (inode, generation, line, name)
       );
       CREATE TABLE IF NOT EXISTS doc_blocks (
         inode TEXT NOT NULL,
@@ -1762,6 +1798,16 @@ def prepare_source(connection, row, raw, rules_repo):
     )
   if start > len(doc_bytes):
     start = 0
+  # 只看工具輸出：agent 自己寫的範例或指令不算印出憑證。
+  connection.executemany(
+    "INSERT OR IGNORE INTO secret_exposures (inode, generation, line, name) VALUES (?, ?, ?, ?)",
+    [
+      (row["inode"], generation, part["line"], name)
+      for part in parts
+      if part["role"] == "user" and part["tool_use_id"] != "-"
+      for name in credential_names(part["text"])
+    ],
+  )
   carried = row["continuity"] or ""
   if start == len(doc_bytes) and row["status"] in {"complete", "partial", "failed"} and prefix_intact and len(raw) == analyzed_size:
     # 已完成的段不為補規則標記而重送；暫時讀不到規則版本的 session 只在之後追加的段重新取規則。
@@ -3015,9 +3061,23 @@ def cmd_promote(args):
   connection = connect(state, write=False)
   data = snapshot(connection)
   violations = rule_violations(connection)
+  exposures = connection.execute(
+    """
+    SELECT sources.session_id, MIN(secret_exposures.line), secret_exposures.name
+    FROM secret_exposures
+    JOIN sources ON sources.inode = secret_exposures.inode AND sources.generation = secret_exposures.generation
+    WHERE sources.included = 1
+    GROUP BY sources.session_id, secret_exposures.name
+    ORDER BY 1, 2, 3
+    """
+  ).fetchall() if table_exists(connection, "secret_exposures") else []
   connection.close()
-  data['candidates'] = [item for item in data['candidates'] if item['source_status'] in {'complete', 'partial'}]
-  if not data["candidates"] and not violations:
+  # 分析器自己判「無法判斷」的發現，Opus 回原文抽樣只有 13% 是真問題（2026-10-08，127 條）；留在資料庫可查，不進待折。
+  data['candidates'] = [
+    item for item in data['candidates']
+    if item['source_status'] in {'complete', 'partial'} and item['status'] != 'uncertain'
+  ]
+  if not data["candidates"] and not violations and not exposures:
     print(json.dumps({"command": "promote", "appended": 0}))
     return 0
   root = Path(args.friction_root)
@@ -3055,6 +3115,16 @@ def cmd_promote(args):
         f"- {today} [{ref}; signal_type=agent-observation; "
         f"target=unknown; feedback_quote=\"{quote}\"; why=\"unknown\"; flags=speculation] "
         f"{observation} {direction}"
+      )
+    for session_id, line, name in exposures:
+      ref = f"secret:session:{session_id}#{line}:{name}"
+      if ref in recorded:
+        continue
+      recorded.add(ref)
+      rows.append(
+        f"- {today} [source_ref={ref}; signal_type=agent-observation; target=unknown; "
+        f"feedback_quote=\"{name}\"; why=\"unknown\"] 工具輸出印出了 {name} 的值"
+        f"（session-audit 固定規則偵測，值不寫入本檔）。確認是否已輪替。"
       )
     base, fresh, rule_entries, rule_sublines = apply_rule_violations(
       original, violations, Path(args.rules_repo).expanduser(), today

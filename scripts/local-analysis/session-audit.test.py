@@ -512,6 +512,7 @@ class SessionAuditCliTest(unittest.TestCase):
       + "+19998887766\n"
       + "MONGO_PASS=leakmongopass\n"
       + "DB_PWD=leakdbpwd\n"
+      + "PASS: VISIBLE_TEST_NAME\n"
     )
     record = {
       "type": "assistant",
@@ -535,7 +536,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
     sent = b"".join(server.bodies).decode()
-    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge"):
+    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge", "VISIBLE_TEST_NAME"):
       self.assertIn(marker, sent)
     for secret in (
       "UNIQUEPRIVATELINE",
@@ -1477,6 +1478,64 @@ class SessionAuditCliTest(unittest.TestCase):
     second = self.cli(["promote", *self.flags(url)])
     self.assertEqual(second.returncode, 0, second.stderr)
     self.assertEqual(friction.read_text().count("source_ref=session:sess-real#1"), 1)
+
+  def test_promote_skips_findings_the_analyzer_could_not_judge(self):
+    write_jsonl(self.projects / "work" / "sure.jsonl", user_line("QUOTE_UNSURE QUOTE_SURE", session_id="sure"))
+    friction = self.friction / "workflow-general.md"
+    friction.write_text("# 摩擦\n\n## 待折\n\n- old\n\n## 已折／已否決\n\n- closed\n")
+    server = serve(lambda body: (analysis([
+      finding("QUOTE_UNSURE", "uncertain", "obs-unsure"),
+      finding("QUOTE_SURE", "unresolved", "obs-sure"),
+    ]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["promote", *self.flags(url)]).returncode, 0)
+    text = friction.read_text()
+    self.assertIn("obs-sure", text)
+    self.assertNotIn("obs-unsure", text)
+
+  def credential_session(self, name, printed, authored=""):
+    tool_use = {"type": "assistant", "sessionId": name, "message": {"role": "assistant", "content": [
+      {"type": "text", "text": authored or "讀設定"},
+      {"type": "tool_use", "id": "toolu_env", "name": "Bash", "input": {"command": "cat .dev.env"}},
+    ]}}
+    result = {"type": "user", "sessionId": name, "message": {"role": "user", "content": [
+      {"type": "tool_result", "tool_use_id": "toolu_env", "content": printed},
+    ]}}
+    write_jsonl(
+      self.projects / "work" / f"{name}.jsonl",
+      user_line("讀設定檔", session_id=name) + json.dumps(tool_use) + "\n" + json.dumps(result) + "\n",
+    )
+    friction = self.friction / "workflow-general.md"
+    friction.write_text("# 摩擦\n\n## 待折\n\n- old\n\n## 已折／已否決\n\n- closed\n")
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    return friction, f"http://127.0.0.1:{server.server_address[1]}"
+
+  def test_credential_printed_by_a_tool_is_recorded_by_name_without_its_value(self):
+    friction, url = self.credential_session("leak", "HOST=db.local\nMONGO_PASS=s3cretValue99\n")
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["promote", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["promote", *self.flags(url)]).returncode, 0)
+    text = friction.read_text()
+    self.assertNotIn("s3cretValue99", text)
+    entries = [line for line in text.splitlines() if "MONGO_PASS" in line]
+    self.assertEqual(len(entries), 1, text)
+    self.assertIn("session:leak#3", entries[0])
+
+  def test_placeholders_and_agent_written_credentials_are_not_recorded(self):
+    friction, url = self.credential_session(
+      "clean",
+      "API_KEY=$API_KEY\nDB_PASSWORD=<your-password>\nTOKEN=[REDACTED]\n"
+      "PASS: test_login_flow_works\ntoken: documented-example-value\n",
+      authored="範例：export SERVICE_PASSWORD=hunter2hunter2",
+    )
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["promote", *self.flags(url)]).returncode, 0)
+    text = friction.read_text()
+    for name in ("API_KEY", "DB_PASSWORD", "TOKEN", "SERVICE_PASSWORD", "PASS", "token"):
+      self.assertNotIn(name, text)
 
   RULE_FRICTION = (
     "# 摩擦\n\n## 待折\n\n- 2026-01-01 old pending item\n\n"
