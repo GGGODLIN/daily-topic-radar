@@ -328,8 +328,11 @@ def connect(state, write):
     connection = sqlite3.connect(database)
     os.chmod(database, 0o600)
   connection.row_factory = sqlite3.Row
-  connection.execute("PRAGMA busy_timeout=2000")
+  connection.execute("PRAGMA busy_timeout=30000")
   if write:
+    # 預設的回滾日誌讓任何讀取都擋住寫入：庫長到 1.2 GB 後，日報的唯讀統計一跑 17 秒，分析器提交就逾時崩潰。
+    # WAL 讓讀與寫互不阻擋；只剩寫對寫（SessionEnd 入列）要排隊，交給上面的等待時間。
+    connection.execute("PRAGMA journal_mode=WAL")
     connection.executescript(
       """
       CREATE TABLE IF NOT EXISTS hints (

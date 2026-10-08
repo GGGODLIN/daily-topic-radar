@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -143,6 +144,29 @@ class SchedulerTests(population.PopulationTests):
     run.communicate(timeout=20)
     self.assertEqual(enqueued.returncode, 0, enqueued.stderr)
     self.assertLess(waited, 4, 'The run must not hold a write transaction open across an HTTP wait')
+
+  def test_a_slow_reader_does_not_crash_the_run(self):
+    self.source('work/first.jsonl', 'BEFORE_READER')
+    server, url = self.provider()
+    self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
+    self.source('work/second.jsonl', 'DURING_READER')
+
+    def reply(body):
+      time.sleep(3)
+      return fixtures.analysis([], rule_tags=[]), 200
+
+    server, url = self.provider(reply)
+    flags = self.flags(url)
+    database = Path(flags[flags.index('--state') + 1]) / 'state.sqlite'
+    reader = sqlite3.connect(f'file:{database}?mode=ro', uri=True, isolation_level=None)
+    self.addCleanup(reader.close)
+    # 日報的唯讀統計在 1.2 GB 的庫上要跑 17 秒；讀取期間分析器的寫入不能因此崩潰。
+    reader.execute('BEGIN')
+    reader.execute('SELECT COUNT(*) FROM sources').fetchone()
+    done = self.cli(['run', *flags], timeout=30)
+    reader.execute('COMMIT')
+    self.assertEqual(done.returncode, 0, done.stderr)
+    self.assertEqual(self.source_named(self.status(url), 'second.jsonl')['status'], 'complete')
 
 
 if __name__ == '__main__':
