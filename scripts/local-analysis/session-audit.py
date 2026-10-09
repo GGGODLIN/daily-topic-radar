@@ -2244,6 +2244,8 @@ def cmd_run(args):
       # doc_offset>0 的 pending 仍是 old，不能下輪升成 new。
       return cutoff is not None and row["mtime"] < cutoff
 
+    mode = {"backfill": False}
+
     def scan():
       observed = refresh(connection, args.projects, args.self_session, window["bounds"] if window is not None else None)
       members = None
@@ -2252,6 +2254,7 @@ def cmd_run(args):
         members = sync_history_batch(connection, window, observed, cutoff)
         update_history_review(connection)
         history_open = history_snapshot(connection)["status"] == "active"
+        mode["backfill"] = history_open
       connection.commit()
       ended = session_end_times(connection)
       now = time.time()
@@ -2332,18 +2335,20 @@ def cmd_run(args):
       sessions.add(session_key)
       resume(session_key, group, analyzer)
 
-    configured = parse_legs(args.direct_legs)
+    # 平常只追新 session，走 free、名額小；開回填批次時才換成高併發的直連腿，批次進 review 後下一輪自動退回。
+    configured = parse_legs(args.backfill_legs if mode["backfill"] and args.backfill_legs else args.direct_legs)
+    base = args.max_sessions
     eligible = eligible_legs(configured, args.grok_quota_file)
     slots_of = dict(configured)
     paused_now = {alias for (alias,) in connection.execute("SELECT alias FROM leg_pauses")}
     legs = [(alias, slots) for alias, slots in eligible if alias not in paused_now]
     # 名額全部指定給直連腿時不碰 free 鏈：鏈尾的腿沒驗證過（Muse 8 個摩擦只抓到 2 個），暫停時寧可少跑也不靜默換品質。
     # 有用 free 時，暫停或額度到線的腿把名額讓給 free。
-    uses_free = sum(slots for _, slots in configured) < MAX_CONCURRENT_SESSIONS
-    free_slots = MAX_CONCURRENT_SESSIONS - sum(slots for _, slots in legs) if uses_free else 0
+    uses_free = sum(slots for _, slots in configured) < base
+    free_slots = base - sum(slots for _, slots in legs) if uses_free else 0
     capacity = {**({"free": free_slots} if free_slots > 0 else {}), **dict(legs)}
-    # 指定的池名額加總超過 30 時（例如 Grok 額外加 10），總量跟著名額走；30 只是 free 補位的基準。
-    concurrency = max(MAX_CONCURRENT_SESSIONS, sum(slots for _, slots in configured))
+    # 指定的池名額加總超過基準時（例如 Grok 額外加 10），總量跟著名額走；基準只是 free 補位的上限。
+    concurrency = max(base, sum(slots for _, slots in configured))
     try:
       pool_specs = json.loads(args.pool_health)
     except ValueError:
@@ -3176,6 +3181,8 @@ def build_parser():
   parser.add_argument("--rescan-seconds", type=float, default=RESCAN_SECONDS)
   # free 之外的直連腿，格式 alias:名額,alias:名額；預設不開，只走 free。
   parser.add_argument("--direct-legs", default="")
+  parser.add_argument("--backfill-legs", default="")
+  parser.add_argument("--max-sessions", type=int, default=MAX_CONCURRENT_SESSIONS)
   parser.add_argument("--pool-health", default=json.dumps(POOL_HEALTH))
   parser.add_argument("--leg-probe-seconds", type=float, default=LEG_PROBE_SECONDS)
   parser.add_argument("--block-bytes", type=int, default=BLOCK_BYTES)

@@ -38,7 +38,7 @@ class DirectLegTests(population.PopulationTests):
   def test_each_leg_carries_its_share_of_slots(self):
     self.assertEqual(self.peaks(LEGS, self.grok_usage(40), full=30), {'free': 16, 'workbuddy-v41': 7, 'grok-4.7': 7})
 
-  def peaks(self, legs, quota, full, sessions=48):
+  def peaks(self, legs, quota, full, sessions=48, extra=()):
     fixtures.ThreadingHTTPServer.request_queue_size = 64
     self.sessions(sessions)
     lock = threading.Lock()
@@ -60,9 +60,14 @@ class DirectLegTests(population.PopulationTests):
           active[model] -= 1
 
     _, url = self.provider(reply)
-    done = self.cli(['run', *self.flags(url), '--direct-legs', legs, '--grok-quota-file', str(quota)], timeout=30)
+    done = self.cli(['run', *self.flags(url), '--direct-legs', legs, '--grok-quota-file', str(quota), *extra], timeout=30)
     self.assertEqual(done.returncode, 0, done.stderr)
     return peak
+
+  def test_free_only_runs_stay_under_the_session_cap(self):
+    # 20 個 session 全部到齊才放行：沒有上限時峰值會到 20，有上限時卡在 10 等逾時。
+    peak = self.peaks('', self.grok_usage(10), full=20, sessions=20, extra=['--max-sessions', '10'])
+    self.assertEqual(peak, {'free': 10}, 'Incremental runs on the free chain keep to the configured cap')
 
   def test_production_legs_add_ten_grok_slots_on_top_of_the_two_pools(self):
     peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(10), full=40)

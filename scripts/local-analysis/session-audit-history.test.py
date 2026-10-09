@@ -34,6 +34,23 @@ class HistoryWindowTests(fixtures.SessionAuditCliTest):
   def run_window(self, url, since=SINCE):
     return self.cli(['run', *self.flags(url, started_at=DEPLOYED), '--history-since', since, '--history-until', UNTIL])
 
+  def test_backfill_uses_its_own_legs_until_the_batch_reaches_review(self):
+    self.history_source('recent.jsonl', 'RECENT_WORK', '2026-10-02T00:00:00Z')
+    models = []
+    server, url = self.provider(lambda body: (models.append(json.loads(body)['model']) or fixtures.analysis([], rule_tags=[]), 200))
+    command = ['run', *self.flags(url, started_at=DEPLOYED), '--history-since', SINCE, '--history-until', UNTIL,
+               '--direct-legs', '', '--backfill-legs', 'mimo26-pool:10', '--max-sessions', '10']
+    done = self.cli(command)
+    self.assertEqual(done.returncode, 0, done.stderr)
+    self.assertEqual(set(models), {'mimo26-pool'}, 'An open backfill batch runs on the backfill legs')
+    self.assertEqual(self.status(url)['history_batch']['status'], 'review')
+    live = self.projects / 'work' / 'live.jsonl'
+    fixtures.write_jsonl(live, fixtures.user_line('LIVE_AFTER_WINDOW', timestamp='2026-10-06T00:00:00Z'))
+    models.clear()
+    done = self.cli(command)
+    self.assertEqual(done.returncode, 0, done.stderr)
+    self.assertEqual(set(models), {'free'}, 'Once the batch waits for review, new sessions go back to the free chain')
+
   def test_seven_day_window_excludes_older_and_synthetic_but_keeps_live_sources(self):
     recent = self.history_source('recent.jsonl', 'RECENT_WORK', '2026-10-02T00:00:00Z')
     older = self.history_source('older.jsonl', 'OLDER_THAN_SEVEN', '2026-09-20T00:00:00Z')
