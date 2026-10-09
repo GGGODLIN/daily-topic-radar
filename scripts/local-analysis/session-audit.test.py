@@ -1524,6 +1524,37 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(len(entries), 1, text)
     self.assertIn("session:leak#3", entries[0])
 
+  def test_session_end_written_between_two_prepared_sources_does_not_crash_the_run(self):
+    # 2026-10-09 正式環境：同一輪補位時，SessionEnd 入列在兩個來源之間寫了一筆，下一個來源記憑證名稱時整輪當掉（database is locked）。
+    _, url = self.credential_session("leak", "MONGO_PASS=s3cretValue99\n")
+    leak = self.projects / "work" / "leak.jsonl"
+    os.utime(leak, (time.time() - 60, time.time() - 60))
+    plain = self.projects / "work" / "plain.jsonl"
+    write_jsonl(plain, user_line("PLAIN_WORK", session_id="plain"))
+    # 第一次讀的來源會在記規則版本時提交；只有讀過又追加的來源才走到沒有提交的那條路。
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    for path, session_id, age in ((leak, "leak", 60), (plain, "plain", 0)):
+      with path.open("a") as handle:
+        handle.write(user_line(f"APPENDED_{session_id}", session_id=session_id))
+      os.utime(path, (time.time() - age, time.time() - age))
+    spec = importlib.util.spec_from_file_location("analyzer_in_process", SCRIPT)
+    analyzer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(analyzer)
+    real_read = analyzer.read_source
+    queued = []
+
+    def read_then_session_end(path):
+      if path.name == "leak.jsonl" and not queued:
+        queued.append(self.cli(["enqueue", *self.flags(url)], stdin=json.dumps({"hook_event_name": "SessionEnd", "session_id": "other"})))
+      return real_read(path)
+
+    analyzer.read_source = read_then_session_end
+    self.assertEqual(analyzer.main(["run", *self.flags(url)]), 0)
+    self.assertEqual(queued[0].returncode, 0, queued[0].stderr)
+    status = self.status(url)
+    self.assertEqual(self.source_named(status, "plain.jsonl")["status"], "complete")
+    self.assertEqual(self.source_named(status, "leak.jsonl")["status"], "complete")
+
   def test_placeholders_and_agent_written_credentials_are_not_recorded(self):
     friction, url = self.credential_session(
       "clean",

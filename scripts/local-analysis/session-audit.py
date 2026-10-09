@@ -1799,15 +1799,18 @@ def prepare_source(connection, row, raw, rules_repo):
   if start > len(doc_bytes):
     start = 0
   # 只看工具輸出：agent 自己寫的範例或指令不算印出憑證。
-  connection.executemany(
-    "INSERT OR IGNORE INTO secret_exposures (inode, generation, line, name) VALUES (?, ?, ?, ?)",
-    [
-      (row["inode"], generation, part["line"], name)
-      for part in parts
-      if part["role"] == "user" and part["tool_use_id"] != "-"
-      for name in credential_names(part["text"])
-    ],
-  )
+  exposures = [
+    (row["inode"], generation, part["line"], name)
+    for part in parts
+    if part["role"] == "user" and part["tool_use_id"] != "-"
+    for name in credential_names(part["text"])
+  ]
+  # 空清單也會開交易卻不拿寫鎖：之後的讀取釘在舊版本，SessionEnd 入列一寫，這條連線下次寫入就立刻 database is locked、不等 busy_timeout。
+  if exposures:
+    connection.executemany(
+      "INSERT OR IGNORE INTO secret_exposures (inode, generation, line, name) VALUES (?, ?, ?, ?)",
+      exposures,
+    )
   carried = row["continuity"] or ""
   if start == len(doc_bytes) and row["status"] in {"complete", "partial", "failed"} and prefix_intact and len(raw) == analyzed_size:
     # 已完成的段不為補規則標記而重送；暫時讀不到規則版本的 session 只在之後追加的段重新取規則。
