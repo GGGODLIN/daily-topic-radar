@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -8,171 +9,179 @@ import pytest
 from social_info.config import SourceConfig
 from social_info.fetchers.twitter import fetch
 
+FIXTURE = Path("tests/fixtures/scrapebadger_tweet_response.json")
+ACTOR_PATH = (
+    "/v2/acts/scrape.badger~twitter-tweets-scraper/run-sync-get-dataset-items"
+)
+
+
+def _cfg(handles: list[str], **params) -> SourceConfig:
+    merged = {"handles": handles, "time_window_hours": 24}
+    merged.update(params)
+    return SourceConfig(
+        id="twitter_tier1",
+        type="twitter",
+        enabled=True,
+        tier=1,
+        params=merged,
+    )
+
 
 @pytest.mark.asyncio
 async def test_fetch_twitter_via_apify(httpx_mock, monkeypatch):
     monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
-    fixture = json.loads(Path("tests/fixtures/apify_tweet_scraper_response.json").read_text())
+    fixture = json.loads(FIXTURE.read_text())
     httpx_mock.add_response(
         url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
         json=fixture,
-        is_reusable=True,
-    )
-
-    cfg = SourceConfig(
-        id="twitter_tier1",
-        type="twitter",
-        enabled=True,
-        tier=1,
-        params={
-            "handles": ["sama", "karpathy", "simonw"],
-            "per_handle_limit": 10,
-            "time_window_hours": 24,
-        },
-    )
-
-    async with httpx.AsyncClient() as client:
-        items = await fetch(cfg, client)
-
-    payload = json.loads(httpx_mock.get_requests()[0].content)
-    assert payload["maxItems"] == 20
-    assert len(items) == 1
-    item = items[0]
-    assert item.source == "x"
-    assert item.source_handle == "@sama"
-    assert item.engagement["likes"] == 734
-    assert item.engagement["comments"] == 38
-    assert item.engagement["retweets"] == 9
-
-
-@pytest.mark.asyncio
-async def test_fetch_twitter_all_mock_raises(httpx_mock, monkeypatch):
-    """Apify actor returns mock_tweet placeholders when the underlying X search
-    has no real results (KaitoEasyAPI bills a minimum charge per call and pads
-    the dataset to meet it). An all-mock response means the source silently
-    produced nothing — raise so it lands in KNOWN_ISSUES instead of vanishing
-    as a clean `ok / items_fetched=0`.
-
-    Real incident 2026-07-31: twitter_tier1 and twitter_anthropic both returned
-    15 mock_tweet records; both were recorded ok/0 and the digest lost the whole
-    X layer with no alert.
-    """
-    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
-    httpx_mock.add_response(
-        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
-        json=[
-            {"type": "mock_tweet", "id": -1, "text": "minimum charge..."},
-            {"type": "mock_tweet", "id": -2, "text": "more mock..."},
-        ],
-        is_reusable=True,
-    )
-    cfg = SourceConfig(
-        id="twitter_tier1",
-        type="twitter",
-        enabled=True,
-        tier=1,
-        params={"handles": ["nobody"]},
-    )
-    async with httpx.AsyncClient() as client:
-        with pytest.raises(RuntimeError, match="0 usable tweets"):
-            await fetch(cfg, client)
-
-
-@pytest.mark.asyncio
-async def test_fetch_twitter_falls_back_to_twitter_content(httpx_mock, monkeypatch):
-    """The `searchTerms` field fails intermittently upstream while the actor's
-    `twitterContent` field keeps serving the same data (observed 2026-08-20 and
-    2026-09-09; both recovered on their own hours later). When the primary shape
-    comes back all-mock, retry once with the OR-joined single-query shape before
-    giving up.
-
-    The two fields cannot be combined in one call — the actor documents (and a
-    live probe on 2026-09-09 confirmed) that `searchTerms` overrides
-    `twitterContent` whenever both are set.
-    """
-    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
-    real = json.loads(Path("tests/fixtures/apify_tweet_scraper_response.json").read_text())
-    httpx_mock.add_response(
-        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
-        json=[{"type": "mock_tweet", "id": -1, "text": "minimum charge..."}],
     )
     httpx_mock.add_response(
         url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
-        json=real,
+        json=[{
+            "id": "555",
+            "username": "karpathy",
+            "user_name": "Andrej Karpathy",
+            "text": "notes on agents",
+            "created_at": "2026-10-09T09:00:03Z",
+            "favorite_count": 3,
+            "retweet_count": 1,
+            "reply_count": 0,
+        }],
     )
 
-    cfg = SourceConfig(
-        id="twitter_tier1",
-        type="twitter",
-        enabled=True,
-        tier=1,
-        params={
-            "handles": ["sama", "karpathy", "simonw"],
-            "per_handle_limit": 10,
-            "time_window_hours": 24,
-        },
-    )
+    cfg = _cfg(["sama", "karpathy"], per_handle_limit=10)
 
     async with httpx.AsyncClient() as client:
         items = await fetch(cfg, client)
 
     requests = httpx_mock.get_requests()
     assert len(requests) == 2
+    first, second = (json.loads(req.content) for req in requests)
+    assert first["mode"] == "Advanced Search"
+    assert first["query_type"] == "Latest"
+    assert first["max_results"] == 10
+    assert first["query"].startswith("from:sama since:")
+    assert " until:" in first["query"]
+    assert "from:karpathy" not in first["query"]
+    assert " OR " not in first["query"]
+    assert second["query"].startswith("from:karpathy since:")
+    assert second["max_results"] == 10
+    assert "maxItems" not in first
+    assert "searchTerms" not in first
+    assert "maxTotalChargeUsd" not in first
+    assert requests[0].url.params["maxTotalChargeUsd"] == "0.01"
+    assert ACTOR_PATH in str(requests[0].url)
 
-    primary = json.loads(requests[0].content)
-    assert "twitterContent" not in primary
-    assert primary["maxItems"] == 20
-
-    fallback = json.loads(requests[1].content)
-    assert "searchTerms" not in fallback
-    assert fallback["twitterContent"].startswith(
-        "(from:sama OR from:karpathy OR from:simonw) since:"
-    )
-    assert " until:" in fallback["twitterContent"]
-    assert fallback["maxItems"] == 30
-
-    assert len(items) == 1
-    assert items[0].source_handle == "@sama"
-
-
-@pytest.mark.asyncio
-async def test_fetch_twitter_all_mock_error_names_both_shapes(httpx_mock, monkeypatch):
-    """Both shapes exhausted — the KNOWN_ISSUES message has to say the fallback
-    was tried too, otherwise the next debugging round re-probes it by hand."""
-    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
-    httpx_mock.add_response(
-        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
-        json=[{"type": "mock_tweet", "id": -1, "text": "minimum charge..."}],
-        is_reusable=True,
-    )
-    cfg = SourceConfig(
-        id="twitter_tier1",
-        type="twitter",
-        enabled=True,
-        tier=1,
-        params={"handles": ["nobody"]},
-    )
-    async with httpx.AsyncClient() as client:
-        with pytest.raises(RuntimeError, match="searchTerms, twitterContent"):
-            await fetch(cfg, client)
-    assert len(httpx_mock.get_requests()) == 2
+    assert len(items) == 2
+    item = items[0]
+    assert item.source == "x"
+    assert item.source_tier == 1
+    assert item.source_handle == "@sama"
+    assert item.author == "Sam Altman"
+    assert item.url == "https://x.com/sama/status/2048167247278207182"
+    assert item.posted_at == datetime(2026, 4, 25, 22, 28, 19)
+    assert item.engagement["likes"] == 734
+    assert item.engagement["comments"] == 38
+    assert item.engagement["retweets"] == 9
+    assert items[1].source_handle == "@karpathy"
+    assert items[1].posted_at == datetime(2026, 10, 9, 9, 0, 3)
 
 
 @pytest.mark.asyncio
-async def test_fetch_twitter_mixed_mock_and_real_keeps_real(httpx_mock, monkeypatch):
-    """Partial padding is normal — the actor tops a short result set up to its
-    minimum. As long as at least one real tweet survives, filter the mocks and
-    return quietly (no alert)."""
+async def test_fetch_twitter_all_mock_raises(httpx_mock, monkeypatch):
+    """非空但全是 mock 要進既有失敗路徑。不再為了第二種 query shape 多打一發。"""
     monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
-    real = json.loads(Path("tests/fixtures/apify_tweet_scraper_response.json").read_text())
     httpx_mock.add_response(
         url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
         json=[
             {"type": "mock_tweet", "id": -1, "text": "minimum charge..."},
-            *real,
             {"type": "mock_tweet", "id": -2, "text": "more mock..."},
         ],
         is_reusable=True,
+    )
+    cfg = _cfg(["nobody", "else"])
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(RuntimeError, match="0 usable tweets") as exc:
+            await fetch(cfg, client)
+    message = str(exc.value)
+    assert "searchTerms" not in message
+    assert "twitterContent" not in message
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 2
+    for req, handle in zip(requests, ["nobody", "else"], strict=True):
+        payload = json.loads(req.content)
+        assert payload["query"].startswith(f"from:{handle} since:")
+        assert "searchTerms" not in payload
+        assert "twitterContent" not in payload
+
+
+@pytest.mark.asyncio
+async def test_fetch_twitter_matt_limit_stays_50(httpx_mock, monkeypatch):
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=json.loads(FIXTURE.read_text()),
+    )
+    cfg = _cfg(["mattpocockuk"], per_handle_limit=50)
+    async with httpx.AsyncClient() as client:
+        await fetch(cfg, client)
+    payload = json.loads(httpx_mock.get_requests()[0].content)
+    assert payload["max_results"] == 50
+    assert payload["query"].startswith("from:mattpocockuk since:")
+
+
+@pytest.mark.asyncio
+async def test_fetch_twitter_rfc_and_iso_become_utc_naive(httpx_mock, monkeypatch):
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=[
+            {
+                "id": "1",
+                "username": "example",
+                "user_name": "Example",
+                "text": "rfc",
+                "created_at": "Fri Oct 09 09:00:03 +0000 2026",
+                "favorite_count": 12,
+                "retweet_count": 3,
+                "reply_count": 2,
+            },
+            {
+                "id": "2",
+                "username": "example",
+                "user_name": "Example",
+                "text": "iso offset",
+                "created_at": "2026-10-09T17:00:03+08:00",
+                "favorite_count": 1,
+                "retweet_count": 0,
+                "reply_count": 4,
+            },
+        ],
+    )
+    async with httpx.AsyncClient() as client:
+        items = await fetch(_cfg(["example"]), client)
+    assert items[0].posted_at == datetime(2026, 10, 9, 9, 0, 3)
+    assert items[0].posted_at.tzinfo is None
+    assert items[1].posted_at == datetime(2026, 10, 9, 9, 0, 3)
+    assert items[1].posted_at.tzinfo is None
+    assert items[0].url == "https://x.com/example/status/1"
+    assert items[0].engagement == {"likes": 12, "comments": 2, "retweets": 3}
+    assert items[1].engagement["comments"] == 4
+
+
+@pytest.mark.asyncio
+async def test_fetch_twitter_mixed_mock_and_real_keeps_real(httpx_mock, monkeypatch):
+    """mock 與缺欄位列丟掉；沒有 type=tweet 的正常列留下。"""
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
+    real = json.loads(FIXTURE.read_text())
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=[
+            {"type": "mock_tweet", "id": -1, "text": "minimum charge..."},
+            {"id": "9", "text": "no username", "username": ""},
+            *real,
+            {"type": "mock_tweet", "id": -2, "text": "more mock..."},
+        ],
     )
     cfg = SourceConfig(
         id="twitter_anthropic",
@@ -185,28 +194,25 @@ async def test_fetch_twitter_mixed_mock_and_real_keeps_real(httpx_mock, monkeypa
         items = await fetch(cfg, client)
     assert len(items) == 1
     assert items[0].source_handle == "@sama"
+    assert len(httpx_mock.get_requests()) == 1
 
 
 @pytest.mark.asyncio
 async def test_fetch_twitter_empty_dataset_returns_empty(httpx_mock, monkeypatch):
-    """A genuinely empty dataset is not the padding failure mode — keep the
-    existing quiet-empty behaviour so this stays distinguishable from all-mock."""
+    """空 dataset 不是失敗。前一個 handle 是空的，仍要打下一個。"""
     monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
     httpx_mock.add_response(
         url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
         json=[],
-        is_reusable=True,
     )
-    cfg = SourceConfig(
-        id="twitter_tier1",
-        type="twitter",
-        enabled=True,
-        tier=1,
-        params={"handles": ["nobody"]},
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=[],
     )
     async with httpx.AsyncClient() as client:
-        items = await fetch(cfg, client)
+        items = await fetch(_cfg(["nobody", "quiet"]), client)
     assert items == []
+    assert len(httpx_mock.get_requests()) == 2
 
 
 @pytest.mark.asyncio
@@ -226,38 +232,58 @@ async def test_fetch_twitter_no_token_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_twitter_http_error_is_not_retried(httpx_mock, monkeypatch):
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        status_code=502,
+        json={"error": "bad gateway"},
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(httpx.HTTPStatusError) as exc:
+            await fetch(_cfg(["sama", "karpathy"], per_handle_limit=10), client)
+    assert exc.value.response.status_code == 502
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_twitter_duplicate_url_emitted_once(httpx_mock, monkeypatch):
+    monkeypatch.setenv("APIFY_TOKEN_TWITTER", "fake-token")
+    row = json.loads(FIXTURE.read_text())
+    httpx_mock.add_response(
+        url=re.compile(r"https://api\.apify\.com/v2/acts/.*"),
+        json=row,
+        is_reusable=True,
+    )
+    async with httpx.AsyncClient() as client:
+        items = await fetch(_cfg(["sama", "karpathy"]), client)
+    assert len(httpx_mock.get_requests()) == 2
+    assert len(items) == 1
+    assert items[0].url == "https://x.com/sama/status/2048167247278207182"
+
+
+@pytest.mark.asyncio
 async def test_fetch_twitter_relay_mode_omits_token(httpx_mock, monkeypatch):
     monkeypatch.setenv("APIFY_RELAY_URL", "http://127.0.0.1:8317")
     monkeypatch.delenv("APIFY_TOKEN_TWITTER", raising=False)
-    fixture = json.loads(Path("tests/fixtures/apify_tweet_scraper_response.json").read_text())
+    fixture = json.loads(FIXTURE.read_text())
     httpx_mock.add_response(
         url=re.compile(r"http://127\.0\.0\.1:8317"),
         json=fixture,
-        is_reusable=True,
-    )
-
-    cfg = SourceConfig(
-        id="twitter_tier1",
-        type="twitter",
-        enabled=True,
-        tier=1,
-        params={"handles": ["sama"], "per_handle_limit": 10, "time_window_hours": 24},
     )
 
     async with httpx.AsyncClient() as client:
-        items = await fetch(cfg, client)
+        items = await fetch(_cfg(["sama"], per_handle_limit=10), client)
 
     req = httpx_mock.get_requests()[0]
-    assert str(req.url) == (
-        "http://127.0.0.1:8317/v2/acts/"
-        "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest/"
-        "run-sync-get-dataset-items"
-    )
+    assert req.url.path == ACTOR_PATH
+    assert str(req.url).startswith("http://127.0.0.1:8317/v2/acts/")
     assert "token" not in req.url.params
+    assert req.url.params["maxTotalChargeUsd"] == "0.01"
     assert req.headers.get("Authorization") is None
     payload = json.loads(req.content)
-    assert payload["searchTerms"][0].startswith("from:sama since:")
-    assert payload["maxItems"] == 20
+    assert payload["query"].startswith("from:sama since:")
+    assert payload["max_results"] == 10
     assert len(items) == 1
     assert items[0].source == "x"
     assert items[0].engagement["likes"] == 734
