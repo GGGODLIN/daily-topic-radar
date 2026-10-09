@@ -99,7 +99,7 @@ done
 good_report() { printf '{"gate1":{"status":"passed","findings":0,"filesChecked":12,"items":[]},"gate2":{"status":"passed","findings":0,"filesChecked":9,"items":[]}}\n' > "$report"; }
 case "$STUB_EXPORT" in
   diff) mkdir -p "$stage"; cp -R "$STUB_STAGE_SRC/." "$stage/"; good_report; echo '{"mode":"dry-run"}' ;;
-  nodiff) mkdir -p "$stage"; git -C "$STUB_PUB" archive HEAD | tar -x -C "$stage"; good_report; echo '{"mode":"dry-run"}' ;;
+  nodiff) mkdir -p "$stage"; git -C "$STUB_PUB" archive "${STUB_EXPORT_REF:-HEAD}" | tar -x -C "$stage"; good_report; echo '{"mode":"dry-run"}' ;;
   gatefail)
     mkdir -p "$stage"
     printf '{"gate1":{"status":"failed","findings":1,"filesChecked":12,"items":[]},"gate2":{"status":"passed","findings":0,"filesChecked":9,"items":[]}}\n' > "$report"
@@ -139,6 +139,9 @@ case "$STUB_REVIEW" in
   mutation-only)
     echo "GATE3_RESULT: findings"
     echo "FINDING: skills/mutation-testing/SKILL.md:12 | 段落與上游 zedi 的排錯表相同" ;;
+  mutation-leak)
+    echo "GATE3_RESULT: findings"
+    echo "FINDING: skills/mutation-testing/SKILL.md:30 | 內含看起來像私人 email 的字樣" ;;
   lowconf) echo "GATE3_RESULT: low-confidence" ;;
   garbage) echo "我覺得這份差異看起來沒問題。" ;;
   fail) echo "relay unavailable" >&2; exit 3 ;;
@@ -306,7 +309,8 @@ printf 'skill v2\n' > "$W/stage-src/skills/mutation-testing/SKILL.md"
 run_channel diff mutation; R="$(report)"
 assert_contains "accepted-risk section names ADR 0004" "使用者已知情接受（ADR 0004），不列為新發現" "$R"
 assert_not_contains "mutation-testing upstream passage is not listed as a finding" "發現：skills/mutation-testing" "$R"
-assert_not_contains "mutation-testing upstream passage is not listed as a finding (text)" "排錯表" "$R"
+assert_not_contains "mutation-testing upstream passage is not under the findings list" "- 發現：skills/mutation-testing" "$R"
+assert_not_contains "mutation-testing upstream passage is not shown outside the accepted section" "排錯表" "$(printf '%s\n' "$R" | sed '/^### 使用者已知情接受/,$d')"
 assert_contains "other findings are still listed" "發現：hooks/extra.sh:1" "$R"
 assert_contains "gate 3 says there are findings" "結論：有發現" "$R"
 setup_world
@@ -393,6 +397,95 @@ assert_contains "relay route goes to the local relay" "base_url=http://127.0.0.1
 printf 'CLIPROXY_BASE_URL=http://example.invalid:8317\nCLIPROXY_KEY_CC=x\n' > "$W/keys.env"
 run_channel diff ok CC_VENDOR=ccp-free PUBLISH_CANDIDATE_KEYS_FILE="$W/keys.env" PUBLISH_CANDIDATE_GPT_MODELS_FILE="$W/gpt-models.env"; R="$(report)"
 assert_contains "non-local relay URL is refused → gate 3 not completed" "第 3 關未完成" "$R"
+
+# ---------------------------------------------------------------- 13. 已接受路徑的 FINDING 原文照樣給使用者看
+# 子字串比對會把「路徑含 skills/mutation-testing」的整行歸進已接受；隱私類發現也會被吞，所以原文必須印出。
+LEAK_LINE='skills/mutation-testing/SKILL.md:30 | 內含看起來像私人 email 的字樣'
+setup_world
+printf 'skill v2\n' > "$W/stage-src/skills/mutation-testing/SKILL.md"
+run_channel diff mutation; R="$(report)"
+ACCEPTED_SECTION="$(printf '%s\n' "$R" | sed -n '/^### 使用者已知情接受/,$p')"
+assert_contains "accepted FINDING line is printed verbatim in the accepted section" "skills/mutation-testing/SKILL.md:12 | 段落與上游 zedi 的排錯表相同" "$ACCEPTED_SECTION"
+assert_contains "accepted section keeps the ADR 0004 sentence" "使用者已知情接受（ADR 0004），不列為新發現" "$ACCEPTED_SECTION"
+assert_not_contains "non-accepted finding is not duplicated into the accepted section" "hooks/extra.sh" "$ACCEPTED_SECTION"
+setup_world
+printf 'skill v2\n' > "$W/stage-src/skills/mutation-testing/SKILL.md"
+run_channel diff mutation-leak; R="$(report)"
+ACCEPTED_SECTION="$(printf '%s\n' "$R" | sed -n '/^### 使用者已知情接受/,$p')"
+assert_contains "a privacy finding under the accepted path is still shown to the user" "$LEAK_LINE" "$ACCEPTED_SECTION"
+assert_contains "classification is unchanged: only accepted lines → no new finding" "結論：沒有發現" "$R"
+
+# ---------------------------------------------------------------- 14. 基準：origin/main 優先、沒有就用 HEAD
+# 公開 repo 的本機 HEAD 領先 origin/main（commit 了但沒推上去）：基準必須是 origin/main，否則未發布內容會靜默消失。
+make_pub_ahead() { # 本機多一個尚未推送的 commit（內容等於本週匯出），origin/main 停在第一個 commit
+  ORIGIN_SHA="$(git -C "$W/pub" rev-parse HEAD)"
+  git -C "$W/pub" update-ref refs/remotes/origin/main "$ORIGIN_SHA"
+  cp -R "$W/stage-src/." "$W/pub/"
+  git -C "$W/pub" add -A
+  git_commit "$W/pub" "2026-10-04T00:00:00+00:00" "publish: local only"
+  LOCAL_FULL="$(git -C "$W/pub" rev-parse HEAD)"
+  LOCAL_SHORT="$(git -C "$W/pub" rev-parse --short HEAD)"
+  ORIGIN_SHORT="$(git -C "$W/pub" rev-parse --short "$ORIGIN_SHA")"
+}
+DIVERGE='公開 repo 本機副本的 HEAD 與 origin/main 不同'
+
+# (a) HEAD 領先、匯出內容 = HEAD：不能走「沒有候選」，要以 origin/main 為基準列出候選並標出分歧
+setup_world
+make_pub_ahead
+run_channel nodiff ok; R="$(report)"
+assert_has_line "HEAD ahead of origin/main → candidate path, not silent no-candidate" "$H_CAND" "$R"
+assert_not_contains "HEAD ahead of origin/main → never the no-candidate sentence" "$NO_CAND" "$R"
+assert_contains "baseline line names origin/main with its short SHA" "公開 repo origin/main ${ORIGIN_SHORT}" "$R"
+assert_contains "divergence line is shown" "$DIVERGE" "$R"
+assert_contains "divergence line carries the local HEAD short SHA" "（${LOCAL_SHORT}）" "$R"
+assert_contains "divergence line carries the origin/main short SHA" "（${ORIGIN_SHORT}）" "$R"
+assert_contains "divergence line is a ⚠️ line" "⚠️ $DIVERGE" "$R"
+assert_contains "report says origin/main is only as fresh as the last fetch" "上次 fetch" "$R"
+assert_contains "diff is counted against origin/main" "新增 1、修改 1、刪除 0" "$R"
+assert_contains "prompt tells the model which baseline it is" "origin/main ${ORIGIN_SHORT}" "$(cat "$W/prompt.capture" 2>/dev/null)"
+[ "$(git -C "$W/pub" rev-parse HEAD)" = "$LOCAL_FULL" ] && [ -z "$(git -C "$W/pub" status --porcelain)" ] && pass "origin/main baseline leaves the public copy untouched" || fail "origin/main baseline leaves the public copy untouched"
+
+# (a2) HEAD 領先、但匯出內容 = origin/main：沒有差異也要把分歧攤出來，不能只講沒有候選
+setup_world
+make_pub_ahead
+run_channel nodiff ok STUB_EXPORT_REF=origin/main; R="$(report)"
+assert_contains "no diff vs origin/main but HEAD differs → divergence line still shown" "⚠️ $DIVERGE" "$R"
+assert_contains "no-diff report names origin/main as the baseline" "公開 repo origin/main（${ORIGIN_SHORT}）" "$R"
+assert_not_contains "no-diff report adds no candidate heading" "$H_CAND" "$R"
+
+# (a3) 本機另有無關歷史的舊 main、HEAD 被切過去：基準不能變垃圾
+setup_world
+ORIGIN_SHA="$(git -C "$W/pub" rev-parse HEAD)"
+git -C "$W/pub" update-ref refs/remotes/origin/main "$ORIGIN_SHA"
+git -C "$W/pub" checkout -q --orphan unrelated-main
+git -C "$W/pub" rm -rq --cached . && rm -rf "$W/pub/hooks" "$W/pub/skills" "$W/pub/CLAUDE.md"
+printf 'unrelated root\n' > "$W/pub/OLD.md"
+git -C "$W/pub" add -A
+git_commit "$W/pub" "2026-08-01T00:00:00+00:00" "old unrelated root"
+run_channel nodiff ok STUB_EXPORT_REF=origin/main; R="$(report)"
+assert_contains "unrelated HEAD → baseline is still origin/main" "公開 repo origin/main（$(git -C "$W/pub" rev-parse --short "$ORIGIN_SHA")）" "$R"
+assert_not_contains "unrelated HEAD → no garbage diff is reported as a candidate" "$H_CAND" "$R"
+assert_contains "unrelated HEAD → divergence line shown" "⚠️ $DIVERGE" "$R"
+
+# HEAD = origin/main：用 origin/main 當基準，但不出現分歧警告
+setup_world
+git -C "$W/pub" update-ref refs/remotes/origin/main "$(git -C "$W/pub" rev-parse HEAD)"
+run_channel diff ok; R="$(report)"
+assert_has_line "HEAD = origin/main → normal candidate" "$H_CAND" "$R"
+assert_not_contains "HEAD = origin/main → no divergence line" "$DIVERGE" "$R"
+
+# (b) 沒有 origin/main：行為不變（基準仍是 HEAD，沒有 origin 字樣，也沒有分歧警告）
+setup_world
+git -C "$W/pub" branch -q main 2>/dev/null; git -C "$W/pub" show-ref --verify --quiet refs/remotes/origin/main && fail "fixture has no origin/main"
+run_channel diff ok; R="$(report)"
+assert_contains "no origin/main → baseline is the local HEAD" "對照基準：公開 repo HEAD $(git -C "$W/pub" log -1 --format=%h)" "$R"
+assert_not_contains "no origin/main → report never mentions origin/main" "origin/main" "$R"
+assert_not_contains "no origin/main → no divergence line" "$DIVERGE" "$R"
+assert_contains "no origin/main → same diff counts as before" "新增 1、修改 1、刪除 0" "$R"
+setup_world
+run_channel nodiff ok; R="$(report)"
+assert_contains "no origin/main → no-diff week still says there is no candidate" "$NO_CAND" "$R"
+assert_not_contains "no origin/main → no-diff report has no divergence line" "$DIVERGE" "$R"
 
 # ---------------------------------------------------------------- 12. 真實 export.mjs 整合（CLI 參數與輸出格式沒有跟替身脫節）
 REAL_NODE="$(command -v node || echo /opt/homebrew/bin/node)"

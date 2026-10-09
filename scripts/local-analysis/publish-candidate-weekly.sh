@@ -11,6 +11,11 @@
 # 防的是誠實但健忘的 agent 把候選當成可自行執行的待辦；不防刻意繞過的 agent——真正擋 push 的是 public-push-gate hook（第 10 票）。
 # 第 3 關是模型審查，品質機率性：它漏掉的東西，靠第 1、2 關與使用者決策兜底；判不出來一律當「未完成」，不當通過。
 #
+# 對照基準：優先用公開 repo 本機的 refs/remotes/origin/main，沒有才退回 HEAD。
+# 原因：發布流程是「先本機 commit、再過使用者可拒絕的 gate 才 push」，push 也可能被 GitHub push protection 退回；
+# 若以本機 HEAD 為基準，尚未推上去的匯出內容會讓下週比對出「沒有差異」而靜默消失。本機另保留一條無關歷史的舊 main 分支，HEAD 被切過去時基準也會變垃圾。
+# 本 channel 唯讀、不 fetch、不連網，所以 origin/main 只和最後一次 fetch 一樣新；報告會註明，並在 HEAD 與 origin/main 不同時多標一行 ⚠️。
+#
 # 模型呼叫路由與 recap-daily.sh 的 run_recap 同一套（原生 Claude 用 native Opus、其餘啟動方式走本機 CLIProxyAPI 的 Luna(max)）；那邊改路由，這邊要跟著改。
 # 以下 PUBLISH_CANDIDATE_* 覆寫只給測試與手動把路徑導到別處用。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -230,7 +235,7 @@ display_path() { printf '%s' "$1" | sed "s|^$HOME_DIR/|~/|"; }
 
 build_prompt() { # build_prompt <new items 檔> → stdout
   cat <<'EOF'
-你是公開前的差異審查員。以下是「私人 harness 準備公開的內容」與「公開 repo 目前 HEAD」的差異。機械檢查（敏感字掃描、接線檢查）已經通過，所以你要找的是字串比對抓不到的東西：
+你是公開前的差異審查員。以下是「私人 harness 準備公開的內容」與「公開 repo 目前基準版本」的差異。機械檢查（敏感字掃描、接線檢查）已經通過，所以你要找的是字串比對抓不到的東西：
 - 能辨識個人或公司身分的內容（公司、客戶、同事、內部專案代號、內部網域或端點、私人 email、只有本人才懂的路徑與帳號脈絡）
 - 看起來不該公開的設定、憑證形狀、內部流程細節
 - 上游授權或出處問題
@@ -247,7 +252,7 @@ FINDING: <公開路徑>:<行號或 -> | <一句話描述問題>      （每個�
 NEW_FILE: <新增項目的路徑，照抄下方> | include 或 exclude | <一句理由>      （每個新增項目一行）
 EOF
   echo ""
-  echo "===== 差異（unified diff，head/ = 公開 HEAD，stage/ = 本次匯出）====="
+  echo "===== 差異（unified diff，head/ = 公開 repo ${BASE_NAME} ${PUB_SHA}，stage/ = 本次匯出）====="
   head -c "$MAX_DIFF_BYTES" "$TMP/full.diff"
   if [ "$DIFF_TRUNCATED" -eq 1 ]; then
     echo ""
@@ -285,13 +290,26 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
   PRIOR="$TMP/prior.md"
   extract_prior_candidate > "$PRIOR"
 
-  if [ ! -d "$PUBLIC_DIR" ] || ! git -C "$PUBLIC_DIR" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-    finish_failure "公開 repo 本機副本讀不到 HEAD：$PUBLIC_DIR" ""
+  BASE_REF=HEAD; BASE_NAME=HEAD
+  if [ -d "$PUBLIC_DIR" ] && git -C "$PUBLIC_DIR" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null 2>&1; then
+    BASE_REF=refs/remotes/origin/main; BASE_NAME=origin/main
+  fi
+  if [ ! -d "$PUBLIC_DIR" ] || ! git -C "$PUBLIC_DIR" rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null 2>&1; then
+    finish_failure "公開 repo 本機副本讀不到 ${BASE_NAME}：$PUBLIC_DIR" ""
     echo "=== publish-candidate weekly finished: $(date) ==="; exit 0
   fi
-  PUB_SHA="$(git -C "$PUBLIC_DIR" log -1 --format=%h)"
-  PUB_SUBJECT="$(git -C "$PUBLIC_DIR" log -1 --format=%s)"
-  PUB_TS="$(git -C "$PUBLIC_DIR" log -1 --format=%cI)"
+  PUB_SHA="$(git -C "$PUBLIC_DIR" log -1 --format=%h "$BASE_REF")"
+  PUB_SUBJECT="$(git -C "$PUBLIC_DIR" log -1 --format=%s "$BASE_REF")"
+  PUB_TS="$(git -C "$PUBLIC_DIR" log -1 --format=%cI "$BASE_REF")"
+  BASE_NOTES="$TMP/base-notes.txt"; : > "$BASE_NOTES"
+  if [ "$BASE_NAME" = origin/main ]; then
+    echo "origin/main 只和本機上次 fetch 一樣新（本 channel 刻意不 fetch、不連網）；遠端之後若有新 commit，這裡看不到。" >> "$BASE_NOTES"
+    PUB_HEAD_FULL="$(git -C "$PUBLIC_DIR" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null || true)"
+    if [ "$PUB_HEAD_FULL" != "$(git -C "$PUBLIC_DIR" rev-parse "$BASE_REF")" ]; then
+      PUB_HEAD_SHORT="$(git -C "$PUBLIC_DIR" rev-parse --short HEAD 2>/dev/null || echo 讀不到)"
+      echo "⚠️ 公開 repo 本機副本的 HEAD 與 origin/main 不同：HEAD（${PUB_HEAD_SHORT}）、origin/main（${PUB_SHA}）。可能有尚未推上去的本機 commit，或 HEAD 被切到別的分支；本次以 origin/main 為基準，請確認那些本機 commit 是否還要發布。" >> "$BASE_NOTES"
+    fi
+  fi
 
   # 1. 匯出（只產生、不同步）
   STAGE="$TMP/stage"
@@ -313,10 +331,10 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
   G1_FILES="$(jq -r '.gate1.filesChecked // "?"' "$GATE_REPORT")"
   G2_FILES="$(jq -r '.gate2.filesChecked // "?"' "$GATE_REPORT")"
 
-  # 2. 與公開 HEAD 比對
+  # 2. 與公開基準（origin/main，沒有就 HEAD）比對
   mkdir -p "$TMP/work/head"
-  if ! git -C "$PUBLIC_DIR" archive HEAD | tar -x -C "$TMP/work/head"; then
-    finish_failure "讀不出公開 repo HEAD 的內容：$PUBLIC_DIR" ""
+  if ! git -C "$PUBLIC_DIR" archive "$BASE_REF" | tar -x -C "$TMP/work/head"; then
+    finish_failure "讀不出公開 repo ${BASE_NAME} 的內容：$PUBLIC_DIR" ""
     echo "=== publish-candidate weekly finished: $(date) ==="; exit 0
   fi
   mv "$STAGE" "$TMP/work/stage"
@@ -328,11 +346,13 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
       echo "# 公開 harness 每週發布候選 — $DATE"
       echo ""
       if [ -s "$PRIOR" ]; then
-        echo "⚠️ 本次重跑匯出結果與公開 repo HEAD（${PUB_SHA}）沒有差異，但同日稍早產生過候選，保留如下；請先確認它是否已發布或處理，再決定。"
+        echo "⚠️ 本次重跑匯出結果與公開 repo ${BASE_NAME}（${PUB_SHA}）沒有差異，但同日稍早產生過候選，保留如下；請先確認它是否已發布或處理，再決定。"
+        [ -s "$BASE_NOTES" ] && { echo ""; cat "$BASE_NOTES"; }
         echo ""
         cat "$PRIOR"
       else
-        echo "${NO_CANDIDATE}：匯出結果與公開 repo HEAD（${PUB_SHA}）沒有差異；第 1、2 關機械檢查通過。"
+        echo "${NO_CANDIDATE}：匯出結果與公開 repo ${BASE_NAME}（${PUB_SHA}）沒有差異；第 1、2 關機械檢查通過。"
+        [ -s "$BASE_NOTES" ] && { echo ""; cat "$BASE_NOTES"; }
       fi
     } > "$f"
     write_report "$f"
@@ -354,7 +374,7 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
   if [ "$CONFIG_RC" -eq 2 ]; then
     echo "無法判斷白名單、替換規則、接線點清單自上次發布後有沒有變動（設定檔不在 git 追蹤內）" >> "$TMP/reasons"
   elif [ -s "$TMP/config-changed" ]; then
-    echo "白名單、替換規則或接線點清單自上次發布（公開 HEAD ${PUB_SHA}，${PUB_TS}）後有變動：$(paste -sd, "$TMP/config-changed")" >> "$TMP/reasons"
+    echo "白名單、替換規則或接線點清單自上次發布（公開 ${BASE_NAME} ${PUB_SHA}，${PUB_TS}）後有變動：$(paste -sd, "$TMP/config-changed")" >> "$TMP/reasons"
   fi
   awk -F'\t' '$1 == "A" && index($2, "/") { split($2, p, "/"); print p[1] }' "$TMP/changes.tsv" | sort -u | while IFS= read -r seg; do
     [ -e "$TMP/work/head/$seg" ] || echo "新增一整類元件（公開版原本沒有的頂層目錄）：$seg/"
@@ -438,7 +458,8 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
     echo "$H_CAND"
     echo ""
     echo "產生時間：$(date '+%Y-%m-%d %H:%M')。是否發布、是否升級全審，都由你決定；agent 不得代做，也不得自行 push 或開始全審。"
-    echo "對照基準：公開 repo HEAD ${PUB_SHA}（${PUB_SUBJECT}）。"
+    echo "對照基準：公開 repo ${BASE_NAME} ${PUB_SHA}（${PUB_SUBJECT}）。"
+    [ -s "$BASE_NOTES" ] && cat "$BASE_NOTES"
     echo ""
     echo "### 差異摘要"
     echo ""
@@ -495,6 +516,11 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
     echo ""
     if awk -F'\t' -v a="$ACCEPTED_PATH" 'index($2, a)' "$TMP/changes.tsv" | grep -q . || [ -s "$TMP/accepted" ]; then
       echo "- $ACCEPTED_PATH 的上游翻譯／照搬段落（snava10/alist、hughescr/claude-code-config、otomatty/zedi，含 BSL 1.1 內容）：使用者已知情接受（ADR 0004），不列為新發現。"
+      # ADR 0004 只接受上游授權風險；分類是子字串比對，這個路徑下的隱私類發現也會落到這裡，所以原文逐行印出讓使用者自己判斷。
+      if [ -s "$TMP/accepted" ]; then
+        echo "- 第 3 關回報中被歸入此類的 FINDING 原文（請確認只有上游授權風險，沒有洩漏類發現）："
+        sed 's/^/  - /' "$TMP/accepted"
+      fi
     else
       echo "無"
     fi
