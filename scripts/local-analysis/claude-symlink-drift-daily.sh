@@ -16,7 +16,7 @@ mkdir -p "$OUT_DIR" "$LOG_DIR"
 log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG"; }
 
 CLAUDE_ROOT="$HOME/.claude"
-LOCK_DIRS=("$HOME/.claude-team" "$HOME/.claude-max")
+LOCK_DIRS=("$HOME/.claude-team-s" "$HOME/.claude-team-p")
 
 # 白名單分兩族，理由不同、不要混談：
 #   (1) updater / OS ephemeral state：atomic write 必拆 symlink
@@ -84,7 +84,7 @@ done
 {
   echo "# Claude symlink drift report ($DATE)"
   echo ""
-  echo "**目標**：偵測 \`~/.claude-team\` / \`~/.claude-max\` 內被 claude binary atomic write 拆 symlink 變 real file/dir 的 entries。"
+  echo "**目標**：偵測 \`~/.claude-team-s\` / \`~/.claude-team-p\` 內被 claude binary atomic write 拆 symlink 變 real file/dir 的 entries。"
   echo ""
   echo "**Whitelist（不算 drift）**，兩族理由不同："
   echo "- **updater / OS ephemeral state**（atomic write 必拆 symlink，2026-07-31 拍板）：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`.DS_Store\` / \`.last-update-result.json\`"
@@ -104,7 +104,7 @@ done
     echo "## 修復指令"
     echo ""
     echo '```bash'
-    echo 'for lock in $HOME/.claude-team $HOME/.claude-max; do'
+    echo 'for lock in $HOME/.claude-team-s $HOME/.claude-team-p; do'
     echo '  cd "$lock"'
     echo '  shopt -s nullglob dotglob 2>/dev/null'
     echo '  for name in *; do'
