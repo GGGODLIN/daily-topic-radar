@@ -20,11 +20,10 @@ _REDDIT_HINT = (
 )
 
 _TWITTER_HINT = (
-    "X 兩種失敗看 error 文字分辨：(1)「0 usable tweets / mock_tweet padding」= Apify actor "
-    "那次搜尋沒撈到任何推文，回的全是 KaitoEasyAPI 為湊最低收費塞的假資料（fetcher 已濾掉）。"
-    "多半是上游 X 搜尋被限流、通常隔天自癒；若連兩天出現，拿 external-feeds 的 follow-builders "
-    "X feed 對照確認推文其實存在，再考慮換 actor。(2) ReadError / timeout = 偶發網路問題，"
-    "retry 即可。注意此 actor 每次呼叫都有最低消費，不要盲目重跑。"
+    "X 失敗看 error 文字分辨：(1)「0 usable tweets」= ScrapeBadger 有回列，但沒有可解析推文"
+    "（mock_tweet，或缺少 id / username / text）。不是 Kaito 為湊最低收費塞的假資料，"
+    "fetcher 也不會改打第二種 query。(2) HTTP 錯誤 / ReadError / timeout = 該請求失敗，"
+    "source 內不會自動重打。每個 handle 各一發，已經打出去的不退費，不要盲目重跑整包。"
 )
 
 ACTION_HINTS: dict[str, str] = {

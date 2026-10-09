@@ -1,28 +1,14 @@
-"""X / Twitter fetcher via Apify Tweet Scraper actor (kaitoeasyapi).
+"""X / Twitter fetcher via Apify ScrapeBadger.
 
-Why Apify (vs twitterapi.io / scrape) — see BACKLOG.md and design spec:
-- $0.25/1K tweets * 6K tweets/month = $1.50/month
-- Apify free plan auto-refills $5 platform credits each month -> $0 actual cost
-- Pay-Per Result, no rate limits, no personal-account ban risk
-- Actor maintainer keeps anti-scrape working (no DevX maintenance)
+每個 handle 各打一發：這個 actor 只有一條 query，把多個 handle OR 在一起時，
+吵的帳號會吃掉其他帳號的 max_results。source 之間本來就並行，這裡不再加佇列。
 
-Two request shapes, tried in order (2026-09-09):
-1. `searchTerms` — one independent search per handle. `maxItems` is the cap
-   *per search term*, so every handle gets its own budget.
-2. `twitterContent` — a single OR-joined query. `maxItems` is a *global* cap
-   ordered by recency, so it is scaled by handle count; quiet handles can still
-   be crowded out by chatty ones, which is why this is the fallback and not the
-   primary.
-
-The actor ignores `twitterContent` whenever `searchTerms` is set, so the two
-cannot be sent together — the fallback has to be a second request. Both fields
-accept identical Twitter search syntax and bill identically (per returned
-dataset item), so switching changes coverage shape only, never the rate.
-
-Occurrences of the all-mock failure this fallback covers: 2026-08-20,
-2026-09-09 (both recovered on their own within hours).
+不打第二種 shape，HTTP 失敗也不重送。maxTotalChargeUsd 是 Apify run 的
+query 參數，不是 actor input；它只限制這次 run 的 actor 計費，
+不保證平台額外費也被這個數字封頂。
 """
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -32,11 +18,12 @@ from social_info.fetchers.base import Item
 from social_info.fetchers.relay import apify_post_url
 from social_info.url_utils import canonical_url
 
-ACTOR_ID = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest"
+ACTOR_ID = "scrape.badger~twitter-tweets-scraper"
 API_URL = f"https://api.apify.com/v2/acts/{ACTOR_ID}/run-sync-get-dataset-items"
 
-_TWITTER_TIME_FMT = "%a %b %d %H:%M:%S %z %Y"
-_MIN_MAX_ITEMS = 20
+# 現行最大 per_handle_limit 50 * $0.00015 = $0.0075，cap 留一點餘裕。
+# 這個數字不是平台附加費的上限。
+_MAX_TOTAL_CHARGE_USD = 0.01
 
 
 def _format_window(window_hours: int) -> tuple[str, str]:
@@ -46,31 +33,36 @@ def _format_window(window_hours: int) -> tuple[str, str]:
     return since, until
 
 
-def _parse_tweet_time(s: str) -> datetime | None:
-    try:
-        return datetime.strptime(s, _TWITTER_TIME_FMT).replace(tzinfo=None)
-    except (TypeError, ValueError):
+def _parse_tweet_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
         return None
+    dt: datetime | None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        dt = None
+    if dt is None:
+        try:
+            dt = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(UTC).replace(tzinfo=None)
 
 
-def _search_terms_payload(
-    handles: list[str], per_handle_limit: int, since: str, until: str
+def _handle_payload(
+    handle: str, per_handle_limit: int, since: str, until: str
 ) -> dict:
+    # actor 下限是 1。10 維持 10，不要把 Kaito 的 20 筆底數加回來。
+    limit = int(per_handle_limit)
+    if limit < 1:
+        limit = 1
     return {
-        "searchTerms": [f"from:{h} since:{since} until:{until}" for h in handles],
-        "maxItems": max(_MIN_MAX_ITEMS, per_handle_limit),
-        "queryType": "Latest",
-    }
-
-
-def _twitter_content_payload(
-    handles: list[str], per_handle_limit: int, since: str, until: str
-) -> dict:
-    joined = " OR ".join(f"from:{h}" for h in handles)
-    return {
-        "twitterContent": f"({joined}) since:{since} until:{until}",
-        "maxItems": max(_MIN_MAX_ITEMS, per_handle_limit * len(handles)),
-        "queryType": "Latest",
+        "mode": "Advanced Search",
+        "query": f"from:{handle} since:{since} until:{until}",
+        "query_type": "Latest",
+        "max_results": limit,
     }
 
 
@@ -81,18 +73,27 @@ def _count_mocks(data: list) -> int:
     )
 
 
+def _tweet_url(tw: dict) -> str:
+    username = str(tw.get("username") or "").strip().lstrip("@")
+    tweet_id = str(tw.get("id") or "").strip()
+    if not username or not tweet_id or tweet_id.startswith("-"):
+        return ""
+    return f"https://x.com/{username}/status/{tweet_id}"
+
+
 def _to_items(data: list, source: SourceConfig, now: datetime) -> list[Item]:
     items: list[Item] = []
     for tw in data:
-        if not isinstance(tw, dict) or tw.get("type") != "tweet":
+        # 新 actor 不帶 type=tweet。mock / 缺 id 或 username 仍丟，其餘留下。
+        if not isinstance(tw, dict) or tw.get("type") == "mock_tweet":
             continue
         text = (tw.get("text") or "").strip()
-        tweet_url = tw.get("url") or ""
+        tweet_url = _tweet_url(tw)
         if not text or not tweet_url:
             continue
-        author = tw.get("author") or {}
-        username = author.get("userName") or ""
-        posted_at = _parse_tweet_time(tw.get("createdAt", "")) or now
+        username = str(tw.get("username") or "").strip().lstrip("@")
+        posted_at = _parse_tweet_time(tw.get("created_at")) or now
+        author = str(tw.get("user_name") or username).strip()
         items.append(Item(
             title=text[:120] + ("…" if len(text) > 120 else ""),
             url=tweet_url,
@@ -102,13 +103,13 @@ def _to_items(data: list, source: SourceConfig, now: datetime) -> list[Item]:
             source_tier=source.tier,
             posted_at=posted_at,
             fetched_at=now,
-            author=author.get("name") or username,
+            author=author,
             excerpt=text[:200],
             language="en",
             engagement={
-                "likes": int(tw.get("likeCount") or 0),
-                "comments": int(tw.get("replyCount") or 0),
-                "retweets": int(tw.get("retweetCount") or 0),
+                "likes": int(tw.get("favorite_count") or 0),
+                "comments": int(tw.get("reply_count") or 0),
+                "retweets": int(tw.get("retweet_count") or 0),
             },
         ))
     return items
@@ -124,6 +125,9 @@ async def _post(
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     url, params = apify_post_url(API_URL, "APIFY_TOKEN_TWITTER")
+    # relay 模式 params 是 None（token 不進 URL）；cap 仍要帶上。
+    query = dict(params or {})
+    query["maxTotalChargeUsd"] = _MAX_TOTAL_CHARGE_USD
 
     handles = source.params.get("handles", [])
     per_handle_limit = source.params.get("per_handle_limit", 10)
@@ -132,25 +136,35 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     since, until = _format_window(window_hours)
     now = utcnow()
 
-    builders = (_search_terms_payload, _twitter_content_payload)
-    attempted_fields: list[str] = []
-    last_data: list = []
+    items: list[Item] = []
+    seen: set[str] = set()
+    invalid_rows = 0
+    mock_rows = 0
+    saw_rows = False
 
-    for build in builders:
-        payload = build(handles, per_handle_limit, since, until)
-        attempted_fields.append(next(iter(payload)))
-        data = await _post(http, url, params, payload)
+    for handle in handles:
+        payload = _handle_payload(handle, per_handle_limit, since, until)
+        data = await _post(http, url, query, payload)
         if not data:
-            return []
-        items = _to_items(data, source, now)
-        if items:
-            return items
-        last_data = data
+            continue
+        saw_rows = True
+        mock_rows += _count_mocks(data)
+        batch = _to_items(data, source, now)
+        invalid_rows += len(data) - len(batch)
+        for item in batch:
+            # 只避免同一個 source 輸出兩筆相同 URL。前一發已經計費，這裡退不了。
+            key = item.canonical_url or item.url
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
 
-    raise RuntimeError(
-        f"actor returned {len(last_data)} records but 0 usable tweets "
-        f"({_count_mocks(last_data)} mock_tweet padding) — upstream X search "
-        f"found nothing for {len(handles)} handles over {window_hours}h "
-        f"across {len(attempted_fields)} request shapes "
-        f"({', '.join(attempted_fields)})"
-    )
+    if items:
+        return items
+    if saw_rows:
+        raise RuntimeError(
+            f"actor returned {invalid_rows} records but 0 usable tweets "
+            f"({mock_rows} mock_tweet) — no usable row for {len(handles)} handles "
+            f"over {window_hours}h; not retrying another query shape"
+        )
+    return []

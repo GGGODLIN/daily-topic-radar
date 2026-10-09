@@ -236,10 +236,10 @@ sources:
     language: en
     limit: 15
 
-  # === X / Twitter (Apify actor kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest) ===
-  # 不是 twitterapi.io — 該註解 2026-08-01 更正，實作見 fetchers/twitter.py 檔頭。
-  # 此 actor 每次呼叫有最低收費，查無結果時會回 mock_tweet 湊數；fetcher 濾掉 mock，
-  # 若濾完為空會 raise 進 KNOWN_ISSUES（2026-07-31 靜默漏抓一整天後補的偵測）。
+  # === X / Twitter (Apify actor scrape.badger~twitter-tweets-scraper) ===
+  # 不是 twitterapi.io，也不是已停用的 KaitoEasyAPI。實作見 fetchers/twitter.py。
+  # 按回傳筆數計費（公開價 $0.00015/tweet），沒有 Kaito 的最低 20 筆，也不做第二種 query fallback。
+  # 每個 handle 各一發。空 dataset 當正常空結果；有資料但全解析失敗才 raise 進 KNOWN_ISSUES。
   - id: twitter_tier1
     type: twitter
     enabled: true
@@ -305,14 +305,13 @@ sources:
   # === Matt Pocock 獨立追蹤軸 ===
   # 2026-08-03 加。拆成獨立 source id（而非塞進 twitter_tier1）是為了讓 digest agent
   # 靠 source id 路由到「🎓 Matt Pocock 動態」獨立 section — 跟 twitter_anthropic
-  # 同一個模式、同一個理由。代價：X fetcher 一個 source id = 一次 Apify actor 呼叫
-  # （該 actor 每次呼叫有最低收費，見上面 twitter_tier1 註解）。
+  # 同一個模式、同一個理由。代價：一個 source 裡每個 handle 各打一發
+  # （不再是整包一次，也沒有最低收費；mattpocockuk 只有一個 handle，所以仍是一發）。
   # ⚠️ handle 是 mattpocockuk 不是 mattpocock — GitHub profile 的 twitter_username
   # 欄位確認（2026-08-03）。同名陷阱見下面 youtube_matt 註解。
-  # per_handle_limit 給 50（不是照 tier1 的 10）：fetcher 的 maxItems 算法是
-  # max(20, per_handle_limit)，單 handle 用 10 會被夾在 20。
-  # 2026-08-03 實跑：20 則全部落在 08-02 15:52–17:43 不到 2 小時內，36h 窗口
-  # 明顯被截斷 —— 他回覆量極大。50 則 ≈ $0.0125/天（$0.25/1K tweets）可忽略。
+  # per_handle_limit 維持 50：他回覆量極大，36h 窗口用 10 會被截斷
+  # （2026-08-03 實跑 20 則全部落在不到 2 小時）。新 actor 不會再把 10 抬到 20。
+  # 50 則結果費 ≈ $0.0075/次（$0.00015/tweet）。maxTotalChargeUsd=0.01 只蓋這次 run 的 actor 費。
   # ⚠️ 待觀察：若 raw md 每天都剛好 50 則，代表仍在撞上限、要再往上調。
   - id: twitter_matt
     type: twitter
