@@ -83,7 +83,7 @@ def cargo_git_installed():
 def mcp_npx_installed():
     paths = os.environ.get("CCTOOL_CLAUDE_JSON")
     paths = paths.split(os.pathsep) if paths is not None else [
-        os.path.expanduser("~/.claude.json"), os.path.expanduser("~/.claude-max/.claude.json")]
+        os.path.expanduser("~/.claude.json")]
     out = {}
     for path in paths:
         try:

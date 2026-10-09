@@ -209,7 +209,7 @@ def main():
     print()
 
     name_only = set()
-    for sp in ("~/.claude/settings.json", "~/.claude-max/settings.json", "~/.claude-team/settings.json"):
+    for sp in ("~/.claude/settings.json", "~/.claude-team/settings.json"):
         try:
             ov = json.loads(Path(sp).expanduser().read_text()).get("skillOverrides", {})
             name_only.update(k for k, v in ov.items() if v == "name-only")

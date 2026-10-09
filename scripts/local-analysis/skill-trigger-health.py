@@ -204,7 +204,7 @@ def main():
   )
 
   name_only = set()
-  for sp in (os.path.expanduser("~/.claude/settings.json"), os.path.expanduser("~/.claude-max/settings.json"), os.path.expanduser("~/.claude-team/settings.json")):
+  for sp in (os.path.expanduser("~/.claude/settings.json"), os.path.expanduser("~/.claude-team/settings.json")):
     try:
       with open(sp) as fh:
         ov = json.load(fh).get("skillOverrides", {})
