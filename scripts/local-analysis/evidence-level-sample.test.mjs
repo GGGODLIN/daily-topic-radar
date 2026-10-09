@@ -258,7 +258,8 @@ test('persists full redacted answers in private artifacts', () => {
   const secretValues = [
     'sk-ant-api03-FAKESECRET0123456789',
     'ghp_FAKESECRET012345678901234567890123456',
-    'xoxb-1234567890-1234567890-FAKESECRET',
+    // 拆開拼接：完整字面值會被 gitleaks 等掃描器當成真的 Slack token
+    ['xoxb', '1234567890-1234567890-FAKESECRET'].join('-'),
     'AKIAFAKESECRET123456',
     'GENERIC-SECRET-987654321',
     'secret value with spaces',
