@@ -121,6 +121,20 @@ class BlockTests(population.PopulationTests):
     self.assertGreater(log['peak'], 1)
     self.assertEqual(self.source_named(self.status(url), 'giant.jsonl')['status'], 'complete')
 
+  def test_a_copied_giant_session_waits_until_the_first_copy_finishes(self):
+    # 2026-10-10 正式環境：workflow 的 .GOLDEN 備份與原檔是同一份對話，兩份同時切塊、塊名撞在一起，收尾時整輪當掉（KeyError），連 21 輪。
+    original = self.big()
+    copy = self.projects / 'work' / 'backup' / original.name
+    copy.parent.mkdir()
+    fixtures.write_jsonl(copy, original.read_text(), bind_session=False)
+    log, reply = self.recorder()
+    _, url = self.provider(reply)
+    done = self.cli(['run', *self.flags(url, extra=BLOCK)], timeout=60)
+    self.assertEqual(done.returncode, 0, done.stderr)
+    self.assertEqual(sorted(self.sent_lines(log)), sorted(list(range(LINES)) * 2), 'Both copies are analyzed in full')
+    rows = [row for row in self.status(url)['sources'] if row['name'] == original.name]
+    self.assertEqual([row['status'] for row in rows], ['complete', 'complete'])
+
 
 if __name__ == '__main__':
   suite = unittest.TestSuite(BlockTests(name) for name in BlockTests.__dict__ if name.startswith('test_'))

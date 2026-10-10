@@ -359,7 +359,9 @@ def connect(state, write):
       fail("state-hardlink" if info.st_nlink > 1 else "state-symlink")
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
   else:
-    connection = sqlite3.connect(database)
+    # 交易一開就拿寫鎖：預設的延後模式下，沒真的寫入的語句（例如空清單的 executemany）會開交易卻不拿鎖，
+    # 之後的讀取釘在舊版本；SessionEnd 入列一提交，這條連線下次寫入就立刻 database is locked、不走 busy_timeout。
+    connection = sqlite3.connect(database, isolation_level="IMMEDIATE")
     os.chmod(database, 0o600)
   connection.row_factory = sqlite3.Row
   connection.execute("PRAGMA busy_timeout=30000")
@@ -2311,11 +2313,15 @@ def cmd_run(args):
         queue.append(item)
       return None
 
+    def busy(key):
+      # 切塊中的對話只以（對話, 塊起點）記在途；副本要連這些塊一起認，否則兩份同時切塊、塊名撞在一起。
+      return key in sessions or any(isinstance(item[0], tuple) and item[0] == key for item in sessions)
+
     def take(group):
       queue = queues[group]
       for _ in range(len(queue)):
         row = queue.popleft()
-        if transcript(row) not in sessions:
+        if not busy(transcript(row)):
           return row
         queue.append(row)
       return None

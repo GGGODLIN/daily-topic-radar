@@ -5,6 +5,7 @@
 假 provider 只在 localhost。不讀真實 transcript、keys 或 relay。
 """
 
+import contextlib
 import fcntl
 import importlib.util
 import json
@@ -1524,6 +1525,22 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(len(entries), 1, text)
     self.assertIn("session:leak#3", entries[0])
 
+  def session_end_from_another_process(self, url):
+    # 入列是另一個行程：分析器握著寫鎖時它要排隊、提交後才寫進去；只等 1 秒，讓排隊中的分析器能繼續跑到提交。
+    proc = subprocess.Popen(
+      [sys.executable, str(SCRIPT), "enqueue", *self.flags(url)],
+      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env,
+    )
+    proc.stdin.write(json.dumps({"hook_event_name": "SessionEnd", "session_id": "other"}))
+    proc.stdin.close()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+      proc.wait(1)
+    return proc
+
+  def assert_session_end_landed(self, queued):
+    self.assertEqual(len(queued), 1)
+    self.assertEqual(queued[0].wait(30), 0, queued[0].stderr.read())
+
   def test_session_end_written_between_two_prepared_sources_does_not_crash_the_run(self):
     # 2026-10-09 正式環境：同一輪補位時，SessionEnd 入列在兩個來源之間寫了一筆，下一個來源記憑證名稱時整輪當掉（database is locked）。
     _, url = self.credential_session("leak", "MONGO_PASS=s3cretValue99\n")
@@ -1545,15 +1562,42 @@ class SessionAuditCliTest(unittest.TestCase):
 
     def read_then_session_end(path):
       if path.name == "leak.jsonl" and not queued:
-        queued.append(self.cli(["enqueue", *self.flags(url)], stdin=json.dumps({"hook_event_name": "SessionEnd", "session_id": "other"})))
+        queued.append(self.session_end_from_another_process(url))
       return real_read(path)
 
     analyzer.read_source = read_then_session_end
     self.assertEqual(analyzer.main(["run", *self.flags(url)]), 0)
-    self.assertEqual(queued[0].returncode, 0, queued[0].stderr)
+    self.assert_session_end_landed(queued)
     status = self.status(url)
     self.assertEqual(self.source_named(status, "plain.jsonl")["status"], "complete")
     self.assertEqual(self.source_named(status, "leak.jsonl")["status"], "complete")
+
+  def test_session_end_written_while_a_reply_without_findings_is_stored_does_not_crash_the_run(self):
+    # 2026-10-10 正式環境：回件沒有發現時，寫回件那一步撞上剛好提交的 SessionEnd 入列，整輪當掉（database is locked）。
+    write_jsonl(self.projects / "work" / "plain.jsonl", user_line("PLAIN_WORK", session_id="plain"))
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    spec = importlib.util.spec_from_file_location("analyzer_in_process", SCRIPT)
+    analyzer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(analyzer)
+    real_store, real_redact = analyzer.store_findings, analyzer.redact_text
+    stored, queued = [], []
+
+    def store_and_remember(*args, **kwargs):
+      stored.append(True)
+      return real_store(*args, **kwargs)
+
+    # 寫完（空的）發現後、寫回件前，第一次遮罩接續摘要時讓 SessionEnd 入列提交一筆。
+    def redact_after_session_end(text):
+      if stored and not queued:
+        queued.append(self.session_end_from_another_process(url))
+      return real_redact(text)
+
+    analyzer.store_findings, analyzer.redact_text = store_and_remember, redact_after_session_end
+    self.assertEqual(analyzer.main(["run", *self.flags(url)]), 0)
+    self.assert_session_end_landed(queued)
+    self.assertEqual(self.source_named(self.status(url), "plain.jsonl")["status"], "complete")
 
   def test_placeholders_and_agent_written_credentials_are_not_recorded(self):
     friction, url = self.credential_session(
