@@ -996,6 +996,9 @@ def explicit_class(path, synthetic, session_ids, self_id):
     return "self"
   if synthetic or EVAL_ROOTS.intersection(path.parts) or any(SKILL_UP_PROJECT_MARK in part for part in path.parts):
     return "synthetic"
+  # workflow-monitor 暫停時把整個 workflow 目錄複製成 .GOLDEN 還原點；內容跟原檔是同一份對話，再分析只會重複寫摩擦。
+  if any(part.endswith(".GOLDEN") for part in path.parts):
+    return "backup"
   return None
 
 

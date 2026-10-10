@@ -49,6 +49,21 @@ class PopulationTests(history.HistoryWindowTests):
     for marker in ['SDK_BACKGROUND', 'UNLABELLED', 'FORWARDED_WORK', 'META_INPUT', 'WRAPPER_INPUT', 'BACKPASS_INPUT', 'TYPED_TEST_INPUT']:
       self.assertNotIn(marker.encode(), sent)
 
+  def test_workflow_golden_backup_is_not_analyzed_again(self):
+    # 2026-10-10 正式環境：workflow-monitor 暫停時留的 .GOLDEN 快照被當成新對話，360 份重複分析。
+    parent = self.source('work/human.jsonl', 'HUMAN_WORK')
+    fields = {'sessionId': parent.stem, 'agentId': 'a1', 'isSidechain': True}
+    workflows = parent.with_suffix('') / 'subagents' / 'workflows'
+    self.source((workflows / 'wf_x' / 'agent-a1.jsonl').relative_to(self.projects), 'WORKFLOW_AGENT', **fields)
+    self.source((workflows / 'wf_x.GOLDEN' / 'agent-a1.jsonl').relative_to(self.projects), 'GOLDEN_COPY', **fields)
+    _, url = self.provider()
+    self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
+    sent = b''.join(self.provider_bodies(url))
+    self.assertIn(b'WORKFLOW_AGENT', sent)
+    self.assertNotIn(b'GOLDEN_COPY', sent)
+    golden = [row for row in self.status(url)['sources'] if '.GOLDEN' in row['path']]
+    self.assertEqual([row['included'] for row in golden], [False])
+
   def provider(self, reply=None):
     server, url = super().provider(reply)
     self.servers = getattr(self, 'servers', {})
