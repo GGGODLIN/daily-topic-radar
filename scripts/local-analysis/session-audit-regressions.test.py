@@ -39,6 +39,35 @@ class ContractRepairTests(fixtures.SessionAuditCliTest):
     promoted = self.cli(['promote', *self.flags(url)])
     self.assertEqual(json.loads(promoted.stdout)['appended'], 0)
 
+  def issue_then_update(self, promote_between):
+    path = self.projects / 'work' / 's1.jsonl'
+    fixtures.write_jsonl(path, fixtures.user_line('EARLY_INCIDENT'))
+    response = {'value': fixtures.analysis([fixtures.finding('EARLY_INCIDENT', observation='broken-widget')])}
+    _, url = self.provider(lambda body: (response['value'], 200))
+    self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
+    target = self.promote_file()
+    if promote_between:
+      self.assertEqual(json.loads(self.cli(['promote', *self.flags(url)]).stdout)['appended'], 1)
+    update = fixtures.finding('STILL_BROKEN', observation='widget-still-broken', source_line=2)
+    update['issue_ref'] = self.status(url)['candidates'][0]['issue_ref']
+    response['value'] = fixtures.analysis([update])
+    with path.open('a') as handle:
+      handle.write(fixtures.user_line('STILL_BROKEN'))
+    self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
+    return target, self.cli(['promote', *self.flags(url)])
+
+  def test_a_still_open_issue_already_in_the_file_gets_no_second_entry(self):
+    # 2026-10-10 抽樣：新寫入的紀錄有 14%（19/137）只是同一議題的後續狀態，每段各占一條。
+    target, promoted = self.issue_then_update(promote_between=True)
+    self.assertEqual(promoted.returncode, 0, promoted.stderr)
+    self.assertEqual(json.loads(promoted.stdout)['appended'], 0)
+    self.assertNotIn('widget-still-broken', target.read_text())
+
+  def test_an_issue_updated_before_its_first_promote_still_gets_one_entry(self):
+    target, promoted = self.issue_then_update(promote_between=False)
+    self.assertEqual(json.loads(promoted.stdout)['appended'], 1)
+    self.assertIn('widget-still-broken', target.read_text())
+
   def test_legacy_line_reference_does_not_swallow_two_distinct_same_line_issues(self):
     fixtures.write_jsonl(self.projects / 'work' / 's1.jsonl', fixtures.user_line('ISSUE_APPLE and ISSUE_ORANGE'))
     _, url = self.provider(lambda body: (fixtures.analysis([
