@@ -42,6 +42,12 @@ _FOOTER_RE = re.compile(
 class LinuxDoFetchError(RuntimeError):
     """Raised when the feed cannot be read completely inside the window."""
 
+    def __init__(self, message: str, *, kept: list[Item] | None = None) -> None:
+        super().__init__(message)
+        # Only pages already checked for order, uniqueness, and dates. A page
+        # that itself failed stays out, so its items cannot leak in here.
+        self.kept = list(kept or [])
+
 
 def _strip_html(markup: str) -> str:
     text = _WS_RE.sub(" ", _TAG_RE.sub(" ", markup or "")).strip()
@@ -165,33 +171,45 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
         if (utcnow() - started).total_seconds() + needed > FETCH_BUDGET_SECONDS:
             raise LinuxDoFetchError(
                 f"linux.do fetch budget of {FETCH_BUDGET_SECONDS}s exhausted before the "
-                f"{window_hours}h window ended; not a complete day"
+                f"{window_hours}h window ended; not a complete day",
+                kept=collected,
             )
         if page:
             await asyncio.sleep(REQUEST_GAP_SECONDS)
-        body = await asyncio.to_thread(_fetch_page_text, page)
-        page_items, raw_count = _parse_page(body, source, now, page)
+        try:
+            body = await asyncio.to_thread(_fetch_page_text, page)
+            page_items, raw_count = _parse_page(body, source, now, page)
+        except LinuxDoFetchError as exc:
+            raise LinuxDoFetchError(str(exc), kept=collected) from exc
         if raw_count == 0:
-            raise LinuxDoFetchError(f"linux.do page {page} had no entries")
+            raise LinuxDoFetchError(f"linux.do page {page} had no entries", kept=collected)
         page_urls = [item.canonical_url for item in page_items]
         if len(page_urls) != len(set(page_urls)):
-            raise LinuxDoFetchError(f"linux.do page {page} repeats an entry")
+            raise LinuxDoFetchError(f"linux.do page {page} repeats an entry", kept=collected)
         if seen_urls and set(page_urls) <= seen_urls:
-            raise LinuxDoFetchError(f"linux.do page {page} repeated the previous page")
-        _assert_page_moves_backward(page, page_items, previous_oldest)
+            raise LinuxDoFetchError(
+                f"linux.do page {page} repeated the previous page", kept=collected
+            )
+        try:
+            _assert_page_moves_backward(page, page_items, previous_oldest)
+        except LinuxDoFetchError as exc:
+            raise LinuxDoFetchError(str(exc), kept=collected) from exc
+        oldest = min(item.posted_at for item in page_items)
         fresh = [item for item in page_items if item.canonical_url not in seen_urls]
         seen_urls.update(item.canonical_url for item in fresh)
         collected.extend(item for item in fresh if item.posted_at >= cutoff)
-        previous_oldest = min(item.posted_at for item in page_items)
-        if previous_oldest < cutoff:
-            return collected
-        # A short raw page can be a truncated day, so it does not end the feed.
-        if raw_count < PAGE_SIZE:
+        # Valid items remain useful even when the page cannot prove full coverage.
+        if oldest >= cutoff and raw_count < PAGE_SIZE:
             raise LinuxDoFetchError(
                 f"linux.do page {page} is short and still inside the "
-                f"{window_hours}h window; not treating it as the end of the feed"
+                f"{window_hours}h window; not treating it as the end of the feed",
+                kept=collected,
             )
+        previous_oldest = oldest
+        if previous_oldest < cutoff:
+            return collected
     raise LinuxDoFetchError(
         f"linux.do still inside the {window_hours}h window after {max_pages} pages; "
-        "refusing to truncate silently"
+        "refusing to truncate silently",
+        kept=collected,
     )

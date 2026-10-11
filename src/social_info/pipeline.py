@@ -93,7 +93,7 @@ def annotate_net_new(
     """
     survivors = {id(it) for it in new_items}
     for r in results:
-        if not r.ok:
+        if not r.ok and not (r.source_id == "linuxdo" and r.items):
             continue
         r.net_new = sum(1 for it in r.items if id(it) in survivors)
 
@@ -160,9 +160,12 @@ async def _run_one_fetcher(source: SourceConfig, http: httpx.AsyncClient) -> Fet
                 continue
             break
 
+    # LinuxDO is the only fetcher that can name items already validated before
+    # the window stopped. Other failures still arrive with nothing to keep.
+    kept = getattr(last_exc, "kept", None)
     return FetchResult(
         source_id=source.id,
-        items=[],
+        items=list(kept) if kept else [],
         ok=False,
         error=_redact_secrets(f"{type(last_exc).__name__}: {last_exc}"),
         error_class=last_class or "persistent_error",
@@ -197,7 +200,10 @@ async def run_pipeline(
 
     all_items: list[Item] = []
     for r in results:
-        if not r.ok:
+        # A failed source is normally dropped whole. LinuxDO's incomplete window
+        # is the exception: its result carries only pages already validated, and
+        # ok stays false so the report still says the day is not complete.
+        if not r.ok and not (r.source_id == "linuxdo" and r.items):
             continue
         items = r.items[:limit_per_source] if limit_per_source else r.items
         all_items.extend(items)

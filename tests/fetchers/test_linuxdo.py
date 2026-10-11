@@ -31,6 +31,10 @@ printf '%s\n' "$page" >> "$CURL_LOG"
 if [ "$CURL_MODE" = "timeout" ]; then
   sleep "$CURL_SLEEP"
 fi
+if [ "$CURL_MODE" = "page1-429" ] && [ "$page" != "0" ]; then
+  printf '\n__SOCIAL_INFO_HTTP__429'
+  exit 0
+fi
 if [ "$CURL_MODE" = "rc" ]; then
   echo "curl: transport failed" >&2
   exit 28
@@ -231,12 +235,21 @@ async def test_old_page_ends_the_window(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_short_page_inside_the_window_fails(monkeypatch, tmp_path):
+async def test_short_page_keeps_valid_items_and_reports_incomplete(db, monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)
     _put(body_dir, 0, PAGE.read_text(encoding="utf-8"))
+    config = Config(defaults={}, sources=[_cfg()])
 
-    with pytest.raises(LinuxDoFetchError, match="not treating it as the end"):
-        await fetch(_cfg())
+    new_items, results, _ids = await run_pipeline(config, db)
+
+    assert [item.url for item in new_items] == [
+        "https://linux.do/t/topic/1001",
+        "https://linux.do/t/topic/1002",
+    ]
+    assert results[0].ok is False
+    assert "not treating it as the end" in results[0].error
+    assert results[0].net_new == 2
+    assert db.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
     assert _calls(log) == ["0"]
 
 
@@ -458,3 +471,167 @@ async def test_pipeline_rate_limit_is_a_reported_failure(db, monkeypatch, tmp_pa
     text = report.read_text(encoding="utf-8")
     assert "sources_failed: 1" in text
     assert "linuxdo:" in text
+
+
+def _assert_kept_failure(new_items, results, expected_urls):
+    failed = [result for result in results if not result.ok]
+    assert len(failed) == 1
+    assert failed[0].ok is False
+    assert [item.url for item in new_items] == expected_urls
+    assert [item.url for item in failed[0].items] == expected_urls
+    return failed[0]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_page0_when_page1_is_rate_limited(db, monkeypatch, tmp_path):
+    body_dir, log = _prepare(monkeypatch, tmp_path, mode="page1-429")
+    kept = _batch(100, datetime(2026, 10, 11, 10, 10, 0))
+    kept[0]["title"] = "Kept topic"
+    _put(body_dir, 0, _feed(kept))
+    config = Config(defaults={}, sources=[_cfg()])
+    reports = tmp_path / "reports"
+    reports.mkdir()
+
+    new_items, results, _ids = await run_pipeline(config, db)
+    failed = _assert_kept_failure(
+        new_items, results, [item["link"] for item in kept]
+    )
+    report = write_report(
+        new_items, [failed], out_dir=reports, date="2026-10-11", generated_at=NOW,
+    )
+
+    assert _calls(log) == ["0", "1"]
+    assert "429" in failed.error
+    stored = [
+        row["title"]
+        for row in db.conn.execute("SELECT title FROM items ORDER BY posted_at DESC")
+    ]
+    assert stored[0] == "Kept topic"
+    text = report.read_text(encoding="utf-8")
+    assert "sources_failed: 1" in text
+    assert "429" in text
+    assert "## LINUX DO (100 items)" in text
+    assert "Kept topic" in text
+    row = db.conn.execute("SELECT status, net_new FROM fetch_runs").fetchone()
+    assert row["status"] == "failed"
+    assert row["net_new"] == 100
+
+
+@pytest.mark.asyncio
+async def test_failed_page_items_do_not_join_the_kept_set(db, monkeypatch, tmp_path):
+    body_dir, log = _prepare(monkeypatch, tmp_path)
+    kept = _batch(100, datetime(2026, 10, 11, 10, 10, 0))
+    _put(body_dir, 0, _feed(kept))
+    rejected = _batch(100, datetime(2026, 10, 11, 8, 0, 0), start=9000)
+    rejected[0], rejected[1] = rejected[1], rejected[0]
+    rejected[0]["title"] = "Unordered rejected"
+    rejected[1]["title"] = "Must not leak"
+    _put(body_dir, 1, _feed(rejected))
+    config = Config(defaults={}, sources=[_cfg()])
+
+    new_items, results, _ids = await run_pipeline(config, db)
+    failed = _assert_kept_failure(
+        new_items, results, [item["link"] for item in kept]
+    )
+
+    assert "newest-first" in failed.error
+    assert _calls(log) == ["0", "1"]
+    stored = [
+        row["title"]
+        for row in db.conn.execute("SELECT title FROM items")
+    ]
+    assert "Unordered rejected" not in stored
+    assert "Must not leak" not in stored
+
+
+@pytest.mark.asyncio
+async def test_pipeline_page0_failure_keeps_nothing(db, monkeypatch, tmp_path):
+    body_dir, log = _prepare(monkeypatch, tmp_path, status="429")
+    _put(body_dir, 0, _feed(_batch(100, datetime(2026, 10, 11, 10, 10, 0))))
+    config = Config(defaults={}, sources=[_cfg()])
+
+    new_items, results, _ids = await run_pipeline(config, db)
+
+    assert new_items == []
+    assert results[0].items == []
+    assert _calls(log) == ["0"]
+    stored = db.conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+    assert stored == 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_partial_replay_inserts_nothing(db, monkeypatch, tmp_path):
+    body_dir, log = _prepare(monkeypatch, tmp_path, mode="page1-429")
+    kept = _batch(100, datetime(2026, 10, 11, 10, 10, 0))
+    _put(body_dir, 0, _feed(kept))
+    config = Config(defaults={}, sources=[_cfg()])
+
+    first, _, _ = await run_pipeline(config, db)
+    second, second_results, _ids = await run_pipeline(config, db)
+
+    assert len(first) == 100
+    assert second == []
+    assert second_results[0].ok is False
+    assert second_results[0].net_new == 0
+    assert _calls(log) == ["0", "1", "0", "1"]
+    stored = db.conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+    assert stored == 100
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_items_when_the_page_cap_stops_the_window(
+    db, monkeypatch, tmp_path
+):
+    body_dir, log = _prepare(monkeypatch, tmp_path)
+    kept = _batch(100, datetime(2026, 10, 11, 10, 10, 0))
+    _put(body_dir, 0, _feed(kept))
+    _put(body_dir, 1, _feed(_batch(100, datetime(2026, 10, 11, 8, 0, 0), start=9000)))
+    config = Config(defaults={}, sources=[_cfg(max_pages=1)])
+
+    new_items, results, _ids = await run_pipeline(config, db)
+    failed = _assert_kept_failure(
+        new_items, results, [item["link"] for item in kept]
+    )
+
+    assert "refusing to truncate" in failed.error
+    assert _calls(log) == ["0"]
+    stored = db.conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+    assert stored == 100
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_items_when_the_budget_stops_the_window(
+    db, monkeypatch, tmp_path
+):
+    body_dir, log = _prepare(monkeypatch, tmp_path)
+    monkeypatch.setattr("social_info.fetchers.linuxdo.FETCH_BUDGET_SECONDS", 26)
+    kept = _batch(100, datetime(2026, 10, 11, 10, 10, 0))
+    _put(body_dir, 0, _feed(kept))
+    _put(body_dir, 1, _feed(_batch(100, datetime(2026, 10, 10, 9, 0, 0), start=9000)))
+    config = Config(defaults={}, sources=[_cfg()])
+
+    new_items, results, _ids = await run_pipeline(config, db)
+    failed = _assert_kept_failure(
+        new_items, results, [item["link"] for item in kept]
+    )
+
+    assert "exhausted" in failed.error
+    assert _calls(log) == ["0"]
+    stored = db.conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+    assert stored == 100
+
+
+@pytest.mark.asyncio
+async def test_pipeline_complete_window_stays_successful(db, monkeypatch, tmp_path):
+    body_dir, log = _prepare(monkeypatch, tmp_path)
+    _window(body_dir)
+    config = Config(defaults={}, sources=[_cfg()])
+
+    new_items, results, _ids = await run_pipeline(config, db)
+
+    assert len(new_items) == 100
+    assert results[0].ok is True
+    assert results[0].error == ""
+    assert _calls(log) == ["0", "1"]
+    row = db.conn.execute("SELECT status FROM fetch_runs").fetchone()
+    assert row["status"] == "ok"
