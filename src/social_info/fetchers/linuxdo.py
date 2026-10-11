@@ -20,14 +20,16 @@ from social_info.url_utils import canonical_url
 FEED_URL = "https://linux.do/latest.rss"
 USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 # A short page inside the window is not proof that collection is complete.
-PAGE_SIZE = 30
+PAGE_SIZE = 100
 DEFAULT_WINDOW_HOURS = 24
 DEFAULT_MAX_PAGES = 50
 REQUEST_GAP_SECONDS = 30.0
 REQUEST_TIMEOUT_SECONDS = 25
-# Runner wall clock is 600s and other sources share it. This bound fails the
-# source instead of paging until the day is covered.
-FETCH_BUDGET_SECONDS = 480
+# per_page=100 lowers the request count. The cap remains 50 pages:
+# 50 * 25s timeout + 49 * 30s gap = 2720s. 3000s covers that; the runner
+# hard limit is 3300s. Hitting this bound fails the source instead of
+# paging until the day is covered.
+FETCH_BUDGET_SECONDS = 3000
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -53,7 +55,7 @@ def _strip_html(markup: str) -> str:
 
 def _fetch_page_text(page: int) -> str:
     """Sync curl. Kept off the event loop via asyncio.to_thread."""
-    url = f"{FEED_URL}?{urlencode({'page': page})}"
+    url = f"{FEED_URL}?{urlencode({'page': page, 'per_page': PAGE_SIZE})}"
     try:
         result = subprocess.run(
             [
@@ -157,7 +159,10 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
     seen_urls: set[str] = set()
     previous_oldest: datetime | None = None
     for page in range(max_pages):
-        if page and (utcnow() - started).total_seconds() + REQUEST_GAP_SECONDS > FETCH_BUDGET_SECONDS:
+        # Gap and the request timeout both count. A check only before the
+        # gap lets the last page run past the budget by a full timeout.
+        needed = REQUEST_TIMEOUT_SECONDS + (REQUEST_GAP_SECONDS if page else 0)
+        if (utcnow() - started).total_seconds() + needed > FETCH_BUDGET_SECONDS:
             raise LinuxDoFetchError(
                 f"linux.do fetch budget of {FETCH_BUDGET_SECONDS}s exhausted before the "
                 f"{window_hours}h window ended; not a complete day"

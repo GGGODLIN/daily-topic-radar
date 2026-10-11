@@ -90,14 +90,14 @@ def test_skills_sh_source_is_enabled_and_registered():
     assert "skills_sh" in FETCHER_REGISTRY
 
 
-def test_linuxdo_source_is_registered_and_disabled():
+def test_linuxdo_source_is_registered_and_enabled():
     from social_info.pipeline import FETCHER_REGISTRY
 
     cfg = load_config(Path("sources.yml"))
     src = next(s for s in cfg.sources if s.id == "linuxdo")
 
     assert src.type == "linuxdo"
-    assert src.enabled is False
+    assert src.enabled is True
     assert src.params["window_hours"] == 24
     assert src.params["max_pages"] == 50
     assert "linuxdo" in FETCHER_REGISTRY

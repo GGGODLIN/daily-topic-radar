@@ -7,7 +7,6 @@ from social_info.config import Config, SourceConfig
 from social_info.db import Database
 from social_info.fetchers.linuxdo import (
     FETCH_BUDGET_SECONDS,
-    REQUEST_GAP_SECONDS,
     LinuxDoFetchError,
     _strip_html,
     fetch,
@@ -25,7 +24,7 @@ CURL_SCRIPT = r"""#!/bin/sh
 page=0
 for arg in "$@"; do
   case "$arg" in
-    *page=*) page=${arg##*page=} ;;
+    *\?page=*|*\&page=*) page=${arg#*page=}; page=${page%%[!0-9]*} ;;
   esac
 done
 printf '%s\n' "$page" >> "$CURL_LOG"
@@ -157,7 +156,7 @@ def _feed(entries):
 
 def _window(body_dir):
     newest = datetime(2026, 10, 11, 10, 10, 0)
-    entries = _batch(30, newest)
+    entries = _batch(100, newest)
     entries[0]["title"] = "Newer topic one"
     entries[0]["description"] = RICH
     entries[-1]["link"] = "https://linux.do/t/topic/1002"
@@ -174,8 +173,10 @@ def db(tmp_path):
 
 
 def test_budget_fits_the_existing_runner():
-    assert FETCH_BUDGET_SECONDS == 480
-    assert FETCH_BUDGET_SECONDS + REQUEST_GAP_SECONDS < 600
+    # per_page=100. Worst case remains 50 * 25s + 49 * 30s = 2720s.
+    # Source budget covers that; runner hard limit is seq 1 110 (3300s).
+    assert FETCH_BUDGET_SECONDS == 3000
+    assert FETCH_BUDGET_SECONDS < 3300
 
 
 def test_strip_html_drops_topic_footer():
@@ -191,7 +192,7 @@ async def test_fetch_stops_only_after_the_window_and_dedups(monkeypatch, tmp_pat
     items = await fetch(_cfg())
 
     assert _calls(log) == ["0", "1"]
-    assert len(items) == 30
+    assert len(items) == 100
     assert [item.url for item in items].count("https://linux.do/t/topic/1002") == 1
     assert "https://linux.do/t/topic/900" not in [item.url for item in items]
     first = items[0]
@@ -207,7 +208,7 @@ async def test_fetch_stops_only_after_the_window_and_dedups(monkeypatch, tmp_pat
 @pytest.mark.asyncio
 async def test_fetch_keeps_every_raw_entry(monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)
-    entries = _batch(31, datetime(2026, 10, 11, 10, 10, 0), start=5000)
+    entries = _batch(100, datetime(2026, 10, 11, 10, 10, 0), start=5000)
     _put(body_dir, 0, _feed(entries))
     _put(body_dir, 1, _feed([
         _entry(1, datetime(2026, 10, 9, 1, 0, 0), title="Old topic"),
@@ -216,8 +217,8 @@ async def test_fetch_keeps_every_raw_entry(monkeypatch, tmp_path):
     items = await fetch(_cfg())
 
     assert _calls(log) == ["0", "1"]
-    assert len(items) == 31
-    assert items[-1].url == "https://linux.do/t/topic/8030"
+    assert len(items) == 100
+    assert items[-1].url == "https://linux.do/t/topic/8099"
 
 
 @pytest.mark.asyncio
@@ -299,10 +300,8 @@ async def test_unordered_page_fails(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_page_that_does_not_advance_fails(monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)
-    _put(body_dir, 0, _feed(_batch(30, datetime(2026, 10, 11, 10, 10, 0))))
-    _put(body_dir, 1, _feed([
-        _entry(99, datetime(2026, 10, 11, 10, 20, 0)),
-    ]))
+    _put(body_dir, 0, _feed(_batch(100, datetime(2026, 10, 11, 10, 10, 0))))
+    _put(body_dir, 1, _feed(_batch(100, datetime(2026, 10, 11, 12, 0, 0), start=9000)))
 
     with pytest.raises(LinuxDoFetchError, match="did not advance"):
         await fetch(_cfg())
@@ -312,7 +311,7 @@ async def test_page_that_does_not_advance_fails(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_duplicate_page_fails(monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)
-    entries = _batch(30, datetime(2026, 10, 11, 10, 10, 0))
+    entries = _batch(100, datetime(2026, 10, 11, 10, 10, 0))
     _put(body_dir, 0, _feed(entries))
     _put(body_dir, 1, _feed([entries[-1]]))
 
@@ -336,7 +335,7 @@ async def test_duplicate_entry_on_one_page_fails(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_page_cap_fails_instead_of_truncating(monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)
-    _put(body_dir, 0, _feed(_batch(30, datetime(2026, 10, 11, 10, 10, 0))))
+    _put(body_dir, 0, _feed(_batch(100, datetime(2026, 10, 11, 10, 10, 0))))
 
     with pytest.raises(LinuxDoFetchError, match="refusing to truncate"):
         await fetch(_cfg(max_pages=1))
@@ -348,6 +347,18 @@ async def test_time_budget_fails_instead_of_continuing(monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)
     monkeypatch.setattr("social_info.fetchers.linuxdo.FETCH_BUDGET_SECONDS", 0)
     _put(body_dir, 0, _feed(_batch(30, datetime(2026, 10, 11, 10, 10, 0))))
+
+    with pytest.raises(LinuxDoFetchError, match="exhausted"):
+        await fetch(_cfg())
+    assert not log.exists()
+
+
+@pytest.mark.asyncio
+async def test_time_budget_counts_the_next_request(monkeypatch, tmp_path):
+    body_dir, log = _prepare(monkeypatch, tmp_path)
+    monkeypatch.setattr("social_info.fetchers.linuxdo.FETCH_BUDGET_SECONDS", 26)
+    _put(body_dir, 0, _feed(_batch(100, datetime(2026, 10, 11, 10, 10, 0))))
+    _put(body_dir, 1, _feed(_batch(100, datetime(2026, 10, 10, 9, 0, 0), start=9000)))
 
     with pytest.raises(LinuxDoFetchError, match="exhausted"):
         await fetch(_cfg())
@@ -401,11 +412,11 @@ async def test_pipeline_second_run_inserts_nothing(db, monkeypatch, tmp_path):
     )
     second, _, _ = await run_pipeline(config, db)
 
-    assert len(first) == 30
+    assert len(first) == 100
     assert second == []
     assert _calls(log) == ["0", "1", "0", "1"]
     stored = db.conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
-    assert stored == 30
+    assert stored == 100
     text = report.read_text(encoding="utf-8")
     assert "LINUX DO" in text
     assert "Newer topic one" in text
