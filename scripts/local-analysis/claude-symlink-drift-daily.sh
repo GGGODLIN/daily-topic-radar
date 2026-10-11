@@ -114,6 +114,7 @@ done
     echo '    case "$name" in'
     echo '      .claude.json|.claude.json.backup.*|backups|policy-limits.json|.DS_Store|.last-update-result.json) continue ;;'
     echo '      mcp-needs-auth-cache.json|remote-settings.json) continue ;;'
+    echo '      state|dev-mods|policy-limits.json.stamp.json) continue ;;'
     echo '    esac'
     echo '    [[ -L "$name" ]] && continue'
     echo '    [[ -e "$HOME/.claude/$name" ]] || continue'
