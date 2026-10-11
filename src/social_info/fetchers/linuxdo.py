@@ -23,7 +23,7 @@ USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 PAGE_SIZE = 30
 DEFAULT_WINDOW_HOURS = 24
 DEFAULT_MAX_PAGES = 50
-REQUEST_GAP_SECONDS = 8.0
+REQUEST_GAP_SECONDS = 30.0
 REQUEST_TIMEOUT_SECONDS = 25
 # Runner wall clock is 600s and other sources share it. This bound fails the
 # source instead of paging until the day is covered.
