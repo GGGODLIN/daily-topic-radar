@@ -23,6 +23,7 @@ PLATFORM_GROUP_ORDER = [
     ("rss_lab", "Lab Blogs & Releases"),
     ("rss_media", "English Tech Media"),
     ("v2ex", "V2EX (開發者社群)"),
+    ("linuxdo", "LINUX DO"),
     ("zh_cn", "中文 / 中國"),
     ("wechat", "中文 / 微信公眾號"),
     ("zh_tw", "中文 / 台灣"),
@@ -35,6 +36,8 @@ def _group_key_for_source(source: str, source_handle: str, language: str) -> str
         return source
     if source == "v2ex":
         return "v2ex"
+    if source == "linuxdo":
+        return "linuxdo"
     if source == "github_search":
         return "github_trending"
     if language.startswith("zh-TW"):
