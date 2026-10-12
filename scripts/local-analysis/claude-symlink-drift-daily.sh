@@ -37,6 +37,8 @@ is_whitelisted() {
     # 2026-10-09 拍板：CC 按帳號寫的 runtime 資料（state/ 只有 mcp-discover-verdicts.json、dev-mods/ 是 session UUID 目錄），
     # hooks／scripts 沒有任何地方經 CLAUDE_CONFIG_DIR 讀它們；改 symlink 會把不同帳號的資料混在一起。
     state|dev-mods|policy-limits.json.stamp.json) return 0 ;;
+    # 統計快取可由共用對話重建，各帳號更新時不要求保留共享連結。
+    stats-cache.json) return 0 ;;
     .claude.json.backup.*) return 0 ;;
   esac
   return 1
@@ -89,9 +91,11 @@ done
   echo ""
   echo "**目標**：偵測 \`~/.claude-team-s\` / \`~/.claude-team-p\` 內被 claude binary atomic write 拆 symlink 變 real file/dir 的 entries。"
   echo ""
-  echo "**Whitelist（不算 drift）**，兩族理由不同："
+  echo "**Whitelist（不算 drift）**："
   echo "- **updater / OS ephemeral state**（atomic write 必拆 symlink，2026-07-31 拍板）：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`.DS_Store\` / \`.last-update-result.json\`"
   echo "- **帳號綁定的 server 狀態**（本來就該各 lock dir 各存一份，重建 symlink 會跨帳號污染，2026-08-01 拍板）：\`policy-limits.json\` / \`mcp-needs-auth-cache.json\` / \`remote-settings.json\`；CC 按帳號寫的 runtime 資料 \`state/\` / \`dev-mods/\` / \`policy-limits.json.stamp.json\`（2026-10-09 拍板）"
+  echo ""
+  echo '- **統計快取**：`stats-cache.json` 可由對話紀錄重建，各帳號自行保存，不重建共享連結。'
   echo ""
   echo "## 結果"
   echo ""
@@ -114,7 +118,7 @@ done
     echo '    case "$name" in'
     echo '      .claude.json|.claude.json.backup.*|backups|policy-limits.json|.DS_Store|.last-update-result.json) continue ;;'
     echo '      mcp-needs-auth-cache.json|remote-settings.json) continue ;;'
-    echo '      state|dev-mods|policy-limits.json.stamp.json) continue ;;'
+    echo '      state|dev-mods|policy-limits.json.stamp.json|stats-cache.json) continue ;;'
     echo '    esac'
     echo '    [[ -L "$name" ]] && continue'
     echo '    [[ -e "$HOME/.claude/$name" ]] || continue'

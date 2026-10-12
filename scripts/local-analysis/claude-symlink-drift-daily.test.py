@@ -15,7 +15,7 @@ class RepairTemplateTest(unittest.TestCase):
       home = Path(temporary)
       default = home / ".claude"
       default.mkdir()
-      protected = [".claude.json", ".claude.json.backup.fixture", "backups", "policy-limits.json", ".DS_Store", ".last-update-result.json", "mcp-needs-auth-cache.json", "remote-settings.json", "state", "dev-mods", "policy-limits.json.stamp.json"]
+      protected = [".claude.json", ".claude.json.backup.fixture", "backups", "policy-limits.json", ".DS_Store", ".last-update-result.json", "mcp-needs-auth-cache.json", "remote-settings.json", "state", "dev-mods", "policy-limits.json.stamp.json", "stats-cache.json"]
       directories = {"backups", "state", "dev-mods"}
       for root in (default, home / ".claude-team-s", home / ".claude-team-p"):
         root.mkdir(exist_ok=True)
@@ -35,6 +35,10 @@ class RepairTemplateTest(unittest.TestCase):
       self.assertEqual(result.returncode, 0, result.stderr)
       report = (home / "reports/local-analysis/fixture-symlink-drift.md").read_text()
       self.assertIn("Drift count: **2**", report)
+      for root in (home / ".claude-team-s", home / ".claude-team-p"):
+        cache = root / "stats-cache.json"
+        self.assertFalse(cache.is_symlink())
+        self.assertEqual(cache.read_text(), str(root))
       repair = report.split("```bash\n", 1)[1].split("```", 1)[0]
       result = subprocess.run(["bash", "-e", "-c", repair], env=env, capture_output=True, text=True)
       self.assertEqual(result.returncode, 0, result.stderr)
