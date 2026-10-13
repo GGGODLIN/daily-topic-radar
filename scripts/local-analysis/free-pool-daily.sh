@@ -216,6 +216,7 @@ for (base, model), (pname, key) in sorted(probes.items()):
         "messages": [{"role": "user", "content": "hello"}],
         "max_tokens": 400,
         "temperature": 0,
+        "metadata": {"budget_mode": "diagnostic"},
     }).encode()
     req = urllib.request.Request(
         base + "/chat/completions", data=body, method="POST",

@@ -40,6 +40,7 @@ from pathlib import Path
 
 mode_path = Path(os.environ["MODE_PATH"])
 port_path = Path(os.environ["PORT_PATH"])
+body_path = Path(os.environ["BODY_PATH"])
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, _format, *_args):
@@ -57,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(200, {"status": "ok"})
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body_path.write_text(self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode())
         if mode_path.read_text().strip() == "hello-402":
             self.reply(402, {"error": {"message": "insufficient credits"}})
         else:
@@ -70,7 +71,7 @@ server.serve_forever()
 PY
 
 echo ok > "$TMP/mode"
-MODE_PATH="$TMP/mode" PORT_PATH="$TMP/port" python3 "$TMP/server.py" &
+MODE_PATH="$TMP/mode" PORT_PATH="$TMP/port" BODY_PATH="$TMP/body" python3 "$TMP/server.py" &
 SERVER_PID=$!
 for _ in $(seq 1 50); do [ -s "$TMP/port" ] && break; sleep 0.1; done
 PORT="$(cat "$TMP/port")"
@@ -137,6 +138,9 @@ run_wrapper clean ok; rc=$?
 [ "$rc" -eq 0 ] && pass "all green exits 0" || fail "all green exits 0 — rc=$rc"
 [ "$(cat "$out_file" 2>/dev/null)" = "__SILENT__" ] && pass "all green stays __SILENT__" || fail "all green stays __SILENT__ — $(cat "$out_file" 2>/dev/null)"
 assert_contains "all green logs the 24h section" "過去 24 小時無異常" "$(cat "$log_file" 2>/dev/null)"
+body="$(cat "$TMP/body" 2>/dev/null)"
+assert_contains "hello body keeps max_tokens 400" '"max_tokens": 400' "$body"
+assert_contains "hello body marks diagnostic" '"budget_mode": "diagnostic"' "$body"
 
 # 2. hello 全綠但 24 小時有異常：報告要出，hello 結論是「小請求存活」。
 run_wrapper anomaly ok; rc=$?
