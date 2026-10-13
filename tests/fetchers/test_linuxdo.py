@@ -177,8 +177,8 @@ def db(tmp_path):
 
 
 def test_budget_fits_the_existing_runner():
-    # per_page=100. Worst case remains 50 * 25s + 49 * 30s = 2720s.
-    # Source budget covers that; runner hard limit is seq 1 110 (3300s).
+    # The source budget can stop paging before the page cap and must leave
+    # time for the runner to save partial items before its hard limit.
     assert FETCH_BUDGET_SECONDS == 3000
     assert FETCH_BUDGET_SECONDS < 3300
 
@@ -192,9 +192,16 @@ def test_strip_html_drops_topic_footer():
 async def test_fetch_stops_only_after_the_window_and_dedups(monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)
     _window(body_dir)
+    waits = []
+
+    async def record_wait(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr("social_info.fetchers.linuxdo.asyncio.sleep", record_wait)
 
     items = await fetch(_cfg())
 
+    assert waits == [60.0]
     assert _calls(log) == ["0", "1"]
     assert len(items) == 100
     assert [item.url for item in items].count("https://linux.do/t/topic/1002") == 1

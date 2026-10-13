@@ -23,12 +23,11 @@ USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 PAGE_SIZE = 100
 DEFAULT_WINDOW_HOURS = 24
 DEFAULT_MAX_PAGES = 50
-REQUEST_GAP_SECONDS = 30.0
+REQUEST_GAP_SECONDS = 60.0
 REQUEST_TIMEOUT_SECONDS = 25
-# per_page=100 lowers the request count. The cap remains 50 pages:
-# 50 * 25s timeout + 49 * 30s gap = 2720s. 3000s covers that; the runner
-# hard limit is 3300s. Hitting this bound fails the source instead of
-# paging until the day is covered.
+# With a 60s gap, the 3000s budget can stop collection before the 50-page
+# cap. Keep the runner's 3300s hard limit; retain validated partial items
+# and report an incomplete window instead of extending the run.
 FETCH_BUDGET_SECONDS = 3000
 
 _TAG_RE = re.compile(r"<[^>]+>")
