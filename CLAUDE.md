@@ -99,7 +99,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `reports/{date}.md` 是 raw aggregator 輸出（06:00 launchd 自動產生）。`reports/digest-{date}.html` 是 Claude 個人化整理（**手動 trigger**，使用者叫我產才做）。
 
-共用觀察池與研究選題雷達的入口、資料限制與回放指令見 [docs/topic-radar.md](/docs/topic-radar.md)。雷達讀本機觀察資料，不另抓來源；daily topic 的選題與呈現仍引用當日 raw。新增 X 帳號的核准配置與未啟用的額外服務見 [docs/topic-radar-sources.md](/docs/topic-radar-sources.md)。
+共用觀察池與研究選題雷達的入口、資料限制與回放指令見 [docs/topic-radar.md](/docs/topic-radar.md)。本機雷達不另抓來源；`free_radar` 原工具免費收集器另抓新搜尋角度、共用池中 X 正文，接在一般來源存池後，沿用現有每日排程。daily topic 的選題與呈現仍引用當日 raw，新增資料與原工具報告供「新來源觀察」取用。已啟用與未啟用功能的盤點見 [docs/topic-radar-sources.md](/docs/topic-radar-sources.md)。
 
 **執行主體是 `~/.claude/workflows/daily-topic-analysis*.js` 其中一支（2026-05-26 起走 workflow、HTML 撰寫 2026-07-04 起派 sonnet subagent）；哪一支由 hook 分派，見上面「今日分析入口語意」段。Pre-flight 攔截 protocol（KNOWN_ISSUES / WATCH / PROBES stage-2 fetch）、主軸抽取、URL fact-check 分流、digest HTML 鐵律（🛠 GitHub 倉庫觀察獨立段 / 🟣 Anthropic·Claude 動態獨立段 / v3 範本 / resurface marker）——細節全部以該 workflow script 內嵌 prompt 為 SSOT，改規則改那裡、不改本檔。各版本砍掉哪些 phase 也以 script 為準（例：極簡版無 FactCheck / Verify / external-feeds）。**
 

@@ -11,6 +11,7 @@ from social_info import known_issues
 from social_info.config import load_config
 from social_info.db import Database
 from social_info.fetchers.base import Item
+from social_info.free_radar import render_report as render_free_radar_report
 from social_info.markdown import render_item, splice_radar_section
 from social_info.observation_pool import ObservationPool
 from social_info.pipeline import (
@@ -93,6 +94,17 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _free_radar_markdown(config, date: str) -> str:
+    sections = []
+    for source in config.enabled_sources():
+        if source.type != "new_term_radar":
+            continue
+        report_path = Path(source.params.get("report_dir", "reports/new-term-radar")) / f"{date}.json"
+        if report_path.exists():
+            sections.append(render_free_radar_report(json.loads(report_path.read_text(encoding="utf-8"))))
+    return "\n\n".join(sections)
+
+
 def _run_radar(args: argparse.Namespace, db: Database, date: str, raw_path: Path) -> Path:
     pool = ObservationPool(args.pool)
     if args.seed_pool:
@@ -101,6 +113,9 @@ def _run_radar(args: argparse.Namespace, db: Database, date: str, raw_path: Path
     report = analyze(pool, load_radar_config(args.radar_config), history, date)
     write_radar_reports(report, args.reports / "topic-radar")
     radar_md = render_radar_markdown(report)
+    free_md = _free_radar_markdown(load_config(args.config), date)
+    if free_md:
+        radar_md += "\n\n" + free_md
     if raw_path.exists():
         raw_path.write_text(
             splice_radar_section(raw_path.read_text(encoding="utf-8"), radar_md),
@@ -148,6 +163,11 @@ async def _main() -> int:
         print(f"Retrying {len(retry_targets)} failed source(s): {', '.join(retry_targets)}")
     limit_per_source = 3 if args.smoke else None
     dry_run = args.dry_run or args.smoke
+    if dry_run and any(
+        source.type == "new_term_radar" and (only_sources is None or source.id in only_sources)
+        for source in config.enabled_sources()
+    ):
+        print("Skipped free_radar in dry-run/smoke: its comparison snapshots must not be updated.")
 
     pool = None if dry_run else ObservationPool(args.pool)
     new_items, results, resurface_ids = await run_pipeline(
@@ -209,6 +229,9 @@ async def _main() -> int:
         report = analyze(pool, load_radar_config(args.radar_config), history, date)
         write_radar_reports(report, args.reports / "topic-radar")
         radar_md = render_radar_markdown(report)
+        free_md = _free_radar_markdown(config, date)
+        if free_md:
+            radar_md += "\n\n" + free_md
     out = write_report(
         all_items_today, failures, args.reports, date, now_tw,
         stale=stale, resurface_items=resurface_items, empty=empty,

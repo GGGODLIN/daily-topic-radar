@@ -23,6 +23,7 @@ _SOURCE_KIND = {
     "rss": "rss",
     "rsshub": "rsshub",
     "huggingface": "huggingface",
+    "new_term_radar": "new_term_radar",
     "github_search": "github_search",
     "github_trending": "github_trending",
     "trendshift": "trendshift",

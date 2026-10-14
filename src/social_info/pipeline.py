@@ -15,6 +15,7 @@ from social_info.db import Database
 from social_info.dedup import Deduper, compute_item_id, compute_title_hash
 from social_info.fetchers import (
     clawhub,
+    free_radar,
     github_search,
     github_trending,
     hn,
@@ -119,6 +120,7 @@ FETCHER_REGISTRY = {
     "linuxdo": linuxdo.fetch,
     "wewe_rss": wewe_rss.fetch,
     "muse_spool": muse_spool.fetch,
+    "new_term_radar": free_radar.fetch,
 }
 
 
@@ -197,14 +199,23 @@ async def run_pipeline(
     if only_sources:
         enabled = [s for s in enabled if s.id in only_sources]
 
+    independent = [source for source in enabled if source.type == "new_term_radar" and not dry_run]
+    regular = [source for source in enabled if source.type != "new_term_radar"]
     async with httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT) as http:
-        results = await asyncio.gather(*[_run_one_fetcher(s, http) for s in enabled])
+        results = await asyncio.gather(*[_run_one_fetcher(s, http) for s in regular])
 
-    if pool is not None and not dry_run:
-        by_id = {source.id: source for source in enabled}
-        for result in results:
-            source = by_id.get(result.source_id)
-            if source is not None:
+        if pool is not None and not dry_run:
+            by_id = {source.id: source for source in regular}
+            for result in results:
+                source = by_id.get(result.source_id)
+                if source is not None:
+                    pool.record_result(source, result)
+
+        # The independent collector reads shared X observations from this run.
+        for source in independent:
+            result = await _run_one_fetcher(source, http)
+            results.append(result)
+            if pool is not None and not dry_run:
                 pool.record_result(source, result)
 
     all_items: list[Item] = []

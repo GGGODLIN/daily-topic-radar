@@ -67,6 +67,25 @@
 
 新增帳號使用現役 Apify 額度，不新增訂閱；daily topic 照原模型路徑。更大的資料輸入是否增加模型 token／耗時尚未量測，先以實際觀察判斷，不預設每次都分析全部池資料。
 
+## 免費原工具的共用接線
+
+使用者後續確認直接做：擴大資料池、備好原工具所需資料與歷史，並讓正式 digest 呈現新角度。原工具免費模組固定在 [456aeee817ba6a755e3db90bc298aead051945fb](https://github.com/zhuyansen/new-term-radar/tree/456aeee817ba6a755e3db90bc298aead051945fb)，不執行帶付費預設值的整套 `radar daily`。
+
+| 原工具功能 | 現有覆蓋與本輪接法 | digest 可取用的內容 | 來源 |
+|---|---|---|---|
+| X 名稱差分 | 共用池已有正文，供原工具分析；不另抓 X | 多帳號提到的新名稱及貼文證據 | [sources.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/sources.py)、[現有配置](/sources.yml) |
+| HF 新進榜 | 現有抓取按 likes7d；另抓 trendingScore，保留 models／Spaces 基準 | 新進榜模型與 demo、名稱副本整理；首次只報基準 | [sources.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/sources.py)、[現有抓取](/src/social_info/fetchers/huggingface.py) |
+| GitHub 成長 | 保留 Trending／Trendshift／既有搜尋；新增近期建立的搜尋角度 | 建立時間、平均星數成長或相對前次增量的研究線索 | [breakout.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/breakout.py) |
+| 目錄新收錄 | 新增 Glama、LobeHub Skills、OpenTools 的 sitemap 比較 | 新收錄工具／MCP／skill 頁面，不冒稱新發布或已驗工具品質 | [sitemaps.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/sitemaps.py)、[本輪配置](/new-term-radar.json) |
+| Reddit 求助／評論痛點 | 原工具走付費服務，本輪不啟用 | 尚無這類新增內容 | [asks.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/asks.py)、[pains.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/pains.py) |
+| 新網站／新賣家／收入 | 需要付費資料服務或 TrustMRR key，本輪不啟用 | 尚無這類新增內容 | [上游說明](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/README.zh-CN.md) |
+| SEO／Trends 回顧 | 需要付費服務，本輪不啟用 | 不提供搜尋量或市場熱度結論 | [usecases.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/usecases.py)、[review.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/review.py) |
+| Search Console | 需要本人網站授權，本輪不啟用 | 不提供本人網站曝光增量 | [gsc.py](https://github.com/zhuyansen/new-term-radar/blob/456aeee817ba6a755e3db90bc298aead051945fb/radar/gsc.py) |
+
+獨立收集入口由現有每日 pipeline 在一般来源存池後呼叫，也可單獨執行；不新增排程。新資料和來源健康進共用池，原工具另保存 HF／GitHub／sitemap 快照與觀察報告。digest 讀 raw 中的「新來源觀察」及原工具報告，按候選原文指出值得研究的原因與增量，與已有主題重疊時只交叉引用。
+
+初次 HF 與 sitemap 抓取只建立比較基準，不能驗證「新進榜／新收錄」。同 URL 的既有來源與新工具不是兩份獨立證據。公開頁面抓取不使用付費 API，但仍受端點流量限制與站點規則；本輪選中的 robots 與 sitemap 在 2026-10-14 實測 HTTP 200，未據此保證之後每日成功。
+
 ## 啟用與觀察
 
 14 個帳號每日一次的配置已獲使用者核准；首輪實抓只跑新增 `twitter_radar`，不重抓原來源。2026-10-14 首輪14次請求完成，回件中25則可解析貼文來自7個帳號，另7個帳號回`empty/no_results`；TeksEdge達10筆上限，不追加抓取。25則已存共用池與當日raw；6則較完整的`full_text`以已保存回件離線補存，不重抓。回件、池與raw對照是本輪驗證，不保證下一輪每帳號都有消息。
