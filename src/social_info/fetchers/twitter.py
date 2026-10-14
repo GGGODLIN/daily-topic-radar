@@ -88,6 +88,7 @@ def _to_items(data: list, source: SourceConfig, now: datetime) -> list[Item]:
         if not isinstance(tw, dict) or tw.get("type") == "mock_tweet":
             continue
         text = (tw.get("text") or "").strip()
+        full_text = (tw.get("full_text") or text).strip()
         tweet_url = _tweet_url(tw)
         if not text or not tweet_url:
             continue
@@ -106,7 +107,7 @@ def _to_items(data: list, source: SourceConfig, now: datetime) -> list[Item]:
             author=author,
             excerpt=text[:200],
             language="en",
-            content=text,
+            content=full_text,
             metadata={"content_kind": "post_text"},
             engagement={
                 "likes": int(tw.get("favorite_count") or 0),

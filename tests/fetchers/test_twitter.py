@@ -7,9 +7,11 @@ import httpx
 import pytest
 
 from social_info.config import SourceConfig
+from social_info.fetchers.twitter import _to_items as twitter_to_items
 from social_info.fetchers.twitter import fetch
 
 FIXTURE = Path("tests/fixtures/scrapebadger_tweet_response.json")
+FULL_TEXT_FIXTURE = Path("tests/fixtures/scrapebadger_full_text.json")
 ACTOR_PATH = (
     "/v2/acts/scrape.badger~twitter-tweets-scraper/run-sync-get-dataset-items"
 )
@@ -213,6 +215,26 @@ async def test_fetch_twitter_empty_dataset_returns_empty(httpx_mock, monkeypatch
         items = await fetch(_cfg(["nobody", "quiet"]), client)
     assert items == []
     assert len(httpx_mock.get_requests()) == 2
+
+
+def test_content_uses_saved_full_text():
+    """text 是截斷欄；有 full_text 時正文用它，沒有就退回 text。"""
+    rows = json.loads(FULL_TEXT_FIXTURE.read_text())
+    source = _cfg(["GoogleDeepMind"])
+    now = datetime(2026, 10, 14, 12, 0)
+    items = twitter_to_items(rows, source, now)
+    saved = next(item for item in items if item.url.endswith("2110039277442682916"))
+    raw = next(row for row in rows if str(row["id"]) == "2110039277442682916")
+    assert saved.excerpt == raw["text"][:200]
+    assert saved.title.startswith(raw["text"][:120])
+    assert saved.content == raw["full_text"].strip()
+    assert len(saved.content) == 403
+    lengths = sorted(len(item.content) for item in items if len(item.content) > 300)
+    assert lengths == [403, 674, 805, 969, 1035, 1105]
+    fallback = twitter_to_items([{
+        "id": "1", "username": "ada", "text": "only text",
+    }], source, now)
+    assert fallback[0].content == "only text"
 
 
 @pytest.mark.asyncio
