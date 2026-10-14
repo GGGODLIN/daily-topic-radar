@@ -54,6 +54,8 @@ def items_from_spool(spool: dict, source: SourceConfig, now: datetime) -> list[I
             fetched_at=now,
             excerpt=text[:200],
             language="zh" if _CJK_RE.search(text) else (source.language or "en"),
+            content=text,
+            metadata={"content_kind": "post_text"},
         ))
     return items
 

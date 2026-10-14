@@ -66,6 +66,8 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             author=post.get("author_name") or author,
             excerpt=text[:200],
             language=post.get("lang") or language,
+            content=text,
+            metadata={"content_kind": "post_text"},
             engagement={
                 "likes": int(post.get("like_count") or 0),
                 "comments": int(post.get("reply_count") or 0),

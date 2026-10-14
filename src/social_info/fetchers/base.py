@@ -25,6 +25,13 @@ class Item:
     engagement: dict[str, int] = field(default_factory=dict)
     also_appeared_in: list[dict[str, str]] = field(default_factory=list)
     comments: list[dict[str, str]] = field(default_factory=list)
+    # Full text the source already returned. Not a page fetch, and not stored
+    # in state.db — to_db_row omits it so tracked items need no migration.
+    content: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def body_text(self) -> str:
+        return self.content or self.excerpt or self.title
 
     def to_db_row(self, item_id: str, title_hash: str) -> dict[str, Any]:
         return {

@@ -68,6 +68,8 @@ def _post_to_item(
         author=username,
         excerpt=text[:200],
         language=language,
+        content=text,
+        metadata={"content_kind": "post_text"},
         engagement={
             "likes": int(post.get("like_count") or 0),
             "comments": int(post.get("replies_count") or 0),

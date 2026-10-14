@@ -7,16 +7,25 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from social_info import known_issues
 from social_info.config import load_config
 from social_info.db import Database
 from social_info.fetchers.base import Item
-from social_info import known_issues
-from social_info.markdown import render_item
+from social_info.markdown import render_item, splice_radar_section
+from social_info.observation_pool import ObservationPool
 from social_info.pipeline import (
+    hydrate_item_content,
     resolve_resurface_items,
     resolve_stale_and_empty,
     run_pipeline,
     write_report,
+)
+from social_info.topic_radar import (
+    RadarHistory,
+    analyze,
+    load_radar_config,
+    render_radar_markdown,
+    write_radar_reports,
 )
 
 TAIPEI = timezone(timedelta(hours=8))
@@ -69,11 +78,60 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="re-run only sources whose most recent fetch_run was a failure",
     )
+    p.add_argument("--pool", type=Path, default=Path("data/topic-pool.db"))
+    p.add_argument("--radar-config", type=Path, default=Path("topic-radar.yml"))
+    p.add_argument(
+        "--analyze-pool",
+        action="store_true",
+        help="analyze the local pool and splice the radar into the day's raw report",
+    )
+    p.add_argument(
+        "--seed-pool",
+        action="store_true",
+        help="with --analyze-pool, copy today's state.db excerpts into the pool",
+    )
     return p.parse_args()
+
+
+def _run_radar(args: argparse.Namespace, db: Database, date: str, raw_path: Path) -> Path:
+    pool = ObservationPool(args.pool)
+    if args.seed_pool:
+        pool.seed_from_database(db, date, load_config(args.config))
+    history = RadarHistory(args.pool.parent / "topic-radar.json")
+    report = analyze(pool, load_radar_config(args.radar_config), history, date)
+    write_radar_reports(report, args.reports / "topic-radar")
+    radar_md = render_radar_markdown(report)
+    if raw_path.exists():
+        raw_path.write_text(
+            splice_radar_section(raw_path.read_text(encoding="utf-8"), radar_md),
+            encoding="utf-8",
+        )
+    else:
+        rows = db.items_for_date(date)
+        items = [_row_to_item(row) for row in rows]
+        hydrate_item_content(items, pool, date)
+        resurface = resolve_resurface_items(db, db.resurfaced_item_ids_for_date(date))
+        hydrate_item_content(resurface, pool, date)
+        stale, empty = resolve_stale_and_empty(db, date, [])
+        write_report(
+            items, [], args.reports, date, datetime.now(TAIPEI),
+            stale=stale, resurface_items=resurface, empty=empty,
+            radar_markdown=radar_md,
+        )
+    pool.close()
+    return raw_path
 
 
 async def _main() -> int:
     args = _parse_args()
+    if args.analyze_pool:
+        db = Database(args.db)
+        db.init_schema()
+        date = args.date or datetime.now(TAIPEI).strftime("%Y-%m-%d")
+        out = _run_radar(args, db, date, args.reports / f"{date}.md")
+        print(f"Analyzed pool into {out}")
+        db.close()
+        return 0
     config = load_config(args.config)
     db = Database(args.db)
     db.init_schema()
@@ -91,12 +149,14 @@ async def _main() -> int:
     limit_per_source = 3 if args.smoke else None
     dry_run = args.dry_run or args.smoke
 
+    pool = None if dry_run else ObservationPool(args.pool)
     new_items, results, resurface_ids = await run_pipeline(
         config,
         db,
         only_sources=only_sources,
         dry_run=dry_run,
         limit_per_source=limit_per_source,
+        pool=pool,
     )
     failures = [r for r in results if not r.ok]
 
@@ -111,11 +171,15 @@ async def _main() -> int:
         for f in failures:
             print(f"FAILED: {f.source_id}: {f.error}")
         db.close()
+        if pool is not None:
+            pool.close()
         return 0
 
     if dry_run:
         print(f"DRY-RUN: {len(new_items)} new items, {len(failures)} failures")
         db.close()
+        if pool is not None:
+            pool.close()
         return 0
 
     now_tw = datetime.now(TAIPEI)
@@ -137,9 +201,18 @@ async def _main() -> int:
         db, sorted(set(resurface_ids) | set(db.resurfaced_item_ids_for_date(date)))
     )
     stale, empty = resolve_stale_and_empty(db, date, results)
+    hydrate_item_content(all_items_today, pool, date)
+    hydrate_item_content(resurface_items, pool, date)
+    radar_md = None
+    if pool is not None:
+        history = RadarHistory(args.pool.parent / "topic-radar.json")
+        report = analyze(pool, load_radar_config(args.radar_config), history, date)
+        write_radar_reports(report, args.reports / "topic-radar")
+        radar_md = render_radar_markdown(report)
     out = write_report(
         all_items_today, failures, args.reports, date, now_tw,
         stale=stale, resurface_items=resurface_items, empty=empty,
+        radar_markdown=radar_md,
     )
     db.update_last_surfaced_at(resurface_ids)
 
@@ -154,6 +227,8 @@ async def _main() -> int:
     )
     print(f"Wrote {issues_path} ({len(issues)} known issue(s))")
     db.close()
+    if pool is not None:
+        pool.close()
     return 0
 
 

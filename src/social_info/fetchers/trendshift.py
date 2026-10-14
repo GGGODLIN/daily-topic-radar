@@ -118,6 +118,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
                 author=full_name.split("/")[0],
                 excerpt=d.get("description", "")[:200],
                 language="en",
+                metadata={"content_kind": "description"},
                 engagement={
                     "rank": int(d["rank"]),
                     "score": int(float(d["score"])),

@@ -1,23 +1,30 @@
 """Generic RSS / Atom fetcher (lab blogs, tech media, Taiwan media)."""
-import re
 from datetime import datetime
 from time import mktime
 
 import feedparser
 import httpx
+from bs4 import BeautifulSoup
 
 from social_info._time import utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
 
-_TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"\s+")
+
+def _excerpt(html: str) -> str:
+    # Existing summary path stays a collapsed 200-char excerpt.
+    text = BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True)
+    return " ".join(text.split())[:200]
 
 
-def _strip_html(html: str) -> str:
-    text = _TAG_RE.sub("", html)
-    return _WS_RE.sub(" ", text).strip()
+def _feed_content(entry) -> tuple[str, str]:
+    """Only the feed content field. Summary stays the excerpt and is not body text."""
+    content = entry.get("content")
+    if not content:
+        return "", ""
+    raw = content[0].get("value", "") or ""
+    return BeautifulSoup(raw, "html.parser").get_text("\n", strip=True), "feed_content"
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
@@ -40,7 +47,8 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             posted_at = datetime.fromtimestamp(mktime(entry.updated_parsed))
         else:
             posted_at = now
-        excerpt = _strip_html(entry.get("summary") or entry.get("description") or "")[:200]
+        excerpt = _excerpt(entry.get("summary") or entry.get("description") or "")
+        body, kind = _feed_content(entry)
 
         items.append(Item(
             title=title,
@@ -55,5 +63,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             excerpt=excerpt,
             language=source.language,
             engagement={},
+            content=body,
+            metadata={"content_kind": kind} if kind else {},
         ))
     return items

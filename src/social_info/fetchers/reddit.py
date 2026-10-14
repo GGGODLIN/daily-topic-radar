@@ -89,6 +89,15 @@ def _entry_excerpt(entry) -> str:
     return body[:EXCERPT_MAX_CHARS]
 
 
+def _entry_body(entry) -> str:
+    markup = ""
+    entry_content = entry.get("content")
+    if entry_content:
+        markup = entry_content[0].get("value", "") or ""
+    markup = markup or entry.get("summary") or ""
+    return _strip_html(_SUBMITTED_BY_RE.split(markup)[0])
+
+
 def _entry_posted_at(entry, fallback):
     for key in ("published_parsed", "updated_parsed"):
         parsed = entry.get(key)
@@ -165,5 +174,6 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             excerpt=_entry_excerpt(entry),
             language="en",
             engagement={},
+            metadata={"content_kind": "summary"},
         ))
     return items

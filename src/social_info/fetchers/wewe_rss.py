@@ -72,5 +72,6 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             excerpt=excerpt,
             language=source.language,
             engagement={},
+            metadata={"content_kind": "summary"},
         ))
     return items

@@ -80,5 +80,11 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             excerpt=_clean(content),
             language="zh-CN",
             engagement={"comments": int(topic.get("replies") or 0)},
+            metadata={
+                "id": str(topic_id),
+                "created_at": str(topic.get("created") or ""),
+                "content_kind": "post_text" if content else "summary",
+            },
+            content=content,
         ))
     return items

@@ -35,6 +35,10 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             ).replace(tzinfo=None)
         except (KeyError, ValueError):
             posted_at = now
+        created = entry.get("createdAt") or entry.get("created_at")
+        metadata = {"id": repo_id, "category": category}
+        if created:
+            metadata["created_at"] = created
         items.append(Item(
             title=title,
             url=full_url,
@@ -51,5 +55,6 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
                 "likes": int(entry.get("likes") or 0),
                 "downloads": int(entry.get("downloads") or 0),
             },
+            metadata={**metadata, "content_kind": "model_id"},
         ))
     return items

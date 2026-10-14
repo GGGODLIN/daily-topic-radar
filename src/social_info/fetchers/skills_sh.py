@@ -64,6 +64,7 @@ def _parse_board(html: str, board: str, tier: int) -> list[Item]:
                 author=publisher,
                 language="en",
                 engagement={"rank": rank, "installs": installs},
+                metadata={"content_kind": "title"},
             )
         )
     return items

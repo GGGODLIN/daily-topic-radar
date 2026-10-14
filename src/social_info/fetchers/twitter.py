@@ -106,6 +106,8 @@ def _to_items(data: list, source: SourceConfig, now: datetime) -> list[Item]:
             author=author,
             excerpt=text[:200],
             language="en",
+            content=text,
+            metadata={"content_kind": "post_text"},
             engagement={
                 "likes": int(tw.get("favorite_count") or 0),
                 "comments": int(tw.get("reply_count") or 0),

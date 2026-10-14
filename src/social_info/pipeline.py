@@ -36,6 +36,7 @@ from social_info.fetchers import (
 )
 from social_info.fetchers.base import FetchResult, Item
 from social_info.markdown import render_file
+from social_info.observation_pool import ObservationPool
 
 _SECRET_QS_RE = re.compile(
     r"([?&](?:token|apikey|api_key|access_token|auth|key)=)[^&\s'\"]+",
@@ -183,6 +184,7 @@ async def run_pipeline(
     dry_run: bool = False,
     limit_per_source: int | None = None,
     resurface_days: int = RESURFACE_DAYS,
+    pool: ObservationPool | None = None,
 ) -> tuple[list[Item], list[FetchResult], list[str]]:
     """Run all enabled fetchers in parallel, dedup, return (new_items, all_results, resurface_ids).
 
@@ -197,6 +199,13 @@ async def run_pipeline(
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT) as http:
         results = await asyncio.gather(*[_run_one_fetcher(s, http) for s in enabled])
+
+    if pool is not None and not dry_run:
+        by_id = {source.id: source for source in enabled}
+        for result in results:
+            source = by_id.get(result.source_id)
+            if source is not None:
+                pool.record_result(source, result)
 
     all_items: list[Item] = []
     for r in results:
@@ -253,6 +262,7 @@ def _row_to_item(row: dict[str, Any]) -> Item:
         engagement=json.loads(row.get("engagement_json") or "{}"),
         also_appeared_in=json.loads(row.get("also_appeared_in") or "[]"),
         comments=json.loads(row.get("comments_json") or "[]"),
+        content=row.get("content") or "",
     )
 
 
@@ -320,6 +330,23 @@ def resolve_stale_and_empty(
     return list(stale.values()), list(empty.values())
 
 
+def hydrate_item_content(items: list[Item], pool: ObservationPool | None, date: str) -> None:
+    """Fill Item.content from the pool. Missing full text stays an excerpt."""
+    if pool is None:
+        return
+    start, end = Database._utc_range_for_date(date)
+    for item in items:
+        row = pool.latest_content(item.canonical_url, start, end)
+        if not row or not row.get("content"):
+            continue
+        meta = json.loads(row.get("metadata_json") or "{}")
+        kind = meta.get("content_kind") or ""
+        if kind not in {"post_text", "feed_content"}:
+            continue
+        item.content = row["content"]
+        item.metadata = {**item.metadata, "content_kind": kind}
+
+
 def write_report(
     new_items: list[Item],
     failures: list[FetchResult],
@@ -329,6 +356,7 @@ def write_report(
     stale: list[FetchResult] | None = None,
     resurface_items: list[Item] | None = None,
     empty: list[FetchResult] | None = None,
+    radar_markdown: str | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     md = render_file(
@@ -339,6 +367,7 @@ def write_report(
         stale=stale,
         resurface_items=resurface_items,
         empty=empty,
+        radar_markdown=radar_markdown,
     )
     out_path = out_dir / f"{date}.md"
     out_path.write_text(md, encoding="utf-8")

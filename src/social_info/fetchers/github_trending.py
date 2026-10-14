@@ -75,6 +75,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
                         excerpt=description[:200],
                         language="en",
                         engagement={"stars": stars},
+                        metadata={"content_kind": "description"},
                     ))
             except Exception as e:
                 print(f"github_trending {lang} {since} failed: {e}", file=sys.stderr)

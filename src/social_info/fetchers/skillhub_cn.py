@@ -64,6 +64,7 @@ def _to_item(entry: dict, rank: int, tier: int, language: str, now: datetime) ->
         language=language,
         engagement=engagement,
         also_appeared_in=also,
+        metadata={"content_kind": "description"},
     )
 
 

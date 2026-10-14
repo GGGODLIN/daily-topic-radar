@@ -124,6 +124,11 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             author=hit.get("author") or "",
             excerpt="",
             language="en",
+            metadata={
+                "id": story_id,
+                "created_at": hit.get("created_at") or "",
+                "content_kind": "title",
+            },
             engagement={
                 "score": int(hit.get("points") or 0),
                 "comments": int(hit.get("num_comments") or 0),

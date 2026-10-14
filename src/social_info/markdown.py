@@ -1,4 +1,5 @@
 """Markdown rendering for daily digest files."""
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -103,6 +104,8 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
             lines.append(f"> {item.excerpt.replace('\n', ' ').strip()}")
         lines.append("")
 
+    lines.extend(_content_lines(item))
+
     if item.comments:
         lines.append("> 💬 Top comments:")
         for c in item.comments:
@@ -127,6 +130,25 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
     return "\n".join(lines)
 
 
+RADAR_START = "<!-- topic-radar:start -->"
+RADAR_END = "<!-- topic-radar:end -->"
+
+
+def _content_lines(item: Item) -> list[str]:
+    kind = str((item.metadata or {}).get("content_kind") or "")
+    # Only text the source already returned as a post or feed body. Descriptions,
+    # titles and RSS summaries stay in the excerpt and are not labelled full text.
+    if kind not in {"post_text", "feed_content"}:
+        return []
+    if not item.content or item.content == item.excerpt:
+        return []
+    lines = ["> 來源提供的正文:"]
+    for content_line in item.content.strip("\n").split("\n"):
+        lines.append(f"> {content_line}".rstrip())
+    lines.append("")
+    return lines
+
+
 def render_file(
     date: str,
     generated_at: datetime,
@@ -135,6 +157,7 @@ def render_file(
     stale: list[FetchResult] | None = None,
     resurface_items: list[Item] | None = None,
     empty: list[FetchResult] | None = None,
+    radar_markdown: str | None = None,
 ) -> str:
     resurface_items = resurface_items or []
     resurface_object_ids = {id(it) for it in resurface_items}
@@ -191,4 +214,20 @@ def render_file(
         for it in bucket:
             lines.append(render_item(it, is_resurface=id(it) in resurface_object_ids))
 
+    if radar_markdown:
+        lines.extend(["", RADAR_START, radar_markdown.rstrip("\n"), RADAR_END, ""])
+
     return "\n".join(lines)
+
+
+def splice_radar_section(markdown: str, radar_markdown: str) -> str:
+    """Replace only the radar markers. Text outside them, including diagnostics, stays."""
+    block = f"{RADAR_START}\n{radar_markdown.rstrip(chr(10))}\n{RADAR_END}\n"
+    pattern = re.compile(
+        re.escape(RADAR_START) + r".*?" + re.escape(RADAR_END) + r"\n?",
+        re.DOTALL,
+    )
+    if pattern.search(markdown):
+        return pattern.sub(lambda _match: block, markdown, count=1)
+    suffix = "" if markdown.endswith("\n") else "\n"
+    return markdown + suffix + "\n" + block

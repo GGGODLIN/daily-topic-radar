@@ -78,6 +78,11 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             author=(n.get("user") or {}).get("name", ""),
             excerpt=n.get("tagline", "")[:200],
             language="en",
+            metadata={
+                "id": n.get("id", ""),
+                "created_at": n.get("createdAt", ""),
+                "content_kind": "tagline",
+            },
             engagement={
                 "votes": int(n.get("votesCount") or 0),
                 "comments": int(n.get("commentsCount") or 0),

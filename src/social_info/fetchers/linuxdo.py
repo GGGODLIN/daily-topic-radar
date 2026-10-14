@@ -220,6 +220,7 @@ def _parse_page(body: str, source: SourceConfig, now: datetime, page: int) -> tu
             excerpt=_strip_html(entry.get("summary") or entry.get("description") or ""),
             language=source.language,
             engagement={},
+            metadata={"content_kind": "summary"},
         ))
     return items, len(entries)
 

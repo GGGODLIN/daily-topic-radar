@@ -50,6 +50,7 @@ def _to_item(entry: dict, rank: int, tier: int, now: datetime) -> Item | None:
         excerpt=" ".join(str(entry.get("summary") or "").split())[:200],
         language="en",
         engagement=engagement,
+        metadata={"content_kind": "summary"},
     )
 
 

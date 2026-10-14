@@ -74,6 +74,9 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
                 pushed_at = datetime.fromisoformat(
                     repo["pushed_at"].replace("Z", "+00:00")
                 ).replace(tzinfo=None)
+                metadata = {"id": full_name}
+                if repo.get("created_at"):
+                    metadata["created_at"] = repo["created_at"]
 
                 items.append(Item(
                     title=full_name,
@@ -88,6 +91,7 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
                     excerpt=desc[:200],
                     language="en",
                     engagement={"stars": repo.get("stargazers_count", 0)},
+                    metadata={**metadata, "content_kind": "description"},
                 ))
         except Exception as e:
             print(f"github_search query '{query}' failed: {e}", file=sys.stderr)
