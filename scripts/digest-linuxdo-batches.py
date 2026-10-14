@@ -28,6 +28,9 @@ _CANONICAL_TOPIC = re.compile(r"^https://linux\.do/t/topic/(\d+)$")
 DEFAULT_MAX_CHARS = 18000
 DEFAULT_MAX_ITEMS = 40
 SECTION_TITLE = "LINUX DO"
+# The reader template carries this one line. Replacing any other occurrence
+# would splice the manifest into a string or a comment the workflow still runs.
+PREPARED_MARKER = "const prepared = null"
 NOTE = (
     "RSS excerpt is the original post only. Images are URLs with no image "
     "bytes. Replies are absent. This helper does not claim the forum thread "
@@ -429,6 +432,35 @@ def _workflow_output(manifest: dict, fragments: list[dict]) -> str:
     )
 
 
+def _manifest_literal(manifest: dict) -> str:
+    """JSON literal for a JS source line.
+
+    ensure_ascii keeps every URL byte in the ASCII range, so a quote or
+    slash inside an untrusted title cannot close the literal. U+2028 and
+    U+2029 are not escaped by ensure_ascii, and a raw one would end the JS
+    line before the manifest object closed.
+    """
+    literal = json.dumps(manifest, ensure_ascii=True, separators=(",", ":"))
+    return literal.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+
+
+def _render_workflow_script(template: str, manifest: dict) -> str:
+    # A whole line, not a substring. The same characters inside a string or
+    # comment are data the workflow still carries, not a second marker.
+    marker_line = f"{PREPARED_MARKER}\n"
+    count = template.count(marker_line)
+    if count != 1:
+        raise BatchError(
+            f"reader template must contain {PREPARED_MARKER!r} exactly once, found {count}"
+        )
+    rendered = template.replace(
+        marker_line, f"const prepared = {_manifest_literal(manifest)};\n", 1
+    )
+    if rendered.count("const prepared = {") != 1 or PREPARED_MARKER in rendered.splitlines():
+        raise BatchError("rendered workflow script does not keep a single prepared binding")
+    return rendered
+
+
 def _stdout_meta(manifest: dict) -> dict:
     return {
         "ok": manifest["ok"],
@@ -455,13 +487,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print a compact base64 manifest instead of the summary",
     )
+    parser.add_argument("--workflow-script", type=Path)
+    parser.add_argument("--reader-template", type=Path)
     args = parser.parse_args(argv)
+    if (args.workflow_script is None) != (args.reader_template is None):
+        print(json.dumps(
+            {"ok": False, "err": "--workflow-script and --reader-template must be given together"},
+            ensure_ascii=False,
+        ))
+        return 1
     try:
         if not args.raw.is_file():
             raise BatchError(f"raw file not found: {args.raw}")
         raw_text = args.raw.read_text(encoding="utf-8")
         plan = build(raw_text, str(args.raw), args.max_chars, args.max_items)
         manifest = write_out(plan, args.out)
+        if args.workflow_script is not None:
+            # Disk is the authority. The plan still in memory is not re-read.
+            on_disk = json.loads((args.out / "manifest.json").read_text(encoding="utf-8"))
+            template = args.reader_template.read_text(encoding="utf-8")
+            _write_same(args.workflow_script, _render_workflow_script(template, on_disk))
     except BatchError as exc:
         print(json.dumps({"ok": False, "err": str(exc)}, ensure_ascii=False))
         return 1
@@ -471,7 +516,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.workflow_output:
         print(_workflow_output(manifest, _fragments_in_order(manifest, args.out)))
     else:
-        print(json.dumps(_stdout_meta(manifest), ensure_ascii=False))
+        meta = _stdout_meta(manifest)
+        if args.workflow_script is not None:
+            meta["workflow_script"] = str(args.workflow_script)
+        print(json.dumps(meta, ensure_ascii=False))
     return 0
 
 

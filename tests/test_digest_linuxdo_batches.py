@@ -392,3 +392,166 @@ def test_non_positive_budget_is_an_error(tmp_path: Path, bad: str):
     result = _run(raw, out, "--max-chars", bad)
     assert result.returncode == 1
     assert json.loads(result.stdout)["ok"] is False
+
+
+_READER_TEMPLATE = """\
+export const meta = { name: 'reader' }
+const prepared = null
+const NOTE = 'const prepared = null is data, not the marker'
+function run() {
+  return prepared
+}
+"""
+
+
+def _prepared_literal(script_text: str) -> dict:
+    """Take the JSON object off the substituted line. The template is not executed."""
+    line = next(
+        row for row in script_text.splitlines() if row.startswith("const prepared = {")
+    )
+    assert line.endswith(";")
+    return json.loads(line.removeprefix("const prepared = ").removesuffix(";"))
+
+
+def test_workflow_script_embeds_disk_manifest_without_shipping_it(tmp_path: Path):
+    # Topic numbers that failed when the transport rebuilt them: a 3020144-class
+    # id, a leading zero, an integer past 2^53-1, and a long entry cut into parts.
+    # The other section must stay outside the embedded batches.
+    odd = "https://linux.do/t/topic/3020144"
+    leading = "https://linux.do/t/topic/03020140"
+    huge = "https://linux.do/t/topic/9007199254740993"
+    long_body = "甲" * 30
+    body = (
+        _entry("失敗例", odd, "甲文")
+        + _entry("前導零", leading, "乙文")
+        + _entry("大數", huge, "丙文")
+        + _entry("很長", "https://linux.do/t/topic/3020140", long_body)
+    )
+    before = "## English Tech Media (1 items)\n\n### [keep](https://example.com/a)\n\n> stay\n\n---\n"
+    raw = tmp_path / "raw.md"
+    out = tmp_path / "out"
+    template = tmp_path / "reader-template.js"
+    script = tmp_path / "reader.js"
+    _write(raw, _raw(before, _linux(body)))
+    _write(template, _READER_TEMPLATE)
+
+    result = _run(
+        raw,
+        out,
+        "--max-chars",
+        "40",
+        "--workflow-script",
+        str(script),
+        "--reader-template",
+        str(template),
+    )
+    assert result.returncode == 0, result.stderr
+    meta = json.loads(result.stdout)
+    assert meta["workflow_script"] == str(script)
+    assert "batches" not in meta
+    assert "3020144" not in result.stdout
+    assert "9007199254740993" not in result.stdout
+    assert template.read_text(encoding="utf-8") == _READER_TEMPLATE
+
+    written = script.read_text(encoding="utf-8")
+    assert sum(line == "const prepared = null" for line in written.splitlines()) == 0
+    assert sum(line.startswith("const prepared = {") for line in written.splitlines()) == 1
+    assert "const NOTE = 'const prepared = null is data, not the marker'" in written
+    assert written.endswith("  return prepared\n}\n")
+
+    embedded = _prepared_literal(written)
+    on_disk = _manifest(out)
+    assert embedded == on_disk
+    urls = [url for batch in embedded["batches"] for url in batch["topic_urls"]]
+    assert odd in urls
+    assert leading in urls
+    assert huge in urls
+    assert "https://linux.do/t/topic/3020140" in urls
+    assert "https://example.com/a" not in json.dumps(embedded["batches"])
+    assert any(batch["chars"] > 0 and len(batch["fragment_ids"]) >= 1 for batch in embedded["batches"])
+    assert embedded["fragment_count"] > embedded["entry_count"]
+    rebuilt = _rebuilt_linux(out)
+    assert long_body in rebuilt
+    assert rebuilt.count("https://linux.do/t/topic/3020140)") == 1
+
+
+def test_workflow_script_keeps_line_separator_inside_the_literal(tmp_path: Path):
+    # source_path is copied onto the manifest verbatim. A separator in a title
+    # or a link target is parsed away before the manifest exists.
+    raw = tmp_path / ("raw" + " " + "file.md")
+    out = tmp_path / "out"
+    template = tmp_path / "reader-template.js"
+    script = tmp_path / "reader.js"
+    _write(raw, _raw(_linux(_entry("分隔", "https://linux.do/t/topic/3020144", "正文"))))
+    _write(template, _READER_TEMPLATE)
+
+    result = _run(
+        raw, out, "--workflow-script", str(script), "--reader-template", str(template)
+    )
+    assert result.returncode == 0, result.stderr
+    written = script.read_text(encoding="utf-8")
+    assert " " not in written
+    assert "\\u2028" in written
+    assert sum(line.startswith("const prepared = {") for line in written.splitlines()) == 1
+    embedded = _prepared_literal(written)
+    assert embedded == _manifest(out)
+    assert " " in embedded["source_path"]
+
+
+def test_workflow_script_rejects_marker_count_and_half_a_pair(tmp_path: Path):
+    raw = tmp_path / "raw.md"
+    out = tmp_path / "out"
+    template = tmp_path / "reader-template.js"
+    script = tmp_path / "reader.js"
+    _write(raw, _raw(_linux(_entry("甲", "https://linux.do/t/topic/1", "正文"))))
+
+    _write(template, "const ready = null\n")
+    missing = _run(
+        raw, out, "--workflow-script", str(script), "--reader-template", str(template)
+    )
+    assert missing.returncode != 0
+    assert json.loads(missing.stdout)["ok"] is False
+    assert not script.exists()
+
+    _write(template, "const prepared = null\nconst prepared = null\n")
+    doubled = _run(
+        raw, out, "--workflow-script", str(script), "--reader-template", str(template)
+    )
+    assert doubled.returncode != 0
+    assert json.loads(doubled.stdout)["ok"] is False
+    assert not script.exists()
+
+    only_script = _run(raw, out, "--workflow-script", str(script))
+    assert only_script.returncode != 0
+    assert json.loads(only_script.stdout)["ok"] is False
+    assert not script.exists()
+
+    only_template = _run(raw, out, "--reader-template", str(template))
+    assert only_template.returncode != 0
+    assert json.loads(only_template.stdout)["ok"] is False
+    assert not script.exists()
+
+
+def test_workflow_script_refuses_a_symlink_destination(tmp_path: Path):
+    raw = tmp_path / "raw.md"
+    out = tmp_path / "out"
+    template = tmp_path / "reader-template.js"
+    elsewhere = tmp_path / "elsewhere.js"
+    link = tmp_path / "reader.js"
+    _write(raw, _raw(_linux(_entry("甲", "https://linux.do/t/topic/1", "正文"))))
+    _write(template, _READER_TEMPLATE)
+    _write(elsewhere, "original\n")
+    link.symlink_to(elsewhere)
+
+    result = _run(
+        raw,
+        out,
+        "--workflow-script",
+        str(link),
+        "--reader-template",
+        str(template),
+    )
+    assert result.returncode != 0
+    assert json.loads(result.stdout)["ok"] is False
+    assert elsewhere.read_text(encoding="utf-8") == "original\n"
+    assert link.is_symlink()
