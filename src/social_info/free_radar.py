@@ -304,14 +304,19 @@ def _x_block(pool_path: Path, state: Path, moment: datetime, label: str) -> tupl
         cutoff = _aware(Database._utc_range_for_date(label)[1])
         end = min(moment, cutoff)
         rows = sources.novel_names(posts, vocab, end)
+    originals = {post["url"]: post["created"].isoformat() for post in posts}
+    for row in rows:
+        for post in row.get("posts") or []:
+            post["created_at"] = originals.get(post.get("url"), "")
     if posts:
-        today = _taipei_day(moment)
-        cutoff = (datetime.strptime(today, "%Y-%m-%d").date() - timedelta(days=sources.VOCAB_DAYS)).isoformat()
+        cutoff = (datetime.strptime(label, "%Y-%m-%d").date() - timedelta(days=sources.VOCAB_DAYS)).isoformat()
         saved = dict(vocab)
         for post in posts:
             for term in sources.names(post["text"]):
-                saved[term] = today
-        snap.save(path, {term: seen for term, seen in saved.items() if seen >= cutoff})
+                saved[term] = max(saved.get(term, label), label)
+        saved = {term: seen for term, seen in saved.items() if seen >= cutoff}
+        if not path.exists() or saved != vocab:
+            snap.save(path, saved)
     if not posts:
         notes.append("這個台北日的 pool 沒有 X 列")
     return {
@@ -390,6 +395,7 @@ def _raw_items(blocks: dict[str, dict], observed_on: str) -> list[dict[str, Any]
             "kind": "x", "title": row["term"], "url": post.get("url") or "",
             "status": "lead", "entry": post.get("url") or "",
             "first_observed": observed_on, "likes": int(row.get("likes") or 0),
+            "created_at": post.get("created_at") or "",
             "note": row.get("note") or "",
         })
     return items

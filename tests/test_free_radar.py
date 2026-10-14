@@ -57,6 +57,43 @@ def test_first_snapshot_shared_items_and_same_day_no_refetch(tmp_path):
     assert later["raw_items"] == report["raw_items"]
 
 
+def test_backdated_cached_report_preserves_vocab_and_post_timestamp(tmp_path):
+    from pathlib import Path
+
+    from social_info.fetchers.base import FetchResult, Item
+    from social_info.observation_pool import ObservationPool
+    from social_info.vendor.new_term_radar import snap
+
+    source = _source(tmp_path)
+    pool_path = Path(source.params["pool_path"])
+    pool = ObservationPool(pool_path)
+    posted = datetime(2026, 10, 13, 22)
+    fetched = datetime(2026, 10, 14, 1)
+    item = Item(
+        title="HyperFrames", url="https://x.com/test/status/1", canonical_url="https://x.com/test/status/1",
+        source="x", source_handle="@test", source_tier=1, posted_at=posted, fetched_at=fetched,
+        content="HyperFrames launches", engagement={"likes": 200},
+    )
+    pool.record_result(SourceConfig("twitter", "twitter", True, 1), FetchResult(
+        "twitter", items=[item], started_at=fetched, ended_at=fetched,
+    ))
+    pool.close()
+    (pool_path.parent / "topic-radar.json").write_text(json.dumps({"terms": {"prior": "2026-10-13"}}))
+    calls = []
+    report = collect(source, "2026-10-14", now=datetime(2026, 10, 14, 12, tzinfo=UTC),
+                     transports=_transports(calls))
+    vocab_path = Path(source.params["state_dir"]) / "x_vocab.json.gz"
+    before = vocab_path.read_bytes()
+    later = collect(source, "2026-10-14", now=datetime(2026, 10, 15, 2, tzinfo=UTC),
+                    transports=_transports(calls))
+    assert later["reused"] is True
+    assert calls == ["hf", "github", "sitemap"]
+    assert vocab_path.read_bytes() == before
+    assert set(snap.load(vocab_path).values()) <= {"2026-10-13", "2026-10-14"}
+    x_items = [item for item in to_items(report) if item.source_handle == "x"]
+    assert x_items and all(item.posted_at == posted for item in x_items)
+
+
 def test_config_change_recollects_and_exposes_preserved_failure(tmp_path):
     source = _source(tmp_path)
     calls = []
