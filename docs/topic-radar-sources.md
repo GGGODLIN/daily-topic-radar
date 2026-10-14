@@ -2,7 +2,7 @@
 
 ## 本輪已批准的範圍
 
-使用現有已啟用來源，抓取一次，供共用資料池、daily topic 與選題雷達取用。保存抓取端已取得的完整正文；沒有全文的來源保留摘要與資料限制，不追加抓頁請求。新雷達只讀本機資料，不呼叫新付費 API。新增帳號與額外服務在本文件規劃，尚未啟用。
+使用共用來源配置與抓取，供共用資料池、daily topic 與選題雷達取用。保存抓取端已取得的完整正文；沒有全文的來源保留摘要與資料限制，不追加抓頁請求。新雷達只讀本機資料，不呼叫新模型 API。使用者於 2026-10-14 核准新增 14 個 X 帳號，沿用現役 Apify relay、每日一次、每帳號最多 10 筆與每次 Actor 費上限 US$0.01，包含首輪實抓驗證；只消耗既有額度，不充值、不新增訂閱。
 
 ## 推薦帳號
 
@@ -10,29 +10,49 @@
 
 | 組別 | 配置提案 | 來源 |
 |---|---|---|
-| 模型與工具官方 | 作為第一批候選，待帳號有效性確認 | 上游 labs 清單 |
-| 資訊整理者 | 作為第一批候選，與官方交叉觀察 | 上游 bloggers 清單 |
+| 模型與工具官方 | 第一批已核准名單見下表 | 上游 labs 清單與下表身分來源 |
+| 資訊整理者 | AK／TeksEdge 已核准；Rowan 保留待核 | 上游 bloggers 清單與下表身分來源 |
 | 影像／影片 | 保留候選；使用者想加重視覺題目時啟用 | 上游 labs 清單 |
 | Cursor | 先查是否與現有 Cursor 重複或改名 | 上游 cursor_ai／現有 Cursor |
 
-第一批候選，不啟用：
+## 已核准的來源
 
-- 官方：OpenAI、OpenAIDevs、GoogleDeepMind、GoogleAIStudio、Alibaba_Qwen、Kimi_Moonshot、MiniMax__AI、Zai_org、xai、AIatMeta、MistralAI、huggingface。
-- 整理者：_akhaliq、TeksEdge、rowancheung。
+`twitter_radar` 與現役 enabled X 帳號不分大小寫去重。配置由 29 增到 43 個帳號（29 + 14），既有來源設定維持原樣。
+
+| 帳號 | 用途 | 身分來源 |
+|---|---|---|
+| OpenAI | 模型與產品公告 | [OpenAI 官網](https://openai.com/)頁尾 |
+| OpenAIDevs | API 與開發工具 | [開發者官網](https://developers.openai.com/)頁尾 |
+| GoogleDeepMind | 模型與研究 | [DeepMind 官網](https://deepmind.google/)頁尾 |
+| GoogleAIStudio | API 與工具入口 | [DeepMind 官號點名](https://x.com/GoogleDeepMind/status/2110039277442682916) |
+| Alibaba_Qwen | Qwen 模型 | [Qwen GitHub 組織](https://api.github.com/orgs/QwenLM) twitter_username |
+| Kimi_Moonshot | Kimi 模型 | [Moonshot 官網](https://www.moonshot.ai/)社交連結 |
+| MiniMax_AI | MiniMax 模型與工具 | [MiniMax 官網](https://www.minimax.io/)與[GitHub](https://api.github.com/orgs/MiniMax-AI) |
+| Zai_org | GLM 模型與工具 | [Z.ai GitHub 組織](https://api.github.com/orgs/zai-org) twitter_username |
+| SpaceXSI | 原 xAI 品牌消息 | [x.ai 官網](https://x.ai/)頁尾目前指向 SpaceXSI |
+| AIatMeta | Meta AI 模型與研究 | [Meta AI 官網](https://ai.meta.com/)頁尾 |
+| MistralAI | Mistral 模型與工具 | [Mistral 官網](https://mistral.ai/)社交連結 |
+| huggingface | 開源模型與平台 | [Hugging Face GitHub 組織](https://api.github.com/orgs/huggingface)與[官網](https://huggingface.co/) |
+| _akhaliq | 論文與模型線索 | [AK 個人 HF 頁](https://huggingface.co/akhaliq)連到 X；個人帳號 |
+| TeksEdge | 本地模型與硬體線索 | [個人 GitHub](https://api.github.com/users/TeksEdge) twitter_username；個人帳號 |
+
+原候選 `MiniMax__AI` 改用 `MiniMax_AI`，`xai` 改用官網目前指向的 `SpaceXSI`。身分核對不保證訊息品質；部份帳號只確認到較舊貼文，首輪抓取會逐帳號記錄空結果／解析缺口，不宣稱已確認最新活動。
+
+`rowancheung` 保留待核、不啟用：[Rundown 官網](https://www.therundown.ai/)本輪只連品牌 `therundownai`，尚未建立到個人 handle 的身分鏈。這不是判定其帳號是假或品質差。
 
 視覺類候選，不啟用：Kling_ai、runwayml、pika_labs、LumaLabsAI、Hailuo_AI、higgsfield_ai、ViduAI_official、Alibaba_Wan、dreamina_ai、midjourney、krea_ai。
 
-待驗身分：cursor_ai。是否仍為有效帳號、是否與現有 Cursor 重複，尚未查證；不得按新帳號計入啟用配置。其他候選也只沿用作者提供的名字，啟用前需確認官方身分與近況，不把作者推薦當已核實的來源品質。
+待驗身分：cursor_ai。是否仍為有效帳號、是否與現有 Cursor 重複，尚未查證；不得按新帳號計入啟用配置。其他未啟用候選仍需確認身分，不把作者推薦當來源品質。
 
 ## 抓取頻率與費用
 
 這輪不增加排程。現有 shared collector 每日一次；兩套分析可多次讀池，不會因此重抓。若需要比每日更早的感知，另由使用者批准縮短 X 收集間隔；不能把分析頻率等同抓取頻率。
 
-公開 actor metadata 回件：[ScrapeBadger API](https://api.apify.com/v2/acts/scrape.badger~twitter-tweets-scraper)，2026-10-14 查詢，最新 startedAt=2026-08-21 的 PAY_PER_EVENT 配置列 FREE 的 tweet event 為 US$0.00015／筆，其他 tier 更低。isPPEPlatformUsagePaidByUser 在前一價格設定為true；本估算不涵蓋平台額外使用費，也未查本人帳號方案／剩餘額度或實際帳單。
+公開 actor metadata 回件：[ScrapeBadger API](https://api.apify.com/v2/acts/scrape.badger~twitter-tweets-scraper)，2026-10-14 查詢，最新 startedAt=2026-08-21 的 PAY_PER_EVENT 配置列 FREE 的 tweet event 為 US$0.00015／筆。新增 14 帳號、每帳號最多 10 筆、每日一次、30 日的事件費：14 × 10 × 1 × 30 × 0.00015 = **估計 US$0.63／30 日**，不是完整帳單上限。
 
-第一批15帳號、每帳號最多10筆、每日一次、30日的 tweet event 算式：15 × 10 × 1 × 30 × 0.00015 = **估計 US$0.675／月**。這是全數每次都達筆數上限的事件費估算，不是完整帳單上限。
+[官方價格表](https://apify.com/scrape.badger/twitter-tweets-scraper/pricing)標示 Platform costs Included，同 Actor README 又提啟動費與空結果計費；兩者差異尚未用實際帳單釐清。現役程式每 handle 各一發，帶 `maxTotalChargeUsd=0.01`（`src/social_info/fetchers/twitter.py`）。按正常每日一次，14 × 30 × 0.01 = **US$4.20／30 日的名義 Actor 費限制**；程式沒有月累計硬閘，重跑、重試與平台費也不能用這個算式保證封頂。
 
-如果改成每日三次，沿用相同15帳號與10筆限制：15 × 10 × 3 × 30 × 0.00015 = **估計 US$2.025／月**，平台額外費未計。這個頻率未批准。實際足夠的每帳號筆數需觀察截斷，不能為維持低費用宣稱已覆蓋所有貼文。
+使用者核准只用既有額度。relay 本輪唯讀 `/status` 顯示另一個已配置帳號餘額 372 美分（US$3.72），`/healthz` 回 `ok=true`；這是當時觀察值，不保證整月足夠。額度不足時呈現來源缺口，不自動充值或升級。增加頻率尚未批准。
 
 ## 額外服務
 
@@ -45,8 +65,10 @@
 | GoAnyAPI | 非本輪必要，不啟用 | 上游 README 選配資料源 |
 | 既有模型 | daily topic 照原分析路徑，不新增模型服務 | 現役 daily-topic workflow |
 
-本輪額外服務費：沒有新增計費呼叫；這不代表既有 Apify 或 daily topic 免費。更大的資料輸入是否增加模型 token／耗時尚未量測，先以實際觀察判斷，不預設每次都分析全部池資料。
+新增帳號使用現役 Apify 額度，不新增訂閱；daily topic 照原模型路徑。更大的資料輸入是否增加模型 token／耗時尚未量測，先以實際觀察判斷，不預設每次都分析全部池資料。
 
-## 待使用者核准的啟用方案
+## 啟用與觀察
 
-接線與本機驗證後，再決定是否：啟用第一批15帳號、維持每日一次或增加頻率、訂出完整帳單的月增額上限。推薦先維持現有頻率，以第一批候選的出題增量與資料截斷率判斷，不一次啟用全部名單。
+14 個帳號每日一次的配置已獲使用者核准；首輪實抓只跑新增 `twitter_radar`，不重抓原來源。2026-10-14 首輪14次請求完成，回件中25則可解析貼文來自7個帳號，另7個帳號回`empty/no_results`；TeksEdge達10筆上限，不追加抓取。25則已存共用池與當日raw；6則較完整的`full_text`以已保存回件離線補存，不重抓。回件、池與raw對照是本輪驗證，不保證下一輪每帳號都有消息。
+
+自然使用時追蹤每帳號回件、是否碰上限、以及使用者有沒有想研究的新題目。更早找到可寫題目的收益留待觀察；額外訂閱、充值、其他候選與增加頻率均未啟用。
