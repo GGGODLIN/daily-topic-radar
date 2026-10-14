@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import feedparser
+from bs4 import BeautifulSoup, NavigableString
 
 from social_info._time import utcnow
 from social_info.config import SourceConfig
@@ -30,12 +31,10 @@ REQUEST_TIMEOUT_SECONDS = 25
 # and report an incomplete window instead of extending the run.
 FETCH_BUDGET_SECONDS = 3000
 
-_TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"\s+")
-_FOOTER_RE = re.compile(
-    r"\d+\s*个帖子\s*-\s*\d+\s*位参与者|阅读完整话题|Read\s+the\s+full\s+topic",
-    re.IGNORECASE,
-)
+_POST_COUNT_RE = re.compile(r"^\d+\s*个帖子\s*-\s*\d+\s*位参与者$")
+_READ_FULL_RE = re.compile(r"^(?:阅读完整话题|Read the full topic)$", re.IGNORECASE)
+_SKIP_TAGS = frozenset({"script", "style", "svg"})
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
 
 
 class LinuxDoFetchError(RuntimeError):
@@ -48,14 +47,94 @@ class LinuxDoFetchError(RuntimeError):
         self.kept = list(kept or [])
 
 
+def _is_post_count(node) -> bool:
+    return bool(_POST_COUNT_RE.fullmatch(node.get_text(" ", strip=True)))
+
+
+def _is_read_full(node) -> bool:
+    return bool(_READ_FULL_RE.fullmatch(node.get_text(" ", strip=True)))
+
+
+def _drop_rss_footer(soup: BeautifulSoup) -> None:
+    """Remove only the Discourse footer appended after the opening post.
+
+    That footer is the trailing post-count block, and a read-full link only
+    when it is the last block. The same link or sentence earlier in the post
+    is content; a document-wide match would delete it.
+    """
+    blocks = [node for node in soup.find_all(["p", "div"]) if node.parent == soup]
+    if not blocks:
+        return
+    if _is_read_full(blocks[-1]):
+        blocks[-1].decompose()
+        blocks.pop()
+    if blocks and _is_post_count(blocks[-1]):
+        blocks[-1].decompose()
+
+
+def _render_html(node, parts: list[str], code_blocks: list[str]) -> None:
+    if isinstance(node, NavigableString):
+        parts.append(str(node))
+        return
+    name = getattr(node, "name", None)
+    if not name or name in _SKIP_TAGS:
+        return
+    if name == "img":
+        src = node.get("src") or ""
+        if src:
+            parts.append(f"![{node.get('alt') or ''}]({src})")
+        return
+    if name == "br":
+        parts.append("\n")
+        return
+    if name == "hr":
+        parts.append("\n\n---\n\n")
+        return
+    if name == "pre":
+        # Placeholder so the later blank-line collapse cannot touch code.
+        token = f"\x00PRE{len(code_blocks)}\x00"
+        code_blocks.append(node.get_text())
+        parts.append(f"\n\n{token}\n\n")
+        return
+    if name == "a":
+        href = (node.get("href") or "").strip()
+        inner: list[str] = []
+        for child in node.children:
+            _render_html(child, inner, code_blocks)
+        text = "".join(inner).strip()
+        if href and text and text != href:
+            parts.append(f"[{text}]({href})")
+        elif href:
+            parts.append(href)
+        else:
+            parts.append(text)
+        return
+    for child in getattr(node, "children", ()):
+        _render_html(child, parts, code_blocks)
+    if name in {"p", "li", "blockquote", "h1", "h2", "h3", "h4", "div", "aside"}:
+        parts.append("\n\n")
+
+
+def _restore_code_blocks(text: str, code_blocks: list[str]) -> str:
+    def restore(match: re.Match[str]) -> str:
+        code = code_blocks[int(match.group(1))]
+        if code.endswith("\n"):
+            code = code[:-1]
+        return f"```\n{code}\n```"
+
+    return re.sub(r"\x00PRE(\d+)\x00", restore, text)
+
+
 def _strip_html(markup: str) -> str:
-    text = _WS_RE.sub(" ", _TAG_RE.sub(" ", markup or "")).strip()
-    kept = []
-    for part in re.split(r"(?<=[。！？.!?])\s+|\n+", text):
-        if _FOOTER_RE.search(part):
-            break
-        kept.append(part)
-    return _WS_RE.sub(" ", " ".join(kept)).strip()
+    soup = BeautifulSoup(markup or "", "html.parser")
+    _drop_rss_footer(soup)
+    code_blocks: list[str] = []
+    parts: list[str] = []
+    for child in soup.children:
+        _render_html(child, parts, code_blocks)
+    text = _BLANK_RUN_RE.sub("\n\n", "".join(parts))
+    text = "\n".join(line.rstrip() for line in text.splitlines()).strip()
+    return _restore_code_blocks(text, code_blocks)
 
 
 def _fetch_page_text(page: int) -> str:
@@ -138,7 +217,7 @@ def _parse_page(body: str, source: SourceConfig, now: datetime, page: int) -> tu
             posted_at=posted_at,
             fetched_at=now,
             author=entry.get("author") or "",
-            excerpt=_strip_html(entry.get("summary") or entry.get("description") or "")[:200],
+            excerpt=_strip_html(entry.get("summary") or entry.get("description") or ""),
             language=source.language,
             engagement={},
         ))

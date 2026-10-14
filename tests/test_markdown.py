@@ -39,6 +39,39 @@ def test_render_item_no_engagement():
     assert "♥" not in out
 
 
+def test_linuxdo_excerpt_keeps_paragraphs_code_and_url():
+    excerpt = (
+        "第一段。\n"
+        "\n"
+        "見 [規格](https://example.com/spec)。\n"
+        "\n"
+        "```\n"
+        "def keep():\n"
+        "    return 'indent'\n"
+        "```\n"
+        "\n"
+        "![截圖](https://cdn.example/photo.jpeg)"
+    )
+    out = render_item(_item(
+        source="linuxdo",
+        source_handle="开发调优",
+        language="zh-CN",
+        author="alice",
+        engagement={},
+        excerpt=excerpt,
+    ))
+    assert "> 第一段。" in out
+    assert "> 見 [規格](https://example.com/spec)。" in out
+    assert "> ```" in out
+    assert "> def keep():" in out
+    assert ">     return 'indent'" in out
+    assert "> ![截圖](https://cdn.example/photo.jpeg)" in out
+    assert out.index("> 第一段。") < out.index("> ```") < out.index(">     return 'indent'")
+    other = render_item(_item(excerpt="line one\nline two"))
+    assert "> line one line two" in other
+    assert "> line two" not in other
+
+
 def test_render_item_with_also_appeared_in():
     item = _item()
     item.also_appeared_in = [

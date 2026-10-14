@@ -94,8 +94,13 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
     lines.append("")
 
     if item.excerpt:
-        excerpt = item.excerpt.replace("\n", " ").strip()
-        lines.append(f"> {excerpt}")
+        # Other sources stay one collapsed line. LINUX DO keeps the first post's
+        # paragraphs and code indent; a single replace("\n") would flatten both.
+        if item.source == "linuxdo":
+            for excerpt_line in item.excerpt.strip("\n").split("\n"):
+                lines.append(f"> {excerpt_line}".rstrip())
+        else:
+            lines.append(f"> {item.excerpt.replace('\n', ' ').strip()}")
         lines.append("")
 
     if item.comments:

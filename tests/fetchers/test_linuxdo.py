@@ -188,6 +188,88 @@ def test_strip_html_drops_topic_footer():
     assert _strip_html(raw) == "Hello."
 
 
+def test_strip_html_keeps_the_full_first_post():
+    tail = "句" * 80 + "。末句仍在。"
+    raw = (
+        "<p>開頭。</p><p>" + ("中" * 240) + "</p><p>" + tail + "</p>"
+        "<p><small>9 个帖子 - 4 位参与者</small></p>"
+        "<p><a href=\"https://linux.do/t/topic/9\">阅读完整话题</a></p>"
+    )
+    text = _strip_html(raw)
+    assert len(text) > 200
+    assert text.endswith("末句仍在。")
+    assert "阅读完整话题" not in text
+    assert "个帖子" not in text
+
+
+def test_strip_html_keeps_image_link_and_code():
+    raw = (
+        "<p>見 <a href=\"https://example.com/spec\">規格</a>。</p>"
+        "<pre><code class=\"lang-py\">print('keep-me')\n</code></pre>"
+        "<div class=\"lightbox-wrapper\"><a class=\"lightbox\" "
+        "href=\"https://cdn.example/original.png\">"
+        "<img src=\"https://cdn.example/photo.jpeg\" alt=\"截圖\"></a></div>"
+        "<p><a class=\"attachment\" href=\"https://linux.do/uploads/short-url/abc.txt\">"
+        "notes.txt</a> (1 KB)</p>"
+        "<p>正文提到阅读完整话题，不能因此被切掉。</p>"
+        "<p><small>1 个帖子 - 1 位参与者</small></p>"
+        "<p><a href=\"https://linux.do/t/topic/1\">阅读完整话题</a></p>"
+    )
+    text = _strip_html(raw)
+    assert "[規格](https://example.com/spec)" in text
+    assert "print('keep-me')" in text
+    assert "```" in text
+    assert "![截圖](https://cdn.example/photo.jpeg)" in text
+    assert "[notes.txt](https://linux.do/uploads/short-url/abc.txt)" in text
+    assert "正文提到阅读完整话题，不能因此被切掉。" in text
+    assert text.index("print('keep-me')") < text.index("正文提到阅读完整话题")
+    assert "个帖子" not in text
+    assert "https://linux.do/t/topic/1" not in text
+
+
+def test_strip_html_keeps_same_named_link_and_only_the_tail_footer():
+    raw = (
+        "<p>先看 <a href=\"https://example.com/full\">阅读完整话题</a> 再決定。</p>"
+        "<p><a href=\"https://example.com/thread\">阅读完整话题</a></p>"
+        "<p>後文還在。</p>"
+        "<p><small>4 个帖子 - 2 位参与者</small></p>"
+        "<p><a href=\"https://linux.do/t/topic/9\">阅读完整话题</a></p>"
+    )
+    text = _strip_html(raw)
+    assert "[阅读完整话题](https://example.com/full)" in text
+    assert "[阅读完整话题](https://example.com/thread)" in text
+    assert "後文還在。" in text
+    assert "个帖子" not in text
+    assert "https://linux.do/t/topic/9" not in text
+
+
+def test_strip_html_preserves_pre_indent_and_blank_lines():
+    raw = (
+        "<pre><code>    first\n"
+        "\n"
+        "\n"
+        "second</code></pre>"
+        "<p><small>1 个帖子 - 1 位参与者</small></p>"
+        "<p><a href=\"https://linux.do/t/topic/3\">阅读完整话题</a></p>"
+    )
+    text = _strip_html(raw)
+    assert "```\n    first\n\n\nsecond\n```" in text
+    assert "阅读完整话题" not in text
+
+
+def test_strip_html_keeps_image_only_post():
+    raw = (
+        "<p></p><div class=\"lightbox-wrapper\"><a class=\"lightbox\" "
+        "href=\"https://cdn.example/full.png\">"
+        "<img src=\"https://cdn.example/only.jpeg\" alt=\"image\"></a></div><p></p>"
+        "<p><small>2 个帖子 - 2 位参与者</small></p>"
+        "<p><a href=\"https://linux.do/t/topic/2\">阅读完整话题</a></p>"
+    )
+    text = _strip_html(raw)
+    assert text == "[![image](https://cdn.example/only.jpeg)](https://cdn.example/full.png)"
+    assert "阅读完整话题" not in text
+
+
 @pytest.mark.asyncio
 async def test_fetch_stops_only_after_the_window_and_dedups(monkeypatch, tmp_path):
     body_dir, log = _prepare(monkeypatch, tmp_path)

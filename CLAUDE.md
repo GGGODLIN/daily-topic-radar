@@ -108,6 +108,7 @@ Main session 需要知道的：
 - **三份攔截檔都在 repo root、手動 maintain**：`KNOWN_ISSUES.md`（pipeline 自動寫，四區 🚨/🛠/🪦/⏳）、`WATCH.md`（被動 grep raw md 的 upstream bug 清單）、`PROBES.md`（主動 fetch 外部 source 的訊號清單）——各檔自帶 schema + 維護規則，新增 entry 照檔內規範 append
 - **手動觸發 probes**：使用者說「跑 probes」→ `bash scripts/local-analysis/probes-daily.sh`（overwrite 當天 probes report、對所有 entries 跑）
 - **external-feeds backstop**：follow-builders feed 定位是「自家 source 漏抓 backstop」非主軸校準；feed 404 不阻塞 digest；上游 repo 消失 → 移除該 pre-flight step；試讀結案數據見 memory `reference_follow_builders_trial_2026_06_05`
+- **LINUX DO 原文分批**：fetcher 保留列表 RSS 提供的首帖文字、資源連結與換行，不逐篇追加請求；來源仍可能缺圖片文字或回覆。Stage-2 先用 [`scripts/digest-linuxdo-batches.py`](/scripts/digest-linuxdo-batches.py) 將所有條目分批，現役 workflow 逐批讀取後分層合併；生成資料放 `reports/digest-inputs/`（gitignored）。`linuxdo_reading` abort 表示分批或閱讀回報缺失，不可當成零訊號繼續。既有 `state.db` 的短摘要不會因升級自動回補，本次不改歷史資料。
 
 ### URL 抓取路由
 
