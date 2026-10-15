@@ -1,17 +1,30 @@
 #!/bin/bash
 # free-pool-daily.sh — /daily-local workflow 的 free-pool channel（2026-09-21 建）。
 #
-# kind: 'shell'——零 LLM。偵測 free / free-smart 模型池各來源的三層死法：
-#   過程沒開（port / process）／認證・額度死（402、ready 數、餘額）／位址漂移（ngrok 現行 URL 實打）。
-# 可用證據語義（使用者拍板的 hello 簡化）：對 relay config 內每條 free/free-smart 腿（跳過
-# disabled、按 base-url+model 去重、動態讀檔新腿自動納入）打一發 hello 小請求——200+非空
+# kind: 'shell'——零 LLM。偵測 free / free-smart 模型池各腿的三層死法：
+#   過程沒開（gateway / port）／認證・額度死（402、401/403、429）／腿在 gateway 上解析不到。
+# 拓樸（2026-10-15 改）：Magpie 當天正式接管號池（證據 ~/.magpie-machine/evidence/
+#   formal-pool-cutover-20261015.json、formal-retired-services-20261015.json、
+#   formal-cpa-retirement-20261015.json），litellm-proxy(:8000)、cline2api(:3457)、CPA、
+#   Agent2API trial 同日退役，原本對它們的 port／帳號池／ngrok 探測因此全拿掉；
+#   腿清單改讀 Magpie providers.json 內 free／free-smart 兩個 group 的 members 聯集
+#   （動態讀檔，新腿自動納入、provider 標 off 的跳過），經 Magpie gateway 各打一發 hello。
+#   - agentrouter :8002 仍探：4 個 legacy provider（agentrouter-glm／astra 與 -smart 版）還以它為後端，
+#     cutover 證據對這塊寫 HOLD（Prepared not applied）。gateway 看不到 :8002 本身死活、只看到 hello 逾時，
+#     分開探才分得出「gateway 通、後端死」。
+#   - :8317 現由 launchd com.philip.relay-backend-switch 提供，仍探 port，掛了要知道。
+#   - cline 帳號池健康（active 數、模型冷卻）現在在 Magpie 的 logins.json；本輪不覆蓋，
+#     cline 腿只靠 hello 看得到「整條死」，看不到「帳號剩幾個」。
+#   - legacy member 是 unlisted、不出現在 /v1/models，但 gateway 仍會路由，所以照 member 字串直接當 model 打；
+#     打回 404 且不在 /v1/models 才是 providers.json 與 gateway 對不上，產 D 級 fail-loud，不靜默跳過。
+# 可用證據語義（使用者拍板的 hello 簡化）：每條腿打一發 hello 小請求——200+非空
 # content＝「小請求存活」：只證明此刻一發小請求能過，不代表正常大小的請求或白天沒出事
 # （那段交給下方「過去 24 小時」）；認證死／額度死／通道死一發現形。hello 失敗分級：step- 402 或 content 空＝B（花錢來源）、其他腿死＝C、
 # 429（無 deployments／cooldown 字樣）或探測環境壞＝D（判不出來，fail-loud）；
-# 429 但回應體含 No deployments／cooldown＝C（上游配額死，litellm 對冷卻耗盡的表達方式）。
+# 429 但回應體含 No deployments／cooldown＝C（上游配額死，上游對冷卻耗盡的表達方式）。
 # hello 逾時 60 秒——mimo 這類引擎文件記載延遲可達 30 秒，20 秒會假陽。
 # 全綠寫 __SILENT__（證據落在 LOG 的 hello 行）；任一來源異常才產出報告，嚴重度排序
-# A→B→C→D：全池級（relay / litellm 掛）→ 花錢來源（2026-09-24 stepfun 拔除後暫無）→ 池內其他來源 →
+# A→B→C→D：全池級（gateway / relay 掛）→ 花錢來源（2026-09-24 stepfun 拔除後暫無）→ 池內其他來源 →
 # 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
 # 「獨立 free-pool 軸、不併 codex-cdp」——codex-cdp 管連線地基、本軸管供應鏈三層死法。
 #
@@ -36,8 +49,8 @@ set -euo pipefail
 
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/Users/linhancheng/.local/bin"
 export PATH
-PY_YAML="${FREE_POOL_PY_YAML:-/opt/homebrew/bin/python3}"
-[[ -x "$PY_YAML" ]] || PY_YAML="$(command -v python3 || echo python3)"
+PY="/opt/homebrew/bin/python3"
+[[ -x "$PY" ]] || PY="$(command -v python3 || echo python3)"
 
 SI="/Users/linhancheng/code/social-info"
 OUT_DIR="${FREE_POOL_OUT_DIR:-$SI/reports/local-analysis}"
@@ -47,12 +60,9 @@ OUT="$OUT_DIR/$DATE-free-pool.md"
 LOG="$LOG_DIR/local-analysis-free-pool-$DATE.log"
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
-RELAY_CONFIG="${FREE_POOL_RELAY_CONFIG:-$HOME/.cli-proxy-api/config.yaml}"
-CLINE_ACCOUNTS="${FREE_POOL_CLINE_ACCOUNTS:-$HOME/.cline2api/.cline-accounts.json}"
-LITELLM_LOG_DIR="${FREE_POOL_LITELLM_LOG_DIR:-$HOME/.local/state/litellm}"
+MAGPIE_PROVIDERS="${FREE_POOL_MAGPIE_PROVIDERS:-$HOME/.magpie-machine/home/.config/magpie/providers.json}"
+MAGPIE_URL="${FREE_POOL_MAGPIE_URL:-http://127.0.0.1:18417/v1}"
 PORT_RELAY="${FREE_POOL_PORT_RELAY:-8317}"
-PORT_LITELLM="${FREE_POOL_PORT_LITELLM:-8000}"
-PORT_CLINE="${FREE_POOL_PORT_CLINE:-3457}"
 PORT_AR="${FREE_POOL_PORT_AR:-8002}"
 AR_URL="${FREE_POOL_AR_URL:-http://127.0.0.1:$PORT_AR}"
 RELAY_WATCH="${FREE_POOL_RELAY_WATCH:-$HOME/Desktop/projects/cliproxyapi-setup/tools/relay-watch/relay_watch.py}"
@@ -72,156 +82,73 @@ http_code() {
 
 {
   echo "free-pool daily probe $DATE $(date '+%H:%M:%S')"
-  echo "relay_config=$RELAY_CONFIG"
+  echo "magpie_url=$MAGPIE_URL"
+  echo "magpie_providers=$MAGPIE_PROVIDERS"
 
+  gateway_code=$(http_code "${MAGPIE_URL%/}/models")
+  echo "magpie_models_code=${gateway_code}"
+  if [[ "$gateway_code" != "200" ]]; then
+    add_finding A "[magpie] gateway 未回應——全池死（launchd com.philip.magpie-machine）"
+  fi
   if ! port_probe "$PORT_RELAY"; then
-    add_finding A "[relay] :${PORT_RELAY} 未在聽——全池死（launchd 應自摔重啟，若持續紅查 ~/Library/LaunchAgents/com.philip.cli-proxy-api）"
+    add_finding A "[relay] :${PORT_RELAY} 未在聽（launchd 應自摔重啟，若持續紅查 ~/Library/LaunchAgents/com.philip.relay-backend-switch）"
   fi
-  if ! port_probe "$PORT_LITELLM"; then
-    add_finding A "[litellm] :${PORT_LITELLM} 未在聽——經 litellm 的腿（groq/bai/mimo）全死"
-  fi
-
 
   ar_code=$(http_code "$AR_URL/health/liveliness")
   if [[ "$ar_code" == "000" ]]; then
-    add_finding C "[agentrouter] :${PORT_AR} 未回應——agentrouter-glm 腿死"
+    add_finding C "[agentrouter] :${PORT_AR} 未回應——agentrouter 系 legacy 腿死"
   elif [[ "$ar_code" != "200" ]]; then
     add_finding C "[agentrouter] liveliness 回 HTTP ${ar_code}"
   fi
 
-  if port_probe "$PORT_CLINE"; then
-    if [[ -r "$CLINE_ACCOUNTS" ]]; then
-      cline_stat=$("$PY_YAML" - "$CLINE_ACCOUNTS" "$(date '+%Y-%m-%dT%H:%M:%S')" <<'PY'
-import json, sys
+  # gateway 不通時逐腿 hello 只會產出一排連線失敗，掩蓋 A 級那一條；全池死已經夠響。
+  hello_out=""
+  if [[ "$gateway_code" == "200" ]]; then
+    hello_rc=0
+    hello_out=$("$PY" - "$MAGPIE_PROVIDERS" "$MAGPIE_URL" <<'PY'
+import json, os, sys, time, urllib.request, urllib.error
+providers_path, base = sys.argv[1], sys.argv[2].rstrip("/")
+key = os.environ.get("FREE_POOL_MAGPIE_KEY") or ""
 try:
-    d = json.load(open(sys.argv[1]))
+    with open(providers_path) as f:
+        cfg = json.load(f)
+    providers = {p["id"]: p for p in cfg.get("providers", []) if p.get("id")}
+    groups = {g.get("id"): g.get("members") or [] for g in cfg.get("groups", [])}
 except Exception:
-    print("PARSE_FAIL")
+    print("HELLO_FAIL\tD\t[hello] Magpie providers.json 讀取或解析失敗——腿清單無法判定，全池 hello 證據未取得（fail-loud）")
     sys.exit(0)
-now = sys.argv[2]
-accs = d.get("accounts", d if isinstance(d, list) else [])
-total = len(accs)
-active = sum(1 for a in accs if (a.get("status") or "") == "active")
-keys = set()
-for a in accs:
-    keys.update((a.get("modelCooldowns") or {}).keys())
-models = sorted(keys | {"deepseek/deepseek-v4-flash-0731", "cline-free/deepseek-v4.1-flash"})
-parts = []
-zeros = []
-for m in models:
-    n = 0
-    for a in accs:
-        if (a.get("status") or "") != "active":
-            continue
-        until = (a.get("modelCooldowns") or {}).get(m) or ""
-        if isinstance(until, list):
-            until = until[0] if until else ""
-        if not until or str(until)[:19] <= now[:19]:
-            n += 1
-    parts.append(f"{m}={n}")
-    if n == 0:
-        zeros.append(m)
-print(f"{active}/{total}|" + " ".join(parts) + "|" + ",".join(zeros))
-PY
-      )
-      echo "cline_accounts=${cline_stat}"
-      if [[ "$cline_stat" == "PARSE_FAIL" || -z "$cline_stat" ]]; then
-        add_finding D "[cline] 帳號檔解析失敗：${CLINE_ACCOUNTS}——ready 數無法判定（fail-loud）"
-      else
-        IFS='|' read -r cline_active cline_avail cline_zeros <<< "$cline_stat"
-        if [[ "$cline_active" == "0/"* ]]; then
-          add_finding C "[cline] 帳號池 0 active（${cline_active}）——cline 系腿全死；查額度或 namespace 漂移（09-15 V4.1 事件同形）"
-        elif [[ -n "$cline_zeros" ]]; then
-          add_finding C "[cline] 帳號皆 active（${cline_active}）但模型 ${cline_zeros} 冷卻後 0 個可用帳號——該腿安靜死（cline2api 選號會排除冷卻帳號，pool.go eligible 邏輯）；per-model available：${cline_avail}"
-        fi
-      fi
-    else
-      add_finding D "[cline] 帳號檔不可讀：${CLINE_ACCOUNTS}——ready 數無法判定（fail-loud）"
-    fi
-  else
-    add_finding C "[cline2api] :${PORT_CLINE} 未在聽——cline 帳號池腿全死"
-  fi
-
-  # mimo-desktop 腿 2026-09-27 隨帳號結束退役（launchd plist 已改名 .retired-20260927、relay config 無 mimo-desktop）；
-  # 探針留著會每天誤報「Desktop 未啟動」，2026-09-29 移除。要復活得先重新 onboard 再加回探針。
-
-  if [[ -r "$RELAY_CONFIG" ]]; then
-    ngrok_rc=0
-    ngrok_url=$("$PY_YAML" - "$RELAY_CONFIG" <<'PY'
-import sys
-try:
-    import yaml
-except ImportError:
-    sys.exit(2)
-try:
-    cfg = yaml.safe_load(open(sys.argv[1]))
-except Exception:
-    sys.exit(3)
-for p in (cfg or {}).get("openai-compatibility", []):
-    if p.get("name") == "atkins-devin-swe2":
-        if p.get("disabled"):
-            print("DISABLED")
-        else:
-            print(p.get("base-url", ""))
-        break
-PY
-    ) || ngrok_rc=$?
-    if [[ "$ngrok_rc" -eq 2 ]]; then
-      add_finding D "[devin-swe2] 探測環境缺 yaml 解析器（${PY_YAML} 無法 import yaml）——drift 軸無法判定（fail-loud）"
-    elif [[ "$ngrok_rc" -eq 3 ]]; then
-      add_finding D "[devin-swe2] relay config 解析失敗：${RELAY_CONFIG}——drift 軸無法判定（fail-loud）"
-    elif [[ "${ngrok_url:-}" == "DISABLED" ]]; then
-      echo "devin_swe2_base=（provider 已 disabled，照紀錄略過不探測）"
-    elif [[ -n "${ngrok_url:-}" ]]; then
-      devin_code=$(http_code "${ngrok_url%/}/models")
-      echo "devin_swe2_base=${ngrok_url} code=${devin_code}"
-      if [[ "$devin_code" == "000" || "$devin_code" == "404" || "$devin_code" == "502" || "$devin_code" == "503" ]]; then
-        add_finding C "[devin-swe2] 現行 ngrok URL（${ngrok_url}）探測 HTTP ${devin_code}——網址可能已漂移（免費隧道重開即變），更新 relay config 前該腿死"
-      fi
-    else
-      echo "devin_swe2_base=（config 確認無 atkins-devin-swe2 provider，該軸不適用）"
-    fi
-  else
-    add_finding D "[relay-config] 讀不到 ${RELAY_CONFIG}——鏈腿清單與 devin URL 無法判定（fail-loud）"
-  fi
-
-  hello_rc=0
-  hello_out=$("$PY_YAML" - "$RELAY_CONFIG" <<'PY'
-import json, sys, time, urllib.request, urllib.error
-try:
-    import yaml
-except ImportError:
-    print("HELLO_FAIL\tD\t[hello] 探測環境缺 yaml——全池 hello 證據未取得（fail-loud）")
+members = []
+for gid in ("free", "free-smart"):
+    for m in groups.get(gid, []):
+        if m not in members:
+            members.append(m)
+if not members:
+    print("HELLO_FAIL\tD\t[hello] providers.json 內 free／free-smart group 沒有任何 member——腿清單為空，全池 hello 證據未取得（fail-loud）")
     sys.exit(0)
 try:
-    cfg = yaml.safe_load(open(sys.argv[1]))
+    with urllib.request.urlopen(base + "/models", timeout=10) as r:
+        listed = {m.get("id") for m in json.loads(r.read()).get("data", [])}
 except Exception:
-    print("HELLO_FAIL\tD\t[hello] relay config 解析失敗——全池 hello 證據未取得（fail-loud）")
-    sys.exit(0)
-probes = {}
-for p in (cfg or {}).get("openai-compatibility", []):
-    if p.get("disabled"):
+    listed = set()
+for member in members:
+    pid = member.split("/", 1)[0]
+    prov = providers.get(pid) or {}
+    pname = prov.get("name") or pid
+    if prov.get("off") is True:
+        print(f"hello - {pname} {member}: provider off，略過")
         continue
-    chain_models = [m for m in p.get("models", []) if m.get("alias") in ("free", "free-smart")]
-    if not chain_models:
-        continue
-    base = (p.get("base-url") or "").rstrip("/")
-    key_entries = p.get("api-key-entries") or [{}]
-    key = key_entries[0].get("api-key", "")
-    for m in chain_models:
-        probes.setdefault((base, m.get("name")), (p.get("name", "?"), key))
-for (base, model), (pname, key) in sorted(probes.items()):
     body = json.dumps({
-        "model": model,
+        "model": member,
         "messages": [{"role": "user", "content": "hello"}],
         "max_tokens": 400,
         "temperature": 0,
         "metadata": {"budget_mode": "diagnostic"},
     }).encode()
-    req = urllib.request.Request(
-        base + "/chat/completions", data=body, method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(base + "/chat/completions", data=body, method="POST", headers=headers)
+    basename = member.rsplit("/", 1)[-1]
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             d = json.loads(r.read())
@@ -229,44 +156,49 @@ for (base, model), (pname, key) in sorted(probes.items()):
             content = msg.get("content") or ""
             reasoning = msg.get("reasoning") or msg.get("reasoning_content") or ""
             comp_tok = ((d.get("usage") or {}).get("completion_tokens")) or 0
-            print(f"hello ✓ {pname} {model}: {r.status} content={content[:24]!r} reasoning={bool(reasoning)} comp_tok={comp_tok}")
+            print(f"hello ✓ {pname} {member}: {r.status} content={content[:24]!r} reasoning={bool(reasoning)} comp_tok={comp_tok}")
             if not content.strip() and not reasoning.strip() and comp_tok <= 0:
-                sev = "B" if str(model).startswith("step-") else "C"
-                print(f"HELLO_FAIL\t{sev}\t[{pname}] hello 回 200 但零輸出（content/reasoning/completion_tokens 全空）——回應通道死（{base} model={model}）")
+                sev = "B" if basename.startswith("step-") else "C"
+                print(f"HELLO_FAIL\t{sev}\t[{pname}] hello 回 200 但零輸出（content/reasoning/completion_tokens 全空）——回應通道死（{base} model={member}）")
     except urllib.error.HTTPError as e:
         code = e.code
         try:
             body_txt = e.read(200).decode("utf-8", "replace").replace("\n", " ")
         except Exception:
             body_txt = ""
-        if code == 429 and ("No deployments" in body_txt or "cooldown" in body_txt):
-            sev, kind = "C", "上游 deployment 全數冷卻——配額／key 疑耗盡（litellm 回 429 但語義是腿死）"
+        if code == 404 and member not in listed:
+            sev, kind = "D", "member 無法在 gateway 解析（HTTP 404 且不在 /v1/models）——providers.json 與 gateway 對不上，該腿無法判定"
+        elif code == 429 and ("No deployments" in body_txt or "cooldown" in body_txt):
+            sev, kind = "C", "上游 deployment 全數冷卻——配額／key 疑耗盡（429 但語義是腿死）"
         elif code == 429:
             sev, kind = "D", "撞限流未能判定（fail-loud）"
         elif code == 402:
-            sev = "B" if str(model).startswith("step-") else "C"
+            sev = "B" if basename.startswith("step-") else "C"
             kind = "額度耗盡"
         elif code in (401, 403):
             sev, kind = "C", f"認證／權限失效（HTTP {code}）"
         else:
             sev, kind = "C", f"HTTP {code}"
-        print(f"HELLO_FAIL\t{sev}\t[{pname}] hello 失敗：{kind}（{base} model={model}）上游回應：{body_txt[:120]}")
+        print(f"HELLO_FAIL\t{sev}\t[{pname}] hello 失敗：{kind}（{base} model={member}）上游回應：{body_txt[:120]}")
     except Exception as e:
-        print(f"HELLO_FAIL\tC\t[{pname}] hello 連線失敗：{type(e).__name__}（{base} model={model}）")
+        print(f"HELLO_FAIL\tC\t[{pname}] hello 連線失敗：{type(e).__name__}（{base} model={member}）")
     time.sleep(1)
 PY
-  ) || hello_rc=$?
-  printf '%s\n' "$hello_out"
-  if [[ "${hello_rc:-0}" -ne 0 ]]; then
-    add_finding D "[hello] 探測執行失敗（exit ${hello_rc}）——全池可用證據未取得（fail-loud）"
+    ) || hello_rc=$?
+    if [[ "${hello_rc:-0}" -ne 0 ]]; then
+      add_finding D "[hello] 探測執行失敗（exit ${hello_rc}）——全池可用證據未取得（fail-loud）"
+    fi
+  else
+    echo "hello=略過（gateway /models HTTP ${gateway_code}）"
   fi
+  printf '%s\n' "$hello_out"
   while IFS=$'\t' read -r _tag _sev _msg; do
     [[ "$_tag" == "HELLO_FAIL" ]] && add_finding "$_sev" "$_msg"
   done <<< "$hello_out"
 } > "$LOG" 2>&1 || true
 
 day_rc=0
-day_section=$("$PY_YAML" "$RELAY_WATCH" report 2>>"$LOG") || day_rc=$?
+day_section=$("$PY" "$RELAY_WATCH" report 2>>"$LOG") || day_rc=$?
 if [[ "$day_rc" -ne 0 || -z "$day_section" ]]; then
   echo "relay-watch report 失敗（exit ${day_rc}）：${RELAY_WATCH}" >> "$LOG"
   rm -f "$FINDINGS"
