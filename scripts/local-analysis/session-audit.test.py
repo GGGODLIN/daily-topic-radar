@@ -1170,11 +1170,74 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertNotIn("source_sha", columns["segments"])
     self.assertNotIn("source_sha", columns["model_replies"])
     self.assertEqual(
-      state_query(database, "SELECT file_size, doc_offset, generation FROM sources WHERE inode = '7:7'", fetch="one"),
+      state_query(database, "SELECT file_size, doc_offset, generation FROM sources WHERE inode = '7'", fetch="one"),
       (10, 10, 1),
     )
     self.assertEqual(state_query(database, "SELECT record_uuid FROM segments", fetch="one"), ("rec-1",))
     self.assertEqual(state_query(database, "SELECT content, status FROM model_replies", fetch="one"), ("kept body", "parsed"))
+
+  def test_source_key_does_not_carry_the_device_number(self):
+    # macOS 每次開機重編 st_dev；鍵帶著它時，2026-10-16 重開機後 4,453 份已分析的檔被當成新檔重排。
+    path = self.projects / "work" / "reboot.jsonl"
+    write_jsonl(path, user_line("QUOTE_REBOOT"))
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    database = self.state / "state.sqlite"
+    key = str(path.stat().st_ino)
+    self.assertEqual(state_query(database, "SELECT inode FROM sources", fetch="all"), [(key,)])
+    self.assertEqual(state_query(database, "SELECT inode FROM scan_cache", fetch="all"), [(key,)])
+
+  def test_rows_split_by_an_old_device_number_merge_back_without_resending(self):
+    # 修正前的庫在重開機後：舊鍵被標 missing，同一檔以新鍵從頭排隊。升級要併回一列、保住已分析的水位。
+    path = self.projects / "work" / "split.jsonl"
+    write_jsonl(path, user_line("QUOTE_SPLIT"))
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(len(server.bodies), 1)
+    database = self.state / "state.sqlite"
+    key = str(path.stat().st_ino)
+    analyzed = state_query(
+      database, "SELECT doc_offset, file_size, limitations FROM sources WHERE inode = ?", (key,), fetch="one"
+    )
+    self.assertGreater(analyzed[0], 0)
+    db = sqlite3.connect(database)
+    for table in (
+      "sources", "findings", "segments", "model_replies", "rule_sessions", "rule_coverage", "rule_tags",
+      "history_members", "doc_blocks", "secret_exposures",
+    ):
+      db.execute(f"UPDATE {table} SET inode = ? WHERE inode = ?", (f"111:{key}", key))
+    db.execute("UPDATE sources SET status = 'missing', latest_complete = 0, limitations = '[\"missing\"]'")
+    db.execute(
+      "INSERT INTO sources (inode, path, name, classification, included, status, latest_complete, generation, mtime, session_id)"
+      " SELECT ?, path, name, classification, included, 'pending', 0, 1, mtime, session_id FROM sources",
+      (f"222:{key}",),
+    )
+    db.execute(
+      "INSERT INTO findings (inode, generation, status, independent_recurrence, target, observation, check_direction, quote,"
+      " source_line) VALUES (?, 1, 'unresolved', 0, 'unknown', 'rerun copy', 'x', 'q', 1)",
+      (f"222:{key}",),
+    )
+    db.execute("UPDATE scan_cache SET inode = ?", (f"222:{key}",))
+    db.execute("PRAGMA user_version = 0")
+    db.commit()
+    db.close()
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(
+      state_query(database, "SELECT inode, status, doc_offset, file_size, limitations FROM sources", fetch="all"),
+      [(key, "pending", analyzed[0], analyzed[1], analyzed[2])],
+    )
+    self.assertEqual(state_query(database, "SELECT COUNT(*) FROM findings", fetch="one"), (0,), "the re-run copy is dropped")
+    self.assertGreater(state_query(database, "SELECT COUNT(*) FROM segments WHERE inode = ?", (key,), fetch="one")[0], 0)
+    self.assertEqual(state_query(database, "SELECT inode FROM scan_cache", fetch="all"), [(key,)])
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    self.assertEqual(len(server.bodies), 1, "an already analyzed transcript is not sent again")
+    row = self.source_named(self.status(url), "split.jsonl")
+    self.assertEqual(row["status"], "complete")
+    self.assertTrue(row["latest_complete"])
 
   def test_scan_cache_entries_drop_the_legacy_digest(self):
     path = self.projects / "work" / "cached.jsonl"

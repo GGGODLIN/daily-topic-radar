@@ -225,6 +225,81 @@ def migrate_hash_free(connection):
     )
 
 
+STABLE_INODE_VERSION = 1
+# 這些表的列是某次分析的結果；同一份對話被拆成多個鍵時只留一份，否則發現與逐段紀錄會重複計算。
+ANALYSIS_TABLES = (
+  "sources", "findings", "segments", "model_replies", "rule_sessions", "rule_coverage", "rule_tags", "doc_blocks",
+  "secret_exposures",
+)
+# 這兩張表記的是檔案本身（屬於哪個回填批次、掃描快取），同一檔的不同鍵併成一列即可。
+FILE_TABLES = ("history_members", "scan_cache")
+
+
+def migrate_stable_inode(connection):
+  # 舊鍵是 st_dev:st_ino。每次開機換 st_dev，舊列在 refresh 被蓋成 missing，同一檔以新鍵從頭排隊重送模型。
+  # 同一 st_ino 只留分析最深的一列，其他列連同子表刪掉：它們是同一份對話的重複分析。
+  if connection.execute("PRAGMA user_version").fetchone()[0] >= STABLE_INODE_VERSION:
+    return
+  connection.commit()
+  connection.execute("BEGIN IMMEDIATE")
+  rows = connection.execute("SELECT rowid, inode, generation, doc_offset, status, limitations FROM sources").fetchall()
+  started = {}
+  for inode, generation, start, cursor in connection.execute("SELECT inode, generation, block_start, cursor FROM doc_blocks"):
+    started.setdefault((inode, generation), []).append((start, cursor))
+
+  def depth(row):
+    # 切塊進行中時 doc_offset 停在第一塊起點，進度在各塊的游標裡。
+    blocks = started.get((row["inode"], row["generation"]), [])
+    return row["doc_offset"] + sum(cursor - start for start, cursor in blocks if start >= row["doc_offset"])
+
+  groups = {}
+  for row in rows:
+    groups.setdefault(row["inode"].rpartition(":")[2], []).append(row)
+  dropped = []
+  restore = {}
+  for key, members in groups.items():
+    keep = max(members, key=lambda row: (depth(row), row["status"] != "missing", row["rowid"]))
+    dropped.extend((row["inode"],) for row in members if row is not keep)
+    # refresh 把沒掃到的舊鍵蓋成 missing，原本的狀態與限制都沒了：有水位的列先回 pending，限制從逐段紀錄補回；
+    # 讀到檔尾時 run 不送模型、直接收尾。
+    if keep["status"] == "missing" and keep["limitations"] == '["missing"]' and depth(keep) > 0:
+      restore[key] = keep["generation"]
+  connection.execute("CREATE TEMP TABLE dropped_keys (inode TEXT PRIMARY KEY)")
+  connection.executemany("INSERT INTO dropped_keys VALUES (?)", dropped)
+  for table in ANALYSIS_TABLES:
+    connection.execute(f"DELETE FROM {table} WHERE inode IN (SELECT inode FROM dropped_keys)")
+  for table in (*ANALYSIS_TABLES, *FILE_TABLES):
+    connection.execute(f"UPDATE OR IGNORE {table} SET inode = substr(inode, instr(inode, ':') + 1) WHERE inode LIKE '%:%'")
+    connection.execute(f"DELETE FROM {table} WHERE inode LIKE '%:%'")
+  connection.execute("DROP TABLE dropped_keys")
+  if restore:
+    last = {}
+    for inode, generation, doc_end, limitations in connection.execute(
+      "SELECT inode, generation, doc_end, limitations FROM segments WHERE id IN (SELECT MAX(id) FROM segments GROUP BY inode, generation)"
+    ):
+      if restore.get(inode) == generation:
+        last[inode] = (doc_end, json.loads(limitations))
+    blocks = {}
+    for inode, generation, block_end, blocking, noted in connection.execute(
+      "SELECT inode, generation, block_end, blocking, noted FROM doc_blocks"
+    ):
+      if restore.get(inode) == generation:
+        ends, limits = blocks.setdefault(inode, ([], set()))
+        ends.append(block_end)
+        limits.update(json.loads(blocking) + json.loads(noted))
+    for key in restore:
+      doc_end, limits = last.get(key, (0, []))
+      # 切塊分析收尾時的限制是各塊的聯集；切塊之後又續寫的尾段才以最後一段為準。
+      if key in blocks and doc_end <= max(blocks[key][0]):
+        limits = blocks[key][1]
+      connection.execute(
+        "UPDATE sources SET status = 'pending', limitations = ? WHERE inode = ?",
+        (json.dumps(sorted(limits), ensure_ascii=False), key),
+      )
+  connection.execute(f"PRAGMA user_version = {STABLE_INODE_VERSION}")
+  connection.commit()
+
+
 def sensitive_key(name):
   key = re.sub(r"[^A-Za-z0-9]+", "_", name).upper().strip("_")
   # PASS／PWD 單獨出現多半是測試結果（「PASS: 測試名」），只在有前綴時才算憑證名。
@@ -528,6 +603,7 @@ def connect(state, write):
     if 'issue_ref' not in columns:
       connection.execute("ALTER TABLE findings ADD COLUMN issue_ref TEXT NOT NULL DEFAULT ''")
     migrate_hash_free(connection)
+    migrate_stable_inode(connection)
   return connection
 
 
@@ -1036,9 +1112,11 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
         info = target.stat()
       except OSError:
         continue
-      if (info.st_dev, info.st_ino) not in found:
-        found[(info.st_dev, info.st_ino)] = target
-        stats[(info.st_dev, info.st_ino)] = info
+      # 鍵不能帶 st_dev：macOS 每次開機重編裝置號，2026-10-16 重開機後已分析的 4,453 份全被當成新檔重排。
+      # 掃描範圍在同一個 APFS 卷宗內，st_ino 在卷宗內唯一、開機不變。
+      if info.st_ino not in found:
+        found[info.st_ino] = target
+        stats[info.st_ino] = info
   records = {}
   windows = {}
   populations = {}
@@ -1046,7 +1124,7 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
   for key, path in found.items():
     info = stats[key]
     stamp = {"path": str(path), "size": info.st_size, "mtime_ns": info.st_mtime_ns, "window": window_key}
-    cached = (cache or {}).get(f"{key[0]}:{key[1]}")
+    cached = (cache or {}).get(str(key))
     # 每輪全庫重讀要數分鐘、吃掉大半排程；大小與修改時間都沒變就沿用上次的分類材料。
     if cached is not None and all(cached.get(name) == value for name, value in stamp.items()):
       windows[path] = {"has_timestamp": cached["has_timestamp"], "matches": cached["matches"]}
@@ -1069,7 +1147,7 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
     # 所有來源只留分類材料，避免把整個歷史原文一起保留在記憶體。
     records[path] = (session_ids, synthetic, False)
     if updates is not None:
-      updates[f"{key[0]}:{key[1]}"] = {
+      updates[str(key)] = {
         **stamp, "session_ids": sorted(session_ids), "synthetic": bool(synthetic),
         **windows[path], "conversation": populations[path]["conversation"], "human": populations[path]["human"],
         "agent_ids": sorted(populations[path]["agent_ids"]), "sidechain": populations[path]["sidechain"],
@@ -1127,7 +1205,7 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
     info = stats[inode]
     described.append(
       {
-        "inode": f"{inode[0]}:{inode[1]}",
+        "inode": str(inode),
         "path": str(path),
         "name": path.name,
         "classification": kind,
