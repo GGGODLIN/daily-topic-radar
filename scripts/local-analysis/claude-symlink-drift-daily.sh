@@ -22,7 +22,7 @@ LOCK_DIRS=("$HOME/.claude-team-s" "$HOME/.claude-team-p")
 #   (1) updater / OS ephemeral state：atomic write 必拆 symlink
 #       .claude.json / .claude.json.backup.* / backups / .DS_Store / .last-update-result.json
 #   (2) 帳號綁定的 server 狀態：本來就該每個 lock dir 各存一份，重建 symlink 反而是錯的
-#       policy-limits.json / mcp-needs-auth-cache.json / remote-settings.json
+#       policy-limits.json / mcp-needs-auth-cache.json / remote-settings.json / remote-settings.json.synced-at
 #       依據：~/.zshrc 的 _cc_sync_mcp 註 6 明文「claude.ai connector 的 OAuth 綁帳號、
 #       同步不了，各 dir 自己 /mcp 授權」；~/.claude/.gitignore 也已把後兩者列為
 #       never-sync 的 machine-specific state；且 .claude-max（alex 帳號）根本沒有這兩個檔，
@@ -33,7 +33,7 @@ is_whitelisted() {
   local name="$1"
   case "$name" in
     .claude.json|backups|policy-limits.json|.DS_Store|.last-update-result.json) return 0 ;;
-    mcp-needs-auth-cache.json|remote-settings.json) return 0 ;;
+    mcp-needs-auth-cache.json|remote-settings.json|remote-settings.json.synced-at) return 0 ;;
     # 2026-10-09 拍板：CC 按帳號寫的 runtime 資料（state/ 只有 mcp-discover-verdicts.json、dev-mods/ 是 session UUID 目錄），
     # hooks／scripts 沒有任何地方經 CLAUDE_CONFIG_DIR 讀它們；改 symlink 會把不同帳號的資料混在一起。
     state|dev-mods|policy-limits.json.stamp.json) return 0 ;;
@@ -93,7 +93,7 @@ done
   echo ""
   echo "**Whitelist（不算 drift）**："
   echo "- **updater / OS ephemeral state**（atomic write 必拆 symlink，2026-07-31 拍板）：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`.DS_Store\` / \`.last-update-result.json\`"
-  echo "- **帳號綁定的 server 狀態**（本來就該各 lock dir 各存一份，重建 symlink 會跨帳號污染，2026-08-01 拍板）：\`policy-limits.json\` / \`mcp-needs-auth-cache.json\` / \`remote-settings.json\`；CC 按帳號寫的 runtime 資料 \`state/\` / \`dev-mods/\` / \`policy-limits.json.stamp.json\`（2026-10-09 拍板）"
+  echo "- **帳號綁定的 server 狀態**（本來就該各 lock dir 各存一份，重建 symlink 會跨帳號污染，2026-08-01 拍板）：\`policy-limits.json\` / \`mcp-needs-auth-cache.json\` / \`remote-settings.json\` / \`remote-settings.json.synced-at\`（同步時間戳，與 remote-settings.json 同機制、各帳號各一份，2026-10-15 補）；CC 按帳號寫的 runtime 資料 \`state/\` / \`dev-mods/\` / \`policy-limits.json.stamp.json\`（2026-10-09 拍板）"
   echo ""
   echo '- **統計快取**：`stats-cache.json` 可由對話紀錄重建，各帳號自行保存，不重建共享連結。'
   echo ""
@@ -117,7 +117,7 @@ done
     echo '  for name in *; do'
     echo '    case "$name" in'
     echo '      .claude.json|.claude.json.backup.*|backups|policy-limits.json|.DS_Store|.last-update-result.json) continue ;;'
-    echo '      mcp-needs-auth-cache.json|remote-settings.json) continue ;;'
+    echo '      mcp-needs-auth-cache.json|remote-settings.json|remote-settings.json.synced-at) continue ;;'
     echo '      state|dev-mods|policy-limits.json.stamp.json|stats-cache.json) continue ;;'
     echo '    esac'
     echo '    [[ -L "$name" ]] && continue'
