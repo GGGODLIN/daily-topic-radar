@@ -15,7 +15,7 @@ spec.loader.exec_module(population)
 fixtures = population.fixtures
 
 LEGS = 'workbuddy-v41:7,grok-4.7:7'
-PRODUCTION_LEGS = 'argon-high:5,swe2-high:5,mimo26-pool:5,grok-4.7:5'
+PRODUCTION_LEGS = 'swe2-high:5,mimo26-pool:5,grok-4.7:5'
 PRODUCTION_DIRECT = 'audit-chain:10'
 
 
@@ -71,14 +71,14 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(peak, {'free': 10}, 'Incremental runs on the free chain keep to the configured cap')
 
   def test_production_backfill_legs_each_carry_five_slots(self):
-    # 使用者 2026-10-16 把回填各線從 10 降到 5，壓低併發看 Argon 的 429 會不會減少；run.sh 的 --max-sessions 10
-    # 低於名額加總，所以不會有 free 補位、總併發就是 20。
-    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(10), full=20, extra=['--max-sessions', '10'])
-    self.assertEqual(peak, {'argon-high': 5, 'swe2-high': 5, 'mimo26-pool': 5, 'grok-4.7': 5})
+    # 使用者 2026-10-16 把回填各線從 10 降到 5、2026-10-17 拿掉 Argon；run.sh 的 --max-sessions 10
+    # 低於名額加總，所以不會有 free 補位、總併發就是 15。
+    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(10), full=15, extra=['--max-sessions', '10'])
+    self.assertEqual(peak, {'swe2-high': 5, 'mimo26-pool': 5, 'grok-4.7': 5})
 
   def test_grok_over_its_line_leaves_its_slots_empty_instead_of_overloading_the_pools(self):
-    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(50), full=15, extra=['--max-sessions', '10'])
-    self.assertEqual(peak, {'argon-high': 5, 'swe2-high': 5, 'mimo26-pool': 5}, 'Each leg keeps the 5 slots the user set even while Grok sits out')
+    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(50), full=10, extra=['--max-sessions', '10'])
+    self.assertEqual(peak, {'swe2-high': 5, 'mimo26-pool': 5}, 'Each leg keeps the 5 slots the user set even while Grok sits out')
 
   def test_production_incremental_runs_use_the_chain_alone(self):
     # 增量改走 Magpie 的 audit-chain（依序備援），名額全給它就不會再碰 free 鏈。
