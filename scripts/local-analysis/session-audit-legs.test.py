@@ -16,7 +16,7 @@ fixtures = population.fixtures
 
 LEGS = 'workbuddy-v41:7,grok-4.7:7'
 PRODUCTION_LEGS = 'swe2-high:5,mimo26-pool:5,grok-4.7:5'
-PRODUCTION_DIRECT = 'audit-chain:2'
+PRODUCTION_DIRECT = 'argon-low:2'
 
 
 class DirectLegTests(population.PopulationTests):
@@ -81,9 +81,10 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(peak, {'swe2-high': 5, 'mimo26-pool': 5}, 'Each leg keeps the 5 slots the user set even while Grok sits out')
 
   def test_production_incremental_runs_use_the_chain_alone(self):
-    # 增量改走 Magpie 的 audit-chain（依序備援），名額全給它就不會再碰 free 鏈；--max-sessions 跟著降到 2，否則差額補成 free。
-    peak = self.peaks(PRODUCTION_DIRECT, self.grok_usage(10), full=2, sessions=20, extra=['--max-sessions', '2'])
-    self.assertEqual(peak, {'audit-chain': 2})
+    # 增量平常只走主線 argon-low；備用 audit-tail 也算指定名額，所以 --max-sessions 2 不會補出 free 鏈。
+    peak = self.peaks(PRODUCTION_DIRECT, self.grok_usage(10), full=2, sessions=20,
+                      extra=['--max-sessions', '2', '--standby-legs', 'audit-tail:10'])
+    self.assertEqual(peak, {'argon-low': 2})
 
   def pinned_flags(self, url):
     return self.flags(url) + ['--direct-legs', 'mimo26-pool:15,workbuddy-v41:15']

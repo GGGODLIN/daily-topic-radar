@@ -567,6 +567,10 @@ def connect(state, write):
         total INTEGER NOT NULL,
         checked_at REAL NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS standby_switches (
+        name TEXT PRIMARY KEY,
+        since REAL NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS secret_exposures (
         inode TEXT NOT NULL,
         generation INTEGER NOT NULL,
@@ -603,6 +607,9 @@ def connect(state, write):
     if 'issue_ref' not in columns:
       connection.execute("ALTER TABLE findings ADD COLUMN issue_ref TEXT NOT NULL DEFAULT ''")
     migrate_hash_free(connection)
+    # 主線與備用線會輪流接同一份對話的不同段；不記實際模型，換線後品質出問題時查不到是哪一顆。
+    if "model" not in table_columns(connection, "model_replies"):
+      connection.execute("ALTER TABLE model_replies ADD COLUMN model TEXT NOT NULL DEFAULT ''")
     migrate_stable_inode(connection)
   return connection
 
@@ -790,6 +797,20 @@ def finding_failure(item, chunk_text):
     if not quote_on_line(chunk_text, entry["source_line"], quote):
       return "quote-not-in-snapshot"
   return None
+
+
+def served_model(raw):
+  try:
+    obj = json.loads(raw.decode("utf-8", "replace"))
+  except json.JSONDecodeError:
+    return ""
+  return str(obj.get("model") or "")[:200] if isinstance(obj, dict) else ""
+
+
+def readable_analysis(raw):
+  # 試打成功的標準：回件封套正常還不夠，裡面要真的是一份分析，否則壞掉的主線會被誤判為恢復。
+  content, failure = message_from_response(raw)
+  return failure is None and parse_analysis(content, "")[0] is not None
 
 
 def parse_analysis(content, chunk_text):
@@ -2096,11 +2117,12 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       reply_status = "review" if review_failures else "parsed"
       connection.execute(
         "INSERT OR REPLACE INTO model_replies "
-        "(inode, generation, doc_start, doc_end, content, status, limitations) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(inode, generation, doc_start, doc_end, content, status, limitations, model) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (row["inode"], generation, cursor, cursor + accepted_source,
          redact_text(content), reply_status,
-         json.dumps(sorted(review_failures | {"response-needs-review"} if review_failures else set()))),
+         json.dumps(sorted(review_failures | {"response-needs-review"} if review_failures else set())),
+         served_model(body)),
       )
       break
     if accepted is None or accepted_source <= 0:
@@ -2265,6 +2287,11 @@ def session_end_times(connection):
   return ended
 
 
+def closed_by_end(row, ended):
+  moment = ended.get(row["session_id"])
+  return moment is not None and moment + SESSION_END_SLACK_SECONDS >= row["mtime"]
+
+
 def cmd_enqueue(args):
   state = Path(args.state)
   guard_state(state, write=True)
@@ -2346,8 +2373,7 @@ def cmd_run(args):
       now = time.time()
 
       def closed(row):
-        moment = ended.get(row["session_id"])
-        return moment is not None and moment + SESSION_END_SLACK_SECONDS >= row["mtime"]
+        return closed_by_end(row, ended)
 
       rows = [
         row for row in connection.execute(
@@ -2427,18 +2453,22 @@ def cmd_run(args):
 
     # 平常只追新 session，走 free、名額小；開回填批次時才換成高併發的直連腿，批次進 review 後下一輪自動退回。
     configured = parse_legs(args.backfill_legs if mode["backfill"] and args.backfill_legs else args.direct_legs)
+    # 備用線只給增量用：平常不接新工作，主線冷卻中或積壓太久才補上。回填本來就是多條平行線，不再疊一層。
+    standby = [] if mode["backfill"] else parse_legs(args.standby_legs)
+    standby_slots = dict(standby)
+    primary = {alias for alias, _ in configured}
     base = args.max_sessions
     eligible = eligible_legs(configured, args.grok_quota_file)
-    slots_of = dict(configured)
+    slots_of = dict(configured + standby)
     paused_now = {alias for (alias,) in connection.execute("SELECT alias FROM leg_pauses")}
     legs = [(alias, slots) for alias, slots in eligible if alias not in paused_now]
     # 名額全部指定給直連腿時不碰 free 鏈：鏈尾的腿沒驗證過（Muse 8 個摩擦只抓到 2 個），暫停時寧可少跑也不靜默換品質。
-    # 有用 free 時，暫停或額度到線的腿把名額讓給 free。
-    uses_free = sum(slots for _, slots in configured) < base
+    # 有用 free 時，暫停或額度到線的腿把名額讓給 free。備用線也算指定名額，否則主線只有 2 槽時會補出 free。
+    uses_free = sum(slots for _, slots in configured + standby) < base
     free_slots = base - sum(slots for _, slots in legs) if uses_free else 0
     capacity = {**({"free": free_slots} if free_slots > 0 else {}), **dict(legs)}
     # 指定的池名額加總超過基準時（例如 Grok 額外加 10），總量跟著名額走；基準只是 free 補位的上限。
-    concurrency = max(base, sum(slots for _, slots in configured))
+    concurrency = max(base, sum(slots for _, slots in configured + standby))
     try:
       pool_specs = json.loads(args.pool_health)
     except ValueError:
@@ -2457,7 +2487,8 @@ def cmd_run(args):
       if not candidates:
         return None
       open_legs = [leg for leg in candidates if busy.get(leg, 0) < capacity[leg]]
-      return min(open_legs or candidates, key=lambda leg: busy.get(leg, 0))
+      # 全部滿槽就回 None 讓呼叫端等槽：以前會照樣挑一條，續段與重送因此打穿主線 2 槽、試打 1 槽的上限。
+      return min(open_legs, key=lambda leg: busy.get(leg, 0)) if open_legs else None
 
     def send(session_id, analyzer, group, leg, payload, resends=0):
       if leg == "free":
@@ -2484,6 +2515,48 @@ def cmd_run(args):
         connection.commit()
       return value
 
+    def oldest_wait():
+      # 從資料庫算「已可分析、還沒讀完」的新來源等了多久，不看派送佇列：長對話一開始送就離開佇列，積壓會被算短。
+      ended = session_end_times(connection)
+      now = time.time()
+      oldest = 0.0
+      for row in connection.execute("SELECT session_id, mtime FROM sources WHERE included = 1 AND status = 'pending'"):
+        if cutoff is not None and row["mtime"] < cutoff:
+          continue
+        ready = row["mtime"] if closed_by_end(row, ended) else row["mtime"] + args.quiet_seconds
+        oldest = max(oldest, now - ready)
+      return oldest
+
+    def backlog_switch():
+      # 開關存在 state 裡跨輪保存：只放在單輪記憶體時，等待時間落在兩條線之間一換輪就被關掉，「降到下限才關」會失效。
+      waited = oldest_wait()
+      opened = connection.execute("SELECT 1 FROM standby_switches WHERE name = 'backlog'").fetchone() is not None
+      if not opened and waited >= args.backlog_on_hours * 3600:
+        connection.execute("INSERT INTO standby_switches (name, since) VALUES ('backlog', ?)", (time.time(),))
+        connection.commit()
+        return True
+      if opened and waited <= args.backlog_off_hours * 3600:
+        connection.execute("DELETE FROM standby_switches WHERE name = 'backlog'")
+        connection.commit()
+        return False
+      return opened
+
+    standby_state = {"wanted": False}
+
+    def refresh_standby():
+      if not standby_slots:
+        return
+      paused = {alias for (alias,) in connection.execute("SELECT alias FROM leg_pauses")}
+      backlog = backlog_switch()
+      # 主線冷卻中（含試打中）或不能用，就由備用接手；主線一恢復，只剩積壓開關決定要不要繼續開。
+      wanted = backlog or any(leg in paused or leg not in capacity for leg in primary)
+      standby_state["wanted"] = wanted
+      for leg, slots in standby_slots.items():
+        if not wanted:
+          capacity.pop(leg, None)
+        elif leg not in paused:
+          capacity[leg] = slots
+
     def pause_leg(leg):
       # leg_pauses 有列就是暫停中，until 是下一次試打的時間；名額有用 free 時讓回 free。
       connection.execute(
@@ -2495,6 +2568,7 @@ def cmd_run(args):
       slots = capacity.pop(leg, 0)
       if "free" in capacity:
         capacity["free"] += slots
+      refresh_standby()
 
     def resume_leg(leg):
       connection.execute("DELETE FROM leg_pauses WHERE alias = ?", (leg,))
@@ -2503,10 +2577,12 @@ def cmd_run(args):
       if "free" in capacity:
         capacity["free"] = max(0, capacity["free"] - slots_of[leg])
       capacity[leg] = slots_of[leg]
+      refresh_standby()
 
     def review_legs():
       paused = {alias: until for alias, until in connection.execute("SELECT alias, until FROM leg_pauses")}
-      for leg, _slots in eligible:
+      # 沒開的備用線不試打；開著時它暫停了一樣要試打，才回得來。
+      for leg, _slots in eligible + (standby if standby_state["wanted"] else []):
         value = health(leg)
         if leg in paused:
           if value is not None and value[0] > 0:
@@ -2518,6 +2594,25 @@ def cmd_run(args):
             probing.add(leg)
             capacity[leg] = 1
         # 正常中的腿只記錄健康度、不據此暫停：健康度與實際回應衝突時（顯示 0 但打得通）以回應為準。
+      refresh_standby()
+
+    # 有線可送但全部滿槽的段先停在這裡等槽；送回剛失敗的線或硬塞進滿槽的線都不對。
+    parked = deque()
+
+    def dispatch(item):
+      session_id, analyzer, group, payload, resends, avoid = item
+      leg = pick_leg(avoid)
+      if leg is None:
+        return False
+      if not resends:
+        remaining[group] -= 1
+      send(session_id, analyzer, group, leg, payload, resends)
+      return True
+
+    def drop(session_id, analyzer):
+      # 先放下這段，來源維持原狀態，下一輪從存好的水位接著送；池死掉不是 session 的錯。
+      analyzer.close()
+      sessions.remove(session_id)
 
     def resume(session_id, group, analyzer, response=None):
       try:
@@ -2526,19 +2621,18 @@ def cmd_run(args):
         sessions.remove(session_id)
         return
       if not shrinking and (remaining[group] <= 0 or time.monotonic() >= lifetime):
-        analyzer.close()
-        sessions.remove(session_id)
-        return
-      leg = pick_leg()
-      if leg is None:
-        analyzer.close()
-        sessions.remove(session_id)
+        drop(session_id, analyzer)
         return
       # 已開始的 400/413 縮片保留原本的重送流程；到期只擋下一個新片段，不丟棄在途回件。
-      remaining[group] -= 1
-      send(session_id, analyzer, group, leg, payload)
+      item = (session_id, analyzer, group, payload, 0, None)
+      if not dispatch(item):
+        if capacity:
+          parked.append(item)
+        else:
+          drop(session_id, analyzer)
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
+      refresh_standby()
       review_legs()
       next_review = time.monotonic() + LEG_REVIEW_SECONDS
       while True:
@@ -2549,7 +2643,13 @@ def cmd_run(args):
         if open_for_work and time.monotonic() >= next_review:
           review_legs()
           next_review = time.monotonic() + LEG_REVIEW_SECONDS
-        # 總量照各腿名額加總：暫停的腿名額空著，不把它的量壓到其他池上。
+        for _ in range(len(parked)):
+          item = parked.popleft()
+          if not any(leg != item[5] for leg in capacity):
+            drop(item[0], item[1])
+          elif not dispatch(item):
+            parked.append(item)
+        # 總量照各腿名額加總：暫停的腿名額空著，不把它的量壓到其他池上。等槽的段在上面先送，新來源只補剩下的空槽。
         while open_for_work and capacity and len(active) < min(concurrency, sum(capacity.values())):
           group, row = next_row()
           if row is None:
@@ -2582,6 +2682,8 @@ def cmd_run(args):
         connection.commit()
         if not active:
           # 沒有在途也沒有可送的：結束讓 runner 寫出發現，排程 10 秒後重開並重新掃描，不在這裡空轉。
+          for session_id, analyzer, *_ in parked:
+            drop(session_id, analyzer)
           break
         timeout = max(0.0, min(next_scan, next_review) - time.monotonic()) if open_for_work else None
         done, _ = wait(active, timeout=timeout, return_when=FIRST_COMPLETED)
@@ -2593,25 +2695,35 @@ def cmd_run(args):
             print(f"session-audit: leg-fallback {leg} http-{code}", file=sys.stderr)
             if leg in probing:
               pause_leg(leg)
+            elif standby_slots and leg in primary and code in (429, 503):
+              # 有備用線時主線一被限流就冷卻：連續失敗門檻每輪歸零、一次成功也歸零，可能永遠湊不到，備用遲遲不開。
+              pause_leg(leg)
             else:
               consecutive_failures[leg] = consecutive_failures.get(leg, 0) + 1
               value = health(leg, max_age=0)
               dead = value is not None and value[0] == 0
               if leg in capacity and (dead or consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE):
                 pause_leg(leg)
-            other = pick_leg(avoid=leg) if resends < LEG_RESENDS else None
-            if other is None and resends < LEG_RESENDS and leg in capacity:
-              other = leg
-            if other is None:
-              # 沒有腿可送：先放下這段，來源維持原狀態，下一輪再送；池死掉不是 session 的錯。
-              analyzer.close()
-              sessions.remove(session_id)
+            if resends >= LEG_RESENDS:
+              drop(session_id, analyzer)
               continue
-            send(session_id, analyzer, group, other, payload, resends + 1)
+            if any(other != leg for other in capacity):
+              # 有別條線就換線，滿了就等槽，不送回剛失敗的線：主線回 429 的那段因此只會往備用走。
+              item = (session_id, analyzer, group, payload, resends + 1, leg)
+            elif leg in capacity:
+              item = (session_id, analyzer, group, payload, resends + 1, None)
+            else:
+              drop(session_id, analyzer)
+              continue
+            if not dispatch(item):
+              parked.append(item)
             continue
           consecutive_failures[leg] = 0
           if leg in probing:
-            resume_leg(leg)
+            if readable_analysis(body):
+              resume_leg(leg)
+            else:
+              pause_leg(leg)
           resume(session_id, group, analyzer, (code, body))
     if window is not None:
       update_history_review(connection)
@@ -3276,6 +3388,11 @@ def build_parser():
   # free 之外的直連腿，格式 alias:名額,alias:名額；預設不開，只走 free。
   parser.add_argument("--direct-legs", default="")
   parser.add_argument("--backfill-legs", default="")
+  # 增量的備用線，格式同 --direct-legs：主線冷卻中，或最早一份等待中的新來源等超過上線時才接工作，降到下線以內才停。
+  parser.add_argument("--standby-legs", default="")
+  # 16／2 小時是暫定值：白天積壓留給夜裡消化，拖到隔天才叫備用；上線後依實測速度再調。
+  parser.add_argument("--backlog-on-hours", type=float, default=16.0)
+  parser.add_argument("--backlog-off-hours", type=float, default=2.0)
   parser.add_argument("--max-sessions", type=int, default=MAX_CONCURRENT_SESSIONS)
   parser.add_argument("--pool-health", default=json.dumps(POOL_HEALTH))
   parser.add_argument("--leg-probe-seconds", type=float, default=LEG_PROBE_SECONDS)
