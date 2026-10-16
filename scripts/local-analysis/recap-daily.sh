@@ -148,6 +148,31 @@ stdout 只輸出 markdown 報告本身，不要 preamble（「整理完...」「
 EOF
 )
 
+# claude -p 預設只把最後一則 assistant 文字送到 stdout：2026-10-15 模型把報告放在倒數第二則、
+# 最後補了一句結語，報告檔只剩 36 bytes、整天 recap 等於沒跑。改走 stream-json 收齊全部
+# assistant 文字區塊，取最後一個以「# 」開頭的區塊當報告本體；一個都沒有才全部串起來。
+extract_recap_text() {
+  python3 -I -c '
+import json, sys
+blocks = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if d.get("type") != "assistant":
+        continue
+    for c in (d.get("message") or {}).get("content") or []:
+        if c.get("type") == "text" and c.get("text"):
+            blocks.append(c["text"])
+reports = [b for b in blocks if b.lstrip().startswith("# ")]
+sys.stdout.write(reports[-1] if reports else "\n\n".join(blocks))
+'
+}
+
 run_recap() {
   local luna_model=''
   if [[ -z "$PARENT_CC_VENDOR" && -z "$PARENT_ANTHROPIC_BASE_URL" ]]; then
@@ -156,7 +181,7 @@ run_recap() {
       unset ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
       unset CLAUDE_CODE_SUBAGENT_MODEL ANTHROPIC_AUTH_TOKEN
       export CC_VENDOR=headless-channel
-      command "$CLAUDE" --model opus -p "$PROMPT"
+      command "$CLAUDE" --model opus --output-format stream-json --verbose -p "$PROMPT" | extract_recap_text
     )
     return $?
   fi
@@ -212,7 +237,7 @@ run_recap() {
     export API_TIMEOUT_MS="${API_TIMEOUT_MS:-3000000}"
     export CLAUDE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-600000}"
     export CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS:-600000}"
-    command "$CLAUDE" --model "$luna_model" -p "$PROMPT"
+    command "$CLAUDE" --model "$luna_model" --output-format stream-json --verbose -p "$PROMPT" | extract_recap_text
   )
 }
 
