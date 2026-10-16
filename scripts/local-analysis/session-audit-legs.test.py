@@ -15,7 +15,8 @@ spec.loader.exec_module(population)
 fixtures = population.fixtures
 
 LEGS = 'workbuddy-v41:7,grok-4.7:7'
-PRODUCTION_LEGS = 'mimo26-pool:15,workbuddy-v41:15,grok-4.7:10'
+PRODUCTION_LEGS = 'argon-high:10,swe2-high:10,mimo26-pool:10,grok-4.7:10'
+PRODUCTION_DIRECT = 'audit-chain:10'
 
 
 class DirectLegTests(population.PopulationTests):
@@ -69,13 +70,18 @@ class DirectLegTests(population.PopulationTests):
     peak = self.peaks('', self.grok_usage(10), full=20, sessions=20, extra=['--max-sessions', '10'])
     self.assertEqual(peak, {'free': 10}, 'Incremental runs on the free chain keep to the configured cap')
 
-  def test_production_legs_add_ten_grok_slots_on_top_of_the_two_pools(self):
+  def test_production_backfill_legs_each_carry_ten_slots(self):
     peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(10), full=40)
-    self.assertEqual(peak, {'mimo26-pool': 15, 'workbuddy-v41': 15, 'grok-4.7': 10})
+    self.assertEqual(peak, {'argon-high': 10, 'swe2-high': 10, 'mimo26-pool': 10, 'grok-4.7': 10})
 
   def test_grok_over_its_line_leaves_its_slots_empty_instead_of_overloading_the_pools(self):
     peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(50), full=30)
-    self.assertEqual(peak, {'mimo26-pool': 15, 'workbuddy-v41': 15}, 'Each pool keeps the 15 slots the user set even while Grok sits out')
+    self.assertEqual(peak, {'argon-high': 10, 'swe2-high': 10, 'mimo26-pool': 10}, 'Each leg keeps the 10 slots the user set even while Grok sits out')
+
+  def test_production_incremental_runs_use_the_chain_alone(self):
+    # 增量改走 Magpie 的 audit-chain（依序備援），名額全給它就不會再碰 free 鏈。
+    peak = self.peaks(PRODUCTION_DIRECT, self.grok_usage(10), full=10, sessions=20, extra=['--max-sessions', '10'])
+    self.assertEqual(peak, {'audit-chain': 10})
 
   def pinned_flags(self, url):
     return self.flags(url) + ['--direct-legs', 'mimo26-pool:15,workbuddy-v41:15']
