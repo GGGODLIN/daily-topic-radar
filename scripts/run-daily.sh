@@ -56,7 +56,7 @@ uv run python -m social_info --retry-failures
 
 本檔每次 daily run 覆寫；出口恢復正常那天會自動刪除。
 ALERTEOF
-      [ -z "\${VPN_PRECHECK_NO_NOTIFY:-}" ] && osascript -e "display notification \"出口是雲端 IP，reddit 大機率整域 403 — 關掉 VPN 後跑 --retry-failures 可補回\" with title \"⚠️ social-info VPN pre-check\" sound name \"Sosumi\"" 2>/dev/null || true
+      [ -z "${VPN_PRECHECK_NO_NOTIFY:-}" ] && osascript -e "display notification \"出口是雲端 IP，reddit 大機率整域 403 — 關掉 VPN 後跑 --retry-failures 可補回\" with title \"⚠️ social-info VPN pre-check\" sound name \"Sosumi\"" 2>/dev/null || true
       ;;
     *)
       echo "=== VPN-PRECHECK: $VPN_PRECHECK_OUT ==="
@@ -95,8 +95,26 @@ ALERTEOF
   if [ -n "$(git status --porcelain state.db reports/)" ]; then
     git add state.db reports/
     git commit -m "chore: daily aggregate $DATE"
-    git push
-    echo "=== Pushed: $(git rev-parse HEAD) ==="
+    # ── PUSH_GUARD_START ───────────────────────────────────────────────────────
+    # push 失敗不是 silent：2026-10-17 GitHub push protection 擋下貼文裡的第三方 API key，
+    # commit 留在本機一整天沒人知道。比照 VPN pre-check：log 一行＋ALERT 檔＋桌面通知，不擋後續。
+    if git push; then
+      rm -f "$REPO_DIR/ALERT-push-failed.md"
+      echo "=== Pushed: $(git rev-parse HEAD) ==="
+    else
+      PUSH_HEAD=$(git rev-parse --short HEAD)
+      echo "=== ⚠️ PUSH-FAILED: commit $PUSH_HEAD 留在本機、未上 GitHub；看上方 remote 訊息（GH013 = push protection 擋到貼文裡的 key）==="
+      cat > "$REPO_DIR/ALERT-push-failed.md" <<ALERTEOF
+# ⚠️ daily aggregate push 失敗 — $DATE
+
+commit \`$PUSH_HEAD\` 已在本機、沒推上 GitHub。remote 回應見 \`logs/cron-$DATE.log\` 的 PUSH-FAILED 段。
+
+- 看到 \`GH013\` / push protection：某篇貼文含看起來像 API key 的字串。ingest 層的遮罩（src/social_info/redact.py）沒認出這個格式——補 pattern 後，把 raw md 與 state.db 裡那串換成 \`[REDACTED-KEY]\`，\`git reset --soft origin/main\` 重提再 push。不要用 GitHub 的 allow-secret 連結（那是把別人洩漏的 key 再公開一次）。
+- 其他原因（網路、認證、檔案過大）：修好後 \`git push\` 即可，下次成功 push 會自動刪本檔。
+ALERTEOF
+      [ -z "${PUSH_GUARD_NO_NOTIFY:-}" ] && osascript -e "display notification \"commit $PUSH_HEAD 留在本機；看 ALERT-push-failed.md\" with title \"⚠️ social-info push 失敗\" sound name \"Sosumi\"" 2>/dev/null || true
+    fi
+    # ── PUSH_GUARD_END ─────────────────────────────────────────────────────────
   else
     echo "=== No changes to commit ==="
   fi

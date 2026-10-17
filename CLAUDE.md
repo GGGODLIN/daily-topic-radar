@@ -18,6 +18,8 @@
 
 電腦睡眠時 launchd 會在喚醒時補跑一次；整夜關機那天就 miss、不追補。
 
+**Push guard 與 secret 遮罩（2026-10-17 加）**：repo 是 public、GitHub push protection 開著。社群貼文裡網友自己貼的 API key 會被整段抓進 raw md 與 `state.db`，push 就會被 GH013 擋下、當天資料留在本機。兩道處理：(1) [`src/social_info/redact.py`](/src/social_info/redact.py) 在 fetch 結果進 pool／dedup／DB／markdown 之前把 provider 形狀的 token（ark-／sk-／AKIA／ghp_／JWT…）換成 `[REDACTED-KEY:<kind>]`，`db.insert_item` 再擋一次；pattern 刻意窄、只認前綴＋長度，漏認就補 `_KINDS`。(2) `run-daily.sh` 的 `PUSH_GUARD_START/END` 段：push 失敗寫 `ALERT-push-failed.md`（gitignored、下次成功 push 自刪）＋桌面通知＋cron log `PUSH-FAILED` 行，不擋後續。改這兩處後跑 `uv run pytest tests/test_redact.py` 與 `bash scripts/run-daily-push.test.sh`。被擋時的處置：補 pattern、把 md 與 DB 裡那串遮掉、`git reset --soft origin/main` 重提；**不要用 GitHub 的 allow-secret 連結**（等於替別人把洩漏的 key 再公開一次）。
+
 **Threads 來源 `threads_muse` 2026-10-10 起停用**：原本（2026-09-29 加）由 watchdogs repo 的 launchd `com.gggodlin.watchdogs.muse-threads-radar` 用 muse1 帳號產 `muse/threads-radar.json`；Muse cookie 過期、使用者決定不續用，plist 已改名 `.retired-20261010`，`sources.yml` 的 `threads_muse` 設 `enabled: false`（原因見該段註解，commit 3729b79）。目前 Threads 沒有替代來源，digest 的社群討論層缺口照「已知 fetcher gap」段處理。要重開：先看 `sources.yml` 與 memory `project_muse_agent_task_delegate_2026_09_28.md` 檔尾更正行；prompt 檔 [`muse/threads-radar-prompt.txt`](/muse/threads-radar-prompt.txt) 保留未刪，收集程式仍靠第一行「共打開 N 則貼文」和完整貼文網址收結果。
 
 ### 常用指令
