@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from social_info._time import utcnow
+from social_info.redact import redact_row
 
 TAIPEI = timezone(timedelta(hours=8))
 
@@ -95,6 +96,8 @@ class Database:
         return dict(row) if row else None
 
     def insert_item(self, row: dict[str, Any]) -> None:
+        # Second guard for callers that build rows without going through the pipeline fetch path.
+        row = redact_row(row)
         cols = ",".join(row.keys())
         placeholders = ",".join("?" for _ in row)
         self.conn.execute(

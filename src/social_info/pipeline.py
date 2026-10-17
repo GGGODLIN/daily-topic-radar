@@ -38,6 +38,7 @@ from social_info.fetchers import (
 from social_info.fetchers.base import FetchResult, Item
 from social_info.markdown import render_file
 from social_info.observation_pool import ObservationPool
+from social_info.redact import redact_result
 
 _SECRET_QS_RE = re.compile(
     r"([?&](?:token|apikey|api_key|access_token|auth|key)=)[^&\s'\"]+",
@@ -202,7 +203,8 @@ async def run_pipeline(
     independent = [source for source in enabled if source.type == "new_term_radar" and not dry_run]
     regular = [source for source in enabled if source.type != "new_term_radar"]
     async with httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT) as http:
-        results = await asyncio.gather(*[_run_one_fetcher(s, http) for s in regular])
+        # Redact before the pool / dedup / DB / markdown ever see an item: one choke point for every source.
+        results = [redact_result(r) for r in await asyncio.gather(*[_run_one_fetcher(s, http) for s in regular])]
 
         if pool is not None and not dry_run:
             by_id = {source.id: source for source in regular}
@@ -213,7 +215,7 @@ async def run_pipeline(
 
         # The independent collector reads shared X observations from this run.
         for source in independent:
-            result = await _run_one_fetcher(source, http)
+            result = redact_result(await _run_one_fetcher(source, http))
             results.append(result)
             if pool is not None and not dry_run:
                 pool.record_result(source, result)
