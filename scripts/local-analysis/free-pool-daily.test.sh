@@ -32,6 +32,29 @@ assert_not_contains() {
   if printf '%s' "$3" | grep -qF -- "$2"; then fail "$1 — unexpected: $2"; else pass "$1"; fi
 }
 
+CPA_NOTE='> ⚠ 舊 CPA 資料，不涵蓋現役 Magpie 流量；零成功／coverage gap 不能判現役整池故障。'
+
+assert_note_only_on_day_section() {
+  local name="$1" text="$2" marker=$'## 過去 24 小時' prefix suffix first rest
+  case "$text" in
+    *"$marker"*) ;;
+    *) fail "$name — 24h heading missing"; return ;;
+  esac
+  prefix="${text%%"$marker"*}"
+  suffix="${text#*"$marker"}"
+  first="${suffix%%$'\n'*}"
+  rest="${suffix#*$'\n'}"
+  if printf '%s' "$prefix" | grep -qF -- "$CPA_NOTE"; then
+    fail "$name — note leaked into the hello prefix"
+  elif printf '%s' "$first" | grep -qF -- "$CPA_NOTE"; then
+    fail "$name — note replaced the 24h heading"
+  elif ! printf '%s' "$rest" | grep -qF -- "$CPA_NOTE"; then
+    fail "$name — note missing after the 24h heading"
+  else
+    pass "$name"
+  fi
+}
+
 cat > "$TMP/server.py" <<'PY'
 import json
 import os
@@ -137,6 +160,9 @@ else:
     print()
     print("### 達到門檻的 alias")
     print("- ⚠ 警告｜groq-qwen：24 小時失敗率 45%（90/200）")
+    print()
+    print("### 用量趨勢（24 小時成功請求，不算剩餘）")
+    print("- 沒有成功請求")
 PY
 
 run_wrapper() {
@@ -164,6 +190,7 @@ run_wrapper clean ok; rc=$?
 [ "$rc" -eq 0 ] && pass "all green exits 0" || fail "all green exits 0 — rc=$rc"
 [ "$(cat "$out_file" 2>/dev/null)" = "__SILENT__" ] && pass "all green stays __SILENT__" || fail "all green stays __SILENT__ — $(cat "$out_file" 2>/dev/null)"
 assert_contains "all green logs the 24h section" "過去 24 小時無異常" "$(cat "$log_file" 2>/dev/null)"
+assert_contains "all green log marks the 24h section as old CPA data" "$CPA_NOTE" "$(cat "$log_file" 2>/dev/null)"
 body="$(cat "$TMP/body" 2>/dev/null)"
 probed="$(sort -u "$TMP/models" 2>/dev/null)"
 assert_contains "hello body keeps max_tokens 400" '"max_tokens": 400' "$body"
@@ -185,6 +212,8 @@ assert_not_contains "24h anomaly is not silent" "__SILENT__" "$out"
 assert_contains "hello conclusion says 小請求存活" "結論：小請求存活" "$out"
 assert_contains "24h section appended" "## 過去 24 小時" "$out"
 assert_contains "24h anomaly lines kept" "### 達到門檻的 alias" "$out"
+assert_contains "zero-success wording kept" "- 沒有成功請求" "$out"
+assert_note_only_on_day_section "old-CPA note stays inside the 24h section" "$out"
 
 # 3. hello 有發現＋24 小時無異常：原有段落不變，後面接「過去 24 小時」段。
 run_wrapper clean hello-402; rc=$?
@@ -197,6 +226,7 @@ assert_contains "hello finding names the member" "model=fake-leg/fake-model" "$o
 assert_not_contains "hello finding has no 小請求存活" "小請求存活" "$out"
 assert_contains "no-anomaly line in report" "過去 24 小時無異常" "$out"
 assert_contains "self-check in report" "自檢：資料讀取正常" "$out"
+assert_note_only_on_day_section "old-CPA note does not cover the hello finding" "$out"
 
 # 3b. gateway /models 不通：A 級、全池死，且不再逐腿打 hello。
 T_MAGPIE_URL="http://127.0.0.1:$DEAD_PORT/v1" run_wrapper clean ok; rc=$?

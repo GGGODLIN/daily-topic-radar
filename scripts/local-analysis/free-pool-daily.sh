@@ -34,6 +34,7 @@
 # hello 有發現或 24 小時段有異常就出報告；兩者都沒事才 __SILENT__。report 失敗（非零、
 # 找不到檔、空輸出）時本腳本非零退出，run-shell-channel 回報失敗、digest 顯示「偵測
 # channel 失敗」，不退回只看 hello 的全綠。
+# 24h 仍讀 CPA 帳本；未標範圍會把舊帳本零流量誤當現役 Magpie 故障。
 #
 # Threat model（提示型 detector）：
 #   - 不保證即時性：日頻；分鐘級中斷由鏈的 failover 自己撐，本軸管「隔天要知道要修什麼」
@@ -198,12 +199,20 @@ PY
 } > "$LOG" 2>&1 || true
 
 day_rc=0
-day_section=$("$PY" "$RELAY_WATCH" report 2>>"$LOG") || day_rc=$?
-if [[ "$day_rc" -ne 0 || -z "$day_section" ]]; then
+day_raw=$("$PY" "$RELAY_WATCH" report 2>>"$LOG") || day_rc=$?
+if [[ "$day_rc" -ne 0 || -z "$day_raw" ]]; then
   echo "relay-watch report 失敗（exit ${day_rc}）：${RELAY_WATCH}" >> "$LOG"
   rm -f "$FINDINGS"
   echo "free-pool: relay-watch report failed (exit ${day_rc}), see $LOG" >&2
   exit 1
+fi
+# 只插在 relay-watch 自己的「## 過去 24 小時」標題下。hello 結論與發現在上方，不套這則警告。
+day_note=$'> ⚠ 舊 CPA 資料，不涵蓋現役 Magpie 流量；零成功／coverage gap 不能判現役整池故障。'
+day_section="$day_raw"
+if [[ "$day_raw" == "## 過去 24 小時" ]]; then
+  day_section="$(printf '%s\n\n%s' "$day_raw" "$day_note")"
+elif [[ "$day_raw" == "## 過去 24 小時"$'\n'* ]]; then
+  day_section="$(printf '%s\n\n%s\n%s' "## 過去 24 小時" "$day_note" "${day_raw#"## 過去 24 小時"$'\n'}")"
 fi
 printf '%s\n' "$day_section" >> "$LOG"
 day_clean=false
