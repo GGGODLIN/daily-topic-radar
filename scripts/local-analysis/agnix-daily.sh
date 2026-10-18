@@ -8,7 +8,7 @@ export PATH
 REPO_DIR="/Users/linhancheng/code/social-info"
 OUT_DIR="$REPO_DIR/reports/local-analysis"
 LOG_DIR="$REPO_DIR/logs"
-TARGET="${AGNIX_TARGET:-/Users/linhancheng/.claude}"
+TARGET="${AGNIX_TARGET:-$HOME/.claude}"
 AGNIX_VERSION="0.37.5"
 BASELINE="${AGNIX_BASELINE:-$OUT_DIR/.agnix-baseline}"
 

@@ -12,7 +12,7 @@ export PATH
 
 PARENT_CC_VENDOR="${CC_VENDOR-}"
 PARENT_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL-}"
-CLAUDE="${RECAP_CLAUDE_BIN:-/Users/linhancheng/.local/bin/claude}"
+CLAUDE="${RECAP_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 KEYS_FILE="${RECAP_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}"
 GPT_MODELS_FILE="${RECAP_GPT_MODELS_FILE:-$HOME/.claude/config/gpt-models.env}"
 REPO_DIR="/Users/linhancheng/code/social-info"
