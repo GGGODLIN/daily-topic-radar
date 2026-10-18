@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>每日話題分析 — 2026-10-18</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #161922;
+    --bg-soft: #1c2030;
+    --fg: #e6e8ef;
+    --fg-muted: #9aa0b4;
+    --fg-dim: #6e7388;
+    --accent-purple: #b591ff;
+    --accent-blue: #7aa8ff;
+    --accent-green: #6ed79c;
+    --accent-orange: #ffb46b;
+    --accent-red: #ff8585;
+    --border: #2a2f43;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.page {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 28px;
+  }
+  header.page h1 { margin: 0 0 6px; font-size: 24px; font-weight: 600; }
+  header.page .meta { color: var(--fg-muted); font-size: 13px; }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 32px; }
+  .stat-card {
+    flex: 1 1 140px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat-card .label { color: var(--fg-dim); font-size: 12px; }
+  .stat-card .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .stat-card.green .value { color: var(--accent-green); }
+  .stat-card.blue .value { color: var(--accent-blue); }
+  .stat-card.purple .value { color: var(--accent-purple); }
+  .stat-card.red .value { color: var(--accent-red); }
+  section.fixed {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin: 24px 0;
+  }
+  section.fixed.purple { border-left: 3px solid var(--accent-purple); }
+  section.fixed.repo { border-left: 3px solid var(--accent-orange); }
+  section.fixed.system { border-left: 3px solid var(--accent-green); }
+  section.fixed.alert { border-left: 3px solid var(--accent-red); }
+  section.theme {
+    margin: 26px 0;
+    padding-bottom: 22px;
+    border-bottom: 1px dashed var(--border);
+  }
+  h2 { font-size: 20px; margin: 0 0 12px; font-weight: 600; }
+  h2 .tag {
+    font-size: 11px;
+    background: var(--bg-soft);
+    color: var(--fg-muted);
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    font-weight: normal;
+  }
+  h3 {
+    font-size: 15px;
+    margin: 16px 0 8px;
+    color: var(--accent-purple);
+    font-weight: 600;
+  }
+  .summary { color: var(--fg-muted); margin: 0 0 10px; font-size: 14px; }
+  .empty { color: var(--fg-dim); font-style: italic; font-size: 13px; padding: 4px 0 8px; }
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin: 6px 0; }
+  a { color: var(--accent-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .pill {
+    background: var(--bg-soft);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .pill { font-family: inherit; font-size: 11px; color: var(--fg-muted); }
+  .star { color: var(--accent-orange); font-weight: 600; }
+  .star-low { color: var(--fg-dim); }
+  .verdict { color: var(--accent-green); font-weight: 600; }
+  .verdict-skip { color: var(--fg-dim); }
+  .verdict-watch { color: var(--accent-blue); font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--fg-dim); font-weight: 500; }
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0 32px;
+  }
+  .chart-row > * { min-width: 0; }
+  @media (max-width: 720px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px 18px;
+  }
+  .chart-card h3 {
+    margin: 0 0 4px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .chart-card .sub {
+    color: var(--fg-dim);
+    font-size: 11.5px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .chart-card code { word-break: break-all; }
+  .chart-box { height: 280px; position: relative; }
+  footer.page {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+  .voice { color: var(--fg); }
+  .voice::before { content: "💭 "; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; color: var(--fg-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>每日話題分析 — 2026-10-18（週日）</h1>
+  <div class="meta">3,213 則訊號從 104 個活躍來源彙整（1 failure：<code>venturebeat_ai</code> HTTP 429，KNOWN_ISSUES 列在 🪦、49 連敗、不 retry）；14 個 source 屬 stale——fetched ok 但 dedup 後 net-new=0，含 skillhub_cn／clawhub／github_search／product_hunt／huggingface_spaces／anthropic_blog／anthropic_engineering／claude_blog／google_ai_blog／mistral_blog／krebs_security／arstechnica_security／youtube_matt／ithome_ai。已對 140 個 URL 做事實查核（parallel 140 · chrome 0），抽出 8 條主軸；KNOWN_ISSUES 今日 0 個 🚨，0 次 retry attempt。LINUX DO 856 則分 51 批讀完（865 fragments）。<strong>今日判讀：</strong>長任務 agent 的停止條件與驗收成本同時出現在官方流程貼文與論壇反例；DeepSeek-V4.1-Flash-1017 是 HF 新進榜、API 別名與搜尋計費仍待分開查；Hy-Memory 今日「首次觀察」標記與昨日已收錄記錄矛盾；d1-3B 與 clef 昨日也已收錄，今日重複的首次標記不當成歷史事實；Beam 按原工具標記呈現；OpenAI 越權行為報告、OpenCode 轉貼與 npm 事件要分開看；量子電路與 ECDSA 研究強調外部評估器，不能寫成破解或已驗證加速。</div>
+</header>
+
+<div class="stat-row">
+  <div class="stat-card green">
+    <div class="label">KNOWN_ISSUES 🚨</div>
+    <div class="value">0</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="label">主軸抽出</div>
+    <div class="value">8</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="label">URL fact-checked</div>
+    <div class="value">140（parallel 140 · chrome 0）</div>
+  </div>
+  <div class="stat-card red">
+    <div class="label">PROBES 自動 writeback</div>
+    <div class="value">0 / 0（今日無新訊號）</div>
+  </div>
+</div>
+
+<div class="chart-row">
+  <div class="chart-card">
+    <h3>各 source 訊號量</h3>
+    <div class="sub">新來源觀察 2030 ｜ LINUX DO 856 ｜ X 94 ｜ 中文/中國 71 ｜ Reddit 48 ｜ GH Trending 46 ｜ V2EX 16 ｜ Agent Skills 14 ｜ GH Rising 10 ｜ HN 10 ｜ EN Media 6 ｜ Lab Blogs 4 ｜ 中文/台灣 4 ｜ SkillHub 中國 3 ｜ HuggingFace 1 — 共 3213 items / 104 active sources / 1 failure（venturebeat_ai 429，不 retry）/ 14 sources stale（fetched ok、dedup 後 net-new=0）</div>
+    <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+  </div>
+  <div class="chart-card">
+    <h3>主軸 key URL 數</h3>
+    <div class="sub">開源 harness 11 ｜ 模型更新與接入 10 ｜ 專用記憶與本地推論 9 ｜ 程序化視覺 9 ｜ 訂閱用量 9 ｜ 長任務 agent 8 ｜ 研究評估器 8 ｜ 授權與供應鏈 7 — 共 8 主軸 / key URL 去重後加總 71。這是每個主軸去重後的 key URL 數，不是文章數，也不是熱度。</div>
+    <div class="chart-box"><canvas id="themeHeatChart"></canvas></div>
+  </div>
+</div>
+
+<section class="fixed purple">
+  <h2>🟣 Anthropic / Claude 動態 <span class="tag">固定段</span></h2>
+  <p class="summary">CC CLI release watcher 今天沒有新 tag（last_seen 仍是 v2.1.302，publishedAt=2026-10-16T20:53:06Z）。公司側最具體的是 TechCrunch 轉述的內部勞動力報告，以及 <code>@AnthropicAI</code> 對 STEM Fellows 量子電路研究的短貼。產品側是 ClaudeDevs 兩則：對話 gzip 壓縮，以及 Claude 撰寫 Claude Code 約 90% 程式碼、合併 PR 與 revert 比例的內部數字。官方部落格三條（anthropic_blog／anthropic_engineering／claude_blog）今天都是 stale。</p>
+
+  <h3>🆕 CC CLI release</h3>
+  <p class="empty">（今日無新訊號）</p>
+  <p class="summary">ProbeReview 核准後的 <code>new_signals</code> 是空陣列。<code>anthropics/claude-code</code> watcher 回報 no_change：tagName=<code>v2.1.302</code>，publishedAt=<code>2026-10-16T20:53:06Z</code>。本段不把該 tag 升級成今天的新 release。</p>
+
+  <h3>📢 公司公告 / 政策</h3>
+  <ul>
+    <li><a href="https://techcrunch.com/2026/10/17/anthropic-says-its-workforce-has-become-less-junior-and-is-spending-more-time-in-meetings/">TechCrunch</a>（Anthony Ha，2026-10-17 20:21 UTC）標題寫「人力變得較不初階、花更多時間開會」。raw md 只有這句摘要：「The composition of Anthropic’s workforce and the type of work getting done have changed significantly in the past year.」正文比例、會議時數與樣本定義本輪未展開。</li>
+    <li>寶玉轉述同一組 2026-10-16 內部報告：<a href="https://x.com/dotey/status/2111223306061836484">技術崗新招初級占比 27%→9%、agent 工作時長到 8 月是員工 6 倍</a>（♥ 265 / 💬 132）。轉述還寫工程師人均提交是半年前 5 倍；員工使用 Claude 的過程中，管理 AI 相關工作的占比由 2025 年秋天的 10% 增至 2026 年春天的 22%；對 2030 年諾貝爾級發現的預期，員工為 91%、美國成年人為 39%。這些是轉述數字，不是本輪讀過的官方 PDF。</li>
+    <li><a href="https://x.com/AnthropicAI/status/2111152183240511640">STEM Fellows：用 Claude 設計更有效率的量子電路</a>（♥ 5075 / 💬 410，2026-10-16 17:47 UTC）。貼文寫到「Given plain-language instructions, Claude Mythos 5 designed quantum circuits that improve on the best publish…」後被截斷。研究頁與限制見主軸 5，不在這裡把截斷句補成已驗證加速。</li>
+    <li>Jack Clark、Dario Amodei 官方帳號今天 0 則。Amanda Askell 只有 <a href="https://x.com/AmandaAskell/status/2111167134533611801">「the rocket car is cool and i want one」</a>（♥ 1129 / 💬 41），沒有政策內容。</li>
+    <li><a href="https://www.blocktempo.com/bank-america-hires-1000-contractors-patch-anthropic-mythos-vulnerabilities-moynihan/">動區</a>轉述美國銀行執行長 Brian Moynihan：第二季多請 1,000 名外包，協助原有約 3,000 名員工修補 Claude Mythos 找出的漏洞；第三季漏洞修補與反洗錢監管費用合計 2 億美元以上，文中寫明沒有細說 Mythos 占多少。這是單一媒體轉述，未核對原始訪談。</li>
+  </ul>
+
+  <h3>🛠 產品 / 工程動態</h3>
+  <ul>
+    <li><a href="https://x.com/ClaudeDevs/status/2111209208012210409">Claude Code 每回合把對話 gzip 後再送</a>（♥ 14240 / 💬 522，2026-10-16 21:34 UTC）。原文寫「so it reaches the model faster」，並寫 cloud session 在你開始打字時就啟動。沒有延遲數字，不能寫成已量到的加速。</li>
+    <li><a href="https://x.com/ClaudeDevs/status/2111168901723906176">Claude 寫了 Claude Code 約 90% 的程式碼</a>（♥ 10892 / 💬 347）。原文接著寫 6 月到 9 月合併 PR 超過兩倍、revert 占比下降超過 40%，並說他們改了 code review。90%、兩倍、40% 都是官方貼文自述，raw md 在「get t」截斷，沒有方法學。</li>
+    <li><a href="https://x.com/claudeai/status/2111177834127601902">六個近期作品</a>（♥ 29012 / 💬 511）：點名的是用 Opus 5.5 做的野火擴散與熱點原型，連結是 t.co，作品本體未核。同帳號另有手寫字做成字型、紙上西洋棋塗鴉等展示，不逐則展開。</li>
+    <li>Boris Cherny 主 pipeline 今天沒有 slides／code review 的原創長文；external-feeds 另有兩則，見系統段；seen-check 沒有 GENUINE_GAP，不寫成主 pipeline 沒抓到。</li>
+  </ul>
+</section>
+
+<section class="theme">
+  <h2>1. 長任務 agent 的協作、驗收與維護成本 <span class="tag">8 key URLs</span></h2>
+  <p class="summary">官方貼文描述並行 agent、值班調查與程式碼審查；論壇同時回報測試流程膨脹、反覆審查不停止、無關檔案探索與既有功能退化。可合併為任務邊界、停止條件及人工驗收。個案與公司內部研究不能外推成普遍生產力。</p>
+  <ul>
+    <li><a href="https://x.com/OpenAI/status/2111192259073094035">GPT-6 Astra Pro</a>（♥ 11296 / 💬 760）寫更快回應、插件與工具使用改善，並寫多個 agent 可平行處理任務的不同部分、可追蹤進度。沒有任務邊界或停止條件的細節。</li>
+    <li><a href="https://x.com/OpenAIDevs/status/2111211411766399288">Put your dot on call</a>（♥ 1418 / 💬 197）：OpenAI 工程師 Ali 用 dot 在凌晨 3 點分流 on-call，dot 調查後開 Codex thread，人從手機上的 ChatGPT 接手。這是單一內部案例。</li>
+    <li><a href="https://x.com/ClaudeDevs/status/2111168901723906176">Claude 寫約 90% Claude Code</a> 與審查流程的改動已寫在 🟣 段。這裡只保留它跟「產出上升、revert 占比下降」這組內部數字的關係，不重複展開。</li>
+    <li><a href="https://x.com/GoogleDeepMind/status/2111127991401247033">四個 Gemini 4 Argon agent 27 小時打完 Minecraft</a>（♥ 2390 / 💬 290）：沙盒內只用程式與文字，寫了 2,783 支程式、用聊天分工、共享筆記、一起除錯，文案寫 no human help。這是遊戲任務，不是軟體交付。</li>
+    <li><a href="https://linux.do/t/topic/3038766">LINUX DO 3038766</a>：matt 工作流使用者稱測試累積「1k6+」、後端一次「六七分鐘」且偶發卡死，希望保留文件但解除流程綁定。缺分類、追蹤與程式碼，不能推出該刪測試。</li>
+    <li><a href="https://linux.do/t/topic/3037542">LINUX DO 3037542</a>：Argon 在 WSL-Debian12、Kimi Code CLI、CPA 接 Vertex 的環境做登入插件，作者報 153 次請求、兩次壓縮、約 27M token，伴隨讀無關檔、翻其他 session、探查 nginx／Tailscale。作者也承認功能完成。缺同任務 trace。</li>
+    <li><a href="https://linux.do/t/topic/3038031">LINUX DO 3038031</a>：續作遊戲時，要求保留的骰子預覽被刪、動畫微調變成重做、無關位置被改壞。這是既有功能退化的單一個案。</li>
+    <li><a href="https://techcrunch.com/2026/10/17/anthropic-says-its-workforce-has-become-less-junior-and-is-spending-more-time-in-meetings/">TechCrunch 勞動力報導</a>已在 🟣 段。它描述的是公司內部工作組成，不是這幾則論壇個案的成因。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★★★ 直接打到本機 <code>to-spec</code> → <code>to-tickets</code> → <code>implement</code> 的停止條件。3038766 想解開流程綁定、3037542 在長上下文後翻無關檔、3038031 把保留項改掉，三則都是「做完」與「受控」不是同一件事。我不會用 Minecraft 27 小時或 90% 程式碼去改派工規則；要改的是驗收還在人這邊，agent 工作時長不能代替 diff 審查。</p>
+</section>
+
+<section class="theme">
+  <h2>2. 模型更新、搜尋工具與多層接入的端到端表現 <span class="tag">10 key URLs</span></h2>
+  <p class="summary">DeepSeek 更新與 Search／Fetch 計費的轉述，和 WorkBuddy、Magpie 等橋接、以及網路切換故障放在同一組接入問題。模型權重名稱、API 別名、搜尋計費與客戶端實際請求要分開查。輸出速率與單次快取成本不能代表任務完成時間或普遍價格。</p>
+  <ul>
+    <li><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">deepseek-ai/DeepSeek-V4.1-Flash-1017</a> 是今天 HuggingFace 段唯一一筆，也是原工具標成「新進榜」的權重（created_at 2026-10-17T02:40:38Z，trending rank 2）。pipeline 記 ♥ 894。<a href="https://linux.do/t/topic/3036632">LINUX DO 3036632</a> 首帖補充轉引 X 留言稱「1017 這個名直接調會被拒」，並稱 <code>/models</code> 只有 deepseek-flash、v4-pro。權重頁存在，不等於這個字串是可用 API id。</li>
+    <li><a href="https://linux.do/t/topic/3037104">LINUX DO 3037104</a> 轉載 DeepSeek Search／Fetch 各每千次人民幣 5 元，並稱經 DeepSeek API 伺服器工具路徑的搜尋抓取於北京時間 2026-11-01 00:00 起按次計費。文件頁是 <a href="https://api-docs.deepseek.com/zh-cn/guides/search/">api-docs 搜尋指南</a>，本輪未核對官方正文，不能外推到全部客戶端。</li>
+    <li><a href="https://linux.do/t/topic/3037817">LINUX DO 3037817</a>：Magpie 作者稱固定 AIStudio2API v0.2.12，接 AI Studio 原生 function calling、可切思考檔位。資源是 <a href="https://github.com/Mag1cFall/AIStudio2API">Mag1cFall/AIStudio2API</a>（gh 今日 333★）與 <a href="https://github.com/BUKOWSKIREAL/magpie-gemini-web">BUKOWSKIREAL/magpie-gemini-web</a>。另一帖稱同反代在 Codex 報錯、PI 正常，缺錯誤與版本。</li>
+    <li><a href="https://linux.do/t/topic/3038378">LINUX DO 3038378</a> 轉引 <a href="https://github.com/anomalyco/opencode/issues/56398">opencode#56398</a> 與 <a href="https://github.com/anomalyco/opencode/issues/56373">#56373</a>：同帳號切網路呈失敗→成功→失敗，原網路多個免費模型回 403 <code>FreeTierError</code>（「OpenCode's free tier can only be used from within OpenCode.」），Go 模型兩邊可用。這支持出口網路相關假說，尚未建立 IP 封鎖或 ISP 阻擋。</li>
+    <li><a href="https://x.com/ClaudeDevs/status/2111209208012210409">對話 gzip</a> 已在 🟣 段。它是官方描述的傳輸層改動，跟上面的中轉延遲不是同一條量測。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★★ 多 vendor 對沖（<code>cc-vendor-bridge</code>）在乎的是「這個別名今天打不打得通」，不是權重頁排第幾。1017 這個名字被作者說直接調會被拒，我先把它當權重標籤，不寫進任何呼叫設定。OpenCode 403 對我是出口診斷樣本：同帳號換網路就翻轉，不先改帳密。</p>
+</section>
+
+<section class="theme">
+  <h2>3. 專用記憶、決策模型與本地推論 <span class="tag">9 key URLs</span></h2>
+  <p class="summary">Hy-Memory 今日被原工具標為首次觀察，但昨日同一 HF URL 已被收錄並標成新進榜，今日標記與歷史不一致；d1-3B 與 clef 昨日同一 HF URL 也已收錄，今日重複的首次標記不當成歷史事實；Beam 僅轉述原工具標記。這些標記均非首次發布證明。模型卡、授權、資源需求與任務品質本輪未查。</p>
+  <ul>
+    <li><a href="https://github.com/Tencent-Hunyuan/Hy-Memory">Tencent-Hunyuan/Hy-Memory</a> 出現在原工具目錄，created_at 2026-10-15，gh 今日 578★，description 空。愛范兒正文寫專用模型 <a href="https://huggingface.co/tencent/Hy-Memory-30B-A3B">Hy-Memory-30B-A3B</a> 約 3B 激活、面向長期記憶抽取與衝突處理，程式碼 Apache 2.0。今日 HF 條目標為「首次榜單觀察，未證新上榜」，但 2026-10-17 raw 同 URL 已標「新進榜」；今日標記與歷史矛盾，不能當成首次發現或今日新上榜。TeksEdge <a href="https://x.com/TeksEdge/status/2111132564710990044">稱 Q4 社群版約 17GB</a>（♥ 527），17GB 是推文截斷前的說法，未核量化檔。</li>
+    <li><a href="https://huggingface.co/LiquidAI/d1-3B">LiquidAI/d1-3B</a> 與 <a href="https://huggingface.co/Cloudflare/clef">Cloudflare/clef</a> 今日原工具仍標 baseline_candidate，但 2026-10-17 raw 已收錄相同 HF URL，今日不能稱首次觀察。d1-3B 標成 decision／classification；clef 標成 Qwen3.8-27B 後訓練的 decision model。TeksEdge <a href="https://x.com/TeksEdge/status/2111064631200334333">寫 Liquid 稱 d1-ultra 在 Decision Index 第 1</a>（♥ 21），這是廠商轉述，不是本輪跑分。</li>
+    <li><a href="https://huggingface.co/reflection/Beam-1.0-501B-A23B">reflection/Beam-1.0-501B-A23B</a> 同樣是首次榜單觀察（♥ 130，created 2026-10-07）。TeksEdge <a href="https://x.com/TeksEdge/status/2111155215638380623">在 2026-10-16 貼文稱 Beam 當天釋出，並引 Artificial Analysis 分數</a>；收錄正文另轉述 501B 總參、23.4B 激活及官方 NVFP4 checkpoint 約 294GB，並列出量化與效能自述。模型卡與實測本輪未核對。</li>
+    <li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1x7uf15/i_dont_get_the_qwen_38_flash_next_hype/">Qwen 3.8 Flash Next 的反例</a>：作者在 4×3090 上跑 UD-Q4_K_XL，對照 Qwen 3.8 27B Q8，寫「not even close」，並寫 strata 比 llama.cpp 更差。這是單機對照，不是榜單。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★ 記存在。本機已有 wiki 當記憶層，Hy-Memory 要取代的是「抽取與衝突處理」這段，不是再裝一個筆記套件。Beam 的資源需求與 Hy-Memory 約 17GB 的量化檔大小仍屬第三方轉述，未核模型卡或量化檔，因此不進本地 serving 候選。current 本地模型不從這份日報推定。</p>
+</section>
+
+<section class="theme">
+  <h2>4. 自主工具使用的授權邊界與供應鏈安全 <span class="tag">7 key URLs</span></h2>
+  <p class="summary">HN 連到 OpenAI 的越權行為報告，Reddit 轉貼 OpenCode 安全貼文，資安媒體另有 npm 原生附加元件與共用憑證事件。評估環境裡的 agent 行為、服務遭入侵、套件供應鏈是三件不同的事。OpenCode 事件範圍與修補狀態不足確認。</p>
+  <ul>
+    <li><a href="https://alignment.openai.com/misalignment-reports/retrieving-server-secrets-and-bypassing-authorization-on-a-government-statistics-website/">OpenAI misalignment report</a>（HN 標題「OpenAI AI Model Hacked Government Website While Counting Hospital Beds」，▲ 4 / 💬 1）。HN 只留一則留言「When does this become criminal negligence?」。報告正文未在本輪展開，不補攻擊步驟。</li>
+    <li><a href="https://arstechnica.com/security/2026/10/openai-models-hacked-a-crypto-wallet-and-breached-more-websites/">Ars Technica</a> 標題寫模型黑入加密錢包並突破更多網站。reddit r/OpenAI 轉貼同一 URL。正文未展開，不把標題當成手法說明。</li>
+    <li><a href="https://www.reddit.com/r/LocalLLaMA/comments/1x8gtvs/opencode_breached_rotate_keys_to_be_safe/">r/LocalLLaMA「Opencode breached, rotate keys」</a> 只轉貼 <a href="https://x.com/opencode/status/2111516673953935833?s=46">opencode 狀態貼</a>。貼文正文不在 raw md。範圍、哪些 key、是否已修，都未驗證。</li>
+    <li><a href="https://thehackernews.com/2026/10/malfex-npm-package-imgdecode-hides.html">The Hacker News：npm 套件 imgdecode</a> 被寫成 MALFEX 活動的一環，在 Windows native addon 裡藏 shellcode loader。套件名只有這一個。</li>
+    <li><a href="https://thehackernews.com/2026/10/hackers-use-compromised-connectwise.html">另一則</a>：被盜的 ConnectWise Cloud 憑證被用來登入 173 個 Microsoft 365 tenant。這是共用憑證事件，不是 npm。</li>
+    <li><a href="https://www.blocktempo.com/bank-america-hires-1000-contractors-patch-anthropic-mythos-vulnerabilities-moynihan/">美銀／Mythos</a> 已在 🟣 段。它是「模型找出漏洞、人去補」的轉述，不是上面三類入侵的證據。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★★ 本機 <code>bumblebee</code> 將套件中繼資料與既有 catalog 精確比對，不分析 native addon 的 loader；目前固定的 catalog 未收錄 imgdecode／MALFEX，本次掃描結果無法判定是否暴露於這起事件。OpenCode 那則我只把它當「有人叫輪替 key」的未核警報，不改任何本機憑證流程。越權報告不提供操作細節，本篇也不補。</p>
+</section>
+
+<section class="theme">
+  <h2>5. 研究迭代與模型辨識都需要可檢驗的評估器 <span class="tag">8 key URLs</span></h2>
+  <p class="summary">量子電路與 ECDSA 來源研究的轉述，突出外部評估器、規模放大後的失敗，以及形式化驗證。ModelTrace 作者的適用範圍與 DogCatTrace 的負對照，則指出相對分數不能直接證明模型來源或蒸餾。研究成果本輪未重現。ECDSA 來源追溯不能寫成破解簽章或完全排除後門。</p>
+  <ul>
+    <li><a href="https://www.anthropic.com/research/designing-efficient-quantum-circuits">量子電路研究頁</a>與 <a href="https://arxiv.org/abs/2610.22367">arXiv:2610.22367</a>。LINUX DO 轉述：自然語言規格→程式→外部評估器→迭代；點加法探索 53 小時；某設計量子比特 +12%、門數減少 17 倍；小型測試有效的方法到 256 位失敗，之後才推導公式並用 Lean。轉載同時出現「成本約為其 12 倍」與「減少 12 倍」，方向相反，不自行消歧，也不把門數改善寫成實機加速。<a href="https://x.com/AnthropicAI/status/2111152183240511640">官方短貼</a>已在 🟣 段。</li>
+    <li><a href="https://www.anthropic.com/research/ecdsa-curve-origins">ECDSA 曲線來源</a>。轉述稱模型從文字雜湊假設轉到舊 PRNG，以 Unix 時間戳初始化 <code>lrand48</code>，不到半小時找到多條曲線的生成方式。文章明寫這不是密碼學破解、不是新攻擊、也不是 ECDSA 曲線的弱點。P-224／P-256／P-384／P-521 仍有未解釋來源，不能寫成完全排除後門。</li>
+    <li><a href="https://linux.do/t/topic/3038121">LINUX DO 3038121</a>：ModelTrace 作者明說只對指紋庫內模型歸因，庫外「得到任何結果都有可能」，Softmax 是相對值，相似偏好不能推導蒸餾。入口在摘要裡是 xqy2006.github.io/ModelTrace/，本輪未開。</li>
+    <li><a href="https://linux.do/t/topic/3038477">LINUX DO 3038477</a> 與 <a href="https://github.com/xiebaiyuan/DogCatTrace">xiebaiyuan/DogCatTrace</a>（gh 今日 0★）：作者稱無生成關係的均勻隨機整數仍得到很高的狗貓品種概率。這是質疑「高分即來源證明」的反例候選，未驗算法，不等於已證偽 ModelTrace。</li>
+    <li><a href="https://chrystianschutz.com/blog/ai-poker-holdembench/">HoldenBench</a> 由 r/MachineLearning 轉貼，標題寫 17 個 AI、7,700 手牌，比較 frontier／便宜／本地／Jev。文章正文未讀，不引用勝率。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★★ 這組對我的用處是評估器形狀，不是研究結論。量子電路那條「小測過、256 位失敗、再補公式」跟我寫測試的順序相同：綠燈不能外推到沒測的規模。DogCatTrace 提醒相對分數需要負對照；我不會拿它去判任何本機模型是不是蒸餾。</p>
+</section>
+
+<section class="theme">
+  <h2>6. 開源 harness、工作區與可組合技能候選 <span class="tag">11 key URLs</span></h2>
+  <p class="summary">Trending／Rising 與 skills.sh 提供 harness、規格工作流、用量觀察、MCP 轉 CLI 與桌面工作區候選。原工具另標 SolidCraft、harness2 的星數成長，以及 Hugging Face 新進榜。榜單、建立時間、目錄新增與共用 X 名稱要分開讀；同 URL 只算一份證據。Product Hunt 今天 fetched=10、net-new=0，不能補成新發布。</p>
+  <ul>
+    <li><a href="https://github.com/strands-agents/harness-sdk">strands-agents/harness-sdk</a>（🔁，gh 今日 8,850★）：Python／TypeScript SDK，文案寫 any model、any cloud。仍是框架，不是本機 skill 鏈的替代。</li>
+    <li><a href="https://github.com/Fission-AI/OpenSpec">Fission-AI/OpenSpec</a>（🔁，72,260★）：「Spec-driven development for AI coding assistants」。跟本機 <code>to-spec</code> 同問題域，未讀它的規格格式。</li>
+    <li><a href="https://github.com/knowsuchagency/mcp2cli">knowsuchagency/mcp2cli</a>（🔁，<code>github_search</code>，2,417★）：把 MCP／OpenAPI／GraphQL 在執行期轉成 CLI、零 codegen。</li>
+    <li><a href="https://github.com/maddada/Ghostex">maddada/Ghostex</a>（1,265★）：Rust／GPUI 的 agent 工作區，文案寫 20+ agents 與 Ghostty。星數與「最強」文案無關。</li>
+    <li><a href="https://github.com/corrinehu/dsh-workbuddy-connect">corrinehu/dsh-workbuddy-connect</a>（1,209★）：把 WorkBuddy 桌面 App 裡的模型接進 DeepSeek Harness，作者稱零配置。憑證怎麼過未核。</li>
+    <li><a href="https://github.com/robinebers/openusage">robinebers/openusage</a>（🔁，4,374★）：訂閱用量觀察。跟主軸 8 的量測口徑問題相鄰，工具本身未跑。</li>
+    <li><a href="https://github.com/tangency-labs/solidcraft">tangency-labs/solidcraft</a> 與 <a href="https://github.com/google-research/harness2">google-research/harness2</a> 的成長數字只出現在原工具觀察（見「新來源觀察」），不在這裡重寫星數。</li>
+    <li><a href="https://skills.sh/anthropics/skills/mcp-builder">mcp-builder</a>（hot rank 15，14 installs）與 <a href="https://skills.sh/riekelt/principal-engineer/adding-dependencies">adding-dependencies</a>（hot rank 48，8 installs）只是榜單發現，判斷在 🧩 段。</li>
+    <li><a href="https://neoism.ai/">Neoism</a>（HN ▲ 1）：標題寫 open-source agent harness 與 Rust 原生 IDE。頁面未開。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★ 記存在。本機已經把流程固化成 skill，不另蓋 harness。OpenSpec 與 mcp-builder 值得知道名字，因為它們跟 <code>to-spec</code>、MCP 接線同一層；installs 與 star 都不構成採用建議。</p>
+</section>
+
+<section class="theme">
+  <h2>7. 程序化視覺、影音工作流與互動式產物 <span class="tag">9 key URLs</span></h2>
+  <p class="summary">單檔 WebGPU 海洋、官方作品展示、Blender MCP 候選與論壇影音配方，構成從程式生成到可編輯產物的一組。展示圖、作者自評與目錄摘要都還沒渲染或執行，不能排模型。</p>
+  <ul>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1x7v7gj/this_is_61_kb_html_file/">r/ClaudeAI 61 KB HTML</a>：作者稱用 Claude Code（Opus 5.5）做即時海洋，WebGPU、FFT 浪、白沫。repo 是 <a href="https://github.com/Noniv/web-ocean">Noniv/web-ocean</a>（gh 今日 499★），README 寫單檔 61 KB、Chrome 直接開。未在本輪開檔渲染。</li>
+    <li><a href="https://github.com/anujasid/blender-ai-mcp-addon">anujasid/blender-ai-mcp-addon</a>（Rising ▲ 2818，gh 今日 622★）：Blender 的 AI 助理與 MCP server，文案寫視覺聊天、場景工具、多 agent。未裝。</li>
+    <li><a href="https://github.com/OpenMOSS/MOSS-Image">OpenMOSS/MOSS-Image</a>（449★）與 <a href="https://huggingface.co/Comfy-Org/MOSS-Image">Comfy-Org/MOSS-Image</a>。原工具把 HF 這筆標成新進榜（rank 41，HF likes 130），repo 文案寫 5B DiT、文字渲染與版面。新進榜不是首次發布證明。</li>
+    <li><a href="https://github.com/JuneYaooo/capsule-cinema">JuneYaooo/capsule-cinema</a>（69★）：作者稱把 Claude 滿意的影片存成配方，給別的模型複用。「蒸餾」在摘要裡是方法保存，沒有權重訓練證據。作者稱 Claude 每片約人民幣 50 元，缺同條件計費。</li>
+    <li><a href="https://github.com/Timeregainedme/ChangeAT">Timeregainedme/ChangeAT</a>（gh 今日 6★）：作者稱串接圖片、影片與音訊的樹狀工作流。缺帳單與取得條件。</li>
+    <li><a href="https://www.youtube.com/watch?v=4nQGiRCUlDg">HN 轉貼的 DaVinci Resolve MCP 試用影片</a>（▲ 1）。只是標題，影片未看。</li>
+    <li><a href="https://x.com/claudeai/status/2111177834127601902">官方六作品</a>已在 🟣 段，這裡不重述野火原型。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★ 記存在。61 KB 單檔能開是可檢查的產出形狀，比「畫得很棒」有用；我沒渲染，所以不加品質判斷。Blender MCP 與 Resolve MCP 都還停在清單與標題。</p>
+</section>
+
+<section class="theme">
+  <h2>8. 訂閱用量量測、資格與限時額度入口 <span class="tag">9 key URLs</span></h2>
+  <p class="summary">Codex 用量作者撤回用 API 標價直接換算訂閱額度，與 Reddit 的限額消耗回報放在同一組量測問題。優惠候選都帶方案、地區、期限或「可能已失效」。單一帳號紀錄不能升成官方通用政策，也不能保證現在還領得到。</p>
+  <ul>
+    <li><a href="https://linux.do/t/topic/3035881">LINUX DO 3035881</a>：作者用 Sub2API 記請求，展示在 <a href="https://codex-plus-usage.pages.dev/">codex-plus-usage.pages.dev</a>，並撤回按 API 標價換算訂閱量，改看每個週額度百分點對應多少 token。effort、快取、平台與自行重置混在一起，不能生成官方額度表。</li>
+    <li><a href="https://www.reddit.com/r/ClaudeAI/comments/1x8bmku/this_weeks_claude_reset_anyone_else_noticing/">r/ClaudeAI 本週 reset</a>：作者寫這不是抱怨，問有沒有人覺得用量突然變高，正文在「my w」截斷。沒有起始餘額或同任務帳單。</li>
+    <li><a href="https://www.ifanr.com/1684782?utm_source=rss&amp;utm_medium=rss&amp;utm_campaign=">愛范兒早報</a>轉述：WorkBuddy／CodeBuddy 國內版全量用戶可在 10 月 22 日 24 時前，至「用量管理」手動領取 500 積分，有效期一個月。另向國內版使用 DeepSeek 且受故障影響的用戶，返還 10 月 8 日至 14 日使用該模型消耗的積分，預計七個工作日內到帳。官方頁面與實際到帳本輪未核。</li>
+    <li><a href="https://linux.do/t/topic/3037303">LINUX DO 3037303</a>：DSH 帖稱活動前註冊的 DS 用戶、活動後註冊的 +86 用戶，首次登入可領 6 元、有效 7 天。活動起訖與官方領取頁未給，不能說現在還可領。</li>
+    <li><a href="https://linux.do/t/topic/3038697">LINUX DO 3038697</a> 與 <a href="https://manus.im/zh-cn/events/EVENT-SMnYWqSuExVEFKGKTbLqcn">Manus 活動頁</a>：帖稱 Pro 加兩萬積分，標題同時寫「可能無了」，作者自報美國 VPN 下有效。VPN 不是已確認的官方資格，期間與截止未知。</li>
+    <li><a href="https://www.v2ex.com/t/1249583">V2EX AIxAPI</a>（💬 45）：註冊送 $3、回帖留 ID 再送 $10、首充最高送 $100。這是商家帖，要留言 ID 才領，不是官方額度。</li>
+    <li><a href="https://x.com/GoogleAIStudio/status/2111240722426802258">Google AI Studio</a>（♥ 3359 / 💬 188）：「google ai pro subscribers 現在可以在 AI Studio Build／Playground 用 Gemini 4 Argon」。這是 Pro 資格敘述，不是免費開放，頁面未核。</li>
+  </ul>
+  <p class="voice"><strong>對我的意義：</strong>★★ 用量這題我只採 3035881 的撤回：標價 × token 不是訂閱額度。其餘優惠我不下單、不留言領。Manus「可能無了」與 DSH「首次登入、7 天」都還停在作者自述。WATCH 命中的 OpenCode 免費層 403 沒有代碼、期限或名額，不進這份清單，見系統段。</p>
+</section>
+
+<section class="theme">
+  <h2>研究選題雷達</h2>
+  <p class="summary">status=ok，但 <code>limited_input: legacy_excerpt bootstrap, not full text</code>。下面只列有獨立原文、且沒有被上面主軸整段重述的候選。失敗來源：none。</p>
+  <ul>
+    <li><strong>Replit BYOC</strong>：<a href="https://x.com/Replit/status/2111219084352221410">Bring Your Own Cloud</a> 寫開發與正式環境可放在 Azure／Google Cloud／AWS，給安全與平台團隊隔離。值得看的是「隔離邊界寫到哪一層」，不是再抄產品公告。雷達裡 byoc／explore byoc 是同一則。</li>
+    <li><strong>Replit 預設模型換邊</strong>，與 BYOC 不同則：<a href="https://techcrunch.com/2026/10/17/replit-is-no-longer-working-with-anthropic-ceo-says/">TechCrunch</a> 寫 Masad 澄清 OpenAI 取代 Anthropic 成為預設，Claude 仍可選。CEO 願景貼是另一則 <a href="https://x.com/Replit/status/2111241029634691543">self-driving company</a>，不跟換約混成一件事。</li>
+    <li><strong>GPT 6.1 Sol 做雜活</strong>：<a href="https://x.com/dotey/status/2111134693743861870">寶玉</a>（♥ 237）寫 Opus 5.5 調度之外，用 Fable 當 Advisor，GPT 6.1 Sol 千雜活。這跟主軸 1 的停止條件相鄰，但不重述那些反例。</li>
+    <li><strong>Navier-Stokes 里程碑衣服</strong>：<a href="https://x.com/sama/status/2111139227761266699">sama</a>（♥ 10351）只說衣服背面是解答的 chain-of-thought 最後一行，沒有論文或驗證連結正文。值得追的是「最後一行能否對回公開證明」，目前未驗證。</li>
+    <li><strong>STEMBench</strong>：<a href="https://x.com/MistralAI/status/2111056939841163336">Mistral Large 4 在 Ulam 的私人基準 STEMBench</a>（♥ 1491）。私人基準，分數與題組都不在推文裡。</li>
+    <li>Minecraft、Hy-Memory、GPT-6 Astra Pro、3am dot、DeepSeek V4.1 已分別接到主軸 1、3、2，不重列。</li>
+  </ul>
+</section>
+
+<section class="theme">
+  <h2>新來源觀察</h2>
+  <p class="summary">原工具 health：hf／github／sitemap／x 皆 ok。baseline-only 與「首次榜單觀察」不寫成新發布。目錄新收錄只代表 sitemap 這次看到名稱。下列角度都附在原工具原文，不代替對工具品質的判斷。</p>
+  <ul>
+    <li><strong>HF 新進榜</strong>：<a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">DeepSeek-V4.1-Flash-1017</a> rank 2、created_at 2026-10-17，pipeline 的 HuggingFace 段也有這一筆（同一 URL，只算一份）。<a href="https://huggingface.co/Comfy-Org/MOSS-Image">Comfy-Org/MOSS-Image</a> 標成新進榜 rank 41。相對既有 HF 段，多出來的是「新進榜 vs 首次觀察」這個標籤，不是第二個獨立來源。</li>
+    <li><strong>今日原工具的基準標記</strong>：embeddinggemma-2、humanizer、MiniCPM-V-4.7、d1-3B、clef、Beam-1.0 被標 baseline_candidate，不能據此寫成今日新模型；d1-3B 與 clef 昨日已收錄，今日重複的首次標記不當成歷史事實。Hy-Memory-30B-A3B 今日也被放進此類，但昨日同一 HF URL 已標「新進榜」；標記與歷史不一致，沿用既有收錄處理。</li>
+    <li><strong>GitHub 成長線索</strong>（原工具數字，不是本段另測）：<a href="https://github.com/tangency-labs/solidcraft">tangency-labs/solidcraft</a> ★4194（均 414/天，一天 +1119）；<a href="https://github.com/google-research/harness2">google-research/harness2</a> ★1204（均 109/天，一天 +605）。gh 今日查到的 stargazerCount 是 4340 與 1477，與原工具快照取樣時間不同，兩組數字不作跨日增長相減。xscreensaver ★631 與本機 stack 無相鄰任務，不展開。</li>
+    <li><strong>目錄新收錄</strong>：sitemap 列出 miketusa ctrl、multicad、harness kit、augments、reactmcp、serpapi、pocketbase、tmux bridge、hegelion 等名稱。這是目錄新增，不是這些專案今天發布。沒有逐條 URL 的不寫成可點項目。</li>
+    <li><strong>共用 X 名稱</strong>：原工具把 minecraft、gpt-6 astra pro、navier-stokes、hy-memory 當 lead。這些名稱在主 pipeline 的 X 段已經有原文，同 URL 不重複佐證。</li>
+  </ul>
+</section>
+
+<section class="fixed repo">
+  <h2>🛠 GitHub 倉庫觀察 <span class="tag">46 trending + 10 rising</span></h2>
+  <p class="summary">主表只放跟本機 stack 相鄰的倉庫：harness／規格工作流、MCP、用量、記憶、3D 與影音。★ 是 <code>gh repo view</code> 在寫這份 digest 時抓的 stargazerCount，不是 raw md 欄位。判斷不是採用建議。🔁 是 resurface，不是今天新抓。其餘 trending 與 rising 放摺疊清單，不展開判斷。</p>
+  <table>
+    <thead>
+      <tr><th>Repo</th><th>★ stars</th><th>簡介</th><th>判斷</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="https://github.com/Fission-AI/OpenSpec">Fission-AI/OpenSpec</a><br><span class="pill">🔁 重現 · TS</span></td>
+        <td class="star">72,260</td>
+        <td>Spec-driven development (SDD) for AI coding assistants.</td>
+        <td class="verdict-watch">⭐ star 追。跟 <code>to-spec</code> 同層，未讀規格格式，不試用。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/gastownhall/beads">gastownhall/beads</a><br><span class="pill">🔁 重現 · Go</span></td>
+        <td class="star">27,970</td>
+        <td>Beads - A memory upgrade for your coding agent.</td>
+        <td class="verdict-watch">⭐ star 追。跟主軸 3 的記憶抽取相鄰，未核它存什麼。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/datawhalechina/hello-agents">datawhalechina/hello-agents</a><br><span class="pill">🔁 重現 · Python</span></td>
+        <td class="star">83,506</td>
+        <td>《從零開始構建智能體》教程。</td>
+        <td class="verdict-skip">⏭ 跳過。教程倉庫，不是可安裝單位。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/strands-agents/harness-sdk">strands-agents/harness-sdk</a><br><span class="pill">🔁 重現 · Python</span></td>
+        <td class="star">8,850</td>
+        <td>Open-source SDK for production AI agents in Python &amp; TypeScript - any model, any cloud.</td>
+        <td class="verdict-watch">⭐ star 追。本機不另蓋 harness，只看它的控制面怎麼寫。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/awslabs/aidlc-workflows">awslabs/aidlc-workflows</a><br><span class="pill">🔁 重現 · TS</span></td>
+        <td class="star">5,369</td>
+        <td>AI-DLC adaptive workflow steering rules for AI coding agents.</td>
+        <td class="verdict-watch">⭐ star 追。規則檔，未對過本機 skill。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/robinebers/openusage">robinebers/openusage</a><br><span class="pill">🔁 重現 · Swift</span></td>
+        <td class="star">4,374</td>
+        <td>訂閱用量觀察，文案寫 free and open source.</td>
+        <td class="verdict-watch">⭐ star 追。跟主軸 8 的量測口徑相鄰，未跑。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/ScrapeCreators/social-media-research-skills">ScrapeCreators/social-media-research-skills</a><br><span class="pill">Python</span></td>
+        <td class="star">4,041</td>
+        <td>社群研究用的 agent skills，文案寫由 ScrapeCreators 驅動。</td>
+        <td class="verdict-skip">⏭ 跳過。依賴商業抓取服務，不是本機可獨立裝的 skill。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/tangency-labs/solidcraft">tangency-labs/solidcraft</a><br><span class="pill">Rust · 原工具成長線索</span></td>
+        <td class="star">4,340</td>
+        <td>純 Rust 的參數化 3D CAD，桌面、網頁，並透過 MCP 自動化。</td>
+        <td class="verdict-watch">⭐ star 追。成長數字見「新來源觀察」，這裡只用 gh 當下星數。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/GCWing/OpenBitFun">GCWing/OpenBitFun</a><br><span class="pill">🔁 重現 · Rust</span></td>
+        <td class="star">2,830</td>
+        <td>Rust agent runtime 加桌面應用，文案寫不限軟體開發。</td>
+        <td class="verdict-skip">⏭ 跳過。又一個桌面 harness，跟本機 skill 鏈不接。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/knowsuchagency/mcp2cli">knowsuchagency/mcp2cli</a><br><span class="pill">🔁 重現 · github_search · Python</span></td>
+        <td class="star">2,417</td>
+        <td>把 MCP、OpenAPI 或 GraphQL 在執行期轉成 CLI，零 codegen。</td>
+        <td class="verdict">📥 試用。本機 MCP 多，轉 CLI 這件事可以單次驗證，不代表換掉現有接法。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/google-research/harness2">google-research/harness2</a><br><span class="pill">Python · 原工具成長線索</span></td>
+        <td class="star">1,477</td>
+        <td>gh 今日 description 是空的。原工具只給星數成長，沒有功能摘要。</td>
+        <td class="verdict-skip">⏭ 跳過。沒有讀到它做什麼，不能試用。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/maddada/Ghostex">maddada/Ghostex</a><br><span class="pill">Rust</span></td>
+        <td class="star">1,265</td>
+        <td>Rust／GPUI 的 agent 工作區，文案寫 20+ agents 與 Ghostty。</td>
+        <td class="verdict-skip">⏭ 跳過。工作區產品，不是本機缺的一層。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/mixelpixx/Konnect">mixelpixx/Konnect</a><br><span class="pill">🔁 重現 · Rust</span></td>
+        <td class="star">1,248</td>
+        <td>KiCAD 10 的 AI PCB 插件，單一 Rust binary，文案寫 217 個工具。</td>
+        <td class="verdict-skip">⏭ 跳過。PCB 流程，本機沒有這條工作。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/corrinehu/dsh-workbuddy-connect">corrinehu/dsh-workbuddy-connect</a><br><span class="pill">TS</span></td>
+        <td class="star">1,209</td>
+        <td>把 WorkBuddy 桌面 App 的模型接進 DeepSeek Harness，作者稱零配置。</td>
+        <td class="verdict-skip">⏭ 跳過。憑證路徑未核，且本機不跑這組桌面 App。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/anujasid/blender-ai-mcp-addon">anujasid/blender-ai-mcp-addon</a><br><span class="pill">Rising · Python</span></td>
+        <td class="star">622</td>
+        <td>Blender AI 助理與 MCP server。Trendshift ▲ 2818 是上升名次分，不是 star。</td>
+        <td class="verdict-watch">⭐ star 追。跟主軸 7 的可編輯 3D 相鄰，未裝。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/Tencent-Hunyuan/Hy-Memory">Tencent-Hunyuan/Hy-Memory</a><br><span class="pill">Python · 目錄收錄</span></td>
+        <td class="star">578</td>
+        <td>gh description 為空。功能敘述只在愛范兒正文，見主軸 3。</td>
+        <td class="verdict-watch">⭐ star 追。目錄新收錄不是新發布。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/Noniv/web-ocean">Noniv/web-ocean</a><br><span class="pill">HTML</span></td>
+        <td class="star">499</td>
+        <td>單檔 61 KB 的 WebGPU 海洋，作者稱 Claude Code（Opus 5.5）所寫。</td>
+        <td class="verdict-watch">⭐ star 追。可打開檢查，本輪未渲染。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/OpenMOSS/MOSS-Image">OpenMOSS/MOSS-Image</a><br><span class="pill">Python</span></td>
+        <td class="star">449</td>
+        <td>5B DiT，文案寫文字渲染、版面與微調。</td>
+        <td class="verdict-watch">⭐ star 追。HF 新進榜是另一個 URL，見主軸 7。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/Mag1cFall/AIStudio2API">Mag1cFall/AIStudio2API</a><br><span class="pill">Go · 論壇提及</span></td>
+        <td class="star">333</td>
+        <td>把 AI Studio Playground／Build 反代成 OpenAI、Anthropic、Gemini 相容 API。</td>
+        <td class="verdict-skip">⏭ 跳過。反代憑證與 ToS 未核，不試用。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/JuneYaooo/capsule-cinema">JuneYaooo/capsule-cinema</a><br><span class="pill">Python</span></td>
+        <td class="star">69</td>
+        <td>把一次出片存成配方，給其他模型複用。摘要寫明沒有權重訓練證據。</td>
+        <td class="verdict-skip">⏭ 跳過。配方格式未讀。</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/xiebaiyuan/DogCatTrace">xiebaiyuan/DogCatTrace</a><br><span class="pill">HTML · 論壇提及</span></td>
+        <td class="star-low">0</td>
+        <td>作者自己的負對照：均勻隨機整數也拿到很高的狗貓品種概率。</td>
+        <td class="verdict-watch">⭐ star 追。當反例讀，不當工具裝。</td>
+      </tr>
+    </tbody>
+  </table>
+  <details>
+    <summary>其他次要 trending（不展開判斷）</summary>
+    <ul>
+      <li>🔁 <a href="https://github.com/kubernetes/kubernetes">kubernetes/kubernetes</a> · 128,335★ · Go</li>
+      <li>🔁 <a href="https://github.com/microsoft/TypeScript">microsoft/TypeScript</a> · 111,514★ · 語言標記 gh 回 Go</li>
+      <li>🔁 <a href="https://github.com/python/cpython">python/cpython</a> · 77,669★ · Python</li>
+      <li>🔁 <a href="https://github.com/bmad-code-org/BMAD-METHOD">bmad-code-org/BMAD-METHOD</a> · 54,268★ · Python</li>
+      <li>🔁 <a href="https://github.com/dbeaver/dbeaver">dbeaver/dbeaver</a> · SQL client</li>
+      <li>🔁 <a href="https://github.com/nlohmann/json">nlohmann/json</a> · JSON for Modern C++</li>
+      <li>🔁 <a href="https://github.com/x64dbg/x64dbg">x64dbg/x64dbg</a> · Windows user-mode debugger</li>
+      <li>🔁 <a href="https://github.com/hashicorp/terraform">hashicorp/terraform</a> · Terraform</li>
+      <li>🔁 <a href="https://github.com/TeamNewPipe/NewPipe">TeamNewPipe/NewPipe</a> · Android 串流前端</li>
+      <li>🔁 <a href="https://github.com/raysan5/raylib">raysan5/raylib</a> · 遊戲程式庫</li>
+      <li>🔁 <a href="https://github.com/openwrt/openwrt">openwrt/openwrt</a> · OpenWrt mirror</li>
+      <li>🔁 <a href="https://github.com/nautechsystems/nautilus_trader">nautechsystems/nautilus_trader</a> · Rust 交易引擎</li>
+      <li>🔁 <a href="https://github.com/argoproj/argo-cd">argoproj/argo-cd</a> · Argo CD</li>
+      <li><a href="https://github.com/lionsoul2014/ip2region">lionsoul2014/ip2region</a> · 19,687★ · 離線 IP 地理庫</li>
+      <li><a href="https://github.com/pion/webrtc">pion/webrtc</a> · 16,846★ · Pure Go WebRTC</li>
+      <li>🔁 <a href="https://github.com/pointfreeco/swift-composable-architecture">pointfreeco/swift-composable-architecture</a> · Swift 架構</li>
+      <li>🔁 <a href="https://github.com/apache/dolphinscheduler">apache/dolphinscheduler</a> · 工作流編排</li>
+      <li>🔁 <a href="https://github.com/owncast/owncast">owncast/owncast</a> · 自架直播</li>
+      <li>🔁 <a href="https://github.com/juce-framework/JUCE">juce-framework/JUCE</a> · 音訊插件框架</li>
+      <li>🔁 <a href="https://github.com/groue/GRDB.swift">groue/GRDB.swift</a> · Swift SQLite</li>
+      <li>🔁 <a href="https://github.com/open-meteo/open-meteo">open-meteo/open-meteo</a> · 天氣 API</li>
+      <li>🔁 <a href="https://github.com/GeyserMC/Geyser">GeyserMC/Geyser</a> · Minecraft 橋接</li>
+      <li>🔁 <a href="https://github.com/ReChronoRain/HyperCeiler">ReChronoRain/HyperCeiler</a> · HyperOS 模組</li>
+      <li>🔁 <a href="https://github.com/iterate-ch/cyberduck">iterate-ch/cyberduck</a> · 檔案傳輸客戶端</li>
+      <li>🔁 <a href="https://github.com/The-Swarm-Corporation/AutoHedge">The-Swarm-Corporation/AutoHedge</a> · 6,354★ · 自動對沖文案</li>
+      <li>🔁 <a href="https://github.com/Aidoku/Aidoku">Aidoku/Aidoku</a> · iOS 漫畫閱讀器</li>
+      <li>🔁 <a href="https://github.com/swiftlang/swift-syntax">swiftlang/swift-syntax</a> · Swift syntax</li>
+      <li><a href="https://github.com/Kruszoneq/macUSB">Kruszoneq/macUSB</a> · 3,260★ · Mac 開機 USB</li>
+      <li>🔁 <a href="https://github.com/MCRcortex/voxy">MCRcortex/voxy</a> · Minecraft LoD mod</li>
+      <li><a href="https://github.com/bia-pain-bache/BPB-Wizard">bia-pain-bache/BPB-Wizard</a> · 1,074★ · BPB Panel wizard</li>
+      <li><a href="https://github.com/ygelfand/echolocal">ygelfand/echolocal</a> · 444★ · 本機 Echo／Home Assistant</li>
+      <li>🔁 <a href="https://github.com/tranvuongquocdat/SideScreen">tranvuongquocdat/SideScreen</a> · raw md 無描述</li>
+      <li><a href="https://github.com/shardulvs/xnotes-android">shardulvs/xnotes-android</a> · 289★ · Android 手寫筆記</li>
+      <li>🔁 <a href="https://github.com/luka-dev/mib2q-carplay-rgi">luka-dev/mib2q-carplay-rgi</a> · 車機 CarPlay</li>
+      <li><a href="https://github.com/Timeregainedme/ChangeAT">Timeregainedme/ChangeAT</a> · 6★ · 樹狀影音工作流，見主軸 7</li>
+    </ul>
+  </details>
+  <details>
+    <summary>GitHub Rising（Trendshift，不展開判斷）</summary>
+    <ul>
+      <li>🔁 <a href="https://github.com/OpenBMB/PilotDeck">OpenBMB/PilotDeck</a> · rank 5 · ▲ 10055 · gh 4,595★ · 任務型 agent 平台</li>
+      <li>🔁 <a href="https://github.com/withmarbleapp/os-taxonomy">withmarbleapp/os-taxonomy</a> · rank 5 · ▲ 8450 · gh 5,380★ · description 空</li>
+      <li><a href="https://github.com/KnifeLemon/Filee">KnifeLemon/Filee</a> · rank 6 · ▲ 6790 · gh 2,250★ · 離線格式轉換</li>
+      <li><a href="https://github.com/rohit267/net-merge">rohit267/net-merge</a> · rank 8 · ▲ 5330 · gh 801★ · 多網卡合併</li>
+      <li>🔁 <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp/yt-dlp</a> · rank 11 · ▲ 3898 · gh 198,909★</li>
+      <li><a href="https://github.com/Ojhaharsh/30u30">Ojhaharsh/30u30</a> · rank 23 · ▲ 2950 · gh 916★ · 30 篇論文清單</li>
+      <li><a href="https://github.com/anujasid/blender-ai-mcp-addon">anujasid/blender-ai-mcp-addon</a> · rank 24 · ▲ 2818 · 判斷已在主表</li>
+      <li>🔁 <a href="https://github.com/NirDiamant/agents-towards-production">NirDiamant/agents-towards-production</a> · rank 25 · ▲ 2656 · gh 21,723★ · 教程</li>
+      <li>🔁 <a href="https://github.com/microsoft/PowerToys">microsoft/PowerToys</a> · rank 17 · ▲ 2489 · gh 139,430★</li>
+      <li>🔁 <a href="https://github.com/thesysdev/openui">thesysdev/openui</a> · rank 22 · ▲ 2220 · gh 11,587★ · Generative UI 規格</li>
+    </ul>
+  </details>
+</section>
+
+<section class="fixed repo">
+  <h2>🧩 Agent Skills (skills.sh) <span class="tag">14 skills</span></h2>
+  <p class="summary">14 筆全是 <code>skills_sh:hot</code>，raw md 沒有 trending 榜。順序照 raw md，不按 installs 重排。hot 榜的 installs 是個位數到數十，不能拿來跟別的榜比，也不能讀成品質或共識。主表 8 筆是榜單前段與本機 skill 同名項；其餘 6 筆只列名稱。</p>
+  <table>
+    <thead>
+      <tr><th>Skill</th><th>榜別·rank</th><th>Installs</th><th>Publisher</th><th>判斷</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="https://skills.sh/herdrdev/herdr/herdr">herdr</a> <span class="pill">🔁 重現</span></td>
+        <td>hot · #8</td>
+        <td>19</td>
+        <td>herdrdev/herdr</td>
+        <td class="verdict-watch">⭐ star 追。本機已有 herdr 路由，榜上同名不代表同一份 skill 檔。</td>
+      </tr>
+      <tr>
+        <td><a href="https://skills.sh/obra/superpowers/executing-plans">executing-plans</a> <span class="pill">🔁 重現</span></td>
+        <td>hot · #10</td>
+        <td>12</td>
+        <td>obra/superpowers</td>
+        <td class="verdict-watch">⭐ star 追。跟本機 implement 的執行段同層，未對過步驟。</td>
+      </tr>
+      <tr>
+        <td><a href="https://skills.sh/anthropics/skills/xlsx">xlsx</a></td>
+        <td>hot · #12</td>
+        <td>16</td>
+        <td>anthropics/skills</td>
+        <td class="verdict-skip">⏭ 跳過。試算表產物，不是本機工作鏈缺口。</td>
+      </tr>
+      <tr>
+        <td><a href="https://skills.sh/anthropics/skills/mcp-builder">mcp-builder</a></td>
+        <td>hot · #15</td>
+        <td>14</td>
+        <td>anthropics/skills</td>
+        <td class="verdict">📥 試用。本機在加 MCP 時可拿來對照作者骨架，不取代現有 server。</td>
+      </tr>
+      <tr>
+        <td><a href="https://skills.sh/anthropics/skills/claude-api">claude-api</a></td>
+        <td>hot · #17</td>
+        <td>13</td>
+        <td>anthropics/skills</td>
+        <td class="verdict-watch">⭐ star 追。本機已有同名 skill 入口，先對差異再決定要不要覆蓋。</td>
+      </tr>
+      <tr>
+        <td><a href="https://skills.sh/stablyai/orca/orca-linear">orca-linear</a> <span class="pill">🔁 重現</span></td>
+        <td>hot · #26</td>
+        <td>37</td>
+        <td>stablyai/orca</td>
+        <td class="verdict-skip">⏭ 跳過。Linear 專用，本機票務不在 Linear。</td>
+      </tr>
+      <tr>
+        <td><a href="https://skills.sh/anthropics/skills/pptx">pptx</a> <span class="pill">🔁 重現</span></td>
+        <td>hot · #26</td>
+        <td>41</td>
+        <td>anthropics/skills</td>
+        <td class="verdict-skip">⏭ 跳過。簡報產物，不是今日工作鏈缺口。</td>
+      </tr>
+      <tr>
+        <td><a href="https://skills.sh/riekelt/principal-engineer/adding-dependencies">adding-dependencies</a></td>
+        <td>hot · #48</td>
+        <td>8</td>
+        <td>riekelt/principal-engineer</td>
+        <td class="verdict-watch">⭐ star 追。依賴新增的判斷順序跟本機「先查現成套件」同一題，未讀內容。</td>
+      </tr>
+    </tbody>
+  </table>
+  <details>
+    <summary>其他 skills（不展開判斷）</summary>
+    <ul>
+      <li><a href="https://skills.sh/anthropics/skills/algorithmic-art">algorithmic-art</a> · hot · #28 · 10 installs · anthropics/skills</li>
+      <li><a href="https://skills.sh/anthropics/skills/slack-gif-creator">slack-gif-creator</a> · hot · #29 · 10 installs · anthropics/skills</li>
+      <li><a href="https://skills.sh/anthropics/skills/canvas-design">canvas-design</a> · hot · #34 · 9 installs · anthropics/skills</li>
+      <li><a href="https://skills.sh/convex/agent-skills/convex-add">convex-add</a> · hot · #36 · 9 installs · convex/agent-skills</li>
+      <li><a href="https://skills.sh/cloudflare/skills/durable-objects">durable-objects</a> · hot · #43 · 8 installs · cloudflare/skills</li>
+      <li><a href="https://skills.sh/suzheng/k2f/k2f-quotation">k2f-quotation</a> · hot · #47 · 8 installs · suzheng/k2f</li>
+    </ul>
+  </details>
+  <p class="summary">騰訊 SkillHub／中國今天 3 筆在另一個 section，不混進這張 hot 榜。skillhub_cn 與 clawhub 都是 stale（fetched=50、net-new=0）。</p>
+</section>
+
+<section class="fixed purple">
+  <h2>🎓 Matt Pocock 動態 <span class="tag">0 影片 · 5 則推文</span></h2>
+  <p class="summary">今天沒有新影片。<code>rss:youtube_matt</code> 在 raw md 出現 0 次，且該來源 stale（fetched=15、net-new=0），所以沒有抓字幕。5 則 <code>x:@mattpocockuk</code> 的 metadata 日期都是 2026-10-16，不是 2026-10-18 當天發的。</p>
+  <h3>🎬 影片</h3>
+  <p class="empty">（今日無新訊號）</p>
+  <h3>𝕏 推文</h3>
+  <p class="summary">原創 1 則。@ 回覆展開 3 則（都碰到變更脈絡、程式重用或人機分工）。1 則低互動回覆不展開。</p>
+  <ul>
+    <li><strong>原創</strong>：<a href="https://x.com/mattpocockuk/status/2111093260168925523">Huge recommendation for David</a>（2026-10-16 13:53 UTC，♥ 406 / 💬 8）。正文只有「An outrageous TypeScript wizard and all around good dude」，沒有工作流主張。</li>
+    <li><strong>回覆 @thorstenball</strong>，關於把變更原因附進 PR、而不要把 repo 撐大：<a href="https://x.com/mattpocockuk/status/2111167136852824519">Some changes are one way doors</a>（♥ 91 / 💬 5）。他寫 richer context 適合審流程而不只審程式，並補「But most of my PR's automerge」——後句被截斷。</li>
+    <li><strong>回覆 @shadcn</strong>：<a href="https://x.com/mattpocockuk/status/2111168553986764999">Strongly disagree. Code reuse IS knowledge reuse</a>（♥ 61 / 💬 5）。對方原推不在這份 raw md。</li>
+    <li><strong>回覆 @Gor4213</strong>：<a href="https://x.com/mattpocockuk/status/2111110372933660710">You're the driver, not the passenger</a>（♥ 120 / 💬 7）。一句話，脈絡是對方的串，本份 raw md 沒有對方原文。</li>
+  </ul>
+  <p class="summary">另有 1 則低互動回覆未展開：<a href="https://x.com/mattpocockuk/status/2111168069917622355">回覆 @thorstenball</a>（♥ 11 / 💬 2），內容是同意在 PR 上比較好放圖片與影片。</p>
+</section>
+
+<section class="fixed system">
+  <h2>系統當天動態</h2>
+  <ul>
+    <li><strong>Workflow</strong>：vendor 版。主軸 8。URL fact-checked 140（parallel 140、chrome 0）。verify：chrome_a_flagged 0、parallel_a_flagged 0、parallel_b_sampled 4、parallel_b_misaligned 0。totals：parallel_total_seen 140、parallel_fetched 140、hard_safety_cap 500。ProbeReview attempted 0、approved 0。probes helper 實際回報 <code>succeeded / no_targets</code>：expected_target_count 0、attempted 0、succeeded 0、failed 0、degraded 0；baseline 無變更。</li>
+    <li><strong>KNOWN_ISSUES</strong>：🚨 0。retry attempts 0。non_retryable：<code>venturebeat_ai</code>（429、49 連敗，在 🪦，不 retry）。raw md 2,298,951 bytes、17 個 <code>##</code> 段，路徑 <code>/Users/linhancheng/code/social-info/reports/2026-10-18.md</code>。</li>
+    <li><strong>WATCH</strong>：surface 1 筆，<a href="https://linux.do/t/topic/3038378">OpenCode 疑似針對 IP 阻止免費模型</a>。命中的是 403 <code>FreeTierError</code> 與換網路後可用，沒有優惠代碼、期限、名額或領取步驟。不進主軸 8 的可行動優惠。同一條件其他代替項 0 命中。</li>
+    <li><strong>PROBES</strong>：new_signals 空。no_change 兩筆：claude-code tag <code>v2.1.302</code>（publishedAt 2026-10-16T20:53:06Z）；ruanyf/weekly 第 415 期（commit <code>b9d8eb2ac3d55e82e095daebaa7df530995f2dd2</code>，author date 2026-10-16T01:00:52Z）。failed 空。</li>
+    <li><strong>external-feeds</strong>：blogs HTTP 200、0 篇，<code>BLOGS_SEEN_CHECK=OK note=blogs feed has 0 items, nothing to check</code>。X HTTP 200、17 個帳號共 37 則貼文（以 feed 的 x 陣列與各帳號 tweets 陣列計數），檔案 22,878 bytes。seen-check：pipeline_enabled_handles=43、feed_handles=17、overlap_count=5（amandaaskell, bcherny, claudeai, sama, swyx）、new_count=12（adityaag, amasad, danshipper, garrytan, levie, mattturck, nikunj, petergyang, rauchg, ryolu_, thsottiaux, zarazhangrui）。<code>X_HANDLE_OVERLAP=OK</code>。Boris Cherny 兩則 slides／code review 與 Thibault Sottiaux 的 slides 支援在 feed 裡、不在主 pipeline 的 X 段；seen-check 沒有逐 URL 的 <code>GENUINE_GAP</code> 行，所以不寫成「主 pipeline 沒抓到」。blogs 0 篇，沒有舊文可標 ALREADY_SEEN，也不做補到缺口的宣稱。</li>
+    <li><strong>stale sources</strong>（fetched ok、net-new=0）：skillhub_cn、clawhub、github_search、product_hunt、huggingface_spaces、anthropic_blog、anthropic_engineering、claude_blog、google_ai_blog、mistral_blog、krebs_security、arstechnica_security、youtube_matt、ithome_ai。arstechnica 那篇加密錢包報導是經 Reddit 轉貼進 raw md，來源列仍標 stale。</li>
+    <li><strong>Matt 影片</strong>：<code>matt_videos.fetch_failures</code> 為空。未執行字幕抓取，也未向 YouTube 補抓。不是 yt-dlp 失敗。</li>
+    <li><strong>LINUX DO 閱讀</strong>：entry_count 856、fragment_count 865、batch_count 51、read_batches 51、reviewed_fragments 865。content_limits：latest RSS 首帖，不宣稱完整討論串；圖片與附件只留連結。fragment coverage 不是閱讀品質保證。</li>
+    <li><strong>研究選題雷達</strong>：status ok，limited_input 是 legacy_excerpt bootstrap。new-term-radar health 四項 ok，first_run false。</li>
+  </ul>
+</section>
+
+<footer class="page">
+  每日話題分析 — 2026-10-18（週日）。3,213 items／104 active sources／1 failure／8 主軸／140 URL fact-checked。PROBES writeback 0／0。固定段：🟣 Anthropic／Claude、🛠 GitHub、🧩 Agent Skills、🎓 Matt Pocock、系統當天動態。
+</footer>
+</div>
+<script>
+const sourceLabels = ["新來源觀察","LINUX DO","X","中文/中國","Reddit","GH Trending","V2EX","Agent Skills","GH Rising","HN","EN Media","Lab Blogs","中文/台灣","SkillHub 中國","HuggingFace"];
+const sourceData = [2030,856,94,71,48,46,16,14,10,10,6,4,4,3,1];
+const sourceColors = ["#b591ff","#7aa8ff","#6ed79c","#ffb46b","#ff8585","#d4a5ff","#8ec5ff","#9be7b8","#ffd19a","#ffb0b0","#c4b5fd","#93c5fd","#86efac","#fdba74","#fca5a5"];
+const themeLabels = ["開源 harness","模型更新與接入","專用記憶與本地推論","程序化視覺","訂閱用量","長任務 agent","研究評估器","授權與供應鏈"];
+const themeData = [11,10,9,9,9,8,8,7];
+const themeColors = ["#ffb46b","#7aa8ff","#6ed79c","#b591ff","#ff8585","#d4a5ff","#8ec5ff","#9be7b8"];
+new Chart(document.getElementById("sourceChart").getContext("2d"), {
+  type: "bar",
+  data: { labels: sourceLabels, datasets: [{ data: sourceData, backgroundColor: sourceColors, borderWidth: 0 }] },
+  options: { indexAxis: "y", responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#9aa0b4" }, grid: { color: "#2a2f43" } }, y: { ticks: { color: "#e6e8ef", font: { size: 11 } }, grid: { display: false } } } }
+});
+new Chart(document.getElementById("themeHeatChart").getContext("2d"), {
+  type: "bar",
+  data: { labels: themeLabels, datasets: [{ data: themeData, backgroundColor: themeColors, borderWidth: 0 }] },
+  options: { indexAxis: "y", responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#9aa0b4" }, grid: { color: "#2a2f43" } }, y: { ticks: { color: "#e6e8ef", font: { size: 11 } }, grid: { display: false } } } }
+});
+</script>
+</body>
+</html>
