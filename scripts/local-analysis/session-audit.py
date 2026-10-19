@@ -611,6 +611,19 @@ def connect(state, write):
     if "model" not in table_columns(connection, "model_replies"):
       connection.execute("ALTER TABLE model_replies ADD COLUMN model TEXT NOT NULL DEFAULT ''")
     migrate_stable_inode(connection)
+    # sources 內含 file_tail／doc_tail BLOB，無覆蓋索引時 TUI 每 15 秒與 promote 每 10 秒都會翻動整張 7 GB 表。
+    connection.executescript(
+      """
+      CREATE INDEX IF NOT EXISTS idx_sources_included_status_mtime
+        ON sources(included, status, mtime, inode, generation, session_id);
+      CREATE INDEX IF NOT EXISTS idx_sources_inode_gen_included_status_session
+        ON sources(inode, generation, included, status, session_id);
+      CREATE INDEX IF NOT EXISTS idx_segments_inode_generation
+        ON segments(inode, generation);
+      CREATE INDEX IF NOT EXISTS idx_findings_inode_generation
+        ON findings(inode, generation);
+      """
+    )
   return connection
 
 
@@ -2732,11 +2745,63 @@ def cmd_run(args):
   print(json.dumps({"command": "run", "fragments": fragments["new"], "concurrency": concurrency}))
   return 0
 
+def snapshot_candidates(connection, statuses=None, include_uncertain=True):
+  candidates = []
+  latest = {}
+  if table_exists(connection, "findings"):
+    issue_col = "findings.issue_ref" if "issue_ref" in table_columns(connection, "findings") else "'' AS issue_ref"
+    status_clause = (
+      f" AND sources.status IN ({', '.join('?' for _ in statuses)})"
+      if statuses else ""
+    )
+    # CROSS JOIN 固定以 findings 主鍵順序做外層掃描並查 sources 覆蓋索引，避免反過來隨機跳讀 7 GB 檔案再建暫存樹排序。
+    query = f"""
+      SELECT findings.id, findings.inode, findings.status, findings.independent_recurrence,
+             findings.target, findings.observation, findings.check_direction, findings.quote,
+             findings.source_line, {issue_col}, sources.session_id, sources.status AS source_status
+      FROM findings
+      CROSS JOIN sources ON sources.inode = findings.inode AND sources.generation = findings.generation
+      WHERE sources.included = 1{status_clause}
+      ORDER BY findings.id
+    """
+    for row in connection.execute(query, tuple(statuses or ())).fetchall():
+      reference = row[9] or event_ref(row[10], row[8], row[7])
+      latest[(row[1], reference)] = row
+  kept_statuses = {"unresolved", "uncertain"} if include_uncertain else {"unresolved"}
+  for row in latest.values():
+    keep = row[2] in kept_statuses or (row[2] == "resolved" and row[3])
+    if not keep:
+      continue
+    source_ref = event_ref(row[10], row[8], row[7])
+    candidates.append(
+      {
+        "status": row[2],
+        "observation": row[5],
+        "target": row[4],
+        "independent_recurrence": bool(row[3]),
+        "quote": row[7],
+        "check_direction": row[6],
+        "source_line": row[8],
+        "session_id": row[10],
+        "issue_ref": row[9] or source_ref,
+        "source_ref": source_ref,
+        "source_status": row[11],
+      }
+    )
+  return candidates
+
+
 def snapshot(connection):
   hints = connection.execute("SELECT COUNT(*) FROM hints").fetchone()[0] if table_exists(connection, "hints") else 0
   sources = []
   if table_exists(connection, "sources"):
-    for row in connection.execute("SELECT * FROM sources ORDER BY path"):
+    query = """
+      SELECT name, path, generation, file_size, doc_offset, included,
+             classification, status, latest_complete, limitations, excluded_thinking
+      FROM sources
+      ORDER BY path
+    """
+    for row in connection.execute(query):
       sources.append(
         {
           "name": row["name"],
@@ -2752,41 +2817,7 @@ def snapshot(connection):
           "excluded_thinking": row["excluded_thinking"],
         }
       )
-  candidates = []
-  latest = {}
-  if table_exists(connection, "findings"):
-    query = """
-      SELECT findings.*, sources.session_id, sources.status AS source_status
-      FROM findings
-      JOIN sources ON sources.inode = findings.inode AND sources.generation = findings.generation
-      WHERE sources.included = 1
-      ORDER BY findings.id
-    """
-    for row in connection.execute(query):
-      reference = dict(row).get('issue_ref', '')
-      reference = reference or event_ref(row['session_id'], row['source_line'], row['quote'])
-      latest[(row['inode'], reference)] = row
-  for row in latest.values():
-    keep = row["status"] in {"unresolved", "uncertain"} or (
-      row["status"] == "resolved" and row["independent_recurrence"]
-    )
-    if not keep:
-      continue
-    candidates.append(
-      {
-        "status": row["status"],
-        "observation": row["observation"],
-        "target": row["target"],
-        "independent_recurrence": bool(row["independent_recurrence"]),
-        "quote": row["quote"],
-        "check_direction": row["check_direction"],
-        "source_line": row["source_line"],
-        "session_id": row["session_id"],
-        "issue_ref": dict(row).get('issue_ref') or event_ref(row['session_id'], row['source_line'], row['quote']),
-        "source_ref": event_ref(row['session_id'], row['source_line'], row['quote']),
-        "source_status": row['source_status'],
-      }
-    )
+  candidates = snapshot_candidates(connection)
   segments = []
   if table_exists(connection, "segments"):
     query = """
@@ -3266,7 +3297,9 @@ def cmd_promote(args):
   if guard_state(state, write=False) == "missing":
     fail("state-missing")
   connection = connect(state, write=False)
-  data = snapshot(connection)
+  # promote 只處理待折發現；若呼叫全量 snapshot 會把百萬筆 segments 與 model_replies 每 10 秒撈出再丟棄。
+  # 分析器自己判「無法判斷」的發現，Opus 回原文抽樣只有 13% 是真問題（2026-10-08，127 條）；留在資料庫可查，不進待折。
+  candidates = snapshot_candidates(connection, statuses=("complete", "partial"), include_uncertain=False)
   violations = rule_violations(connection)
   exposures = connection.execute(
     """
@@ -3279,12 +3312,7 @@ def cmd_promote(args):
     """
   ).fetchall() if table_exists(connection, "secret_exposures") else []
   connection.close()
-  # 分析器自己判「無法判斷」的發現，Opus 回原文抽樣只有 13% 是真問題（2026-10-08，127 條）；留在資料庫可查，不進待折。
-  data['candidates'] = [
-    item for item in data['candidates']
-    if item['source_status'] in {'complete', 'partial'} and item['status'] != 'uncertain'
-  ]
-  if not data["candidates"] and not violations and not exposures:
+  if not candidates and not violations and not exposures:
     print(json.dumps({"command": "promote", "appended": 0}))
     return 0
   root = Path(args.friction_root)
@@ -3312,7 +3340,7 @@ def cmd_promote(args):
     recorded = set(re.findall(r'\bsource_ref=([^;\s\]]+)', original))
     # 同一議題後續段落的狀態更新會換一句引文、得到新的 source_ref；以議題首見的位置去重，一個議題只占一條。
     issues = recorded | set(re.findall(r'\bissue_ref=([^;\s\]]+)', original))
-    for item in data["candidates"]:
+    for item in candidates:
       issue = item.get("issue_ref") or item["source_ref"]
       if item['source_ref'] in recorded or issue in issues:
         continue
