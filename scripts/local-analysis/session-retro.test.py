@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+"""Acceptance tests at the local retrospective CLI seam; fixtures never call agents."""
+
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).with_name("session-retro.py")
+NOW = "2026-10-20T12:00:00+08:00"
+RECENT = "2026-10-20T01:00:00Z"
+OLD = "2026-10-18T01:00:00Z"
+
+
+def user(text="human request", timestamp=RECENT, **fields):
+  return {"type": "user", "timestamp": timestamp, "promptSource": "typed",
+          "origin": {"kind": "human"}, "message": {"role": "user", "content": text}, **fields}
+
+
+def assistant(text="answer", timestamp=RECENT, **fields):
+  return {"type": "assistant", "timestamp": timestamp,
+          "message": {"role": "assistant", "content": text}, **fields}
+
+
+def dump(path, value):
+  path.parent.mkdir(parents=True, exist_ok=True)
+  path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+
+
+class RetroCLI(unittest.TestCase):
+  def setUp(self):
+    self.tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(self.tmp.cleanup)
+    self.root = Path(self.tmp.name)
+    self.projects = self.root / "projects"
+    self.projects.mkdir()
+    self.reports = self.root / "reports"
+    self.reports.mkdir()
+    self.serial = 0
+
+  def new(self, name):
+    self.serial += 1
+    return self.root / f"{name}-{self.serial}"
+
+  def cli(self, *args, code=0):
+    result = subprocess.run([sys.executable, "-I", str(SCRIPT), *map(str, args)],
+                            text=True, capture_output=True)
+    self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+    return json.loads(result.stdout)
+
+  def source(self, name, records, project="work"):
+    path = self.projects / project / f"{name}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps({"sessionId": name, **row}, ensure_ascii=False)
+                              for row in records) + "\n", encoding="utf-8")
+    return path
+
+  def inventory(self):
+    out = self.new("inventory")
+    result = self.cli("inventory", "--projects-root", self.projects,
+                      "--reports-root", self.reports, "--out", out, "--now", NOW)
+    self.assertEqual(Path(result["inventory_path"]), out / "inventory.json")
+    return out / "inventory.json", json.loads((out / "inventory.json").read_text())
+
+  def prepare(self, records=None, **options):
+    if records is not None:
+      self.source("human", records)
+    inventory, _ = self.inventory()
+    out = self.new("run")
+    args = ["prepare", "--inventory", inventory, "--out", out, "--window", "day"]
+    for key, value in options.items():
+      args += ["--" + key.replace("_", "-"), value]
+    summary = self.cli(*args)
+    self.assertTrue(summary["confirmation_required"])
+    plan = json.loads(Path(summary["plan_path"]).read_text())
+    self.assertEqual(plan["schema_version"], 1)
+    return out / "plan.json", plan
+
+  def stage(self, plan, name, code=0):
+    return self.cli("stage-args", "--plan", plan, "--stage", name, code=code)
+
+  def validate(self, plan, stage, transcripts, code=0):
+    args = ["validate", "--plan", plan, "--stage", stage]
+    for path in transcripts:
+      args += ["--transcript-dir", path]
+    return self.cli(*args, code=code)
+
+  def report(self, item, findings=None, **extra):
+    return {"session": item.get("session", "cross-session"), "unit": item["unit"], "status": "complete",
+            "source_document": item.get("source_document"),
+            "findings": [] if findings is None else findings, **extra}
+
+  def transcript(self, item, report, omit=(), prefix="", reads=None, write=True, alias=None):
+    folder = self.new("transcripts")
+    folder.mkdir()
+    rows = []
+    packet = json.loads(Path(item["packet_path"]).read_text()) if "packet_path" in item else {}
+    pages = packet.get("pages", []) + packet.get("request_index_pages", [])
+    paths = [Path(page["path"] if isinstance(page, dict) else page) for page in pages]
+    if reads is not None:
+      paths = [Path(path) for path in reads]
+    for n, path in enumerate(paths):
+      if str(path) in {str(x) for x in omit}:
+        continue
+      content = path.read_text()
+      # Read ranges can overlap; validation must union actual returned lines, including Unicode separators.
+      lines = content.split("\n")
+      halfway = max(1, len(lines) // 2)
+      for part, (start, chunk) in enumerate([(1, lines[:halfway]), (halfway + 1, lines[halfway:])]):
+        tid = f"read-{n}-{part}"
+        rows.append(assistant([{"type": "tool_use", "id": tid, "name": "Read",
+                                "input": {"file_path": str(path), "offset": start, "limit": len(chunk)}}]))
+        text = prefix + "\n".join(f"{start + j}\t{line}" for j, line in enumerate(chunk))
+        rows.append(user([{"type": "tool_result", "tool_use_id": tid, "content": text}]))
+    report_path = Path(alias) if alias else Path(item["report_path"])
+    dump(report_path, report)
+    if write:
+      rows.append(assistant([{"type": "tool_use", "id": "write", "name": "Write",
+                              "input": {"file_path": str(report_path), "content": json.dumps(report)}}]))
+      rows.append(user([{"type": "tool_result", "tool_use_id": "write", "content": "File created successfully"}]))
+    (folder / "agent-fixture.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
+    return folder
+
+  def read_pass(self, path, findings=None):
+    items = self.stage(path, "reading")["items"]
+    dirs = [self.transcript(item, self.report(item, findings)) for item in items]
+    self.validate(path, "reading", dirs)
+    return items, dirs
+
+  def test_inventory_classifies_whole_sessions_activity_and_aliases(self):
+    self.source("typed", [user()])
+    self.source("queued", [{"type": "attachment", "timestamp": RECENT,
+                            "attachment": {"type": "queued_command", "prompt": "queued human"}}])
+    self.source("slash", [user("<command-name>/help</command-name>", promptSource=None)])
+    self.source("resumed", [user("sdk setup", promptSource="sdk"), user("human resume")])
+    self.source("worker", [user("terminal work", promptSource="sdk", origin={"kind": "terminal-worker"}), user()])
+    self.source("sdk", [user(promptSource="sdk")])
+    self.source("unknown", [user(promptSource=None, origin={})])
+    self.source("eval", [user(isSynthetic=True)])
+    self.source("forward", [user("[main] forwarded")])
+    self.source("child", [user(isSidechain=True)])
+    self.source("metadata-new", [user(timestamp=OLD), {"type": "file-history-snapshot", "timestamp": RECENT}])
+    self.source("future", [user(timestamp="2026-10-20T04:00:01Z")])
+    self.source("boundary", [user(timestamp="2026-10-19T12:00:00+08:00")])
+    self.source("nested", [user()], project="work/deeper")
+    (self.projects / "alias").symlink_to(self.projects / "work", target_is_directory=True)
+    _, data = self.inventory()
+    self.assertEqual(data["options"]["day"]["sessions_count"], 5)
+    included = {r["session"] for r in data["sessions"] if r["classification"] == "human"}
+    self.assertIn("resumed", included)
+    self.assertEqual(next(r for r in data["sessions"] if r["session"] == "slash")["slash_only"], True)
+    self.assertIn("unknown", {r["session"] for r in data["unknown"]})
+    self.assertIn("worker", {r["session"] for r in data["excluded"]})
+    self.assertNotIn("nested", {r["session"] for r in data["sessions"]})
+    self.assertEqual(data["options"]["day"]["cutoff"], "2026-10-20T04:00:00Z")
+
+  def test_last_success_only_accepts_valid_global_completions(self):
+    self.source("human", [user()])
+    base = {"schema_version": 1, "run_id": "good", "scope": "all", "status": "complete",
+            "validation_pass": True, "window_start": OLD, "cutoff": "2026-10-19T00:00:00Z"}
+    dump(self.reports / "good/completion.json", base)
+    for name, fields in [("project", {"scope": {"projects": ["/work"]}}),
+                         ("failed", {"validation_pass": False}), ("partial", {"status": "partial"}),
+                         ("schema", {"schema_version": 2})]:
+      dump(self.reports / name / "completion.json", {**base, "cutoff": RECENT, **fields})
+    _, data = self.inventory()
+    self.assertEqual(data["last_success"], "2026-10-19T00:00:00Z")
+    (self.reports / "good/completion.json").unlink()
+    _, data = self.inventory()
+    self.assertIsNone(data["last_success"])
+    self.assertIsNone(data["options"]["last-success"])
+
+  def test_prepare_uses_snapshot_redacts_before_paging_and_lists_unknown(self):
+    source = self.source("human", [user("before snapshot"), assistant("x" * 23990 + " ghp_" + "a" * 30)])
+    self.source("unknown", [user(promptSource=None, origin={})])
+    inventory, data = self.inventory()
+    source.write_text(json.dumps(user("LIVE_CHANGED")))
+    out = self.new("run")
+    result = self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "day")
+    plan = json.loads(Path(result["plan_path"]).read_text())
+    session = plan["sessions"][0]
+    document = Path(session["document"]).read_text()
+    self.assertIn("before snapshot", document)
+    self.assertNotIn("LIVE_CHANGED", document)
+    self.assertNotIn("ghp_" + "a" * 30, document)
+    self.assertIn("[REDACTED]", document)
+    self.assertEqual(plan["unknown"][0]["session"], "unknown")
+    self.assertTrue(plan["limits"]["thinking_omitted"])
+    self.assertEqual(plan["page_count"], 2)
+    self.assertEqual(plan["models"]["read"], result["models"]["read"])
+    self.assertIn("[line=1 timestamp=2026-10-20T01:00:00Z window user]", document)
+    for page in session["shards"][0]["pages"]:
+      self.assertTrue(Path(page["path"]).read_text().endswith("END_PAGE " + page["id"] + "\n"))
+    self.assertEqual((Path(data["sessions"][0]["snapshot"]).parent.stat().st_mode & 0o777), 0o700)
+    self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "day", code=2)
+
+  def test_prepare_window_models_scope_and_invalid_arguments(self):
+    self.source("human", [user("old necessary context", timestamp=OLD), assistant("old response", timestamp=OLD), user("recent")])
+    inventory, _ = self.inventory()
+    out = self.new("run")
+    self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "custom", "--start", OLD,
+             "--project", self.projects / "work", "--depth", "window", "--read-model", "read-sol",
+             "--merge-model", "merge-sol", "--verify-model", "verify-sol", "--effort", "max", "--concurrency", "2")
+    plan = json.loads((out / "plan.json").read_text())
+    self.assertNotEqual(plan["scope"], "all")
+    self.assertEqual(plan["models"], {"read": "read-sol", "merge": "merge-sol", "verify": "verify-sol"})
+    self.assertEqual(plan["concurrency"], 2)
+    self.assertTrue(plan["limits"]["narrow_coverage"])
+    self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "day", "--concurrency", "5", code=2)
+    self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "last-success", code=2)
+
+  def test_reading_requires_every_page_and_index_from_report_writer(self):
+    path, plan = self.prepare([user(), assistant("a" * 30000)])
+    item = self.stage(path, "reading")["items"][0]
+    packet = json.loads(Path(item["packet_path"]).read_text())
+    missing = packet["pages"][-1]["path"]
+    first = self.transcript(item, self.report(item), omit=[missing])
+    result = self.validate(path, "reading", [first], code=2)
+    self.assertFalse(result["pass"])
+    self.stage(path, "session-merge", code=2)
+    # A different agent reading the missing page cannot repair the report writer's coverage.
+    unrelated = self.transcript(item, self.report(item), write=False, reads=[Path(missing)])
+    self.validate(path, "reading", [first, unrelated], code=2)
+    no_index = self.transcript(item, self.report(item), omit=packet["request_index_pages"])
+    self.validate(path, "reading", [no_index], code=2)
+    good = self.transcript(item, self.report(item))
+    self.validate(path, "reading", [good])
+    self.assertEqual(self.stage(path, "reading")["items"], [])
+
+  def test_read_receipts_unicode_history_and_quote_normalization(self):
+    text = 'Unicode 合法  Output too large history "quoted"'
+    path, plan = self.prepare([user(text)])
+    item = self.stage(path, "reading")["items"][0]
+    evidence = {"session": "human", "source_line": 1, "quote": '\\"quoted\\"'}
+    report = self.report(item, [{"id": item["unit"] + ":f1", "evidence": [evidence]}])
+    folder = self.transcript(item, report)
+    self.validate(path, "reading", [folder])
+    normalized = json.loads((path.parent / "validated" / (item["unit"] + ".json")).read_text())
+    self.assertEqual(normalized["findings"][0]["evidence"][0]["event_time"], RECENT)
+    self.assertEqual(normalized["findings"][0]["evidence"][0]["scope"], "window")
+    self.assertNotIn("event_time", json.loads(Path(item["report_path"]).read_text())["findings"][0]["evidence"][0])
+
+  def test_bad_json_quote_timestamp_null_partial_and_absent_write_fail(self):
+    path, _ = self.prepare([user("literal evidence")])
+    item = self.stage(path, "reading")["items"][0]
+    base = {"id": item["unit"] + ":f", "evidence": [{"session": "human", "source_line": 1, "quote": "literal evidence"}]}
+    bad_quote = json.loads(json.dumps(base))
+    bad_quote["evidence"][0]["quote"] = "literal fabricated evidence"
+    bad_time = json.loads(json.dumps(base))
+    bad_time["evidence"][0]["event_time"] = OLD
+    for report in [None, self.report(item, status="partial"), self.report(item, findings=[] , status="failed"),
+                   self.report(item, [bad_quote]), self.report(item, [bad_time]),
+                   {"session": item["session"], "unit": item["unit"], "status": "complete"}]:
+      with self.subTest(report=report):
+        folder = self.transcript(item, report)
+        self.validate(path, "reading", [folder], code=2)
+    folder = self.transcript(item, self.report(item))
+    Path(item["report_path"]).write_text("{broken")
+    self.validate(path, "reading", [folder], code=2)
+    folder = self.transcript(item, self.report(item), write=False)
+    self.validate(path, "reading", [folder], code=2)
+    folder = self.transcript(item, self.report(item))
+    agent = folder / "agent-fixture.jsonl"
+    rows = [json.loads(x) for x in agent.read_text().split("\n")]
+    rows[1]["message"]["content"][0]["is_error"] = True
+    agent.write_text("\n".join(json.dumps(x) for x in rows))
+    self.validate(path, "reading", [folder], code=2)
+
+  def test_report_write_typo_reuses_real_output_and_binding_rejects_model_change(self):
+    path, _ = self.prepare([user()])
+    item = self.stage(path, "reading")["items"][0]
+    alias = path.parent / "reports" / "mistyped.json"
+    folder = self.transcript(item, self.report(item), alias=alias)
+    self.validate(path, "reading", [folder])
+    self.assertEqual(self.stage(path, "reading")["items"], [])
+    plan = json.loads(path.read_text())
+    plan["models"]["read"] = "changed-model"
+    dump(path, plan)
+    self.stage(path, "cross", code=2)
+    self.assertEqual(len(self.stage(path, "reading")["items"]), 1)
+
+  def test_merge_cross_dispositions_and_two_critics_required_before_finish(self):
+    path, plan = self.prepare([user("source finding"), assistant("x" * 850000)])
+    items = self.stage(path, "reading")["items"]
+    self.assertEqual(len(items), 2)
+    dirs = []
+    ids = []
+    for item in items:
+      ids.append(item["unit"] + ":f")
+      finding = {"id": ids[-1], "evidence": [{"session": "human", "source_line": 1, "quote": "source finding"}]}
+      dirs.append(self.transcript(item, self.report(item, [finding])))
+    self.validate(path, "reading", dirs)
+    merge = self.stage(path, "session-merge")["items"][0]
+    evidence = [{"session": "human", "source_line": 1, "quote": "source finding"}]
+    report = self.report(merge, patterns=[{"id": merge["unit"] + "-P1", "source_finding_ids": ids, "evidence": evidence}])
+    folder = self.transcript(merge, report, reads=[])
+    self.validate(path, "session-merge", [folder], code=2)
+    report["dispositions"] = [{"source_finding_id": key, "disposition": "merged", "reason": "same cause"} for key in ids]
+    folder = self.transcript(merge, report, reads=[])
+    self.validate(path, "session-merge", [folder])
+    cross = self.stage(path, "cross")["items"][0]
+    sid = report["patterns"][0]["id"]
+    cross_report = self.report(cross, patterns=[{"id": "P1", "source_finding_ids": [sid], "evidence": evidence}], dispositions=[])
+    folder = self.transcript(cross, cross_report, reads=[])
+    self.validate(path, "cross", [folder], code=2)
+    cross_report["dispositions"] = [{"source_record_id": sid, "disposition": "kept", "reason": "relevant"}]
+    folder = self.transcript(cross, cross_report, reads=[])
+    self.validate(path, "cross", [folder])
+    critics = self.stage(path, "verify")["items"]
+    self.assertEqual(len(critics), 2)
+    dirs = [self.transcript(critics[0], self.report(critics[0], verdicts=[
+      {"pattern_id": "P1", "verdict": "CONFIRMED", "evidence": [{"path": str(path), "quote": "scope"}]}]), reads=[])]
+    self.validate(path, "verify", dirs, code=2)
+    self.cli("finish", "--plan", path, code=2)
+    for critic in critics:
+      dirs.append(self.transcript(critic, self.report(critic, verdicts=[
+        {"pattern_id": "P1", "verdict": "UNCERTAIN", "evidence": [{"path": str(path), "quote": "scope"}]}]), reads=critic["input_reports"]))
+    self.validate(path, "verify", dirs, code=2)
+    dirs = []
+    for critic in critics:
+      verdict = {"pattern_id": "P1", "verdict": "UNCERTAIN", "evidence": evidence}
+      dirs.append(self.transcript(critic, self.report(critic, verdicts=[verdict]),
+        reads=critic["input_reports"] + critic["source_documents"]))
+    self.validate(path, "verify", dirs)
+    self.cli("finish", "--plan", path, code=2)
+    (path.parent / "final.md").write_text("Verified local report")
+    self.cli("finish", "--plan", path)
+    completion = json.loads((path.parent / "completion.json").read_text())
+    self.assertTrue(completion["validation_pass"])
+    self.assertEqual(completion["cutoff"], "2026-10-20T04:00:00Z")
+
+  def test_zero_findings_is_valid_and_missing_inputs_are_not_zero(self):
+    path, _ = self.prepare([user()])
+    self.read_pass(path)
+    self.validate(path, "session-merge", [])
+    cross = self.stage(path, "cross")["items"][0]
+    empty = self.report(cross, patterns=[], secondary_patterns=[], dispositions=[])
+    folder = self.transcript(cross, empty, reads=[])
+    selected = cross["input_reports"][0]
+    self.validate(path, "cross", [folder])
+    self.assertEqual(self.stage(path, "cross")["items"], [])
+    Path(selected).unlink()
+    self.stage(path, "verify", code=2)
+
+  def test_project_filter_uses_session_cwd_and_stage_specific_effort(self):
+    self.source("human", [user(cwd=str(self.root / "actual-project"))])
+    inventory, data = self.inventory()
+    self.assertIn(str(self.root / "actual-project"), data["options"]["day"]["projects"])
+    result = self.cli("prepare", "--inventory", inventory, "--out", self.new("model-run"), "--window", "day",
+      "--project", self.root / "actual-project", "--read-effort", "medium", "--merge-effort", "high", "--verify-effort", "max")
+    reading = self.stage(Path(result["plan_path"]), "reading")
+    self.assertEqual(reading["effort"], "medium")
+
+  def test_project_last_success_uses_matching_scope(self):
+    self.source("human", [user()])
+    scope = {"projects": [str((self.projects / "work").resolve())], "excluded_sessions": []}
+    dump(self.reports / "project/completion.json", {"schema_version": 1, "run_id": "project", "scope": scope,
+      "status": "complete", "validation_pass": True, "window_start": OLD, "cutoff": "2026-10-19T00:00:00Z"})
+    inventory, _ = self.inventory()
+    summary = self.cli("prepare", "--inventory", inventory, "--out", self.new("project-run"),
+      "--window", "last-success", "--project", self.projects / "work")
+    self.assertEqual(summary["window"]["window_start"], "2026-10-19T00:00:00Z")
+
+  def test_source_parse_gap_blocks_completion_even_with_stage_receipts(self):
+    source = self.source("human", [user(), {"type": "assistant", "message": {"content": "missing timestamp"}}])
+    with source.open("a") as handle:
+      handle.write("{broken\n")
+    path, plan = self.prepare()
+    self.assertTrue(plan["sessions"][0]["limitations"])
+    self.read_pass(path)
+    self.validate(path, "session-merge", [])
+    cross = self.stage(path, "cross")["items"][0]
+    folder = self.transcript(cross, self.report(cross, patterns=[], dispositions=[]), reads=[])
+    self.validate(path, "cross", [folder])
+    critics = self.stage(path, "verify")["items"]
+    dirs = [self.transcript(c, self.report(c, findings=[]), reads=c["input_reports"]) for c in critics]
+    self.validate(path, "verify", dirs)
+    (path.parent / "final.md").write_text("Report of the readable excerpt only")
+    self.cli("finish", "--plan", path, code=2)
+    self.assertFalse((path.parent / "completion.json").exists())
+
+  def test_critic_requires_real_source_reads(self):
+    path, _ = self.prepare([user("evidence")])
+    self.read_pass(path)
+    self.validate(path, "session-merge", [])
+    cross = self.stage(path, "cross")["items"][0]
+    cross_report = self.report(cross, patterns=[{"id": "P1", "source_finding_ids": ["s01-u01-F1"],
+      "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}]}], dispositions=[])
+    # Build the preceding valid candidate through the public CLI before probing the critic seam.
+    item = {"session": "human", "unit": "s01-u01", "report_path": str(path.parent / "reports/s01-u01.json"),
+      "packet_path": str(path.parent / "s01/u01/packet.json")}
+    finding = {"id": "s01-u01-F1", "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}]}
+    folder = self.transcript(item, self.report(item, [finding]))
+    self.validate(path, "reading", [folder])
+    self.validate(path, "session-merge", [])
+    cross = self.stage(path, "cross")["items"][0]
+    cross_report["dispositions"] = [{"id": "s01-u01-F1", "verdict": "kept", "reason": "supported"}]
+    folder = self.transcript(cross, cross_report, reads=[])
+    self.validate(path, "cross", [folder])
+    critics = self.stage(path, "verify")["items"]
+    directories = []
+    for critic in critics:
+      report = self.report(critic, findings=[{"id": critic["unit"] + "-F1", "pattern_id": "P1", "verdict": "CONFIRMED",
+        "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}], "current_evidence": []}])
+      directories.append(self.transcript(critic, report, reads=[]))
+    result = self.validate(path, "verify", directories, code=2)
+    self.assertEqual(result["counts"]["failed"], 2)
+
+  def test_usage_message_ids_dedup_and_unknown_is_explicit(self):
+    folder = self.new("usage")
+    folder.mkdir()
+    row = assistant([{"type": "tool_use", "id": "tool1", "name": "Read", "input": {}}])
+    row["message"].update({"id": "msg1", "usage": {"input_tokens": 10, "output_tokens": 3,
+      "cache_read_input_tokens": 7, "cache_creation_input_tokens": 2}})
+    final = json.loads(json.dumps(row))
+    final["message"]["usage"]["output_tokens"] = 8
+    unknown = assistant("no usage")
+    unknown["message"]["id"] = "msg2"
+    (folder / "agent-one.jsonl").write_text("\n".join(json.dumps(x) for x in [row, final, unknown]))
+    result = self.cli("usage", "--transcript-dir", folder, "--transcript-dir", folder)
+    self.assertEqual(result["totals"], {"input": 10, "output": 8, "cache_read": 7, "cache_creation": 2})
+    self.assertEqual(result["tool_uses"], 1)
+    self.assertEqual(result["unknown_messages"], 1)
+    self.assertFalse(result["billing"])
+
+
+if __name__ == "__main__":
+  unittest.main(verbosity=2)
