@@ -74,6 +74,15 @@ SESSION_END_SLACK_SECONDS = 60
 EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
 # skill-up 在 $TMPDIR/skill-up-<n>/ 跑評測，記錄本身不帶 synthetic 旗標；只認這個專案目錄樣式，不擴到整個 /var/folders。
 SKILL_UP_PROJECT_MARK = "-T-skill-up-"
+# retro-workflow / retro-24h-pilot 的子代理專門讀取過去對話的分頁快照（雙層 transcript）；
+# 再送進 session-audit 只會把被讀的舊對話重審一次並塞住新 session 佇列。
+RETRO_SUBAGENT_MARKERS = (
+  "retro-24h-pilot",
+  "/.claude/references/retro-workflow/",
+  "canonical_chunk=",
+  "\nEND_PAGE ",
+  '"request_index_pages"',
+)
 RULES_VERSION_UNAVAILABLE = "rules-version-unavailable"
 RULE_TAGS_MISSING = "rule-tags-missing"
 RULES_DROPPED_CONTEXT = "rules-dropped-context"
@@ -1023,7 +1032,9 @@ def build_document(raw, metadata_only=False, time_window=None, window_info=None,
         window_info["has_timestamp"] = True
         if time_window[0] <= moment.timestamp() <= time_window[1]:
           window_info["matches"] = True
-    if record_synthetic(obj):
+    if record_synthetic(obj) or (
+      obj.get("isSidechain") is True and any(marker in decoded for marker in RETRO_SUBAGENT_MARKERS)
+    ):
       synthetic = True
     # sessionId 是主檔歸屬；續接紀錄的 session_id 可能是另一個執行 ID，不能混成兩個父來源。
     session_id = obj.get("sessionId", obj.get("session_id"))
