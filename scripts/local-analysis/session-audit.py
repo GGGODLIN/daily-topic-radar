@@ -1810,10 +1810,18 @@ def mark(connection, inode, status, latest, limitations, thinking, **fields):
 
 
 def record_segments(connection, row, generation, parts, doc_start, doc_end, status, limitations):
-  for part in parts:
-    # 只記這次實際送出範圍涵蓋到的來源段。巨大單塊的每一片都帶同一段的 tool id。
-    if part["doc_start"] >= doc_end or part["doc_end"] <= doc_start:
-      continue
+  # 只記這次實際送出範圍涵蓋到的來源段。巨大單塊的每一片都帶同一段的 tool id。
+  matched = [part for part in parts if part["doc_start"] < doc_end and part["doc_end"] > doc_start]
+  if not matched:
+    return
+  # 累積 limitations 若重複寫進每個 segment row 會讓 120 萬行表膨脹逾 5 GB；
+  # 只保留在該 (inode, generation) 的最新 MAX(id) 列，既相容舊鍵還原查詢又不重複複製。
+  connection.execute(
+    "UPDATE segments SET limitations = '[]' WHERE inode = ? AND generation = ? AND limitations != '[]'",
+    (row["inode"], generation),
+  )
+  tail_limits = json.dumps(sorted(limitations), ensure_ascii=False)
+  for idx, part in enumerate(matched):
     connection.execute(
       """
       INSERT INTO segments (
@@ -1835,7 +1843,7 @@ def record_segments(connection, row, generation, parts, doc_start, doc_end, stat
         part["tool_name"],
         part["tool_use_id"],
         status,
-        json.dumps(sorted(limitations), ensure_ascii=False),
+        tail_limits if idx == len(matched) - 1 else "[]",
       ),
     )
 

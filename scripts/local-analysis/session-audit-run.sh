@@ -28,7 +28,10 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
   --standby-legs "${SESSION_AUDIT_STANDBY_LEGS-audit-tail:10}" \
   --backfill-legs "${SESSION_AUDIT_BACKFILL_LEGS-swe2-high:5,mimo26-pool:5,grok-4.7:5}" \
   --max-sessions "${SESSION_AUDIT_MAX_SESSIONS:-2}"
-# 分析器的發現量大且未經 review；放在 ~/.claude/friction 外，避免跟其他機制的摩擦混在一起、灌爆 trial-review。
-"$PY" "$DIR/session-audit.py" promote \
-  --state "$STATE" \
-  --friction-root "${SESSION_AUDIT_FRICTION_ROOT:-$STATE/friction}"
+# 2026-10-19 拍板：發現與規則違規改由 session-audit-consume.py 按 ID 水位線直接從 state.sqlite 全量分批消費，
+# 停止每輪重寫 43.4 MB 的隔離 workflow-general.md（避免無人讀取的死庫存與反覆 I/O）；需舊式匯出時設 SESSION_AUDIT_PROMOTE_FRICTION=1。
+if [ "${SESSION_AUDIT_PROMOTE_FRICTION:-0}" = "1" ]; then
+  "$PY" "$DIR/session-audit.py" promote \
+    --state "$STATE" \
+    --friction-root "${SESSION_AUDIT_FRICTION_ROOT:-$STATE/friction}"
+fi
