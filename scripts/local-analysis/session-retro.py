@@ -2,6 +2,7 @@
 """Local, snapshot-based retrospective CLI."""
 
 import argparse
+import ast
 import copy
 import importlib.util
 import json
@@ -99,7 +100,7 @@ def human_input(row):
   if origin.get("kind") not in (None, "human"):
     return False
   if queued(row):
-    return bool(row["attachment"].get("prompt", "").strip())
+    return bool(content_text(row["attachment"].get("prompt", "")).strip())
   if row.get("type") != "user":
     return False
   text = content_text(row.get("message", {}).get("content", row.get("content", ""))).strip()
@@ -170,12 +171,18 @@ def inventory(args):
     if source in found or not source.is_file():
       continue
     found.add(source)
-    raw = source.read_text(encoding="utf-8")
+    raw = source.read_bytes()
     selected = []
     kept = []
     activities = []
     limits = []
-    for number, line in enumerate(raw.split("\n"), 1):
+    for number, encoded_line in enumerate(raw.split(b"\n"), 1):
+      try:
+        line = encoded_line.decode("utf-8")
+      except UnicodeDecodeError:
+        kept.append("")
+        limits.append({"line": number, "reason": "invalid-utf8"})
+        continue
       if not line.strip():
         kept.append("")
         continue
@@ -208,7 +215,7 @@ def inventory(args):
     sessions.append({"session": source.stem, "source": str(source), "project": str(Path(project).expanduser().resolve()),
                      "snapshot": str(snapshot), "classification": category, "reasons": reasons,
                      "activity": activities, "slash_only": slash_only, "limitations": limits,
-                     "estimated_chars": len(raw)})
+                     "estimated_chars": sum(len(line) for line in kept)})
   last = latest_success(args.reports_root, cutoff)
   options = {}
   for key, start in (("day", cutoff - timedelta(days=1)), ("last-success", last)):
@@ -255,7 +262,7 @@ def visible_blocks(row, audit):
   blocks = []
   media = 0
   if queued(row):
-    blocks.append(("user-queued", audit.redact_text(str(row["attachment"].get("prompt", "")))))
+    blocks.append(("user-queued", audit.redact_text(content_text(row["attachment"].get("prompt", "")))))
   content = row.get("message", {}).get("content", row.get("content"))
   role = str(row.get("type", "unknown"))
   if isinstance(content, str):
@@ -540,9 +547,9 @@ def transcript_agents(directories):
         for block in blocks:
           if not isinstance(block, dict):
             continue
-          if block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+          if row.get("type") == "assistant" and block.get("type") == "tool_use" and isinstance(block.get("id"), str):
             uses[block["id"]] = block
-          if block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str):
+          if row.get("type") == "user" and block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str):
             results[block["tool_use_id"]] = block
       operations = []
       for key, use in uses.items():
@@ -598,12 +605,131 @@ def coverage_errors(agent, item):
   return errors
 
 
+def bash_report(operation, item):
+  # Historical commands are untrusted data; only this bounded construction grammar is accepted.
+  command = operation["input"].get("command", "")
+  match = re.fullmatch(r"python3 -I - <<'PY'\n(.*)\nPY\s*", command, re.S)
+  if not match:
+    return None
+  env = {}
+  helper = ast.parse("def ev(n,q): return {'session':s,'source_line':n,'quote':q}").body[0]
+
+  def shape(node):
+    return ast.dump(node, include_attributes=False)
+
+  def value(node):
+    if isinstance(node, ast.Constant) and type(node.value) in (str, int, bool, type(None)):
+      return node.value
+    if isinstance(node, ast.Name) and node.id in env:
+      return copy.deepcopy(env[node.id])
+    if isinstance(node, ast.Dict) and all(k is not None for k in node.keys):
+      return {value(k): value(v) for k, v in zip(node.keys, node.values, strict=True)}
+    if isinstance(node, ast.List):
+      return [value(v) for v in node.elts]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+      left, right = value(node.left), value(node.right)
+      require(type(left) is type(right) is str, "unsupported addition")
+      return left + right
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+      left, right = value(node.left), value(node.right)
+      require(isinstance(left, Path) and isinstance(right, str), "unsupported path")
+      return left / right
+    if isinstance(node, ast.Call) and not node.keywords:
+      if isinstance(node.func, ast.Name) and node.func.id == "Path" and len(node.args) == 1:
+        return Path(value(node.args[0]))
+      if isinstance(node.func, ast.Name) and node.func.id == "ev" and "ev" in env and len(node.args) == 2:
+        return {"session": env["s"], "source_line": value(node.args[0]), "quote": value(node.args[1])}
+    if isinstance(node, ast.JoinedStr):
+      parts = []
+      for part in node.values:
+        if isinstance(part, ast.Constant):
+          parts.append(part.value)
+        else:
+          require(isinstance(part, ast.FormattedValue) and part.conversion == -1, "unsupported format")
+          spec = value(part.format_spec) if part.format_spec else ""
+          require(spec in ("", "02"), "unsupported format specifier")
+          parts.append(format(value(part.value), spec))
+      return "".join(parts)
+    if isinstance(node, ast.ListComp) and len(node.generators) == 1:
+      gen = node.generators[0]
+      require(not gen.ifs and not gen.is_async and isinstance(gen.target, ast.Name), "unsupported comprehension")
+      call = gen.iter
+      require(isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "range"
+              and not call.keywords and len(call.args) == 2, "unsupported range")
+      start, stop = [value(arg) for arg in call.args]
+      require(type(start) is type(stop) is int and 0 <= stop - start <= 1000, "unbounded range")
+      result = []
+      for number in range(start, stop):
+        env[gen.target.id] = number
+        result.append(value(node.elt))
+      env.pop(gen.target.id, None)
+      return result
+    raise Invalid("unsupported report expression")
+
+  try:
+    tree = ast.parse(match[1])
+    for index, node in enumerate(tree.body):
+      if shape(node) in (shape(ast.parse("import json").body[0]), shape(ast.parse("from pathlib import Path").body[0])):
+        continue
+      if shape(node) == shape(helper):
+        env["ev"] = True
+        continue
+      if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id not in {"ev", "json", "Path"}:
+          assigned = value(node.value)
+          require(not isinstance(node.value, ast.Name) or not isinstance(assigned, (dict, list)), "container aliases unsupported")
+          env[target.id] = assigned
+          continue
+        if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and target.value.id == "r":
+          require(isinstance(env.get("r"), dict), "report assignment requires a dict")
+          env["r"][value(target.slice)] = value(node.value)
+          continue
+      if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+        call = node.value
+        if (isinstance(call.func, ast.Attribute) and call.func.attr == "append" and not call.keywords
+            and len(call.args) == 1 and shape(call.func.value) == shape(ast.parse("r['findings']", mode="eval").body)):
+          env["r"]["findings"].append(value(call.args[0]))
+          continue
+      writer = ast.parse("with p.open('x') as f: json.dump(r,f,ensure_ascii=False,indent=2); f.write('\\n')").body[0]
+      require(shape(node) == shape(writer), "unsupported report statement")
+      target = env["p"].resolve()
+      require(target == Path(item["report_path"]).resolve(), "Bash report target mismatch")
+      suffix = tree.body[index + 1:]
+      if suffix:
+        packet = load(item["packet_path"])
+        count = len(packet["pages"])
+        page_dir = item["unit"].replace("-u", "/u")
+        check = ("a=json.loads(p.read_text())\n"
+          f"assert len(a['read_pages'])=={count} and not a['unread_pages']\n"
+          "for finding in a['findings']:\n for e in finding['evidence']:\n"
+          f"  text=''.join((root/f'{page_dir}/p{{i:02}}.txt').read_text() for i in range(1,{count + 1}))\n"
+          '  assert f"[line={e[\'source_line\']} " in text\n'
+          "  assert e['quote'] in text.replace('\\\\n','\\n').replace('\\\\\"','\"'),(e['source_line'],e['quote'])\n"
+          "print(json.dumps({'report':str(p),'pages':len(a['read_pages']),'findings':len(a['findings']),'json_valid':True,'quotes_present':True},ensure_ascii=False))")
+        require([shape(n) for n in suffix] == [shape(n) for n in ast.parse(check).body], "unsupported post-write statements")
+      report = env["r"]
+      require(report.get("unit") == item["unit"] and report.get("session") == item["session"], "Bash identity mismatch")
+      return target, json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+  except (ValueError, TypeError, KeyError, AttributeError, SyntaxError, OverflowError):
+    return None
+  return None
+
+
 def report_writer(agents, item):
   candidates = []
   expected_path = Path(item["report_path"]).resolve()
-  for agent in agents:
+  for agent_index, agent in enumerate(agents):
     paths = []
+    bash_states = {}
     for op in agent["operations"]:
+      if op["name"] == "Bash":
+        reconstructed = bash_report(op, item)
+        if reconstructed:
+          target, state = reconstructed
+          bash_states[target] = state
+          if target not in paths:
+            paths.append(target)
       if op["name"] in {"Write", "Edit"} and operation_path(op) is not None:
         target = operation_path(op)
         if target not in paths:
@@ -622,25 +748,65 @@ def report_writer(agents, item):
       if not target.is_relative_to(run_root):
         continue
       writes = [op for op in agent["operations"] if operation_path(op) == target and op["name"] in {"Write", "Edit"}]
-      state = None
+      state = bash_states.get(target)
       for op in writes:
         fields = op["input"]
         if op["name"] == "Write":
           state = fields.get("content")
         elif isinstance(state, str) and isinstance(fields.get("old_string"), str) and isinstance(fields.get("new_string"), str):
-          state = state.replace(fields["old_string"], fields["new_string"], -1 if fields.get("replace_all") else 1)
+          old = fields["old_string"]
+          if not old or (state.count(old) != 1 and not fields.get("replace_all")) or old not in state:
+            state = None
+            break
+          state = state.replace(old, fields["new_string"], -1 if fields.get("replace_all") else 1)
+      if state is None:
+        continue
+      for later in agents[agent_index + 1:]:
+        for op in later["operations"]:
+          fields = op["input"]
+          if op["name"] != "Edit" or operation_path(op) != target:
+            continue
+          old, new = fields.get("old_string"), fields.get("new_string")
+          if not isinstance(old, str) or not old or not isinstance(new, str) or state.count(old) != 1 or fields.get("replace_all"):
+            state = None
+            break
+          state = state.replace(old, new, 1)
+        if state is None:
+          break
       if state is not None:
         try:
           if json.loads(state) != report:
             continue
         except (ValueError, TypeError):
           continue
-      elif not writes or writes[-1]["name"] != "Edit":
+      else:
         continue
       candidates.append((agent, target, report))
-  require(bool(candidates), "no successful report Write/Edit evidence with matching identity and artifact")
+  require(bool(candidates), "no successful report Write/Edit/Bash evidence with matching identity and artifact")
   # Later transcript arguments are repair attempts; never union another writer's Read evidence.
   return candidates[-1]
+
+
+def canonical_strings(text, depth=0):
+  yield text
+  if depth >= 4:
+    return
+  try:
+    decoded = json.loads(text)
+  except (ValueError, TypeError, RecursionError):
+    return
+
+  def strings(value):
+    if isinstance(value, str):
+      yield from canonical_strings(value, depth + 1)
+    elif isinstance(value, dict):
+      for child in value.values():
+        yield from strings(child)
+    elif isinstance(value, list):
+      for child in value:
+        yield from strings(child)
+
+  yield from strings(decoded)
 
 
 def normalize_evidence(evidence, item, canonical):
@@ -659,7 +825,7 @@ def normalize_evidence(evidence, item, canonical):
   except ValueError:
     pass
   matching = [event for event in canonical[session] if event["source_line"] == source_line
-              and any(q in event["text"] for q in quotes)]
+              and any(q in text for text in canonical_strings(event["text"]) for q in quotes)]
   require(bool(matching), "quote is not a contiguous source block match")
   event = matching[0]
   if "event_time" in evidence:

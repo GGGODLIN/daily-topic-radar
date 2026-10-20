@@ -156,6 +156,29 @@ class RetroCLI(unittest.TestCase):
     self.assertNotIn("nested", {r["session"] for r in data["sessions"]})
     self.assertEqual(data["options"]["day"]["cutoff"], "2026-10-20T04:00:00Z")
 
+  def test_queued_block_content_is_classified_and_rendered_as_text(self):
+    self.source("queued-blocks", [{"type": "attachment", "timestamp": RECENT,
+      "attachment": {"type": "queued_command", "prompt": [{"type": "text", "text": "queued block request"}]}}])
+    path, plan = self.prepare()
+    self.assertEqual(plan["session_count"], 1)
+    document = Path(plan["sessions"][0]["document"]).read_text()
+    self.assertIn("queued block request", document)
+    self.assertNotIn("{'type': 'text'", document)
+
+  def test_invalid_utf8_line_is_reported_without_losing_other_records(self):
+    source = self.source("human", [user("valid before corruption")])
+    with source.open("ab") as handle:
+      handle.write(b'{"type":"user","text":"\xf0broken"}\n')
+      handle.write((json.dumps(assistant("valid after corruption")) + "\n").encode())
+    _, data = self.inventory()
+    row = next(row for row in data["sessions"] if row["session"] == "human")
+    self.assertEqual(row["limitations"], [{"line": 2, "reason": "invalid-utf8"}])
+    snapshot = Path(row["snapshot"]).read_text()
+    self.assertIn("valid before corruption", snapshot)
+    self.assertIn("valid after corruption", snapshot)
+    self.assertEqual(len(snapshot.split("\n")), 4)
+    self.assertEqual(data["options"]["day"]["sessions_count"], 1)
+
   def test_last_success_only_accepts_valid_global_completions(self):
     self.source("human", [user()])
     base = {"schema_version": 1, "run_id": "good", "scope": "all", "status": "complete",
@@ -241,6 +264,103 @@ class RetroCLI(unittest.TestCase):
     self.assertEqual(normalized["findings"][0]["evidence"][0]["event_time"], RECENT)
     self.assertEqual(normalized["findings"][0]["evidence"][0]["scope"], "window")
     self.assertNotIn("event_time", json.loads(Path(item["report_path"]).read_text())["findings"][0]["evidence"][0])
+
+  def test_nested_canonical_json_quotes_remain_exact_and_line_bound(self):
+    text = '精確 "原句"\n下一行'
+    block = {"type": "tool_use", "id": "nested", "name": "Bash",
+             "input": {"nested": [{"text": text}], "separate": ["不可", "拼接"]}}
+    path, _ = self.prepare([user(), assistant([block])])
+    item = self.stage(path, "reading")["items"][0]
+    for quote, line, valid in [(text, 2, True), (json.dumps(text, ensure_ascii=False)[1:-1], 2, True),
+                               (text, 1, False), ('精確 "錯字"\n下一行', 2, False), ("不可拼接", 2, False)]:
+      with self.subTest(quote=quote, line=line):
+        report = self.report(item, [{"id": item["unit"] + "-F1", "evidence": [
+          {"session": "human", "source_line": line, "quote": quote}]}])
+        folder = self.transcript(item, report)
+        self.validate(path, "reading", [folder], code=0 if valid else 2)
+        if valid:
+          normalized = json.loads((path.parent / "validated" / (item["unit"] + ".json")).read_text())
+          self.assertEqual(normalized["findings"][0]["evidence"][0]["event_time"], RECENT)
+
+  def test_json_inside_tool_text_decodes_without_joining_or_rewriting(self):
+    encoded = json.dumps({"messages": "先按照你的建議處理", "pieces": ["不能", "拼接"]}, ensure_ascii=True)
+    block = {"type": "tool_result", "tool_use_id": "nested", "content": [{"type": "text", "text": encoded}]}
+    path, _ = self.prepare([user(), user([block])])
+    item = self.stage(path, "reading")["items"][0]
+    for quote, valid in [("先按照你的建議處理", True), ("不能拼接", False), ("先按照你的建議修理", False)]:
+      report = self.report(item, [{"id": item["unit"] + "-F1", "evidence": [
+        {"session": "human", "source_line": 2, "quote": quote}]}])
+      folder = self.transcript(item, report)
+      self.validate(path, "reading", [folder], code=0 if valid else 2)
+
+  def bash_transcript(self, item, report, change="", success=True, reads=None):
+    folder = self.transcript(item, report, write=False, reads=reads)
+    packet = json.loads(Path(item["packet_path"]).read_text())
+    count = len(packet["pages"])
+    base = {**report, "findings": [], "read_pages": []}
+    body = ("import json\nfrom pathlib import Path\n"
+      f"root=Path({str(Path(item['report_path']).parent.parent)!r})\ns={item['session']!r}\n"
+      "def ev(n,q): return {'session':s,'source_line':n,'quote':q}\n"
+      f"r={base!r}\n"
+      f"r['read_pages']=[f'{item['unit']}-p{{i:02}}' for i in range(1,{count + 1})]\n"
+      f"r['findings'].append({{'id': {item['unit'] + '-F1'!r}, 'evidence': [ev(1,'human request')]}})\n"
+      f"p=root/{'reports/' + item['unit'] + '.json'!r}\n"
+      "with p.open('x') as f: json.dump(r,f,ensure_ascii=False,indent=2); f.write('\\n')\n")
+    body = change(body) if callable(change) else body + change
+    rows = [assistant([{"type": "tool_use", "id": "bash", "name": "Bash", "input": {
+      "command": "python3 -I - <<'PY'\n" + body + "PY"}}])]
+    if success:
+      rows.append(user([{"type": "tool_result", "tool_use_id": "bash", "content": "created", "is_error": False}]))
+    agent = folder / "agent-fixture.jsonl"
+    with agent.open("a") as handle:
+      handle.write("\n" + "\n".join(json.dumps(row) for row in rows))
+    return folder
+
+  def test_bash_report_literal_assembly_binds_original_read_coverage(self):
+    path, _ = self.prepare([user()])
+    item = self.stage(path, "reading")["items"][0]
+    report = self.report(item, [{"id": item["unit"] + "-F1", "evidence": [
+      {"session": "human", "source_line": 1, "quote": "human request"}]}], read_pages=[item["unit"] + "-p01"])
+    folder = self.bash_transcript(item, report)
+    self.validate(path, "reading", [folder])
+
+  def test_bash_report_rejects_missing_result_mismatch_target_and_unknown_forms(self):
+    path, _ = self.prepare([user()])
+    item = self.stage(path, "reading")["items"][0]
+    report = self.report(item, [{"id": item["unit"] + "-F1", "evidence": [
+      {"session": "human", "source_line": 1, "quote": "human request"}]}], read_pages=[item["unit"] + "-p01"])
+    variants = [dict(success=False), dict(change=lambda b: b.replace("human request", "different")),
+      dict(change=lambda b: b.replace("p=root/", "p=root/'wrong'/")),
+      dict(change=lambda b: b.replace("r=", "evil()\nr=", 1)),
+      dict(change=lambda b: b.replace("r=", "other=unknown\nr=", 1)),
+      dict(change="r.clear()\n"), dict(change="evil()\n"), dict(change="for x in unknown: pass\n"), dict(reads=[]),
+      dict(change=lambda b: b.replace("json.dump(r,f", "json.dump({},f")),
+      dict(change=lambda b: b.replace("r['read_pages']=", "alias=r\nr['read_pages']=").replace("p=root/", "r=alias\np=root/")),
+      dict(change=lambda b: b.replace("r['read_pages']=", "r=[]\nr[0]=1\nr['read_pages']="))]
+    for options in variants:
+      with self.subTest(options=options):
+        folder = self.bash_transcript(item, report, **options)
+        self.validate(path, "reading", [folder], code=2)
+
+  def test_later_exact_edit_preserves_original_writer_coverage(self):
+    path, _ = self.prepare([user("correct quote"), assistant("other")])
+    item = self.stage(path, "reading")["items"][0]
+    report = self.report(item, [{"id": item["unit"] + "-F1", "evidence": [
+      {"session": "human", "source_line": 2, "quote": "correct quote"}]}])
+    original = self.transcript(item, report)
+    repair = self.transcript(item, report, write=False, reads=[])
+    agent = repair / "agent-fixture.jsonl"
+    rows = [assistant([{"type": "tool_use", "id": "edit", "name": "Edit", "input": {
+      "file_path": item["report_path"], "old_string": '"source_line": 2', "new_string": '"source_line": 1'}}]),
+      user([{"type": "tool_result", "tool_use_id": "edit", "content": "edited"}])]
+    agent.write_text("\n".join(json.dumps(row) for row in rows))
+    Path(item["report_path"]).write_text(json.dumps(report).replace('"source_line": 2', '"source_line": 1'))
+    self.validate(path, "reading", [original, repair])
+    validation = json.loads((path.parent / "validation-reading.json").read_text())
+    self.assertEqual(validation["units"][0]["agent"], str(original / "agent-fixture.jsonl"))
+    rows[0]["message"]["content"][0]["input"]["old_string"] = "not present"
+    agent.write_text("\n".join(json.dumps(row) for row in rows))
+    self.validate(path, "reading", [original, repair], code=2)
 
   def test_bad_json_quote_timestamp_null_partial_and_absent_write_fail(self):
     path, _ = self.prepare([user("literal evidence")])
