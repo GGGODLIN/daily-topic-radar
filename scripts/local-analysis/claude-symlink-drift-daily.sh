@@ -34,6 +34,8 @@ is_whitelisted() {
   case "$name" in
     .claude.json|backups|policy-limits.json|.DS_Store|.last-update-result.json) return 0 ;;
     mcp-needs-auth-cache.json|remote-settings.json|remote-settings.json.synced-at) return 0 ;;
+    # 簽章旁檔隨帳號狀態各自保存；只豁免精確檔名，避免漏報近似名稱的 drift。
+    policy-limits.json.signature-iat.json|policy-limits.json.signature.json|remote-settings.json.signature-iat.json|remote-settings.json.signature.json) return 0 ;;
     # 2026-10-09 拍板：CC 按帳號寫的 runtime 資料（state/ 只有 mcp-discover-verdicts.json、dev-mods/ 是 session UUID 目錄），
     # hooks／scripts 沒有任何地方經 CLAUDE_CONFIG_DIR 讀它們；改 symlink 會把不同帳號的資料混在一起。
     state|dev-mods|policy-limits.json.stamp.json) return 0 ;;
@@ -95,6 +97,7 @@ done
   echo "- **updater / OS ephemeral state**（atomic write 必拆 symlink，2026-07-31 拍板）：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`.DS_Store\` / \`.last-update-result.json\`"
   echo "- **帳號綁定的 server 狀態**（本來就該各 lock dir 各存一份，重建 symlink 會跨帳號污染，2026-08-01 拍板）：\`policy-limits.json\` / \`mcp-needs-auth-cache.json\` / \`remote-settings.json\` / \`remote-settings.json.synced-at\`（同步時間戳，與 remote-settings.json 同機制、各帳號各一份，2026-10-15 補）；CC 按帳號寫的 runtime 資料 \`state/\` / \`dev-mods/\` / \`policy-limits.json.stamp.json\`（2026-10-09 拍板）"
   echo ""
+  echo '- **帳號狀態簽章旁檔**：`policy-limits.json.signature-iat.json` / `policy-limits.json.signature.json` / `remote-settings.json.signature-iat.json` / `remote-settings.json.signature.json` 各帳號自行保存，只豁免這四個精確檔名。'
   echo '- **統計快取**：`stats-cache.json` 可由對話紀錄重建，各帳號自行保存，不重建共享連結。'
   echo ""
   echo "## 結果"
@@ -118,6 +121,7 @@ done
     echo '    case "$name" in'
     echo '      .claude.json|.claude.json.backup.*|backups|policy-limits.json|.DS_Store|.last-update-result.json) continue ;;'
     echo '      mcp-needs-auth-cache.json|remote-settings.json|remote-settings.json.synced-at) continue ;;'
+    echo '      policy-limits.json.signature-iat.json|policy-limits.json.signature.json|remote-settings.json.signature-iat.json|remote-settings.json.signature.json) continue ;;'
     echo '      state|dev-mods|policy-limits.json.stamp.json|stats-cache.json) continue ;;'
     echo '    esac'
     echo '    [[ -L "$name" ]] && continue'
