@@ -133,9 +133,9 @@ def test_baseline_then_new_name_survives_rerun(tmp_path):
         started_at=new.fetched_at, ended_at=new.fetched_at,
     ))
     second = analyze(pool, cfg, RadarHistory(history.path), "2026-10-14")
-    assert any(lead["term"] == "qwen3.8 flash" for lead in second["leads"])
+    assert any("qwen3.8 flash" in [lead["term"], *lead.get("aliases", [])] for lead in second["leads"])
     third = analyze(pool, cfg, RadarHistory(history.path), "2026-10-14")
-    assert any(lead["term"] == "qwen3.8 flash" for lead in third["leads"])
+    assert any("qwen3.8 flash" in [lead["term"], *lead.get("aliases", [])] for lead in third["leads"])
     pool.close()
 
 
@@ -312,3 +312,42 @@ def test_latest_observation_supplies_likes(tmp_path):
     assert lead["likes"] == 180
     assert lead["accounts"] == ["bea"]
     pool.close()
+
+
+def test_leads_citing_one_post_merge_into_one():
+    from social_info.topic_radar import merge_leads_by_url, render_radar_markdown
+
+    def lead(term, url, likes=10, sources=("twitter_radar",), accounts=("teksedge",)):
+        return {
+            "term": term, "date": "2026-10-20", "sources": list(sources),
+            "accounts": list(accounts), "likes": likes, "github": [],
+            "evidence": [{"url": url, "account": accounts[0], "title": "t",
+                          "body_excerpt": "b", "source_id": sources[0],
+                          "content_status": "content"}],
+        }
+
+    post = "https://x.com/TeksEdge/status/1"
+    merged = merge_leads_by_url([
+        lead("minimax m2.7", post, likes=298),
+        lead("other model", "https://x.com/b/status/2"),
+        lead("33.3gib", post, likes=298),
+        lead("that 192gb", post, likes=298, accounts=("teksedge", "ada")),
+    ])
+    assert [row["term"] for row in merged] == ["minimax m2.7", "other model"]
+    assert merged[0]["aliases"] == ["33.3gib", "that 192gb"]
+    assert merged[0]["accounts"] == ["ada", "teksedge"]
+    assert merged[0]["likes"] == 298
+    assert len(merged[0]["evidence"]) == 1
+    assert "aliases" not in merged[1]
+    text = render_radar_markdown({"date": "2026-10-20", "status": "ok", "health": [{}],
+                                  "leads": merged})
+    assert text.count(post) == 1
+    assert "### minimax m2.7 / 33.3gib / that 192gb" in text
+
+
+def test_long_alias_lists_are_capped_in_heading():
+    from social_info.topic_radar import lead_heading
+
+    lead = {"term": "a", "aliases": ["b", "c", "d", "e", "f", "g"]}
+    assert lead_heading(lead) == "a / b / c / d / e (+2)"
+    assert lead_heading({"term": "a"}) == "a"

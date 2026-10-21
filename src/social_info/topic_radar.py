@@ -264,9 +264,9 @@ def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, d
         history.remember(term, date, lead)
         leads.append(lead)
     leads.sort(key=lambda row: (-len(row["sources"]), -row["likes"], row["term"]))
-    leads = leads[: int(cfg.get("top") or 25)]
+    leads = merge_leads_by_url(leads)[: int(cfg.get("top") or 25)]
     if not baseline_only:
-        leads = history.leads_on(date)[: int(cfg.get("top") or 25)]
+        leads = merge_leads_by_url(history.leads_on(date))[: int(cfg.get("top") or 25)]
     history.save()
     limited = any(
         row["content_status"] in {"legacy_excerpt", "excerpt", "title"} for row in rows
@@ -288,6 +288,36 @@ def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, d
         "missing_source_ids": _missing_sources(cfg, health),
         "bootstrap": _bootstrap_note(rows),
     }
+
+
+def merge_leads_by_url(leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Name extraction splits one post into many terms; without this the top-25
+    cap filled with fragments of 3-4 posts (2026-10-20/21 reports)."""
+    merged: list[dict[str, Any]] = []
+    by_url: dict[str, dict[str, Any]] = {}
+    for lead in leads:
+        url = ((lead.get("evidence") or [{}])[0]).get("url") or ""
+        prior = by_url.get(url) if url else None
+        if prior is None:
+            row = {**lead, "evidence": list(lead.get("evidence") or [])}
+            merged.append(row)
+            if url:
+                by_url[url] = row
+            continue
+        prior.setdefault("aliases", []).append(lead["term"])
+        prior["sources"] = sorted(set(prior["sources"]) | set(lead.get("sources") or []))
+        prior["accounts"] = sorted(set(prior["accounts"]) | set(lead.get("accounts") or []))
+        prior["likes"] = max(prior["likes"], lead.get("likes") or 0)
+        seen = {ev["url"] for ev in prior["evidence"]}
+        for ev in lead.get("evidence") or []:
+            if ev["url"] not in seen and len(prior["evidence"]) < 5:
+                prior["evidence"].append(ev)
+                seen.add(ev["url"])
+        repos = {repo["url"] for repo in prior.get("github") or []}
+        prior["github"] = list(prior.get("github") or []) + [
+            repo for repo in lead.get("github") or [] if repo["url"] not in repos
+        ]
+    return merged
 
 
 def _latest_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -358,6 +388,13 @@ def _github_note(pool: ObservationPool, rows: list[dict[str, Any]]) -> list[dict
     return notes
 
 
+def lead_heading(lead: dict[str, Any], shown: int = 4) -> str:
+    """One post can yield 40+ fragment names; the full list stays in the JSON."""
+    aliases = lead.get("aliases") or []
+    heading = " / ".join([lead["term"], *aliases[:shown]])
+    return heading + (f" (+{len(aliases) - shown})" if len(aliases) > shown else "")
+
+
 def radar_items(report: dict[str, Any]) -> list[Item]:
     if report.get("baseline_only") or report.get("status") == "no_data":
         return []
@@ -367,7 +404,7 @@ def radar_items(report: dict[str, Any]) -> list[Item]:
         evidence = (lead.get("evidence") or [{}])[0]
         url = evidence.get("url") or ""
         items.append(Item(
-            title=lead["term"],
+            title=lead_heading(lead),
             url=url,
             canonical_url=url,
             source="topic_radar",
@@ -426,7 +463,7 @@ def render_radar_markdown(report: dict[str, Any]) -> str:
         lines.append("")
         return "\n".join(lines)
     for lead in report["leads"]:
-        lines.append(f"### {lead['term'].replace('|', '/')}")
+        lines.append(f"### {lead_heading(lead).replace('|', '/')}")
         lines.append("")
         lines.append(
             "sources: " + ", ".join(lead.get("sources") or [])
