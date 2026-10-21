@@ -2261,6 +2261,43 @@ def parse_legs(text):
   return legs
 
 
+def parse_workdir_routes(text):
+  # 格式 leg:根目錄:改送模型,…；工作目錄在根目錄底下的 session 改送另一個模型（名額、冷卻仍算原腿）。
+  routes = []
+  for item in filter(None, (part.strip() for part in text.split(","))):
+    leg, root, target = (item.split(":") + ["", ""])[:3]
+    if not leg or not target or not root.startswith("/") or root.rstrip("/") != root or root == "/":
+      fail("workdir-routes-invalid")
+    routes.append((leg, root, target))
+  return routes
+
+
+def routed_model(leg, cwd, routes):
+  for route_leg, root, target in routes:
+    if leg == route_leg and isinstance(cwd, str) and (cwd == root or cwd.startswith(root + "/")):
+      return target
+  return leg
+
+
+def session_cwd(path, max_lines=200):
+  # CC 的 jsonl 每筆都帶 cwd；讀前段第一個就夠，讀不到就回 None（照原腿送）。
+  try:
+    with open(path, encoding="utf-8", errors="replace") as handle:
+      for _ in range(max_lines):
+        line = handle.readline()
+        if not line:
+          break
+        try:
+          cwd = json.loads(line).get("cwd")
+        except (ValueError, AttributeError):
+          continue
+        if isinstance(cwd, str) and cwd:
+          return cwd
+  except OSError:
+    return None
+  return None
+
+
 def grok_usage_allows(path):
   try:
     lines = Path(path).read_text().splitlines()
@@ -2522,11 +2559,26 @@ def cmd_run(args):
       # 全部滿槽就回 None 讓呼叫端等槽：以前會照樣挑一條，續段與重送因此打穿主線 2 槽、試打 1 槽的上限。
       return min(open_legs, key=lambda leg: busy.get(leg, 0)) if open_legs else None
 
+    workdir_routes = parse_workdir_routes(args.workdir_routes)
+    cwd_cache = {}
+
+    def model_for(session_key, leg):
+      if not workdir_routes:
+        return leg
+      # session_key 是 transcript(row)＝(session_id 或 inode, 檔名)，超大 session 的分塊再外包一層 (key, block_start)。
+      ident, name = session_key[0] if isinstance(session_key[0], tuple) else session_key
+      if (ident, name) not in cwd_cache:
+        found = connection.execute(
+          "SELECT path FROM sources WHERE (session_id = ? OR inode = ?) AND name = ? LIMIT 1", (ident, ident, name),
+        ).fetchone()
+        cwd_cache[(ident, name)] = session_cwd(found["path"]) if found else None
+      return routed_model(leg, cwd_cache[(ident, name)], workdir_routes)
+
     def send(session_id, analyzer, group, leg, payload, resends=0):
       if leg == "free":
         future = pool.submit(post_json, url, key, payload)
       else:
-        future = pool.submit(post_json, url, key, {**payload, "model": leg}, DIRECT_LEG_TIMEOUT_SECONDS)
+        future = pool.submit(post_json, url, key, {**payload, "model": model_for(session_id, leg)}, DIRECT_LEG_TIMEOUT_SECONDS)
       active[future] = (session_id, analyzer, group, leg, payload, resends)
 
     consecutive_failures = {}
@@ -3437,6 +3489,8 @@ def build_parser():
   parser.add_argument("--backfill-legs", default="")
   # 增量的備用線，格式同 --direct-legs：主線冷卻中，或最早一份等待中的新來源等超過上線時才接工作，降到下線以內才停。
   parser.add_argument("--standby-legs", default="")
+  # 依 session 工作目錄改送模型，格式 leg:根目錄:模型；例如 calyx 公司 session 的 audit-tail 改走帶公司帳號的群組。
+  parser.add_argument("--workdir-routes", default="")
   # 16／2 小時是暫定值：白天積壓留給夜裡消化，拖到隔天才叫備用；上線後依實測速度再調。
   parser.add_argument("--backlog-on-hours", type=float, default=16.0)
   parser.add_argument("--backlog-off-hours", type=float, default=2.0)

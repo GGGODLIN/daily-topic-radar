@@ -26,6 +26,7 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
   --keys-file "${SESSION_AUDIT_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}" \
   --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-argon-low:2}" \
   --standby-legs "${SESSION_AUDIT_STANDBY_LEGS-audit-tail:10}" \
+  --workdir-routes "${SESSION_AUDIT_WORKDIR_ROUTES-audit-tail:$HOME/Desktop/work/calyx:audit-tail-calyx}" \
   --backfill-legs "${SESSION_AUDIT_BACKFILL_LEGS-swe2-high:5,mimo26-pool:5,grok-4.7:5}" \
   --max-sessions "${SESSION_AUDIT_MAX_SESSIONS:-2}"
 # 2026-10-19 拍板：發現與規則違規改由 session-audit-consume.py 按 ID 水位線直接從 state.sqlite 全量分批消費，
