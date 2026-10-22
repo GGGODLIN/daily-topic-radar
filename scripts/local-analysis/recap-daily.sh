@@ -125,14 +125,14 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 - 對每個存活事件分類：
   - 對應得到既有規則（`~/.claude/CLAUDE.md`、`~/.claude/rules/*.md` 的具體條目）→ `rule_violation` + 規則名
   - 對應不到 → `new_rule_candidate`
-- **Ledger 寫回（read-only 的第一個例外）**：append 到 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`，每事件一行 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","rule_family":"<家族>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`。append 前先 grep ledger 有無**同 quote＋同 session**的組合（dedup 鍵 = quote + session，2026-08-05 改：只防同 session 跨日被掃兩次的重複；不同 session 撞同字串的短引用必須照寫，否則 plain-language 這類高頻家族會被系統性低估——07-23 與 08-05 兩個不同 session 的「#1可以白話解釋嗎」即實例），兩欄都命中才跳過
+- **候選交接**：recap 只交候選，不寫 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`。報告內每候選列一行待核 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","rule_family":"<家族>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`，並附上述證據對照，main 核對後才追加。可唯讀查 ledger 是否已有**同 quote＋同 session**；兩欄都命中才跳過，不同 session 的相同短引用不能當成重複。
 - **`rule_family` 必填（2026-07-25 加）**：`rule` 欄是自由書寫、同一條規則跨天會分裂成十幾個變體字串，單靠它統計抓不到集中度。從下列固定 enum 挑一個最貼近的填 `rule_family`：`evidence-level`（證據 / 驗證 / 行為數據 / 不憑推測）、`plain-language`（白話 / 反晶晶體 / 措辭 / 繁中）、`self-research-first`（查得到的事實自己查 / 先搜再說缺）、`ask-vs-decide`（停下問 vs 自決 / 討論模式 / 一次收斂 / 訪談）、`scope-discipline`（只改當次範圍 / 修改前先讀）、`process-completeness`（skill 流程不省略 / trial 紀律 / 固化）、`output-delivery`（答案進最終訊息 / 連結格式 / 呈現）、`tooling-routing`（抓取路由 / fetch 退路 / 工具選擇）。都不貼近才填 `unclassified`
-- **Rule health**：append 後跑 `python3 ~/code/social-info/scripts/local-analysis/rule-family-health.py`（家族聚合層，優先讀 `rule_family`、缺欄走關鍵字 fallback，舊 entry 無需 migration），取其輸出：
+- **Rule health**：唯讀跑 `python3 ~/code/social-info/scripts/local-analysis/rule-family-health.py`（家族聚合層，優先讀 `rule_family`、缺欄走關鍵字 fallback，舊 entry 無需 migration），標明「入帳前計數，不含本輪待核候選」；main 查證追加後再更新 digest 的計數。取其輸出：
   - 家族 30 天 ≥5 次 → 報告標「⚠ 規則家族 X 30 天內 N 次（占 P%）→ 該家族措辭或 enforce 方式可能該改」
   - 單一 rule 字串 30 天 ≥3 次 → 照舊標「⚠ 規則 X 30 天內第 N 次被糾正 → 措辭可能該改（往精確閾值方向）」
   - 兩層都報，家族層在前——單一字串層看得到「哪句話要改」、家族層才看得到「哪個紀律真的沒守住」
   - **歷史次數引用一律以當輪 health 家族口徑為準（2026-07-28 加，治 stale 計數）**：報告或 pending-actions 條目提到某規則「30 天內第 N 次」時，N 必須來自本輪 health 輸出的家族計數，不得沿用 pending 條目標題/note 裡凍結的舊數字——rule 字串跨天漂移（同一紀律寫成十幾種變體），照抄舊標題會系統性低估（實例：self-research-first 家族實際 8 次、pending 標題凍在「第 3 次」被照抄三天）；重浮舊條目時順手把家族現值寫進該條 note
-- 報告呈現：有命中 → 報告末尾「⚠ 規則糾正: N 次」段，每事件一行（規則名 + 短引用），並附「證據對照」列出上述原檔絕對 path、實際 basename、真人 timestamp／連續 quote、既有要求與 assistant 違規的原句及位置；basename 只從已查原檔複製。證據留在報告，不增加 ledger 欄位、不改寫歷史。`new_rule_candidate` 標明「候選，未驗證——不要自動寫入任何規則檔」；沒有命中 → 完全不列
+- 報告呈現：有命中 → 報告末尾「⚠ 規則糾正候選: N 筆（待 main 查證，尚未入帳）」段，每事件一行（規則名 + 短引用），並附「證據對照」列出上述原檔絕對 path、實際 basename、真人 timestamp／連續 quote、既有要求與 assistant 違規的原句及位置；basename 只從已查原檔複製。證據留在報告，不增加 ledger 欄位、不改寫歷史。`new_rule_candidate` 標明「候選，未驗證——不要自動寫入任何規則檔」；沒有命中 → 完全不列
 
 ## codebase-aliases 候選挖掘（akocommerce 特化，2026-07-09 起加入；跟 rule-adherence 段對稱走 ledger 模式）
 
@@ -148,18 +148,18 @@ Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-
   - 純技術詞（不是 domain-specific 概念）→ 不算
   - 模稜兩可 → 寧漏勿誤報
 - 每候選抽取：`phrase`（反覆長描述、50 字內）+ `suggested_term`（建議短 term、kebab-case、5-15 字元）+ `session`（jsonl basename）+ `count`（24h 內出現次數）+ `context_snippet`（代表性 quote、80 字內）
-- **Ledger 寫回（read-only 的第二個例外）**：append 到 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`、每候選一行 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`。**Append 前先 grep ledger 有無同 phrase 或同 suggested_term**（雙鍵去重、跨日避免重複——phrase 是每輪 LLM 挑的代表句、跨日會漂，suggested_term 才是穩定錨點），任一命中就跳過
-- **Scan marker（每天必寫、含 0 候選日）**：ledger 每天固定 append 一行 `{"date":"<今日>","kind":"scan_marker","scanned":<akocommerce session 數>,"candidates":<存活候選數>}`——0 候選日也寫，讓「掃了沒中」跟「靜默跳過」在 ledger 上可分辨。Append 前 grep 同日 scan_marker、有就跳過
-- **決策回寫（2026-07-16 補、trial review 發現的缺口）**：掃描時順帶偵測既有候選的結局——(a) 候選的 suggested_term 或對應條目已出現在 alias 表 → append `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"accepted"}`；(b) session 內使用者對某候選明確拒絕（「不用收」「拒絕」「這個不需要」指向該候選）→ append `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"rejected","reason":"<一句原因、抓得到才寫>"}`。Append 前 grep 同 term 的 decision、有就跳過。**已有 decision 的候選不再重複提報**。沒有這段，採納率（trial 軸 2）永遠算不出來、被拒候選會重複浮上
-- 報告呈現：有命中 → 報告末尾「📌 codebase-aliases 候選: N 個 → 見 ledger」段、每候選一行（suggested_term + 短引用）；沒命中 → 完全不列（scan marker 只進 ledger、不進報告）
+- **候選交接**：不寫 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`，在報告列待核 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`，附原檔路徑、行號與各次出現位置，供 main 核對。唯讀查 ledger 有無同 phrase 或同 suggested_term，任一命中就跳過；phrase 跨日會漂，兩個鍵都要查。
+- **掃描交接（含 0 候選日）**：報告固定列待核 `{"date":"<今日>","kind":"scan_marker","scanned":<akocommerce session 數>,"candidates":<存活候選數>}`，附固定窗口與實際掃過的 session 清單。掃描未完成時明列缺口，不產生完成 marker。由 main 核對掃描範圍與候選後追加；同日已存在 scan_marker 就不重複追加。
+- **決策候選**：既有候選的 suggested_term 或對應條目已出現在 alias 表時，報告列 `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"accepted"}` 並附表內位置；真人明確拒絕該候選時，列 `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"rejected","reason":"<一句原因、抓得到才寫>"}` 並附原訊息位置。main 核對後才追加；同 term 已有 decision 就跳過，已有 decision 的候選不再重複提報。
+- 報告呈現：有命中 → 報告末尾「📌 codebase-aliases 候選: N 個（待 main 查證，尚未入帳）」段，每候選一行（suggested_term + 短引用），附待核 JSON 與證據；沒命中仍保留掃描交接，讓 main 區分零候選與漏掃。
 
 ## Commit outcome 追蹤（2026-07-11 起加入）
 
 repo_commit 線掃描時順帶檢查結局回饋：24h 內 commit subject 以 `revert` 開頭（**大小寫不拘**，含 `revert(scope):` / `Revert "..."` 等 Conventional Commits 與 git 預設兩種形式；2026-07-31 實例：`revert(checkout-invoice):` 小寫開頭被漏、人工補上）、或 body 含 "This reverts commit"（用 `git -C <repo> log --since="$WINDOW_START" --until="$WINDOW_END" --grep='This reverts commit' --pretty=format:'%H%x1f%s%x1f%b'` 補抓）→ 對每個命中用 `git -C <repo> log -1 --pretty=format:'%cI%x1f%s' <被revert的sha>` 查原 commit 日期與 subject。原 commit 的 committer timestamp 落在 `(WINDOW_END 往前 14 天, WINDOW_END]` → 報告末尾加「↩️ commit 被 revert」段、每筆一行：`<repo>: <原 subject>（原 commit <日期>）`。目的：把「先前 session 產出、後來被打掉」的結局回饋進 recap，讓後續工作看得到失敗訊號。amend 不追（偵測依賴 reflog、噪音高）。沒有命中 → 完全不列。
 
-**輸出報告前的最後動作（必做）**：把本輪全部存活的規則糾正事件 append 進 `rule-adherence-ledger.jsonl`，並把 codebase-aliases 候選 append 進 `codebase-aliases-candidate-ledger.jsonl`（兩個 ledger 都先 grep 去重）。先寫兩個 ledger、再輸出報告——順序顛倒就會忘。
+**輸出報告前的最後動作（必做）**：核對本輪候選 JSON、證據位置與掃描交接已保留在報告；未成立者不列為已確認事件。報告交回 main 查證，不執行帳本寫入。
 
-嚴格 read-only：不寫任何檔案、不 commit、不修改 memory。唯一例外：上述 rule-adherence ledger 跟 codebase-aliases candidate ledger 的 append。
+嚴格 read-only：不寫任何檔案、不 commit、不修改 memory；不得 append、覆寫或刪除兩份 ledger。上述待核 JSON 只輸出在報告內，不是寫入命令或授權。
 
 stdout 只輸出 markdown 報告本身，不要 preamble（「整理完...」「以下是...」）、不要結語、不要 code fence wrap。第一個 byte 直接是 `# Daily Recap` 或數字總覽行。
 EOF

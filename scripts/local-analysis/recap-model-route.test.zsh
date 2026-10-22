@@ -132,6 +132,10 @@ require(prompt.count('--since="$WINDOW_START" --until="$WINDOW_END"') == 3, "git
 require(prompt.count('-newermt "$WINDOW_START" ! -newermt "$WINDOW_END"') == 1, "only memory mtime should have both bounds")
 for text in ("WINDOW_START < timestamp <= WINDOW_END", "只當候選預篩", "不得重新取 now", "os.environ", "原檔絕對 path", "實際 basename", "真人 timestamp", "連續 quote", "既有要求原文位置", "assistant 違規原句位置", "少任一項", "證據對照", "不自行輸入 UUID"):
   require(text in prompt, "prompt missing: " + text)
+for text in ("recap 只交候選", "main 核對後才追加", "scan_marker", "掃描未完成", "不得 append、覆寫或刪除兩份 ledger"):
+  require(text in prompt, "candidate handoff missing: " + text)
+for text in ("Ledger 寫回（read-only", "先寫兩個 ledger、再輸出報告", "唯一例外：上述 rule-adherence ledger"):
+  require(text not in prompt, "direct ledger write instruction remains: " + text)
 if errors:
   print("window/prompt: " + "; ".join(errors), file=sys.stderr)
   raise SystemExit(1)
