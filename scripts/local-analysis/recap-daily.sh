@@ -188,17 +188,23 @@ def text_of(event):
     return "\n\n".join(parts)
 
 def acceptable(text):
-    # summary 是 compaction 的容器，不是報告；標題前有文字代表這則不是正文。
+    # summary 是 compaction 的容器，不是報告。
     if "<summary>" in text or "</summary>" in text:
-        return False
-    match = re.search(r"(?m)^# ", text)
-    if match and text[:match.start()].strip():
         return False
     body = text.strip()
     if not re.search(r"(?m)^## \d{4}-\d{2}-\d{2}\b", body):
         return False
     first = body.splitlines()[0]
-    return first.startswith("# Daily Recap") or bool(re.match(
+    overview = bool(re.fullmatch(
+        r"\d+ (?:個 )?(?:CC )?session(?:（[^（）]*）)? *[/／] *"
+        r"\d+ (?:個 )?commit(?:（[^（）]*）)? *[/／] *"
+        r"\d+ 個(?:新或更新|新) memory *[/／] *跨 \d+ 個 repo", first))
+    match = re.search(r"(?m)^# ", text)
+    # prompt 允許總覽先於標題，但不能因此略過任意前言。
+    if match and text[:match.start()].strip():
+        if not overview or text[:match.start()].strip() != first:
+            return False
+    return first.startswith("# Daily Recap") or overview or bool(re.match(
         r"^\d+ (?:個 )?(?:CC )?session / .+commit / .+/ 跨 ", first))
 
 blocks = []
