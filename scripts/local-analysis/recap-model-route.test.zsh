@@ -281,6 +281,22 @@ OVERVIEW_REPORT='3 session / 2 commit / 1 個新 memory / 跨 2 個 repo
 ### 前一日的匿名主題
 正文要留在報告裡，不能被前言蓋掉。'
 
+ANNOTATED_OVERVIEW_REPORT='6 個 session（5 個有可用首 prompt）／8 個 commit（7 個 workspace repo＋1 個 `~/.claude`）／2 個新或更新 memory／跨 3 個 repo
+
+# Daily Recap — 2026-09-08
+
+固定窗口：2026-09-07 12:30:00–2026-09-08 12:30:00（Asia/Taipei）。
+
+## 2026-09-08
+
+### 全形分隔與括號註解的匿名主題
+數字與內容僅供格式回歸，不能代表真實活動。
+
+## 2026-09-07
+
+### 前一日的匿名主題
+保留標題前總覽與正文原有換行。'
+
 PREFACE='先整理四條來源，完成後再輸出報告。'
 CLOSING='以上是今日整理。'
 PROGRESS='正在核對來源，報告還沒寫。'
@@ -387,6 +403,24 @@ assert_status overview-opening "$STREAM_STATUS" 0
 assert_file_has "$STREAM_OUT" '3 session / 2 commit / 1 個新 memory / 跨 2 個 repo'
 assert_file_has "$STREAM_OUT" '數字總覽開頭的匿名主題'
 assert_file_lacks "$STREAM_OUT" '先整理四條來源'
+
+annotated_expected="$fixture/annotated-overview.expected"
+printf '%s\n' "$ANNOTATED_OVERVIEW_REPORT" > "$annotated_expected"
+run_stream_case annotated-overview "" "$(assistant_event "$ANNOTATED_OVERVIEW_REPORT")" "$closing_result"
+assert_status annotated-overview "$STREAM_STATUS" 0
+((++checks))
+if ! cmp -s "$STREAM_OUT" "$annotated_expected"; then
+  print -ru2 -- 'annotated overview report was not preserved byte-for-byte'
+  ((++failures))
+fi
+
+for prefaced_report in "$GOOD_REPORT" "$ANNOTATED_OVERVIEW_REPORT"; do
+  run_stream_case inline-preface "" "$(assistant_event "$PREFACE"$'\n\n'"$prefaced_report")" "$closing_result"
+  assert_status inline-preface "$STREAM_STATUS" 1
+  assert_log_has "$STREAM_ERR" 'recap rejected'
+  ((++checks))
+  [[ ! -e "$STREAM_OUT" ]] || { print -ru2 -- 'inline preface left a success-looking report'; ((++failures)); }
+done
 
 run_stream_case compaction "" "$progress_block" "$compaction_block" "$closing_result"
 assert_status compaction "$STREAM_STATUS" 1
