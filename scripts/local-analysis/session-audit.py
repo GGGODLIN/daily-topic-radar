@@ -82,6 +82,8 @@ RETRO_SUBAGENT_MARKERS = (
   "canonical_chunk=",
   "\nEND_PAGE ",
   '"request_index_pages"',
+  # regress/workload 的盲評評審讀的是受測模型的答案；不排除會把答案裡的錯算成評審自己的行為。
+  "你是盲評評審。只讀這個目錄",
 )
 RULES_VERSION_UNAVAILABLE = "rules-version-unavailable"
 RULE_TAGS_MISSING = "rule-tags-missing"
