@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -51,6 +52,42 @@ class ReportEntrypointTest(unittest.TestCase):
     result = self.run_reader()
     self.assertNotEqual(result.returncode, 0)
     self.assertFalse(self.out.exists())
+
+
+class RunEntrypointTest(unittest.TestCase):
+  def test_run_passes_all_routing_limits(self):
+    command = '''
+capture_audit_args() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@"
+  return 77
+}
+export -f capture_audit_args
+bash "$1"
+'''
+    env = {
+      key: value for key, value in os.environ.items()
+      if not key.startswith('SESSION_AUDIT_')
+    }
+    env.update({
+      'SESSION_AUDIT_PYTHON': 'capture_audit_args',
+      'SESSION_AUDIT_STARTED_AT': 'argv-check',
+    })
+    result = subprocess.run(
+      ['bash', '-c', command, 'test', str(DIR / 'session-audit-run.sh')],
+      env=env, capture_output=True, text=True, timeout=10,
+    )
+    self.assertEqual(result.returncode, 77, result.stderr)
+    args = json.loads(result.stdout)
+    expected = {
+      '--direct-legs': 'argon-low:2',
+      '--standby-legs': 'audit-tail:10',
+      '--workdir-routes': '',
+      '--backfill-legs': 'swe2-high:5,mimo26-pool:5,grok-4.7:5',
+      '--max-sessions': '2',
+    }
+    for flag, value in expected.items():
+      self.assertIn(flag, args)
+      self.assertEqual(args[args.index(flag) + 1], value)
 
 
 if __name__ == '__main__':

@@ -18,6 +18,7 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
 # Grok 週額度用到 50% 就讓出（GROK_PAUSE_PERCENT），名額空著不壓到其他線。
 # Argon 跟互動 session 共用同一把 Google key；以前 10 個同時先打 Argon，每分鐘約 24 次，互動端一直撞 429。
 # --max-sessions 不能高於主線加備用的名額：高出的差額會補成 free 鏈。
+# 公司工作目錄目前不另選模型；需要時透過 SESSION_AUDIT_WORKDIR_ROUTES 指定。
 "$PY" "$DIR/session-audit.py" run \
   --projects "$PROJECTS" \
   --state "$STATE" \
@@ -26,7 +27,6 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
   --keys-file "${SESSION_AUDIT_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}" \
   --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-argon-low:2}" \
   --standby-legs "${SESSION_AUDIT_STANDBY_LEGS-audit-tail:10}" \
-  # 2026-10-21 拍板停用 calyx 改走公司網頁版：公司帳號整個被限流、量也只有全部背景流量的約 6%；機制保留，要用再設環境變數。
   --workdir-routes "${SESSION_AUDIT_WORKDIR_ROUTES-}" \
   --backfill-legs "${SESSION_AUDIT_BACKFILL_LEGS-swe2-high:5,mimo26-pool:5,grok-4.7:5}" \
   --max-sessions "${SESSION_AUDIT_MAX_SESSIONS:-2}"
