@@ -93,6 +93,16 @@ def content_text(content):
   return ""
 
 
+SKIP_PREFIXES = ("[main]", "<task-notification>", "<system-reminder>", "<cross-session-message", "<local-command-stdout>")
+
+
+def forwarded_input(row):
+  if row.get("isSidechain") or row.get("isMeta") or row.get("type") != "user":
+    return False
+  text = content_text(row.get("message", {}).get("content", row.get("content", ""))).lstrip()
+  return text.startswith(("[main]", "<cross-session-message"))
+
+
 def human_input(row):
   if row.get("isSidechain") or row.get("isMeta"):
     return False
@@ -100,13 +110,14 @@ def human_input(row):
   if origin.get("kind") not in (None, "human"):
     return False
   if queued(row):
-    return bool(content_text(row["attachment"].get("prompt", "")).strip())
+    text = content_text(row["attachment"].get("prompt", "")).strip()
+    return bool(text) and not text.startswith(SKIP_PREFIXES)
   if row.get("type") != "user":
     return False
   text = content_text(row.get("message", {}).get("content", row.get("content", ""))).strip()
-  if not text or text.startswith(("[main]", "<task-notification>", "<system-reminder>", "<cross-session-message", "<local-command-stdout>")):
+  if not text or text.startswith(SKIP_PREFIXES):
     return False
-  return row.get("promptSource") == "typed" or (origin.get("kind") == "human" and text.startswith("<command-name>"))
+  return row.get("promptSource") == "typed" or (origin.get("kind") == "human" and text.startswith(("<command-name>", "<command-message>")))
 
 
 def classify(rows, source):
@@ -120,9 +131,9 @@ def classify(rows, source):
       reasons.add("evaluation")
     if row.get("sessionKind") in {"worker", "terminal-worker", "terminal_worker"} or origin.get("kind") in {"worker", "terminal-worker", "terminal_worker", "agent", "forwarded", "dispatch", "subagent"}:
       reasons.add("worker-or-forwarded")
-    if row.get("type") == "user" and content_text(row.get("message", {}).get("content", "")).lstrip().startswith(("[main]", "<cross-session-message")):
+    if forwarded_input(row):
       reasons.add("forwarded")
-  if any(part in {"eval-roots", "synthetic-eval"} or "-T-skill-up-" in part for part in source.parts):
+  if any(part in {"eval-roots", "synthetic-eval"} or "-T-skill-up-" in part or "-collie-canary-project" in part for part in source.parts):
     reasons.add("evaluation-path")
   if reasons:
     return "excluded", sorted(reasons)
@@ -210,8 +221,9 @@ def inventory(args):
     snapshot.write_text("\n".join(kept), encoding="utf-8")
     snapshot.chmod(0o600)
     inputs = [row for row in selected if human_input(row)]
-    slash_only = bool(inputs) and all(not queued(row) and content_text(row.get("message", {}).get("content", "")).lstrip().startswith("<command-name>") for row in inputs)
-    project = next((row["cwd"] for row in reversed(selected) if human_input(row) and isinstance(row.get("cwd"), str)), str(source.parent))
+    slash_only = bool(inputs) and all(not queued(row) and content_text(row.get("message", {}).get("content", "")).lstrip().startswith(("<command-name>", "<command-message>")) for row in inputs)
+    project = next((row["cwd"] for row in reversed(selected) if human_input(row) and isinstance(row.get("cwd"), str)),
+                   next((row["cwd"] for row in reversed(selected) if isinstance(row.get("cwd"), str)), str(source.parent)))
     sessions.append({"session": source.stem, "source": str(source), "project": str(Path(project).expanduser().resolve()),
                      "snapshot": str(snapshot), "classification": category, "reasons": reasons,
                      "activity": activities, "slash_only": slash_only, "limitations": limits,
@@ -223,10 +235,12 @@ def inventory(args):
       options[key] = None
       continue
     selected = [row for row in sessions if row["classification"] == "human" and any(start <= moment(t) <= cutoff for t in row["activity"])]
+    forwarded = [row for row in sessions if row["classification"] == "excluded" and row.get("reasons") == ["forwarded"] and any(start <= moment(t) <= cutoff for t in row["activity"])]
     projects = {}
     for row in selected:
       projects[row["project"]] = projects.get(row["project"], 0) + 1
     options[key] = {"window_start": iso(start), "cutoff": iso(cutoff), "sessions_count": len(selected),
+                    "forwarded_sessions_count": len(forwarded), "forwarded_sessions": [row["session"] for row in forwarded],
                     "estimated_pages": sum(max(1, math.ceil(row["estimated_chars"] / PAGE_CHARS)) for row in selected),
                     "estimated_reader_units": sum(max(1, math.ceil(row["estimated_chars"] / SHARD_CHARS)) for row in selected),
                     "projects": projects, "long_sessions": [row["session"] for row in selected if row["estimated_chars"] > SHARD_CHARS],
@@ -326,7 +340,8 @@ def prepare(args):
     start = moment(option["window_start"])
   require(start <= cutoff, "window start is after cutoff")
   project_filter = {str(Path(p).expanduser().resolve()) for p in args.project}
-  selection = [row for row in data["sessions"] if row["classification"] == "human"
+  selection = [row for row in data["sessions"]
+               if (row["classification"] == "human" or (args.include_forwarded and row["classification"] == "excluded" and row.get("reasons") == ["forwarded"]))
                and (not project_filter or row["project"] in project_filter)
                and row["session"] not in args.exclude_session
                and any(start <= moment(t) <= cutoff for t in row["activity"])]
@@ -357,7 +372,7 @@ def prepare(args):
           continue
         seen.add(key)
         events.append({"source_line": line, "event_time": iso(stamp), "label": label, "text": text,
-                       "human": human_input(obj), "scope": "window" if start <= stamp else "older"})
+                       "human": human_input(obj) or (args.include_forwarded and forwarded_input(obj)), "scope": "window" if start <= stamp else "older"})
     if args.depth == "window":
       current = [i for i, event in enumerate(events) if event["scope"] == "window"]
       first = min(current) if current else len(events)
@@ -1077,6 +1092,8 @@ def parser():
   prep.add_argument("--start")
   prep.add_argument("--project", action="append", default=[])
   prep.add_argument("--exclude-session", action="append", default=[])
+  prep.add_argument("--include-forwarded", dest="include_forwarded", action="store_true", default=True)
+  prep.add_argument("--exclude-forwarded", dest="include_forwarded", action="store_false")
   prep.add_argument("--depth", choices=["full", "window"], default="full")
   prep.add_argument("--focus", default="全面")
   prep.add_argument("--concurrency", type=int, choices=range(1, 5), default=4)
