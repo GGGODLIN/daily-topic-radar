@@ -32,26 +32,20 @@ assert_not_contains() {
   if printf '%s' "$3" | grep -qF -- "$2"; then fail "$1 — unexpected: $2"; else pass "$1"; fi
 }
 
-CPA_NOTE='> ⚠ 舊 CPA 資料，不涵蓋現役 Magpie 流量；零成功／coverage gap 不能判現役整池故障。'
+SOURCE_NOTE='> 資料來源：Magpie 原生用量；不包含舊 CPA 歷史。'
 
-assert_note_only_on_day_section() {
-  local name="$1" text="$2" marker=$'## 過去 24 小時' prefix suffix first rest
+assert_day_section_preserved() {
+  local name="$1" text="$2" marker=$'## 過去 24 小時' suffix expected
   case "$text" in
     *"$marker"*) ;;
     *) fail "$name — 24h heading missing"; return ;;
   esac
-  prefix="${text%%"$marker"*}"
-  suffix="${text#*"$marker"}"
-  first="${suffix%%$'\n'*}"
-  rest="${suffix#*$'\n'}"
-  if printf '%s' "$prefix" | grep -qF -- "$CPA_NOTE"; then
-    fail "$name — note leaked into the hello prefix"
-  elif printf '%s' "$first" | grep -qF -- "$CPA_NOTE"; then
-    fail "$name — note replaced the 24h heading"
-  elif ! printf '%s' "$rest" | grep -qF -- "$CPA_NOTE"; then
-    fail "$name — note missing after the 24h heading"
-  else
+  suffix="$marker${text#*"$marker"}"
+  expected="$(STUB_MODE="$3" python3 "$TMP/relay_watch_stub.py" report)"
+  if [[ "$suffix" == "$expected" ]]; then
     pass "$name"
+  else
+    fail "$name — relay-watch output was changed"
   fi
 }
 
@@ -152,6 +146,8 @@ if mode == "fail":
     sys.exit(1)
 print("## 過去 24 小時")
 print()
+print("> 資料來源：Magpie 原生用量；不包含舊 CPA 歷史。")
+print()
 if mode == "clean":
     print("過去 24 小時無異常")
     print("自檢：資料讀取正常｜收集器健康未偵測｜最近 1 小時 12 個請求，最後一筆 11:48")
@@ -190,7 +186,8 @@ run_wrapper clean ok; rc=$?
 [ "$rc" -eq 0 ] && pass "all green exits 0" || fail "all green exits 0 — rc=$rc"
 [ "$(cat "$out_file" 2>/dev/null)" = "__SILENT__" ] && pass "all green stays __SILENT__" || fail "all green stays __SILENT__ — $(cat "$out_file" 2>/dev/null)"
 assert_contains "all green logs the 24h section" "過去 24 小時無異常" "$(cat "$log_file" 2>/dev/null)"
-assert_contains "all green log marks the 24h section as old CPA data" "$CPA_NOTE" "$(cat "$log_file" 2>/dev/null)"
+assert_contains "all green log preserves the source note" "$SOURCE_NOTE" "$(cat "$log_file" 2>/dev/null)"
+assert_not_contains "all green log does not inject the obsolete CPA claim" "不涵蓋現役 Magpie 流量" "$(cat "$log_file" 2>/dev/null)"
 body="$(cat "$TMP/body" 2>/dev/null)"
 probed="$(sort -u "$TMP/models" 2>/dev/null)"
 assert_contains "hello body keeps max_tokens 400" '"max_tokens": 400' "$body"
@@ -213,7 +210,7 @@ assert_contains "hello conclusion says 小請求存活" "結論：小請求存�
 assert_contains "24h section appended" "## 過去 24 小時" "$out"
 assert_contains "24h anomaly lines kept" "### 達到門檻的 alias" "$out"
 assert_contains "zero-success wording kept" "- 沒有成功請求" "$out"
-assert_note_only_on_day_section "old-CPA note stays inside the 24h section" "$out"
+assert_day_section_preserved "24h anomaly report is preserved verbatim" "$out" anomaly
 
 # 3. hello 有發現＋24 小時無異常：原有段落不變，後面接「過去 24 小時」段。
 run_wrapper clean hello-402; rc=$?
@@ -226,7 +223,7 @@ assert_contains "hello finding names the member" "model=fake-leg/fake-model" "$o
 assert_not_contains "hello finding has no 小請求存活" "小請求存活" "$out"
 assert_contains "no-anomaly line in report" "過去 24 小時無異常" "$out"
 assert_contains "self-check in report" "自檢：資料讀取正常" "$out"
-assert_note_only_on_day_section "old-CPA note does not cover the hello finding" "$out"
+assert_day_section_preserved "hello finding preserves the clean 24h report verbatim" "$out" clean
 
 # 3b. gateway /models 不通：A 級、全池死，且不再逐腿打 hello。
 T_MAGPIE_URL="http://127.0.0.1:$DEAD_PORT/v1" run_wrapper clean ok; rc=$?
