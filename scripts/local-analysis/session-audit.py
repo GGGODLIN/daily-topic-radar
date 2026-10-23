@@ -123,7 +123,7 @@ TOKEN_RE = re.compile(
   r"|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,})\b"
 )
 JSON_SECRET_RE = re.compile(
-  r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|token|secret"
+  r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|token|secret"
   r"|private[_-]?key|privatekey|cookie|authorization)[A-Za-z0-9_.-]*[\"']\s*:\s*)([\"'])([^\"']*)([\"'])"
 )
 AUTHORIZATION_RE = re.compile(r"(?im)\bAuthorization\s*:\s*[^\r\n]+")
@@ -143,6 +143,7 @@ LOCK_RE = re.compile(
 )
 SENSITIVE_SUFFIXES = (
   "API_KEY",
+  "ACTIVE_KEY",
   "ACCESS_KEY",
   "AUTH_TOKEN",
   "ACCESS_TOKEN",

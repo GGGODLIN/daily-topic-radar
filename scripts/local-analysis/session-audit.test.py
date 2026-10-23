@@ -513,6 +513,8 @@ class SessionAuditCliTest(unittest.TestCase):
       + "+19998887766\n"
       + "MONGO_PASS=leakmongopass\n"
       + "DB_PWD=leakdbpwd\n"
+      + "active_key=leakactivekey\n"
+      + '{"active_key":"leakjsonactivekey","active_model":"SAFE_ACTIVE_MODEL"}\n'
       + "PASS: VISIBLE_TEST_NAME\n"
     )
     record = {
@@ -537,7 +539,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
     sent = b"".join(server.bodies).decode()
-    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge", "VISIBLE_TEST_NAME"):
+    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge", "VISIBLE_TEST_NAME", "SAFE_ACTIVE_MODEL"):
       self.assertIn(marker, sent)
     for secret in (
       "UNIQUEPRIVATELINE",
@@ -551,6 +553,8 @@ class SessionAuditCliTest(unittest.TestCase):
       "BEGIN PRIVATE KEY",
       "leakmongopass",
       "leakdbpwd",
+      "leakactivekey",
+      "leakjsonactivekey",
     ):
       self.assertNotIn(secret, sent)
     row = self.source_named(self.status(url), "huge.jsonl")
