@@ -18,6 +18,7 @@ PAGE_CHARS = 24000
 SHARD_CHARS = 6 * 140000
 STAGES = ("reading", "session-merge", "cross", "verify")
 DEFAULT_MODEL = "gpt-6.1-sol[1m]"
+WORKFLOW_TEMPLATE = Path.home() / ".claude/workflows/retro-workflow.js"
 REFERENCES = [str(Path.home() / ".claude/references/retro-workflow" / name)
               for name in ("matt-retro.md", "writing-for-agents.md")]
 
@@ -522,11 +523,18 @@ def stage_args(args):
       reused = [unit["unit"] for unit in previous["units"] if unit["pass"]]
       failures.extend({"unit": unit["unit"], "errors": unit["errors"]} for unit in previous["units"] if not unit["pass"])
       items = [item for item in items if item["unit"] not in reused]
-  return {"stage": args.stage, "plan_path": str(Path(args.plan).resolve()), "models": plan["models"],
-          "effort": plan.get("efforts", {}).get("read" if args.stage == "reading" else "verify" if args.stage == "verify" else "merge", plan["effort"]), "concurrency": plan["concurrency"], "items": items, "confirmed": False,
-          "run_id": plan["run_id"], "focus": plan["focus"], "depth": plan["depth"],
-          "window_start": plan["window_start"], "cutoff": plan["cutoff"], "references": plan["references"],
-          "reused_units": reused, "failures": failures}
+  payload = {"stage": args.stage, "plan_path": str(Path(args.plan).resolve()), "models": plan["models"],
+             "effort": plan.get("efforts", {}).get("read" if args.stage == "reading" else "verify" if args.stage == "verify" else "merge", plan["effort"]), "concurrency": plan["concurrency"], "items": items, "confirmed": False,
+             "run_id": plan["run_id"], "focus": plan["focus"], "depth": plan["depth"],
+             "window_start": plan["window_start"], "cutoff": plan["cutoff"], "references": plan["references"],
+             "reused_units": reused, "failures": failures}
+  template = WORKFLOW_TEMPLATE.read_text(encoding="utf-8")
+  marker = "const preset = null"
+  require(template.count(marker) == 1, "workflow template missing preset marker")
+  embedded = json.dumps(payload, ensure_ascii=False).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+  script_path = run / f"workflow-{args.stage}.js"
+  script_path.write_text(template.replace(marker, f"const preset = {embedded}", 1), encoding="utf-8")
+  return {**payload, "workflow_script_path": str(script_path)}
 
 
 def result_text(value):

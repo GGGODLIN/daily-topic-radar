@@ -562,6 +562,41 @@ class RetroCLI(unittest.TestCase):
     self.assertEqual(result["unknown_messages"], 1)
     self.assertFalse(result["billing"])
 
+  def test_stage_args_writes_embedded_workflow_script_requiring_caller_confirmation(self):
+    path, _ = self.prepare([user("source finding"), assistant("x" * 850000)])
+    out = self.stage(path, "reading")
+    script = Path(out["workflow_script_path"])
+    self.assertEqual(script, path.parent.resolve() / "workflow-reading.js")
+    self.assertTrue(script.is_file())
+    runner = """
+import { readFile } from 'node:fs/promises'
+const src = (await readFile(process.argv[1], 'utf8')).replace(/^export const meta =/m, 'const meta =')
+const fn = new Function('args', 'agent', 'parallel', 'log', `return (async () => {\\n${src}\\n})()`)
+const unconfirmed = await fn({}, async () => null, async fns => Promise.all(fns.map(f => f())), () => {})
+const calls = []
+const confirmed = await fn({ confirmed: true }, async (p, opts) => {
+  calls.push(opts.label)
+  return { session: 'human', unit: opts.label, status: 'complete', report_path: JSON.parse(p.split('工作單=')[1].split('。輸出只能是')[0]).report_path, limitations: [] }
+}, async fns => Promise.all(fns.map(f => f())), () => {})
+console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
+"""
+    run = subprocess.run(["node", "--input-type=module", "-e", runner, str(script)], text=True, capture_output=True)
+    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+    parsed = json.loads(run.stdout)
+    self.assertEqual(parsed["unconfirmed"]["reason"], "confirmation-required")
+    self.assertTrue(parsed["confirmed_ok"])
+    self.assertEqual(parsed["calls"], ["s01-u01", "s01-u02"])
+    gate = subprocess.run([sys.executable, "-I", str(Path.home() / ".claude/hooks/workflow-routing-gate.py")],
+                          input=json.dumps({"tool_name": "Workflow", "tool_input": {"scriptPath": str(script), "args": {"confirmed": True}}}),
+                          text=True, capture_output=True)
+    self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+    self.assertEqual(gate.stdout.strip(), "")
+    first_dir = self.transcript(out["items"][0], self.report(out["items"][0]))
+    self.validate(path, "reading", [first_dir], code=2)
+    refreshed = self.stage(path, "reading")
+    rerun = subprocess.run(["node", "--input-type=module", "-e", runner, refreshed["workflow_script_path"]], text=True, capture_output=True)
+    self.assertEqual(json.loads(rerun.stdout)["calls"], ["s01-u02"])
+
 
 if __name__ == "__main__":
   unittest.main(verbosity=2)
