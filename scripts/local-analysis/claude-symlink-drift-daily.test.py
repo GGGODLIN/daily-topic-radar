@@ -22,9 +22,13 @@ class RepairTemplateTest(unittest.TestCase):
         "remote-settings.json.signature-iat.json",
         "remote-settings.json.signature.json",
       ]
-      protected += signatures
+      runtime = ["daemon.lock", "daemon.status.json", "gh-pr-status-cache.json"]
+      protected += signatures + runtime
       repairable = [
         "shared.txt",
+        "daemon.lock.backup",
+        "daemon.status.json.backup",
+        "gh-pr-status-cache.json.backup",
         "policy-limits.json.signature-iat.json.backup",
         "policy-limits.json.signature.json.backup",
         "remote-settings.json.signature-iat.json.backup",
@@ -48,9 +52,9 @@ class RepairTemplateTest(unittest.TestCase):
       result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
       self.assertEqual(result.returncode, 0, result.stderr)
       report = (home / "reports/local-analysis/fixture-symlink-drift.md").read_text()
-      self.assertIn("Drift count: **10**", report)
+      self.assertIn("Drift count: **16**", report)
       whitelist = report.split("## 結果", 1)[0]
-      for name in signatures:
+      for name in signatures + runtime:
         self.assertIn(f"`{name}`", whitelist)
       for root in (home / ".claude-team-s", home / ".claude-team-p"):
         for name in signatures:

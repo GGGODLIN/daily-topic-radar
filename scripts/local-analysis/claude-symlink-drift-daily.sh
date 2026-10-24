@@ -41,6 +41,8 @@ is_whitelisted() {
     state|dev-mods|policy-limits.json.stamp.json) return 0 ;;
     # 統計快取可由共用對話重建，各帳號更新時不要求保留共享連結。
     stats-cache.json) return 0 ;;
+    # 各 config root 的程序鎖、程序狀態與 PR 快取不可合併成另一個 root 的執行期資料。
+    daemon.lock|daemon.status.json|gh-pr-status-cache.json) return 0 ;;
     .claude.json.backup.*) return 0 ;;
   esac
   return 1
@@ -99,6 +101,7 @@ done
   echo ""
   echo '- **帳號狀態簽章旁檔**：`policy-limits.json.signature-iat.json` / `policy-limits.json.signature.json` / `remote-settings.json.signature-iat.json` / `remote-settings.json.signature.json` 各帳號自行保存，只豁免這四個精確檔名。'
   echo '- **統計快取**：`stats-cache.json` 可由對話紀錄重建，各帳號自行保存，不重建共享連結。'
+  echo '- **執行期狀態與 PR 快取**：`daemon.lock` / `daemon.status.json` / `gh-pr-status-cache.json` 各 config root 自行保存；只豁免這三個精確檔名，近似名稱仍列入檢查。'
   echo ""
   echo "## 結果"
   echo ""
@@ -123,6 +126,7 @@ done
     echo '      mcp-needs-auth-cache.json|remote-settings.json|remote-settings.json.synced-at) continue ;;'
     echo '      policy-limits.json.signature-iat.json|policy-limits.json.signature.json|remote-settings.json.signature-iat.json|remote-settings.json.signature.json) continue ;;'
     echo '      state|dev-mods|policy-limits.json.stamp.json|stats-cache.json) continue ;;'
+    echo '      daemon.lock|daemon.status.json|gh-pr-status-cache.json) continue ;;'
     echo '    esac'
     echo '    [[ -L "$name" ]] && continue'
     echo '    [[ -e "$HOME/.claude/$name" ]] || continue'
