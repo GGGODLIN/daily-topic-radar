@@ -13,6 +13,9 @@ done
 fixture=$(mktemp -d "${TMPDIR:-/tmp}/recap-model-route.XXXXXX")
 trap 'rm -rf "$fixture"' EXIT
 fake="$fixture/claude"
+projects="$fixture/projects"
+mkdir -p "$projects"
+printf '%s\n' '{"type":"user","timestamp":"2026-10-21T01:00:00Z","message":{"content":"沒看到workflow啊"}}' > "$projects/session.jsonl"
 keys="$fixture/keys.env"
 relay_url='http://127.0.0.1:8317'
 relay_token='fixture-relay-token'
@@ -59,6 +62,22 @@ done
   printf 'window_end=%s\n' "${WINDOW_END-}"
 } > "$RECAP_CAPTURE_FILE"
 printf '%s\n' "$prompt" > "$RECAP_CAPTURE_FILE.prompt"
+python3 -I - "$prompt" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+prompt = sys.argv[1]
+match = re.search(r'^USER_MESSAGES_MANIFEST=(.+)$', prompt, re.M)
+assert match, 'wrapper did not prepare user-message batches'
+manifest = json.loads(Path(match.group(1)).read_text())
+assert manifest['message_count'] == 1
+batch = manifest['batches'][0]
+messages = [json.loads(line) for line in Path(batch['path']).read_text().splitlines()]
+assert [row['text'] for row in messages] == ['沒看到workflow啊']
+assert batch['path'] in prompt
+PY
 if [[ -n "${RECAP_STREAM_FILE:-}" ]]; then
   cat "$RECAP_STREAM_FILE"
 else
@@ -72,7 +91,7 @@ source_root="$fixture/source"
 source_error="$fixture/source.err"
 source_state="$fixture/source.state"
 set +e
-env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_OUT_DIR="$source_root/out" RECAP_LOG_DIR="$source_root/log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$source_root/capture" bash -c 'before=$PWD; source "$1"; status=$?; after=$PWD; printf "%s\n%s\n" "$before" "$after" > "$2"; exit "$status"' _ "$script" "$source_state" >/dev/null 2>"$source_error"
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_OUT_DIR="$source_root/out" RECAP_LOG_DIR="$source_root/log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$source_root/capture" bash -c 'before=$PWD; source "$1"; status=$?; after=$PWD; printf "%s\n%s\n" "$before" "$after" > "$2"; exit "$status"' _ "$script" "$source_state" >/dev/null 2>"$source_error"
 source_status=$?
 set -e
 if ((source_status != 2)); then
@@ -148,7 +167,7 @@ PY
 run_case() {
   local label="$1" vendor="$2" base="$3"
   local capture="$fixture/$label.capture" out="$fixture/$label.out" log="$fixture/$label.log"
-  env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$out" RECAP_LOG_DIR="$log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR="$vendor" ANTHROPIC_BASE_URL="$base" ANTHROPIC_AUTH_TOKEN='fixture-parent-token' ANTHROPIC_API_KEY='fixture-parent-api-key' bash "$script"
+  env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$out" RECAP_LOG_DIR="$log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR="$vendor" ANTHROPIC_BASE_URL="$base" ANTHROPIC_AUTH_TOKEN='fixture-parent-token' ANTHROPIC_API_KEY='fixture-parent-api-key' bash "$script"
   assert_line "$capture" "model=$luna"
   assert_line "$capture" 'cc_vendor=headless-channel'
   assert_line "$capture" "base_url=$relay_url"
@@ -163,7 +182,7 @@ run_case() {
 }
 
 native_capture="$fixture/native.capture"
-env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_OUT_DIR="$fixture/native.out" RECAP_LOG_DIR="$fixture/native.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$native_capture" EXPECTED_RELAY_TOKEN="$relay_token" ANTHROPIC_AUTH_TOKEN='fixture-parent-token' ANTHROPIC_API_KEY='fixture-native-key' ANTHROPIC_MODEL='polluted-main' ANTHROPIC_DEFAULT_OPUS_MODEL='free(max)' CLAUDE_CODE_SUBAGENT_MODEL='free(max)' bash "$script"
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_OUT_DIR="$fixture/native.out" RECAP_LOG_DIR="$fixture/native.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$native_capture" EXPECTED_RELAY_TOKEN="$relay_token" ANTHROPIC_AUTH_TOKEN='fixture-parent-token' ANTHROPIC_API_KEY='fixture-native-key' ANTHROPIC_MODEL='polluted-main' ANTHROPIC_DEFAULT_OPUS_MODEL='free(max)' CLAUDE_CODE_SUBAGENT_MODEL='free(max)' bash "$script"
 assert_line "$native_capture" 'model=opus'
 assert_line "$native_capture" 'cc_vendor=headless-channel'
 assert_line "$native_capture" 'base_url='
@@ -188,7 +207,7 @@ CLIPROXY_BASE_URL=https://attacker.invalid
 CLIPROXY_KEY_CC=$relay_token
 EOF
 set +e
-env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$remote_keys" RECAP_OUT_DIR="$fixture/remote.out" RECAP_LOG_DIR="$fixture/remote.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/remote.capture" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>&1
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$remote_keys" RECAP_OUT_DIR="$fixture/remote.out" RECAP_LOG_DIR="$fixture/remote.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/remote.capture" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>&1
 remote_status=$?
 set -e
 ((++checks))
@@ -203,7 +222,7 @@ CLIPROXY_BASE_URL=$relay_url
 CLIPROXY_KEY_CC=$relay_token
 touch "$fixture/source-executed"
 EOF
-env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$malicious_keys" RECAP_OUT_DIR="$fixture/malicious.out" RECAP_LOG_DIR="$fixture/malicious.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/malicious.capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script"
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$malicious_keys" RECAP_OUT_DIR="$fixture/malicious.out" RECAP_LOG_DIR="$fixture/malicious.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/malicious.capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script"
 ((++checks))
 if [[ -e "$fixture/source-executed" ]]; then
   print -ru2 -- 'keys file content executed as shell code'
@@ -211,7 +230,7 @@ if [[ -e "$fixture/source-executed" ]]; then
 fi
 
 set +e
-env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$fixture/missing.env" RECAP_OUT_DIR="$fixture/missing.out" RECAP_LOG_DIR="$fixture/missing.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/missing.capture" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>&1
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$fixture/missing.env" RECAP_OUT_DIR="$fixture/missing.out" RECAP_LOG_DIR="$fixture/missing.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/missing.capture" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>&1
 missing_status=$?
 set -e
 ((++checks))
@@ -221,7 +240,7 @@ if ((missing_status == 0)) || [[ -e "$fixture/missing.capture" ]]; then
 fi
 
 set +e
-env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$fixture/missing-models.env" RECAP_OUT_DIR="$fixture/nomodels.out" RECAP_LOG_DIR="$fixture/nomodels.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/nomodels.capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>&1
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$fixture/missing-models.env" RECAP_OUT_DIR="$fixture/nomodels.out" RECAP_LOG_DIR="$fixture/nomodels.log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/nomodels.capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>&1
 nomodels_status=$?
 set -e
 ((++checks))
@@ -370,7 +389,7 @@ run_stream_case() {
   done
   local run_status
   set +e
-  env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$out" RECAP_LOG_DIR="$log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/$label.capture" EXPECTED_RELAY_TOKEN="$relay_token" RECAP_STREAM_FILE="$payload" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>"$err"
+  env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$out" RECAP_LOG_DIR="$log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$fixture/$label.capture" EXPECTED_RELAY_TOKEN="$relay_token" RECAP_STREAM_FILE="$payload" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>"$err"
   run_status=$?
   set -e
   STREAM_STATUS="$run_status"
@@ -498,7 +517,7 @@ upstream_log="$fixture/upstream.log"
 upstream_err="$fixture/upstream.err"
 mkdir -p "$upstream_out" "$upstream_log"
 set +e
-env -i HOME="$HOME" PATH="$PATH" RECAP_CLAUDE_BIN="$upstream_fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$upstream_out" RECAP_LOG_DIR="$upstream_log" RECAP_DATE=2026-09-08 CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>"$upstream_err"
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$upstream_fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$upstream_out" RECAP_LOG_DIR="$upstream_log" RECAP_DATE=2026-09-08 CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>"$upstream_err"
 upstream_status=$?
 set -e
 assert_status upstream-nonzero "$upstream_status" 9
