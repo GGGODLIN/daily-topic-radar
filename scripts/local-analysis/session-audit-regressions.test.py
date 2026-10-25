@@ -124,6 +124,25 @@ class ContractRepairTests(fixtures.SessionAuditCliTest):
     self.assertNotIn('JSONAUTHSECRET', sent)
     self.assertIn('SAFE_MARKER', sent)
 
+  def test_replay_and_memory_view_copies_are_not_sent_and_line_numbers_hold(self):
+    replay = {'type': 'api-request-blob', 'sessionId': 's1', 'hash': 'h1',
+              'message': {'role': 'user', 'content': 'REPLAY_COPY'}}
+    fixtures.write_jsonl(
+      self.projects / 'work' / 's1.jsonl',
+      fixtures.user_line('BEFORE_MARKER')
+      + json.dumps(replay) + '\n'
+      + fixtures.user_line('<unii-view>\nUNII_COPY')
+      + fixtures.user_line('AFTER_MARKER'),
+    )
+    server, url = self.provider(lambda body: (fixtures.analysis([]), 200))
+    self.assertEqual(self.cli(['run', *self.flags(url)]).returncode, 0)
+    sent = b''.join(server.bodies).decode()
+    self.assertIn('BEFORE_MARKER', sent)
+    self.assertIn('AFTER_MARKER', sent)
+    self.assertNotIn('REPLAY_COPY', sent)
+    self.assertNotIn('UNII_COPY', sent)
+    self.assertIn('[line=4 ', sent)
+
   def test_unredacted_image_stays_local_and_cannot_be_complete(self):
     record = json.loads(fixtures.user_line('image context'))
     record['message']['content'] = [

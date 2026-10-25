@@ -1006,6 +1006,16 @@ def consume_block(block, line, block_index, offset, line_end, parts, images, lim
     add(block["text"])
 
 
+def replayed_copy(obj):
+  # CC 2.1.30x 的 request-replay（api-request*）與 cc-unii -test 每回合的 <unii-view> 目錄，內容都是同一份對話前文的再存；
+  # 照送時 10-15 後的分析文件有 33–45% 是重複內容。分類材料不受影響：這裡只擋進分析文件，行號照原檔計。
+  if str(obj.get("type") or "").startswith("api-request"):
+    return True
+  message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+  content = message.get("content")
+  return obj.get("type") == "user" and isinstance(content, str) and content.startswith("<unii-view>")
+
+
 def build_document(raw, metadata_only=False, time_window=None, window_info=None, population=None):
   parts = []
   images = []
@@ -1077,6 +1087,8 @@ def build_document(raw, metadata_only=False, time_window=None, window_info=None,
         and not text.lstrip().startswith(("[main]", "<task-notification>", "<system-reminder>", "<local-command-stdout>", "<command-name>", "<cross-session-message"))
       )
     if metadata_only:
+      continue
+    if replayed_copy(obj):
       continue
     message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
     role = message.get("role") if isinstance(message.get("role"), str) else (obj.get("type") or "-")
