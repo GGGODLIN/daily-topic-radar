@@ -490,6 +490,29 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertIn("APPENDED_DURING_RUN", path.read_text())
     self.assertNotIn("APPENDED_DURING_RUN", out)
 
+  def test_analysis_reads_the_transcript_once(self):
+    # 2026-10-26 正式環境：每段送出前後都整份重讀比對，834 MB 的 session 多塊同時在途，分析器各留副本，實測峰值 6.5 GB。
+    path = self.projects / "work" / "once.jsonl"
+    write_jsonl(path, user_line("QUOTE_ONCE"))
+    server = serve(lambda body: (analysis([finding("QUOTE_ONCE")]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    spec = importlib.util.spec_from_file_location("analyzer_in_process", SCRIPT)
+    analyzer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(analyzer)
+    real_read = analyzer.read_source
+    reads = []
+
+    def counted(source):
+      reads.append(source.name)
+      return real_read(source)
+
+    analyzer.read_source = counted
+    self.assertEqual(analyzer.main(["run", *self.flags(url)]), 0)
+    self.assertEqual(reads.count("once.jsonl"), 1)
+    self.assertEqual(self.source_named(self.status(url), "once.jsonl")["status"], "complete")
+
   def test_huge_tool_is_not_dropped(self):
     secret_key = (
       "-----BEGIN PRIVATE KEY-----\n"

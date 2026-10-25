@@ -1926,6 +1926,16 @@ def read_source(path):
     return None, "missing"
 
 
+def source_unchanged(path, raw, mtime_ns):
+  # 不整份重讀比對：等回件的分析器會各自留著重讀的全檔副本，834 MB 的 session 多塊同時在途時實測峰值 6.5 GB。
+  # 逐字稿只會追加或整份重寫，大小加修改時間就分得出來。回 None 代表檔案不見了。
+  try:
+    info = os.stat(path)
+  except OSError:
+    return None
+  return info.st_size == len(raw) and info.st_mtime_ns == mtime_ns
+
+
 def prepare_source(connection, row, raw, rules_repo):
   document, images, limits, thinking, _synthetic, _session_ids, parts = build_document(raw)
   parts = locate_parts(document, parts)
@@ -2071,9 +2081,9 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
   produced = 0
   path = Path(row["path"])
   while cursor < limit and produced < frag_limit and time.monotonic() <= deadline:
-    current, error = read_source(path)
-    if error or current != raw:
-      mark(connection, row["inode"], "missing" if error else "pending", False, {"missing" if error else "source-changed-during-analysis"}, thinking)
+    unchanged = source_unchanged(path, raw, mtime_ns)
+    if not unchanged:
+      mark(connection, row["inode"], "missing" if unchanged is None else "pending", False, {"missing" if unchanged is None else "source-changed-during-analysis"}, thinking)
       connection.commit()
       return produced
     window = doc_bytes[cursor : min(cursor + instruction_budget(), limit)]
@@ -2111,9 +2121,9 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
       code, body = yield payload, _shrink > 0
       produced += 1
       fragments["new"] += 1
-      again, error = read_source(path)
-      if error or again != raw:
-        mark(connection, row["inode"], "missing" if error else "pending", False, {"missing" if error else "source-changed-during-analysis"}, thinking)
+      unchanged = source_unchanged(path, raw, mtime_ns)
+      if not unchanged:
+        mark(connection, row["inode"], "missing" if unchanged is None else "pending", False, {"missing" if unchanged is None else "source-changed-during-analysis"}, thinking)
         connection.commit()
         return produced
       if code in {400, 413} and with_rules:
