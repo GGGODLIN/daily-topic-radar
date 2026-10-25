@@ -346,6 +346,16 @@ def credential_names(text):
   return names
 
 
+class _NoLineCount(str):
+  # json 解析失敗時，JSONDecodeError 會從文件開頭數換行來組錯誤訊息；整份 session 上逐次嘗試會隨長度平方成長
+  # （795 MB 的 transcript 一輪跑不完、run 卡住數小時）。這裡只要成功與否，錯誤訊息的行號用不到。
+  def count(self, *args):
+    return 0
+
+  def rfind(self, *args):
+    return -1
+
+
 def redact_text(value):
   # 先遮整段再切片，避免 private key / token 被切到兩個 chunk 後對不上。
   # 不截斷、不壓空白；既有 sanitize_excerpt 會留 600 字，不能拿來做全量分析。
@@ -357,13 +367,13 @@ def redact_text(value):
   decoder = json.JSONDecoder()
   pieces = []
   cursor = 0
-  # 只在下一個非空白字元可能開出合法 JSON 時才試解析：失敗的嘗試會從文件開頭數換行，大檔上隨長度平方成長。
-  # 被略過的位置本來就必定解析失敗，所以遮敏結果不變。
+  probe = _NoLineCount(value)
+  # 只在下一個非空白字元可能開出合法 JSON 時才試解析，減少必定失敗的嘗試；被略過的位置本來就必定解析失敗，所以遮敏結果不變。
   for match in JSON_START_RE.finditer(value):
     if match.start() < cursor:
       continue
     try:
-      parsed, end = decoder.raw_decode(value, match.start())
+      parsed, end = decoder.raw_decode(probe, match.start())
     except (ValueError, RecursionError):
       continue
     if not isinstance(parsed, (dict, list)):
@@ -2737,7 +2747,8 @@ def cmd_run(args):
           elif not dispatch(item):
             parked.append(item)
         # 總量照各腿名額加總：暫停的腿名額空著，不把它的量壓到其他池上。等槽的段在上面先送，新來源只補剩下的空槽。
-        while open_for_work and capacity and len(active) < min(concurrency, sum(capacity.values())):
+        # 每取一筆都重看期限：準備一份大 transcript 可能要好幾分鐘，只在外層看一次時，到期後仍會把整條佇列讀完才停。
+        while time.monotonic() < lifetime and capacity and len(active) < min(concurrency, sum(capacity.values())):
           group, row = next_row()
           if row is None:
             break
