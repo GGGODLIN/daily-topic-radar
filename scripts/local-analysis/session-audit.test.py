@@ -1176,6 +1176,47 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertTrue(after["latest_complete"])
     self.assertIn(b"QUOTE_REWRITE_NEW", server.bodies[-1])
 
+  def test_session_slim_keeps_progress_and_continues_after_append(self):
+    path = self.projects / "work" / "slim.jsonl"
+    blob = json.dumps({"type": "api-request-blob", "hash": "h", "message": {"role": "user", "content": "R" * 20000}})
+    image_copy = {"type": "image", "file": {"base64": "A" * 9000, "type": "image/png"}}
+    write_jsonl(
+      path,
+      user_line("QUOTE_SLIM_ONE") + blob + "\n" + user_line("QUOTE_SLIM_TWO", toolUseResult=image_copy) + user_line("QUOTE_SLIM_THREE"),
+    )
+    server = serve(lambda body: (analysis([]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    before = self.source_named(self.status(url), "slim.jsonl")
+    self.assertEqual(before["generation"], 1)
+    size = path.stat().st_size
+    slim = subprocess.run(
+      [sys.executable, str(SCRIPT.with_name("session-slim.py")), str(path), "--state", str(self.state), "--no-compress"],
+      text=True, capture_output=True, timeout=30, env=self.env, check=False,
+    )
+    self.assertEqual(slim.returncode, 0, slim.stdout + slim.stderr)
+    self.assertLess(path.stat().st_size, size - 25000)
+    self.assertEqual(path.read_text().count("\n"), 4)
+    sent = len(server.bodies)
+    # 原始檔變短、每筆 offset 都變了；進度換算過，session-audit 不能從頭重送，也不能換代。
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    after = self.source_named(self.status(url), "slim.jsonl")
+    self.assertEqual(after["generation"], 1)
+    self.assertFalse(any(b"QUOTE_SLIM_ONE" in body for body in server.bodies[sent:]))
+    with path.open("a") as handle:
+      handle.write(user_line("QUOTE_SLIM_FOUR"))
+    sent = len(server.bodies)
+    self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    grown = self.source_named(self.status(url), "slim.jsonl")
+    self.assertEqual(grown["generation"], 1)
+    fresh = b"".join(server.bodies[sent:])
+    self.assertIn(b"QUOTE_SLIM_FOUR", fresh)
+    self.assertNotIn(b"QUOTE_SLIM_ONE", fresh)
+
   def test_legacy_rows_without_prefix_tails_are_trusted_once(self):
     path = self.projects / "work" / "legacy.jsonl"
     write_jsonl(path, user_line("QUOTE_LEGACY_FIRST"))
