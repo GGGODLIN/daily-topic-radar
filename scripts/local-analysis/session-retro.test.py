@@ -426,8 +426,10 @@ class RetroCLI(unittest.TestCase):
     ids = []
     for item in items:
       ids.append(item["unit"] + ":f")
-      finding = {"id": ids[-1], "evidence": [{"session": "human", "source_line": 1, "quote": "source finding"}]}
-      dirs.append(self.transcript(item, self.report(item, [finding])))
+      finding = {"id": ids[-1], "evidence": [{"session": "human", "source_line": 1, "quote": "source finding"}],
+                 "counterevidence": "bounded counterevidence"}
+      dirs.append(self.transcript(item, self.report(item, [finding], tracking_observations=[
+        {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "not_applicable"}])))
     self.validate(path, "reading", dirs)
     merge = self.stage(path, "session-merge")["items"][0]
     evidence = [{"session": "human", "source_line": 1, "quote": "source finding"}]
@@ -435,11 +437,20 @@ class RetroCLI(unittest.TestCase):
     folder = self.transcript(merge, report, reads=[])
     self.validate(path, "session-merge", [folder], code=2)
     report["dispositions"] = [{"source_finding_id": key, "disposition": "merged", "reason": "same cause"} for key in ids]
+    # Dropping tracking_observations or counterevidence must fail validation.
+    folder = self.transcript(merge, report, reads=[])
+    self.validate(path, "session-merge", [folder], code=2)
+    report["tracking_observations"] = [{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "not_applicable"}]
+    folder = self.transcript(merge, report, reads=[])
+    self.validate(path, "session-merge", [folder], code=2)
+    report["patterns"][0]["counterevidence"] = "bounded counterevidence"
     folder = self.transcript(merge, report, reads=[])
     self.validate(path, "session-merge", [folder])
     cross = self.stage(path, "cross")["items"][0]
     sid = report["patterns"][0]["id"]
-    cross_report = self.report(cross, patterns=[{"id": "P1", "source_finding_ids": [sid], "evidence": evidence}], dispositions=[])
+    cross_report = self.report(cross, patterns=[{"id": "P1", "source_finding_ids": [sid], "evidence": evidence,
+      "counterevidence": "bounded counterevidence"}],
+      tracking_observations=[{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "not_applicable"}], dispositions=[])
     folder = self.transcript(cross, cross_report, reads=[])
     self.validate(path, "cross", [folder], code=2)
     cross_report["dispositions"] = [{"source_record_id": sid, "disposition": "kept", "reason": "relevant"}]

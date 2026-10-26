@@ -878,13 +878,23 @@ def report_records(report):
 
 def check_dispositions(report, item, stage):
   source_records = []
+  expected_tracking = set()
   for path in item["input_reports"]:
     source = load(path)
     require(isinstance(source, dict) and source.get("status") == "complete", "input report missing or incomplete")
     source_records.extend(report_records(source))
+    for obs in source.get("tracking_observations") or []:
+      if isinstance(obs, dict):
+        expected_tracking.add((obs.get("issue_id"), obs.get("change_id")))
   source_ids = [r.get("id") for r in source_records]
   require(all(isinstance(key, str) for key in source_ids) and len(set(source_ids)) == len(source_ids), "invalid or duplicate input record ids")
+  by_id = {r["id"]: r for r in source_records}
   expected = set(source_ids)
+  if expected_tracking:
+    tracking = report.get("tracking_observations")
+    require(isinstance(tracking, list), "tracking_observations required when inputs contain tracking observations")
+    actual_tracking = {(obs.get("issue_id"), obs.get("change_id")) for obs in tracking if isinstance(obs, dict) and obs.get("outcome")}
+    require(expected_tracking <= actual_tracking, "missing tracking observations from input reports")
   dispositions = report.get("dispositions")
   require(isinstance(dispositions, list), "dispositions required, including zero-input merges")
   disposition_key = "source_finding_id" if stage == "session-merge" else "source_record_id"
@@ -908,6 +918,8 @@ def check_dispositions(report, item, stage):
     require(isinstance(refs, list) and bool(refs), "output record requires source ids")
     require(all(key in expected for key in refs), "output record has invented source id")
     require(all(key in retained for key in refs), "output cites a rejected source record")
+    if any(by_id[key].get("counterevidence") for key in refs):
+      require(bool(record.get("counterevidence")), "output record dropped source counterevidence")
     cited.update(refs)
   require(retained <= cited, "kept/merged source not cited by any output")
 
