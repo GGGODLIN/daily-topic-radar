@@ -513,6 +513,49 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(reads.count("once.jsonl"), 1)
     self.assertEqual(self.source_named(self.status(url), "once.jsonl")["status"], "complete")
 
+  def test_scan_and_run_never_load_a_whole_transcript(self):
+    # 2026-10-26：止血後每輪仍把 834 MB 原文整份讀進來（峰值 1.6 GB）；分類掃描與送審都要逐段讀。
+    path = self.projects / "work" / "stream.jsonl"
+    write_jsonl(path, user_line("QUOTE_STREAM"))
+    server = serve(lambda body: (analysis([finding("QUOTE_STREAM")]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    spec = importlib.util.spec_from_file_location("analyzer_in_process", SCRIPT)
+    analyzer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(analyzer)
+    real_read_bytes = Path.read_bytes
+
+    def refuse_transcripts(source):
+      if source.suffix == ".jsonl":
+        raise AssertionError(f"whole transcript read: {source.name}")
+      return real_read_bytes(source)
+
+    Path.read_bytes = refuse_transcripts
+    try:
+      self.assertEqual(analyzer.main(["run", *self.flags(url)]), 0)
+    finally:
+      Path.read_bytes = real_read_bytes
+    self.assertEqual(self.source_named(self.status(url), "stream.jsonl")["status"], "complete")
+    self.assertIn("QUOTE_STREAM", b"".join(server.bodies).decode())
+
+  def test_streamed_transcript_matches_in_memory_lines(self):
+    spec = importlib.util.spec_from_file_location("analyzer_in_process", SCRIPT)
+    analyzer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(analyzer)
+    # 小塊讀取才會讓換行落在塊邊界與塊中間；結尾沒有換行的最後一行也要照算。
+    analyzer.TRANSCRIPT_CHUNK = 3
+    data = b'{"a":1}\n\n{"b":"\xe4\xb8\xad"}\r\n' + b"x" * 5000 + b"\nlast-without-newline"
+    path = self.projects / "raw.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    transcript = analyzer.Transcript(path)
+    with path.open("ab") as handle:
+      handle.write(b"\nAPPENDED_AFTER_OPEN\n")
+    self.assertEqual(list(transcript.lines()), list(analyzer.iter_lines(data)))
+    self.assertEqual(len(transcript), len(data))
+    for end in (0, 5, len(data) // 2, len(data), len(data) + 100):
+      self.assertEqual(analyzer.prefix_tail(transcript, end), analyzer.prefix_tail(data, end))
+
   def test_huge_tool_is_not_dropped(self):
     secret_key = (
       "-----BEGIN PRIVATE KEY-----\n"

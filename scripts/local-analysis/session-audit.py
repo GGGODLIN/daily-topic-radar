@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import weakref
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime, timedelta
@@ -190,14 +191,55 @@ TAIL_BYTES = 4096
 
 def prefix_tail(data, end):
   # 記已分析前綴的最後一段原文；下次拿同位置的位元組直接比，不算 digest。
+  if isinstance(data, Transcript):
+    return data.tail(end)
   return bytes(data[max(0, end - TAIL_BYTES):end])
 
 
-def source_mtime_ns(path):
-  try:
-    return os.stat(path).st_mtime_ns
-  except OSError:
-    return None
+TRANSCRIPT_CHUNK = 1 << 20
+
+
+class Transcript:
+  # 不把整份逐字稿讀進記憶體：834 MB 的 session 光原文就占 0.8 GB，切塊送審時整輪都得留著。
+  # 開檔當下記大小與修改時間，之後只讀這個範圍；檔案被換掉或改寫時，分析器比對修改時間會發現。
+  def __init__(self, path):
+    self.fd = os.open(path, os.O_RDONLY)
+    weakref.finalize(self, os.close, self.fd)
+    info = os.fstat(self.fd)
+    self.size = info.st_size
+    self.mtime_ns = info.st_mtime_ns
+
+  def __len__(self):
+    return self.size
+
+  def tail(self, end):
+    start, stop = max(0, end - TAIL_BYTES), min(end, self.size)
+    if stop <= start:
+      return b""
+    try:
+      return os.pread(self.fd, stop - start, start)
+    except OSError:
+      return b""
+
+  def lines(self):
+    number = start = position = 0
+    buffer = bytearray()
+    while position < self.size:
+      chunk = os.pread(self.fd, min(TRANSCRIPT_CHUNK, self.size - position), position)
+      if not chunk:
+        break
+      position += len(chunk)
+      buffer += chunk
+      cut = 0
+      while (newline := buffer.find(b"\n", cut)) >= 0:
+        number += 1
+        line = bytes(buffer[cut : newline + 1])
+        yield number, start, start + len(line), line
+        start += len(line)
+        cut = newline + 1
+      del buffer[:cut]
+    if buffer:
+      yield number + 1, start, start + len(buffer), bytes(buffer)
 
 
 def table_columns(connection, table):
@@ -912,6 +954,9 @@ def media_verified(obj, images):
 
 
 def iter_lines(raw):
+  if isinstance(raw, Transcript):
+    yield from raw.lines()
+    return
   offset = 0
   number = 0
   while offset < len(raw):
@@ -1207,7 +1252,7 @@ def discover(root, self_id, time_window=None, cache=None, updates=None):
     windows[path] = {"has_timestamp": False, "matches": False}
     populations[path] = {"main_id": path.stem, "conversation": False, "human": False, "agent_ids": set(), "sidechain": False}
     try:
-      raw = path.read_bytes()
+      raw = Transcript(path)
     except OSError:
       records[path] = (set(), set(), True)
       continue
@@ -1921,7 +1966,7 @@ def locate_parts(document, parts):
 
 def read_source(path):
   try:
-    return path.read_bytes(), None
+    return Transcript(path), None
   except OSError:
     return None, "missing"
 
@@ -1940,7 +1985,7 @@ def prepare_source(connection, row, raw, rules_repo):
   document, images, limits, thinking, _synthetic, _session_ids, parts = build_document(raw)
   parts = locate_parts(document, parts)
   doc_bytes = document.encode()
-  mtime_ns = source_mtime_ns(row["path"])
+  mtime_ns = raw.mtime_ns
   start = 0
   generation = row["generation"]
   analyzed_size = row["file_size"]
