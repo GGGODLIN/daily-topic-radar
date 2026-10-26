@@ -76,8 +76,12 @@ add_finding() { printf '%s\t%s\n' "$1" "$2" >> "$FINDINGS"; }
 port_probe() { /usr/bin/nc -z 127.0.0.1 "$1" 2>/dev/null; }
 
 http_code() {
-  local c
-  c=$(/usr/bin/curl -sS -o /dev/null -m 4 -w '%{http_code}' "$1" 2>/dev/null) || true
+  local c attempt
+  for attempt in 1 2 3; do
+    c=$(/usr/bin/curl -sS -o /dev/null -m 4 -w '%{http_code}' "$1" 2>/dev/null) || true
+    [[ "${c:-000}" == "200" ]] && break
+    [[ "$attempt" -lt 3 ]] && sleep 1
+  done
   printf '%s' "${c:-000}"
 }
 
