@@ -158,7 +158,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     if rtid > max_rule_tag_id:
       max_rule_tag_id = rtid
     why_text = rule_why.get(rid, f"{rpath} > {rhead} (@{rid[:8]})")
-    key = why_text[:50]
+    key = why_text if rid in rule_why else rid
     grp = rule_groups.setdefault(key, {
       "rule_path": rpath,
       "rule_heading": rhead,

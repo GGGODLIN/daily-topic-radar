@@ -152,6 +152,55 @@ class SessionAuditConsumeTest(unittest.TestCase):
     self.assertEqual(m3["cursor_before"]["last_finding_id"], 11)
     self.assertEqual(m3["cursor_candidate"]["last_finding_id"], 15)
 
+  def test_rule_grouping_preserves_distinct_unknown_rids_and_full_why_text(self):
+    wf_dir = self.state_dir / "friction"
+    wf_dir.mkdir(parents=True, exist_ok=True)
+    shared_prefix = "A" * 55
+    (wf_dir / "workflow-general.md").write_text(
+      f'- source_ref=rule:CLAUDE.md@1111aaaa1111aaaa why="{shared_prefix}-same"\n'
+      f'- source_ref=rule:CLAUDE.md@2222bbbb2222bbbb why="{shared_prefix}-same"\n'
+      f'- source_ref=rule:CLAUDE.md@3333cccc3333cccc why="{shared_prefix}-different-tail"\n',
+      encoding="utf-8",
+    )
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM rule_tags")
+    long_heading = "Dispatch + Verify 工作紀律 > Dispatch — Main session 不幹活"
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (21, 'ino1', 1, '3d58135eaaaa1111', 'rules/common/dispatch-and-verify.md', ?, 'violated', 'q u1', '2026-10-16T00:00:00Z')",
+      (long_heading,),
+    )
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (22, 'ino1', 1, 'd48a54d7bbbb2222', 'rules/common/dispatch-and-verify.md', ?, 'violated', 'q u2', '2026-10-16T00:00:00Z')",
+      (long_heading,),
+    )
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (23, 'ino1', 1, '1111aaaa1111aaaa', 'CLAUDE.md', '工作紀律', 'violated', 'q k1', '2026-10-16T00:00:00Z')"
+    )
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (24, 'ino1', 1, '2222bbbb2222bbbb', 'CLAUDE.md', '工作紀律', 'violated', 'q k2', '2026-10-16T00:00:00Z')"
+    )
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (25, 'ino1', 1, '3333cccc3333cccc', 'CLAUDE.md', '工作紀律', 'violated', 'q k3', '2026-10-16T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    out_grp = self.root / "out_grp"
+    proc = subprocess.run(
+      [sys.executable, str(SCRIPT), "prepare", "--state", str(self.state_dir), "--out-dir", str(out_grp)],
+      text=True,
+      capture_output=True,
+      check=True,
+    )
+    res = json.loads(proc.stdout)
+    self.assertEqual(res["distinct_merged_rules"], 4)
+    rv_md = (out_grp / "rule-violations.md").read_text(encoding="utf-8")
+    self.assertIn("3d58135e", rv_md)
+    self.assertIn("d48a54d7", rv_md)
+    self.assertNotIn("3d58135e,d48a54d7", rv_md)
+    self.assertIn("1111aaaa,2222bbbb", rv_md)
+
 
 if __name__ == "__main__":
   unittest.main()
