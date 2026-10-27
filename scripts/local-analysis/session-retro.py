@@ -14,10 +14,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-PAGE_CHARS = 24000
+PAGE_CHARS = 240000
+MAX_PAGE_BYTES = 240000
+MAX_PAGE_LINES = 1800
 SHARD_CHARS = 6 * 140000
 STAGES = ("reading", "session-merge", "cross", "verify")
 DEFAULT_MODEL = "gpt-6.1-sol[1m]"
+DEFAULT_TERRA_MODEL = "gpt-6.1-terra"
+DEFAULT_SOL_MODEL = "gpt-6.1-sol"
+DEFAULT_EFFORTS = {"read": "max", "merge": "max", "verify": "xhigh"}
 WORKFLOW_TEMPLATE = Path.home() / ".claude/workflows/retro-workflow.js"
 REFERENCES = [str(Path.home() / ".claude/references/retro-workflow" / name)
               for name in ("matt-retro.md", "writing-for-agents.md")]
@@ -145,15 +150,27 @@ def classify(rows, source):
   return "unknown", ["human-origin-unconfirmed"]
 
 
-def read_model():
+def read_model_table():
+  table = {"GPT_TERRA": DEFAULT_TERRA_MODEL, "GPT_SOL": DEFAULT_SOL_MODEL}
   path = Path.home() / ".claude/config/gpt-models.env"
   if path.exists():
     for line in path.read_text(encoding="utf-8").split("\n"):
-      match = re.fullmatch(r"\s*(?:export\s+)?GPT_SOL\s*=\s*['\"]?([A-Za-z0-9_.:/+\[\]-]+)['\"]?\s*", line)
+      match = re.fullmatch(r"\s*(?:export\s+)?(GPT_TERRA|GPT_SOL)\s*=\s*['\"]?([A-Za-z0-9_.:/+\[\]-]+)['\"]?\s*", line)
       if match:
-        value = match.group(1)
-        return value if value.endswith("[1m]") else value + "[1m]"
-  return DEFAULT_MODEL
+        table[match.group(1)] = re.sub(r"\[1m\]$", "", match.group(2))
+  return table
+
+
+def format_model(base, effort=None):
+  base = re.sub(r"\[1m\]$", "", base)
+  if effort and not re.search(r"\([a-z]+\)$", base):
+    base = f"{base}({effort})"
+  return base + "[1m]"
+
+
+def read_model():
+  table = read_model_table()
+  return format_model(table["GPT_TERRA"], DEFAULT_EFFORTS["read"])
 
 
 def latest_success(root, cutoff, scope="all"):
@@ -309,13 +326,55 @@ def visible_blocks(row, audit):
   return blocks, media
 
 
+def slice_page_chunks(text):
+  if not text:
+    return [""]
+  chunks = []
+  cur = []
+  cur_bytes = 0
+  cur_lines = 0
+  for line in text.splitlines(keepends=True):
+    line_bytes = len(line.encode("utf-8"))
+    if cur_bytes + line_bytes <= MAX_PAGE_BYTES and cur_lines + 1 <= MAX_PAGE_LINES:
+      cur.append(line)
+      cur_bytes += line_bytes
+      cur_lines += 1
+      continue
+    if line_bytes <= MAX_PAGE_BYTES:
+      if cur:
+        chunks.append("".join(cur))
+      cur, cur_bytes, cur_lines = [line], line_bytes, 1
+      continue
+    start = 0
+    while start < len(line):
+      budget = MAX_PAGE_BYTES - cur_bytes if cur else MAX_PAGE_BYTES
+      if budget <= 0:
+        chunks.append("".join(cur))
+        cur, cur_bytes, cur_lines = [], 0, 0
+        budget = MAX_PAGE_BYTES
+      end = min(len(line), start + budget)
+      while len(line[start:end].encode("utf-8")) > budget and end > start + 1:
+        end = start + max(1, (end - start) * budget // len(line[start:end].encode("utf-8")))
+      piece = line[start:end]
+      cur.append(piece)
+      cur_bytes += len(piece.encode("utf-8"))
+      cur_lines += 1
+      start = end
+      if start < len(line):
+        chunks.append("".join(cur))
+        cur, cur_bytes, cur_lines = [], 0, 0
+  if cur:
+    chunks.append("".join(cur))
+  return chunks
+
+
 def pages(text, directory, prefix):
   directory.mkdir(parents=True, exist_ok=True)
   result = []
-  for number, start in enumerate(range(0, max(1, len(text)), PAGE_CHARS), 1):
+  for number, chunk in enumerate(slice_page_chunks(text), 1):
     page_id = f"{prefix}-p{number:02d}"
     path = directory / f"p{number:02d}.txt"
-    path.write_text(text[start:start + PAGE_CHARS] + "\nEND_PAGE " + page_id + "\n", encoding="utf-8")
+    path.write_text(chunk + "\nEND_PAGE " + page_id + "\n", encoding="utf-8")
     result.append({"id": page_id, "path": str(path)})
   return result
 
@@ -418,14 +477,15 @@ def prepare(args):
                          "source_document": str(document), "input_reports": [s["report"] for s in shards],
                          "report_path": str(session_report)})
     sessions.append(session)
-  model = data.get("default_model", DEFAULT_MODEL)
-  models = {"read": args.read_model if args.read_model is not None else model,
-            "merge": args.merge_model if args.merge_model is not None else model,
-            "verify": args.verify_model if args.verify_model is not None else model}
+  table = read_model_table()
+  efforts = {key: getattr(args, key + "_effort") or args.effort or DEFAULT_EFFORTS[key] for key in ("read", "merge", "verify")}
+  models = {"read": args.read_model if args.read_model is not None else format_model(table["GPT_TERRA"], efforts["read"]),
+            "merge": args.merge_model if args.merge_model is not None else format_model(table["GPT_TERRA"], efforts["merge"]),
+            "verify": args.verify_model if args.verify_model is not None else format_model(table["GPT_SOL"], efforts["verify"])}
   scope = "all" if not project_filter and not args.exclude_session else {"projects": sorted(project_filter), "excluded_sessions": args.exclude_session}
   plan = {"schema_version": 1, "run_id": out.name, "scope": scope, "window_start": iso(start), "cutoff": iso(cutoff),
-          "depth": args.depth, "focus": args.focus, "models": models, "effort": args.effort,
-          "efforts": {key: getattr(args, key + "_effort") or args.effort for key in ("read", "merge", "verify")}, "concurrency": args.concurrency,
+          "depth": args.depth, "focus": args.focus, "models": models, "effort": args.effort or DEFAULT_EFFORTS["read"],
+          "efforts": efforts, "concurrency": args.concurrency,
           "sessions": sessions, "session_count": len(sessions), "shard_count": sum(len(s["shards"]) for s in sessions),
           "page_count": sum(len(u["pages"]) for s in sessions for u in s["shards"]), "media_omitted": total_media,
           "unknown": data["unknown"], "excluded": data["excluded"], "references": REFERENCES,
@@ -1120,7 +1180,7 @@ def parser():
   for stage in ("read", "merge", "verify"):
     prep.add_argument("--" + stage + "-model")
     prep.add_argument("--" + stage + "-effort", choices=["low", "medium", "high", "xhigh", "max"] )
-  prep.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default="high")
+  prep.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
   for name in ("stage-args", "validate", "finish"):
     sub = commands.add_parser(name)
     sub.add_argument("--plan", required=True)

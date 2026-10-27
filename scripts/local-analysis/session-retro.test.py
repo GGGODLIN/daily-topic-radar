@@ -33,7 +33,7 @@ class RetroCLI(unittest.TestCase):
   def setUp(self):
     self.tmp = tempfile.TemporaryDirectory()
     self.addCleanup(self.tmp.cleanup)
-    self.root = Path(self.tmp.name)
+    self.root = Path(self.tmp.name).resolve()
     self.projects = self.root / "projects"
     self.projects.mkdir()
     self.reports = self.root / "reports"
@@ -213,7 +213,7 @@ class RetroCLI(unittest.TestCase):
     self.assertIsNone(data["options"]["last-success"])
 
   def test_prepare_uses_snapshot_redacts_before_paging_and_lists_unknown(self):
-    source = self.source("human", [user("before snapshot"), assistant("x" * 23990 + " ghp_" + "a" * 30)])
+    source = self.source("human", [user("before snapshot"), assistant("x" * 239990 + " ghp_" + "a" * 30)])
     self.source("unknown", [user(promptSource=None, origin={})])
     inventory, data = self.inventory()
     source.write_text(json.dumps(user("LIVE_CHANGED")))
@@ -230,6 +230,8 @@ class RetroCLI(unittest.TestCase):
     self.assertTrue(plan["limits"]["thinking_omitted"])
     self.assertEqual(plan["page_count"], 2)
     self.assertEqual(plan["models"]["read"], result["models"]["read"])
+    self.assertEqual(plan["models"], {"read": "gpt-6.1-terra(max)[1m]", "merge": "gpt-6.1-terra(max)[1m]", "verify": "gpt-6.1-sol(xhigh)[1m]"})
+    self.assertEqual(plan["efforts"], {"read": "max", "merge": "max", "verify": "xhigh"})
     self.assertIn("[line=1 timestamp=2026-10-20T01:00:00Z window user]", document)
     for page in session["shards"][0]["pages"]:
       self.assertTrue(Path(page["path"]).read_text().endswith("END_PAGE " + page["id"] + "\n"))
