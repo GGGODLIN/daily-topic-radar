@@ -60,7 +60,7 @@ POOL_HEALTH = {
 POOL_HEALTH_CACHE_SECONDS = 15
 # 只有直連腿設等待上限：它們的上游沒有 relay 的備援，一個不回的請求會一直佔住名額。free 刻意不設。
 DIRECT_LEG_TIMEOUT_SECONDS = 900
-GROK_PAUSE_PERCENT = 50
+GROK_PAUSE_PERCENT = 90
 # 2api 服務會自己換帳號、也會把單一帳號的 402 改寫成 500，回應碼分不出「一個帳號壞」還是「整池死」。
 # 出錯時先問號池健康度，確認沒有活帳號才暫停；健康度讀不到或看起來正常（例如轉收費時帳號不冷卻），
 # 連續失敗到這個次數才暫停。單次失敗只把那段改送別條腿。

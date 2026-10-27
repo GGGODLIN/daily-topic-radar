@@ -15,7 +15,7 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
 # （local-llm-gateway .scratch/real-workload-eval/report.md）。開回填批次時改走三條平行直連線各 5 槽，批次進 review 後下一輪自動退回。
 # 回填不用 Argon（使用者 2026-10-17 決定）：它跟互動 session 的 Argon 共用同一把 Google key，回填佔了分析器 Argon 用量的 84%，
 # 而且直連線沒有鏈可往下接，429 只能由分析器自己換線。
-# Grok 週額度用到 50% 就讓出（GROK_PAUSE_PERCENT），名額空著不壓到其他線。
+# Grok 週額度用到 90% 就讓出（GROK_PAUSE_PERCENT），名額空著不壓到其他線。
 # Argon 跟互動 session 共用同一把 Google key；以前 10 個同時先打 Argon，每分鐘約 24 次，互動端一直撞 429。
 # --max-sessions 不能高於主線加備用的名額：高出的差額會補成 free 鏈。
 # 公司工作目錄目前不另選模型；需要時透過 SESSION_AUDIT_WORKDIR_ROUTES 指定。

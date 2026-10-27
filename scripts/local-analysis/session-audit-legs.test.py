@@ -77,7 +77,7 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(peak, {'swe2-high': 5, 'mimo26-pool': 5, 'grok-4.7': 5})
 
   def test_grok_over_its_line_leaves_its_slots_empty_instead_of_overloading_the_pools(self):
-    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(50), full=10, extra=['--max-sessions', '2'])
+    peak = self.peaks(PRODUCTION_LEGS, self.grok_usage(90), full=10, extra=['--max-sessions', '2'])
     self.assertEqual(peak, {'swe2-high': 5, 'mimo26-pool': 5}, 'Each leg keeps the 5 slots the user set even while Grok sits out')
 
   def test_production_incremental_runs_use_the_chain_alone(self):
@@ -194,7 +194,7 @@ class DirectLegTests(population.PopulationTests):
     self.assertEqual(self.cli(['run', *flags]).returncode, 0)
     self.assertNotIn('grok-4.7', seen, 'A Grok that keeps failing is paused instead of eating every request')
 
-  def test_grok_is_skipped_at_fifty_percent_or_when_usage_is_unknown(self):
+  def test_grok_is_skipped_at_ninety_percent_or_when_usage_is_unknown(self):
     self.sessions(3)
     seen = []
 
@@ -203,12 +203,12 @@ class DirectLegTests(population.PopulationTests):
       return fixtures.analysis([], rule_tags=[]), 200
 
     _, url = self.provider(reply)
-    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(49))]).returncode, 0)
-    self.assertIn('grok-4.7', seen, 'Below 50% Grok still takes its slots')
+    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(89))]).returncode, 0)
+    self.assertIn('grok-4.7', seen, 'Below 90% Grok still takes its slots')
     seen.clear()
     for index in range(3):
       self.source(f'work/full-{index}.jsonl', f'NEAR_LIMIT_{index}')
-    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(50))]).returncode, 0)
+    self.assertEqual(self.cli(['run', *self.leg_flags(url, self.grok_usage(90))]).returncode, 0)
     self.source('work/stale.jsonl', 'STALE_SAMPLE')
     stale = self.grok_usage(10, at=datetime.fromtimestamp(time.time() - 3600, UTC))
     self.assertEqual(self.cli(['run', *self.leg_flags(url, stale)]).returncode, 0)
