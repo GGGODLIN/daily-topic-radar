@@ -173,6 +173,23 @@ class RetroCLI(unittest.TestCase):
     no_fwd_plan = json.loads((no_fwd_run / "plan.json").read_text())
     self.assertNotIn("forward", {s["session"] for s in no_fwd_plan["sessions"]})
 
+  def test_inventory_estimates_omit_thinking_and_api_request_blobs_and_include_window_counts(self):
+    self.source("bloated", [
+      user("older human", timestamp=OLD),
+      assistant([{"type": "api-request-blob", "text": "B" * 1000000}, {"type": "text", "text": "older answer"}], timestamp=OLD),
+      user("recent human", timestamp=RECENT),
+      assistant([{"type": "thinking", "thinking": "T" * 1000000}, {"type": "text", "text": "recent answer"}], timestamp=RECENT),
+    ])
+    _, data = self.inventory()
+    day = data["options"]["day"]
+    self.assertEqual(day["estimated_pages"], 1)
+    self.assertEqual(day["estimated_reader_units"], 1)
+    self.assertEqual(day["window_estimated_pages"], 1)
+    self.assertEqual(day["window_estimated_reader_units"], 1)
+    self.assertEqual(day["default_estimated_pages"], 1)
+    self.assertEqual(day["default_window_estimated_pages"], 1)
+    self.assertEqual(day["long_sessions"], [])
+
   def test_queued_block_content_is_classified_and_rendered_as_text(self):
     self.source("queued-blocks", [{"type": "attachment", "timestamp": RECENT,
       "attachment": {"type": "queued_command", "prompt": [{"type": "text", "text": "queued block request"}]}}])

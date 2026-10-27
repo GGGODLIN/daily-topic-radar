@@ -187,102 +187,6 @@ def latest_success(root, cutoff, scope="all"):
   return max(times) if times else None
 
 
-def inventory(args):
-  root = Path(args.projects_root).expanduser().resolve()
-  cutoff = moment(args.now) if args.now else datetime.now(UTC)
-  out = new_dir(args.out)
-  private = out / "private"
-  private.mkdir(mode=0o700)
-  found = set()
-  sessions = []
-  for alias in sorted(root.glob("*/*.jsonl")):
-    source = alias.resolve()
-    if source in found or not source.is_file():
-      continue
-    found.add(source)
-    raw = source.read_bytes()
-    selected = []
-    kept = []
-    activities = []
-    limits = []
-    for number, encoded_line in enumerate(raw.split(b"\n"), 1):
-      try:
-        line = encoded_line.decode("utf-8")
-      except UnicodeDecodeError:
-        kept.append("")
-        limits.append({"line": number, "reason": "invalid-utf8"})
-        continue
-      if not line.strip():
-        kept.append("")
-        continue
-      try:
-        row = json.loads(line)
-        require(isinstance(row, dict), "record is not an object")
-        stamp = moment(row["timestamp"]) if row.get("timestamp") else None
-      except (ValueError, TypeError):
-        kept.append("")
-        limits.append({"line": number, "reason": "invalid-record-or-timestamp"})
-        continue
-      if stamp and stamp > cutoff:
-        kept.append("")
-        continue
-      if active(row) and stamp is None:
-        kept.append("")
-        limits.append({"line": number, "reason": "activity-without-timestamp"})
-        continue
-      kept.append(line)
-      selected.append(row)
-      if active(row):
-        activities.append(iso(stamp))
-    category, reasons = classify(selected, source)
-    snapshot = private / f"s{len(sessions) + 1:02d}.jsonl"
-    snapshot.write_text("\n".join(kept), encoding="utf-8")
-    snapshot.chmod(0o600)
-    inputs = [row for row in selected if human_input(row)]
-    slash_only = bool(inputs) and all(not queued(row) and content_text(row.get("message", {}).get("content", "")).lstrip().startswith(("<command-name>", "<command-message>")) for row in inputs)
-    project = next((row["cwd"] for row in reversed(selected) if human_input(row) and isinstance(row.get("cwd"), str)),
-                   next((row["cwd"] for row in reversed(selected) if isinstance(row.get("cwd"), str)), str(source.parent)))
-    sessions.append({"session": source.stem, "source": str(source), "project": str(Path(project).expanduser().resolve()),
-                     "snapshot": str(snapshot), "classification": category, "reasons": reasons,
-                     "activity": activities, "slash_only": slash_only, "limitations": limits,
-                     "estimated_chars": sum(len(line) for line in kept)})
-  last = latest_success(args.reports_root, cutoff)
-  options = {}
-  for key, start in (("day", cutoff - timedelta(days=1)), ("last-success", last)):
-    if start is None:
-      options[key] = None
-      continue
-    selected = [row for row in sessions if row["classification"] == "human" and any(start <= moment(t) <= cutoff for t in row["activity"])]
-    forwarded = [row for row in sessions if row["classification"] == "excluded" and row.get("reasons") == ["forwarded"] and any(start <= moment(t) <= cutoff for t in row["activity"])]
-    projects = {}
-    for row in selected:
-      projects[row["project"]] = projects.get(row["project"], 0) + 1
-    options[key] = {"window_start": iso(start), "cutoff": iso(cutoff), "sessions_count": len(selected),
-                    "forwarded_sessions_count": len(forwarded), "forwarded_sessions": [row["session"] for row in forwarded],
-                    "estimated_pages": sum(max(1, math.ceil(row["estimated_chars"] / PAGE_CHARS)) for row in selected),
-                    "estimated_reader_units": sum(max(1, math.ceil(row["estimated_chars"] / SHARD_CHARS)) for row in selected),
-                    "projects": projects, "long_sessions": [row["session"] for row in selected if row["estimated_chars"] > SHARD_CHARS],
-                    "estimate_basis": "raw snapshot character count; sanitized pagination can differ"}
-  scoped_completions = []
-  for completion_path in Path(args.reports_root).glob("*/completion.json"):
-    try:
-      completion = load(completion_path)
-      scope = completion.get("scope")
-      if isinstance(scope, dict):
-        baseline = latest_success(args.reports_root, cutoff, scope)
-        if baseline:
-          scoped_completions.append({"scope": scope, "cutoff": iso(baseline)})
-    except (OSError, ValueError, KeyError, TypeError):
-      continue
-  data = {"schema_version": 1, "cutoff": iso(cutoff), "projects_root": str(root),
-          "scoped_completions": scoped_completions,
-          "last_success": iso(last) if last else None, "options": options, "sessions": sessions,
-          "unknown": [s for s in sessions if s["classification"] == "unknown"],
-          "excluded": [s for s in sessions if s["classification"] == "excluded"], "default_model": read_model()}
-  save(out / "inventory.json", data)
-  return {"inventory_path": str(out / "inventory.json"), "options": options, "unknown_count": len(data["unknown"]), "excluded_count": len(data["excluded"]), "model": data["default_model"]}
-
-
 def sanitizer():
   spec = importlib.util.spec_from_file_location("retro_readonly_audit", Path(__file__).with_name("session-audit.py"))
   module = importlib.util.module_from_spec(spec)
@@ -290,15 +194,16 @@ def sanitizer():
   return module
 
 
-def visible_blocks(row, audit):
+def visible_blocks(row, audit=None):
   blocks = []
   media = 0
   if queued(row):
-    blocks.append(("user-queued", audit.redact_text(content_text(row["attachment"].get("prompt", "")))))
+    prompt_text = content_text(row["attachment"].get("prompt", ""))
+    blocks.append(("user-queued", audit.redact_text(prompt_text) if audit else prompt_text))
   content = row.get("message", {}).get("content", row.get("content"))
   role = str(row.get("type", "unknown"))
   if isinstance(content, str):
-    blocks.append((role, audit.redact_text(content)))
+    blocks.append((role, audit.redact_text(content) if audit else content))
   elif isinstance(content, list):
     for block in content:
       if not isinstance(block, dict):
@@ -309,7 +214,7 @@ def visible_blocks(row, audit):
       if kind in {"image", "document", "audio", "video"}:
         media += 1
         continue
-      clean = copy.deepcopy(block)
+      clean = copy.deepcopy(block) if audit else block
       if kind == "tool_result" and isinstance(clean.get("content"), list):
         kept = []
         for part in clean["content"]:
@@ -317,11 +222,12 @@ def visible_blocks(row, audit):
             media += 1
           else:
             kept.append(part)
-        clean["content"] = kept
+        clean = {**clean, "content": kept}
       if kind == "text":
-        text = audit.redact_text(str(clean.get("text", "")))
+        raw_text = str(clean.get("text", ""))
+        text = audit.redact_text(raw_text) if audit else raw_text
       else:
-        text = json.dumps(audit.redact_obj(clean), ensure_ascii=False)
+        text = json.dumps(audit.redact_obj(clean) if audit else clean, ensure_ascii=False)
       blocks.append((role + ("-" + kind if kind != "text" and isinstance(kind, str) else ""), text))
   return blocks, media
 
@@ -366,6 +272,171 @@ def slice_page_chunks(text):
   if cur:
     chunks.append("".join(cur))
   return chunks
+
+
+def count_body_pages_and_units(body):
+  units = 0
+  total_pages = 0
+  for position in range(0, max(1, len(body)), SHARD_CHARS):
+    units += 1
+    total_pages += len(slice_page_chunks(body[position:position + SHARD_CHARS]))
+  return total_pages, units
+
+
+def build_visible_events(numbered_rows, start=None, include_forwarded=True, audit=None):
+  events = []
+  seen = set()
+  total_media = 0
+  for line, stamp, obj in numbered_rows:
+    blocks, media = visible_blocks(obj, audit)
+    total_media += media
+    message_id = obj.get("message", {}).get("id")
+    for index, (label, text) in enumerate(blocks):
+      key = (message_id, label, index, text)
+      if label.startswith("assistant") and message_id and key in seen:
+        continue
+      seen.add(key)
+      scope = "window" if (start is None or start <= stamp) else "older"
+      events.append({"source_line": line, "event_time": iso(stamp), "label": label, "text": text,
+                     "human": human_input(obj) or (include_forwarded and forwarded_input(obj)), "scope": scope})
+  return events, total_media
+
+
+def slice_window_events(events):
+  current = [i for i, event in enumerate(events) if event["scope"] == "window"]
+  first = min(current) if current else len(events)
+  prior_humans = [i for i, event in enumerate(events[:first]) if event["human"]]
+  context_start = prior_humans[-1] if prior_humans else first
+  return events[context_start:]
+
+
+def render_events_body(events):
+  return "\n".join(f"[line={event['source_line']} timestamp={event['event_time']} {event['scope']} {event['label']}]\n{event['text']}\n"
+                   for event in events)
+
+
+def inventory(args):
+  root = Path(args.projects_root).expanduser().resolve()
+  cutoff = moment(args.now) if args.now else datetime.now(UTC)
+  out = new_dir(args.out)
+  private = out / "private"
+  private.mkdir(mode=0o700)
+  found = set()
+  sessions = []
+  active_rows_by_session = {}
+  for alias in sorted(root.glob("*/*.jsonl")):
+    source = alias.resolve()
+    if source in found or not source.is_file():
+      continue
+    found.add(source)
+    raw = source.read_bytes()
+    selected = []
+    numbered_active = []
+    kept = []
+    activities = []
+    limits = []
+    for number, encoded_line in enumerate(raw.split(b"\n"), 1):
+      try:
+        line = encoded_line.decode("utf-8")
+      except UnicodeDecodeError:
+        kept.append("")
+        limits.append({"line": number, "reason": "invalid-utf8"})
+        continue
+      if not line.strip():
+        kept.append("")
+        continue
+      try:
+        row = json.loads(line)
+        require(isinstance(row, dict), "record is not an object")
+        stamp = moment(row["timestamp"]) if row.get("timestamp") else None
+      except (ValueError, TypeError):
+        kept.append("")
+        limits.append({"line": number, "reason": "invalid-record-or-timestamp"})
+        continue
+      if stamp and stamp > cutoff:
+        kept.append("")
+        continue
+      if active(row) and stamp is None:
+        kept.append("")
+        limits.append({"line": number, "reason": "activity-without-timestamp"})
+        continue
+      kept.append(line)
+      selected.append(row)
+      if active(row):
+        activities.append(iso(stamp))
+        numbered_active.append((number, stamp, row))
+    category, reasons = classify(selected, source)
+    snapshot = private / f"s{len(sessions) + 1:02d}.jsonl"
+    snapshot.write_text("\n".join(kept), encoding="utf-8")
+    snapshot.chmod(0o600)
+    inputs = [row for row in selected if human_input(row)]
+    slash_only = bool(inputs) and all(not queued(row) and content_text(row.get("message", {}).get("content", "")).lstrip().startswith(("<command-name>", "<command-message>")) for row in inputs)
+    project = next((row["cwd"] for row in reversed(selected) if human_input(row) and isinstance(row.get("cwd"), str)),
+                   next((row["cwd"] for row in reversed(selected) if isinstance(row.get("cwd"), str)), str(source.parent)))
+    if category == "human" or (category == "excluded" and reasons == ["forwarded"]):
+      active_rows_by_session[source.stem] = numbered_active
+    sessions.append({"session": source.stem, "source": str(source), "project": str(Path(project).expanduser().resolve()),
+                     "snapshot": str(snapshot), "classification": category, "reasons": reasons,
+                     "activity": activities, "slash_only": slash_only, "limitations": limits,
+                     "estimated_chars": sum(len(line) for line in kept)})
+  last = latest_success(args.reports_root, cutoff)
+  options = {}
+  for key, start in (("day", cutoff - timedelta(days=1)), ("last-success", last)):
+    if start is None:
+      options[key] = None
+      continue
+    selected = [row for row in sessions if row["classification"] == "human" and any(start <= moment(t) <= cutoff for t in row["activity"])]
+    forwarded = [row for row in sessions if row["classification"] == "excluded" and row.get("reasons") == ["forwarded"] and any(start <= moment(t) <= cutoff for t in row["activity"])]
+    projects = {}
+    for row in selected:
+      projects[row["project"]] = projects.get(row["project"], 0) + 1
+    full_pages = full_units = win_pages = win_units = 0
+    def_full_pages = def_full_units = def_win_pages = def_win_units = 0
+    for row in selected + forwarded:
+      events, _ = build_visible_events(active_rows_by_session.get(row["session"], []), start=start)
+      full_body = render_events_body(events)
+      row["estimated_chars"] = len(full_body)
+      fp, fu = count_body_pages_and_units(full_body)
+      wp, wu = count_body_pages_and_units(render_events_body(slice_window_events(events)))
+      def_full_pages += fp
+      def_full_units += fu
+      def_win_pages += wp
+      def_win_units += wu
+      if row["classification"] == "human":
+        full_pages += fp
+        full_units += fu
+        win_pages += wp
+        win_units += wu
+    options[key] = {"window_start": iso(start), "cutoff": iso(cutoff), "sessions_count": len(selected),
+                    "forwarded_sessions_count": len(forwarded), "forwarded_sessions": [row["session"] for row in forwarded],
+                    "estimated_pages": full_pages,
+                    "estimated_reader_units": full_units,
+                    "window_estimated_pages": win_pages,
+                    "window_estimated_reader_units": win_units,
+                    "default_estimated_pages": def_full_pages,
+                    "default_estimated_reader_units": def_full_units,
+                    "default_window_estimated_pages": def_win_pages,
+                    "default_window_estimated_reader_units": def_win_units,
+                    "projects": projects, "long_sessions": [row["session"] for row in selected if row["estimated_chars"] > SHARD_CHARS],
+                    "estimate_basis": "visible blocks after omitting thinking/api-request-blob; redaction can slightly change length"}
+  scoped_completions = []
+  for completion_path in Path(args.reports_root).glob("*/completion.json"):
+    try:
+      completion = load(completion_path)
+      scope = completion.get("scope")
+      if isinstance(scope, dict):
+        baseline = latest_success(args.reports_root, cutoff, scope)
+        if baseline:
+          scoped_completions.append({"scope": scope, "cutoff": iso(baseline)})
+    except (OSError, ValueError, KeyError, TypeError):
+      continue
+  data = {"schema_version": 1, "cutoff": iso(cutoff), "projects_root": str(root),
+          "scoped_completions": scoped_completions,
+          "last_success": iso(last) if last else None, "options": options, "sessions": sessions,
+          "unknown": [s for s in sessions if s["classification"] == "unknown"],
+          "excluded": [s for s in sessions if s["classification"] == "excluded"], "default_model": read_model()}
+  save(out / "inventory.json", data)
+  return {"inventory_path": str(out / "inventory.json"), "options": options, "unknown_count": len(data["unknown"]), "excluded_count": len(data["excluded"]), "model": data["default_model"]}
 
 
 def pages(text, directory, prefix):
