@@ -980,7 +980,7 @@ def normalize_evidence(evidence, item, canonical):
     pass
   matching = [event for event in canonical[session] if event["source_line"] == source_line
               and any(q in text for text in canonical_strings(event["text"]) for q in quotes)]
-  require(bool(matching), "quote is not a contiguous source block match")
+  require(bool(matching), f"quote is not a contiguous source block match (source_line={source_line}, quote={quote!r})")
   event = matching[0]
   if "event_time" in evidence:
     require(moment(evidence["event_time"]) == moment(event["event_time"]), "event_time differs from source")
@@ -1121,16 +1121,19 @@ def critic_read_errors(agent, item, report, canonical, plan):
       if "source_line" in evidence:
         path = documents[evidence.get("session")]
         quote = evidence["quote"]
-        if not any(op["name"] == "Read" and operation_path(op) == path and quote in op["text"] for op in agent["operations"]):
-          errors.append("critic source quote lacks its own successful Read evidence")
+        esc1 = json.dumps(quote, ensure_ascii=False)[1:-1]
+        esc2 = json.dumps(esc1, ensure_ascii=False)[1:-1]
+        quotes = {quote, esc1, esc2}
+        if not any(op["name"] == "Read" and operation_path(op) == path and any(q in op["text"] for q in quotes) for op in agent["operations"]):
+          errors.append(f"critic source quote lacks its own successful Read evidence (pattern={verdict.get('pattern_id')}, session={evidence.get('session')}, source_line={evidence.get('source_line')}, quote={quote!r})")
     if item["unit"] == "verify-current" and verdict["verdict"] != "UNCERTAIN":
       current = verdict.get("current_evidence", [])
       if not current:
-        errors.append("current-state verdict lacks current evidence")
+        errors.append(f"current-state verdict lacks current evidence (pattern={verdict.get('pattern_id')})")
       for evidence in current:
         path = Path(evidence.get("path", "")).expanduser().resolve()
         if not any(op["name"] == "Read" and operation_path(op) == path and op["text"].strip() for op in agent["operations"]):
-          errors.append("current-state evidence lacks successful Read")
+          errors.append(f"current-state evidence lacks successful Read (pattern={verdict.get('pattern_id')}, path={path})")
   return errors
 
 
@@ -1160,12 +1163,18 @@ def validate(args):
       unit.update({"pass": True, "agent": agent["path"], "actual_report_path": str(target),
                    "validated_path": str(destination), "original_report": original, "report": normalized})
     except (OSError, ValueError, KeyError, TypeError) as error:
+      msg = str(error)
+      if msg.startswith("no successful report") and Path(item["report_path"]).is_file():
+        try:
+          load(Path(item["report_path"]))
+        except ValueError as json_error:
+          msg = f"{msg} (JSON parse error in {item['report_path']}: {json_error})"
       if not unit["errors"]:
-        unit["errors"].append(str(error))
+        unit["errors"].append(msg)
       # No new writer is not evidence of failure of a previously validated, unchanged unit.
       if previous and not any(Path(a["path"]) == Path(p.get("agent", "")) for a in agents for p in previous["units"] if p["unit"] == item["unit"]):
         prior = next((p for p in previous["units"] if p["unit"] == item["unit"] and p["pass"]), None)
-        if prior and str(error).startswith("no successful report"):
+        if prior and msg.startswith("no successful report"):
           unit = prior
     units.append(unit)
   success = all(unit["pass"] for unit in units)

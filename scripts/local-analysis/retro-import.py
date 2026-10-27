@@ -8,6 +8,7 @@ content, and never promotes a source verdict onto a discovery.
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -59,7 +60,7 @@ def text_lines(path):
 
 def locate_id(lines, pattern_id):
   token = json.dumps(pattern_id, ensure_ascii=False)
-  hits = [number for number, line in enumerate(lines, 1) if '"id"' in line and token in line]
+  hits = [number for number, line in enumerate(lines, 1) if re.search(r'"id"\s*:\s*' + re.escape(token), line)]
   require(len(hits) == 1, "pattern id is not a unique cross line: " + pattern_id)
   return hits[0], token
 
