@@ -627,6 +627,21 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     rerun = subprocess.run(["node", "--input-type=module", "-e", runner, refreshed["workflow_script_path"]], text=True, capture_output=True)
     self.assertEqual(json.loads(rerun.stdout)["calls"], ["s01-u02"])
 
+  def test_prepare_redacts_cjk_password_labels_in_plain_and_nested_tool_text(self):
+    rows = [
+      user("整理連假後工作現況"),
+      assistant([
+        {"type": "text", "text": "• 初始密碼：leakiampass99\n• 密碼長度：12_SAFE_LEN\n• 忘記密碼：SAFE_RESET_NOTE"},
+        {"type": "tool_result", "tool_use_id": "t1", "content": '{"body":"• 初始密碼：`leaknested88`\\n• 帳號：SAFE_ACCOUNT","初始密碼":"leakkey77"}'},
+      ]),
+    ]
+    _, plan = self.prepare(rows)
+    doc = Path(plan["sessions"][0]["document"]).read_text(encoding="utf-8")
+    for secret in ("leakiampass99", "leaknested88", "leakkey77"):
+      self.assertNotIn(secret, doc)
+    for safe in ("12_SAFE_LEN", "SAFE_RESET_NOTE", "SAFE_ACCOUNT"):
+      self.assertIn(safe, doc)
+
 
 if __name__ == "__main__":
   unittest.main(verbosity=2)

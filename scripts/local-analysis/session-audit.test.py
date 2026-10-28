@@ -581,6 +581,9 @@ class SessionAuditCliTest(unittest.TestCase):
       + "DB_PWD=leakdbpwd\n"
       + "active_key=leakactivekey\n"
       + '{"active_key":"leakjsonactivekey","active_model":"SAFE_ACTIVE_MODEL"}\n'
+      + "• 初始密碼：leakiampass99\n"
+      + '{"text":"• 初始密碼：leaknestediampass88\\n• 登入帳號：SAFE_IAM_USER","初始密碼":"leakcjkkeypass77"}\n'
+      + "密碼長度：12_SAFE_LEN\n"
       + "PASS: VISIBLE_TEST_NAME\n"
     )
     record = {
@@ -605,7 +608,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
     sent = b"".join(server.bodies).decode()
-    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge", "VISIBLE_TEST_NAME", "SAFE_ACTIVE_MODEL"):
+    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge", "VISIBLE_TEST_NAME", "SAFE_ACTIVE_MODEL", "SAFE_IAM_USER", "12_SAFE_LEN"):
       self.assertIn(marker, sent)
     for secret in (
       "UNIQUEPRIVATELINE",
@@ -621,6 +624,9 @@ class SessionAuditCliTest(unittest.TestCase):
       "leakdbpwd",
       "leakactivekey",
       "leakjsonactivekey",
+      "leakiampass99",
+      "leaknestediampass88",
+      "leakcjkkeypass77",
     ):
       self.assertNotIn(secret, sent)
     row = self.source_named(self.status(url), "huge.jsonl")

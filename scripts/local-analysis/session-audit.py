@@ -125,7 +125,8 @@ TOKEN_RE = re.compile(
 )
 JSON_SECRET_RE = re.compile(
   r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|token|secret"
-  r"|private[_-]?key|privatekey|cookie|authorization)[A-Za-z0-9_.-]*[\"']\s*:\s*)([\"'])([^\"']*)([\"'])"
+  r"|private[_-]?key|privatekey|cookie|authorization"
+  r"|初始密碼|預設密碼|臨時密碼|登入密碼|密碼|口令|金鑰|密鑰|私鑰)[A-Za-z0-9_.-]*[\"']\s*:\s*)([\"'])([^\"']*)([\"'])"
 )
 AUTHORIZATION_RE = re.compile(r"(?im)\bAuthorization\s*:\s*[^\r\n]+")
 COOKIE_RE = re.compile(r"(?im)\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]+")
@@ -136,6 +137,15 @@ JWT_RE = re.compile(
 PHONE_RE = re.compile(r"(?<!\w)(?:\+\d{8,15}|\(?\d{2,4}\)?[- .]\d{3,4}[- .]\d{3,4})(?!\w)")
 ASSIGNMENT_RE = re.compile(
   r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]{0,127})\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+CJK_SENSITIVE_KEY_RE = re.compile(
+  r"^(?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰)$"
+)
+# Slack／信件常把初始密碼寫成中文條列（如「• 初始密碼：...」），不含英文鍵名；排除「忘記／重設／修改／設定／輸入／確認密碼」等動作詞。
+CJK_SECRET_LABEL_RE = re.compile(
+  r"(?<!忘記|重設|修改|變更|設定|輸入|驗證|確認)"
+  r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
+  r"(\s*[：:=]\s*)(?:`[^`\r\n]+`|\"[^\"\r\n]*\"|'[^'\r\n]*'|(?:(?!(?:\\[nrt\"'\\]))[^\s,，。；;、\r\n\"'`])+)"
 )
 LOCK_RE = re.compile(
   r"^<!-- friction-review-lock:v1 session=(\S+) "
@@ -356,6 +366,8 @@ def migrate_stable_inode(connection):
 
 
 def sensitive_key(name):
+  if CJK_SENSITIVE_KEY_RE.search(name.strip()):
+    return True
   key = re.sub(r"[^A-Za-z0-9]+", "_", name).upper().strip("_")
   # PASS／PWD 單獨出現多半是測試結果（「PASS: 測試名」），只在有前綴時才算憑證名。
   return any(
@@ -438,6 +450,7 @@ def redact_text(value):
   text = BASIC_RE.sub("Basic [REDACTED]", text)
   text = URI_USERINFO_RE.sub(lambda match: f"{match.group(1)}[REDACTED]:[REDACTED]@", text)
   text = ASSIGNMENT_RE.sub(replace_assignment, text)
+  text = CJK_SECRET_LABEL_RE.sub(r"\1\2[REDACTED]", text)
   text = TOKEN_RE.sub("[REDACTED]", text)
   text = JWT_RE.sub("[JWT_REDACTED]", text)
   text = EMAIL_RE.sub("[EMAIL]", text)
