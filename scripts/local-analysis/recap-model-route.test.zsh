@@ -320,6 +320,15 @@ ANNOTATED_OVERVIEW_REPORT='6 個 session（5 個有可用首 prompt）／8 個 c
 ### 前一日的匿名主題
 保留標題前總覽與正文原有換行。'
 
+PLURAL_ENTRY_OVERVIEW_REPORT='31 sessions（29 個含非 noise 真人 prompt）/ 144 commits（117 個專案＋27 個 `~/.claude`）/ 50 個 memory entry / 跨 10 個 repo
+
+# Daily Recap
+
+## 2026-09-08
+
+### 複數單位與 memory entry 總覽行的匿名主題
+驗證 sessions / commits / memory entry 與標題並存時不會被誤判成前言拒收。'
+
 PREFACE='先整理四條來源，完成後再輸出報告。'
 CLOSING='以上是今日整理。'
 PROGRESS='正在核對來源，報告還沒寫。'
@@ -434,6 +443,16 @@ assert_status annotated-overview "$STREAM_STATUS" 0
 ((++checks))
 if ! cmp -s "$STREAM_OUT" "$annotated_expected"; then
   print -ru2 -- 'annotated overview report was not preserved byte-for-byte'
+  ((++failures))
+fi
+
+plural_expected="$fixture/plural-overview.expected"
+printf '%s\n' "$PLURAL_ENTRY_OVERVIEW_REPORT" > "$plural_expected"
+run_stream_case plural-entry-overview "" "$preface_block" "$(assistant_event "$PLURAL_ENTRY_OVERVIEW_REPORT")" "$closing_result"
+assert_status plural-entry-overview "$STREAM_STATUS" 0
+((++checks))
+if ! cmp -s "$STREAM_OUT" "$plural_expected"; then
+  print -ru2 -- 'plural entry overview report was not preserved byte-for-byte'
   ((++failures))
 fi
 
