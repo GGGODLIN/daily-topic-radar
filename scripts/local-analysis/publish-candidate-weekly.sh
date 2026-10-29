@@ -16,7 +16,8 @@
 # 若以本機 HEAD 為基準，尚未推上去的匯出內容會讓下週比對出「沒有差異」而靜默消失。本機另保留一條無關歷史的舊 main 分支，HEAD 被切過去時基準也會變垃圾。
 # 本 channel 唯讀、不 fetch、不連網，所以 origin/main 只和最後一次 fetch 一樣新；報告會註明，並在 HEAD 與 origin/main 不同時多標一行 ⚠️。
 #
-# 模型呼叫路由與 recap-daily.sh 的 run_recap 同一套（原生 Claude 用 native Opus、其餘啟動方式走本機 CLIProxyAPI 的 Luna(max)）；那邊改路由，這邊要跟著改。
+# 第 3 關的提示、模型路由（原生 Claude 用 native Opus、其餘啟動方式走本機 CLIProxyAPI 的 Luna(max)）與判讀都在
+# ~/.claude/scripts/harness-export/gate3-review.sh，與 publish.sh 共用；路由仍與 recap-daily.sh 的 run_recap 同一套。
 # 以下 PUBLISH_CANDIDATE_* 覆寫只給測試與手動把路徑導到別處用。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd /
@@ -37,6 +38,8 @@ NODE_BIN="${PUBLISH_CANDIDATE_NODE:-/opt/homebrew/bin/node}"
 CLAUDE="${PUBLISH_CANDIDATE_CLAUDE_BIN:-/Users/linhancheng/.local/bin/claude}"
 KEYS_FILE="${PUBLISH_CANDIDATE_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}"
 GPT_MODELS_FILE="${PUBLISH_CANDIDATE_GPT_MODELS_FILE:-$HOME/.claude/config/gpt-models.env}"
+# 第 3 關的提示、模型路由與判讀和 publish.sh 共用這一支；用真正的 $HOME 而非 HOME_DIR，測試換假家目錄時仍載入同一份。
+GATE3_LIB="${PUBLISH_CANDIDATE_GATE3_LIB:-$HOME/.claude/scripts/harness-export/gate3-review.sh}"
 # 上限 300 秒：local-analysis 以 haiku 代理跑 shell channel，Bash 工具單次上限 10 分鐘。
 REVIEW_TIMEOUT="${PUBLISH_CANDIDATE_REVIEW_TIMEOUT:-300}"
 MAX_DIFF_BYTES="${PUBLISH_CANDIDATE_MAX_DIFF_BYTES:-60000}"
@@ -106,72 +109,6 @@ finish_failure() { # finish_failure <原因行> [<細節檔>]
   echo "failure: $reason → report written"
 }
 
-with_timeout() { # alarm 在 exec 後仍有效；逾時以 SIGALRM 結束（退出碼 142）
-  perl -e 'alarm shift @ARGV; exec @ARGV or exit 127' "$REVIEW_TIMEOUT" "$@"
-}
-
-run_review() { # stdin = prompt；stdout = 審查結果
-  local luna_model=''
-  if [[ -z "$PARENT_CC_VENDOR" && -z "$PARENT_ANTHROPIC_BASE_URL" ]]; then
-    (
-      unset ANTHROPIC_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL
-      unset ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
-      unset CLAUDE_CODE_SUBAGENT_MODEL ANTHROPIC_AUTH_TOKEN
-      export CC_VENDOR=headless-channel
-      with_timeout "$CLAUDE" --model opus -p
-    )
-    return $?
-  fi
-  if [[ ! -f "$KEYS_FILE" ]]; then
-    printf 'review route: keys file missing: %s\n' "$KEYS_FILE" >&2
-    return 1
-  fi
-  if [[ -f "$GPT_MODELS_FILE" ]]; then
-    local key value
-    while IFS='=' read -r key value; do
-      [[ "$key" == GPT_LUNA ]] && luna_model="${value%$'\r'}(max)"
-    done < "$GPT_MODELS_FILE"
-  fi
-  if [[ -z "$luna_model" ]]; then
-    printf 'review route: GPT_LUNA missing from %s\n' "$GPT_MODELS_FILE" >&2
-    return 1
-  fi
-  (
-    local CLIPROXY_BASE_URL='' CLIPROXY_KEY_CC='' key value
-    while IFS='=' read -r key value; do
-      value="${value%$'\r'}"
-      case "$key" in
-        CLIPROXY_BASE_URL) CLIPROXY_BASE_URL="$value" ;;
-        CLIPROXY_KEY_CC) CLIPROXY_KEY_CC="$value" ;;
-      esac
-    done < "$KEYS_FILE"
-    if [[ -z "$CLIPROXY_BASE_URL" || -z "$CLIPROXY_KEY_CC" ]]; then
-      printf 'review route: keys file must define CLIPROXY_BASE_URL and CLIPROXY_KEY_CC\n' >&2
-      exit 1
-    fi
-    case "$CLIPROXY_BASE_URL" in
-      http://127.0.0.1:8317|http://localhost:8317) ;;
-      *) printf 'review route: relay URL must be local port 8317\n' >&2; exit 1 ;;
-    esac
-    unset ANTHROPIC_API_KEY ANTHROPIC_FALLBACK_MODEL CLAUDE_CODE_FALLBACK_MODEL
-    export CC_VENDOR=headless-channel
-    export ANTHROPIC_BASE_URL="$CLIPROXY_BASE_URL"
-    export ANTHROPIC_AUTH_TOKEN="$CLIPROXY_KEY_CC"
-    export ANTHROPIC_MODEL="$luna_model"
-    export ANTHROPIC_DEFAULT_FABLE_MODEL="$luna_model"
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="$luna_model"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="$luna_model"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$luna_model"
-    export CLAUDE_CODE_SUBAGENT_MODEL="$luna_model"
-    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-1000000}"
-    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-900000}"
-    export API_TIMEOUT_MS="${API_TIMEOUT_MS:-3000000}"
-    export CLAUDE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-600000}"
-    export CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS:-600000}"
-    with_timeout "$CLAUDE" --model "$luna_model" -p
-  )
-}
-
 # 上次發布之後有變動的設定檔（白名單、替換規則與刪段、接線點清單）。判斷依據是 git 歷史與工作樹，不是內容比對。
 # 輸出：每行一個檔名；回傳 2 表示判斷不了（設定不在 git 追蹤內）。
 changed_config_files() {
@@ -234,23 +171,7 @@ list_new_items() {
 display_path() { printf '%s' "$1" | sed "s|^$HOME_DIR/|~/|"; }
 
 build_prompt() { # build_prompt <new items 檔> → stdout
-  cat <<'EOF'
-你是公開前的差異審查員。以下是「私人 harness 準備公開的內容」與「公開 repo 目前基準版本」的差異。機械檢查（敏感字掃描、接線檢查）已經通過，所以你要找的是字串比對抓不到的東西：
-- 能辨識個人或公司身分的內容（公司、客戶、同事、內部專案代號、內部網域或端點、私人 email、只有本人才懂的路徑與帳號脈絡）
-- 看起來不該公開的設定、憑證形狀、內部流程細節
-- 上游授權或出處問題
-
-規則：
-1. 只讀本訊息內的資料，不要呼叫任何工具，不要修改任何東西。
-2. `skills/mutation-testing` 的上游翻譯／照搬段落（snava10/alist、hughescr/claude-code-config、otomatty/zedi）是使用者已拍板照原樣公開的已知風險（ADR 0004）：不要把它們列為發現。
-3. 沒把握就誠實回報 low-confidence，不要猜成 clean。
-4. 下方「新增項目」是白名單之外、上次發布後新出現的檔案或目錄；逐項判斷該不該收進公開版（include）或不收（exclude），並寫一句理由。
-
-輸出格式（逐行，不要加其他說明）：
-GATE3_RESULT: clean | findings | low-confidence
-FINDING: <公開路徑>:<行號或 -> | <一句話描述問題>      （每個發現一行；沒有就不寫）
-NEW_FILE: <新增項目的路徑，照抄下方> | include 或 exclude | <一句理由>      （每個新增項目一行）
-EOF
+  gate3_instructions
   echo ""
   echo "===== 差異（unified diff，head/ = 公開 repo ${BASE_NAME} ${PUB_SHA}，stage/ = 本次匯出）====="
   head -c "$MAX_DIFF_BYTES" "$TMP/full.diff"
@@ -280,8 +201,6 @@ EOF
   fi
 }
 
-one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
-
 # ---- main ------------------------------------------------------------------
 
 {
@@ -289,6 +208,13 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
 
   PRIOR="$TMP/prior.md"
   extract_prior_candidate > "$PRIOR"
+
+  # shellcheck source=/dev/null
+  if ! source "$GATE3_LIB"; then
+    one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
+    finish_failure "第 3 關共用腳本讀不到：$GATE3_LIB" ""
+    echo "=== publish-candidate weekly finished: $(date) ==="; exit 0
+  fi
 
   BASE_REF=HEAD; BASE_NAME=HEAD
   if [ -d "$PUBLIC_DIR" ] && git -C "$PUBLIC_DIR" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null 2>&1; then
@@ -389,41 +315,11 @@ one_line() { tr '\r\n' '  ' | sed 's/  */ /g; s/^ //; s/ $//'; }
   fi
   build_prompt "$TMP/new-items" > "$TMP/prompt.txt"
 
-  G3_STATE=incomplete   # clean | findings | low-confidence | incomplete
-  G3_NOTE=""
   run_review < "$TMP/prompt.txt" > "$TMP/review.out" 2> "$TMP/review.err"
-  REVIEW_RC=$?
-  if [ "$REVIEW_RC" -eq 142 ]; then
-    G3_NOTE="逾時（超過 ${REVIEW_TIMEOUT} 秒）"
-  elif [ "$REVIEW_RC" -ne 0 ]; then
-    G3_NOTE="模型呼叫失敗（結束碼 ${REVIEW_RC}：$(head -n 1 "$TMP/review.err" | one_line | cut -c1-120)）"
-  else
-    sed 's/^[ *-]*//' "$TMP/review.out" | tr -d '\r' > "$TMP/review.lines"
-    RESULTS="$(grep -c '^GATE3_RESULT:' "$TMP/review.lines")"
-    VALUE="$(grep -m1 '^GATE3_RESULT:' "$TMP/review.lines" | sed 's/^GATE3_RESULT:[[:space:]]*//; s/[[:space:]]*$//')"
-    case "$RESULTS:$VALUE" in
-      1:clean|1:findings|1:low-confidence) G3_STATE="$VALUE" ;;
-      *) G3_NOTE="輸出格式不符（沒有恰好一行有效的 GATE3_RESULT）" ;;
-    esac
-  fi
+  gate3_parse "$?" "$TMP/review.out" "$TMP/review.err" "$TMP"
 
-  # 發現與新增檔判定（只在第 3 關有結果時解析）
-  : > "$TMP/findings"; : > "$TMP/accepted"; : > "$TMP/include"; : > "$TMP/unclassified"
-  if [ "$G3_STATE" != incomplete ]; then
-    grep '^FINDING:' "$TMP/review.lines" | sed 's/^FINDING:[[:space:]]*//' | while IFS= read -r line; do
-      case "$line" in
-        *"$ACCEPTED_PATH"*) printf '%s\n' "$line" >> "$TMP/accepted" ;;
-        *) printf '%s\n' "$line" >> "$TMP/findings" ;;
-      esac
-    done
-    if [ "$G3_STATE" = findings ] && [ ! -s "$TMP/findings" ] && [ ! -s "$TMP/accepted" ]; then
-      G3_STATE=incomplete; G3_NOTE="回報有發現卻沒有列出任何 FINDING 行"
-    elif [ "$G3_STATE" = clean ] && [ -s "$TMP/findings" ]; then
-      G3_STATE=findings   # 自相矛盾時以發現為準，不信「clean」
-    elif [ "$G3_STATE" = findings ] && [ ! -s "$TMP/findings" ]; then
-      G3_STATE=clean      # 只剩使用者已知情接受的項目
-    fi
-  fi
+  # 新增檔判定（只在第 3 關有結果時解析）
+  : > "$TMP/include"; : > "$TMP/unclassified"
   if [ "$G3_STATE" != incomplete ]; then
     grep '^NEW_FILE:' "$TMP/review.lines" | sed 's/^NEW_FILE:[[:space:]]*//' > "$TMP/verdicts"
     while IFS= read -r abs; do

@@ -207,6 +207,14 @@ assert_not_contains "top-level noise directories are not new components" "memory
 assert_not_contains "allowlisted files are not new" "~/.claude/hooks/a.sh" "$(printf '%s' "$PROMPT" | sed -n '/===== 新增項目 =====/,$p')"
 assert_contains "prompt carries the diff" "+echo a2" "$PROMPT"
 assert_contains "prompt tells the model about the accepted risk" "ADR 0004" "$PROMPT"
+# 2026-10-18 外洩漏掉的類別：提示改由 gate3-review.sh 供應後，這些類別必須仍出現在每週候選的提示裡。
+assert_contains "prompt asks for the user's own quotes" "使用者本人的原話" "$PROMPT"
+assert_contains "prompt asks for money and cost figures" "金額、成本" "$PROMPT"
+setup_world
+run_channel diff ok PUBLISH_CANDIDATE_GATE3_LIB="$W/missing-gate3.sh"; R="$(report)"
+assert_has_line "missing shared gate 3 script → failure heading" "$H_FAIL" "$R"
+assert_contains "missing shared gate 3 script is named" "第 3 關共用腳本讀不到" "$R"
+assert_not_contains "missing shared gate 3 script never yields a candidate" "$H_CAND" "$R"
 setup_world
 rm -rf "$W/home/.claude/hooks/new-gate.sh" "$W/home/.claude/skills/newskill"
 rm -f "$W/home/.claude/hooks/newer.sh"
