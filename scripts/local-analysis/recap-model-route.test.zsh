@@ -320,7 +320,7 @@ ANNOTATED_OVERVIEW_REPORT='6 個 session（5 個有可用首 prompt）／8 個 c
 ### 前一日的匿名主題
 保留標題前總覽與正文原有換行。'
 
-PLURAL_ENTRY_OVERVIEW_REPORT='31 sessions（29 個含非 noise 真人 prompt）/ 144 commits（117 個專案＋27 個 `~/.claude`）/ 50 個 memory entry / 跨 10 個 repo
+PLURAL_ENTRY_OVERVIEW_REPORT='56 個窗內 session 檔（27 個自然 session；29 個 T-skill-up 評測檔不納入活動敘事） / 144 commits（117 個專案＋27 個 `~/.claude`）/ 50 個 memory entry / 跨 10 個 repo
 
 # Daily Recap
 

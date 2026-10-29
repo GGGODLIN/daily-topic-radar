@@ -223,16 +223,16 @@ def acceptable(text):
         return False
     first = body.splitlines()[0]
     overview = bool(re.fullmatch(
-        r"\d+ (?:個 )?(?:CC )?sessions?(?:（[^（）]*）)? *[/／] *"
-        r"\d+ (?:個 )?commits?(?:（[^（）]*）)? *[/／] *"
-        r"\d+ (?:個 *)?(?:(?:新或更新的?|新) *)?memory(?: *entr(?:y|ies))?(?:（[^（）]*）)? *[/／] *跨 \d+ 個 repos?(?:（[^（）]*）)?", first))
+        r"\d+ (?:個 *)?(?:窗內 *)?(?:CC *)?sessions?(?: *檔)?(?:（[^（）]*）)? *[/／] *"
+        r"\d+ (?:個 *)?commits?(?:（[^（）]*）)? *[/／] *"
+        r"\d+ (?:個 *)?(?:(?:新或更新的?|新) *)?memory(?: *entr(?:y|ies)| *檔)?(?:（[^（）]*）)? *[/／] *跨 \d+ 個 repos?(?:（[^（）]*）)?", first))
     match = re.search(r"(?m)^# ", text)
     # prompt 允許總覽先於標題，但不能因此略過任意前言。
     if match and text[:match.start()].strip():
         if not overview or text[:match.start()].strip() != first:
             return False
     return first.startswith("# Daily Recap") or overview or bool(re.match(
-        r"^\d+ (?:個 )?(?:CC )?sessions? / .+commits? / .+/ 跨 ", first))
+        r"^\d+ (?:個 *)?(?:窗內 *)?(?:CC *)?sessions?(?: *檔)? / .+commits? / .+/ 跨 ", first))
 
 blocks = []
 result = None
