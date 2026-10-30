@@ -581,6 +581,8 @@ class SessionAuditCliTest(unittest.TestCase):
       + "DB_PWD=leakdbpwd\n"
       + "active_key=leakactivekey\n"
       + '{"active_key":"leakjsonactivekey","active_model":"SAFE_ACTIVE_MODEL"}\n'
+      + '{"id":"iteracompute","key":"leakbareproviderkey9876543210","other":{"key":"SAFE_SHORT_KEY"},"journal":{"key":"v2:6aff68f7c98850ba050eddd34c6f596e"}}\n'
+      + "{'id': 'iteracompute', 'key': 'leakpydictproviderkey1234567890', 'caller': {'key': 'magpie-caller-key'}}\n"
       + "• 初始密碼：leakiampass99\n"
       + '{"text":"• 初始密碼：leaknestediampass88\\n• 登入帳號：SAFE_IAM_USER","初始密碼":"leakcjkkeypass77"}\n'
       + "密碼長度：12_SAFE_LEN\n"
@@ -608,7 +610,7 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(self.cli(["scan", *self.flags(url)]).returncode, 0)
     self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
     sent = b"".join(server.bodies).decode()
-    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge", "VISIBLE_TEST_NAME", "SAFE_ACTIVE_MODEL", "SAFE_IAM_USER", "12_SAFE_LEN"):
+    for marker in ("START_MARKER", "MIDDLE_VISIBLE", "END_MARKER", "toolu_huge", "VISIBLE_TEST_NAME", "SAFE_ACTIVE_MODEL", "SAFE_IAM_USER", "12_SAFE_LEN", "SAFE_SHORT_KEY", "v2:6aff68f7c98850ba050eddd34c6f596e", "magpie-caller-key"):
       self.assertIn(marker, sent)
     for secret in (
       "UNIQUEPRIVATELINE",
@@ -624,6 +626,8 @@ class SessionAuditCliTest(unittest.TestCase):
       "leakdbpwd",
       "leakactivekey",
       "leakjsonactivekey",
+      "leakbareproviderkey9876543210",
+      "leakpydictproviderkey1234567890",
       "leakiampass99",
       "leaknestediampass88",
       "leakcjkkeypass77",

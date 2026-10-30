@@ -632,14 +632,14 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
       user("整理連假後工作現況"),
       assistant([
         {"type": "text", "text": "• 初始密碼：leakiampass99\n• 密碼長度：12_SAFE_LEN\n• 忘記密碼：SAFE_RESET_NOTE"},
-        {"type": "tool_result", "tool_use_id": "t1", "content": '{"body":"• 初始密碼：`leaknested88`\\n• 帳號：SAFE_ACCOUNT","初始密碼":"leakkey77"}'},
+        {"type": "tool_result", "tool_use_id": "t1", "content": '{"body":"• 初始密碼：`leaknested88`\\n• 帳號：SAFE_ACCOUNT","初始密碼":"leakkey77","key":"leakbareproviderkey9876543210","nested":{"key":"SAFE_SHORT_KEY"}}'},
       ]),
     ]
     _, plan = self.prepare(rows)
     doc = Path(plan["sessions"][0]["document"]).read_text(encoding="utf-8")
-    for secret in ("leakiampass99", "leaknested88", "leakkey77"):
+    for secret in ("leakiampass99", "leaknested88", "leakkey77", "leakbareproviderkey9876543210"):
       self.assertNotIn(secret, doc)
-    for safe in ("12_SAFE_LEN", "SAFE_RESET_NOTE", "SAFE_ACCOUNT"):
+    for safe in ("12_SAFE_LEN", "SAFE_RESET_NOTE", "SAFE_ACCOUNT", "SAFE_SHORT_KEY"):
       self.assertIn(safe, doc)
 
 

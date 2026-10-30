@@ -128,6 +128,8 @@ JSON_SECRET_RE = re.compile(
   r"|private[_-]?key|privatekey|cookie|authorization"
   r"|初始密碼|預設密碼|臨時密碼|登入密碼|密碼|口令|金鑰|密鑰|私鑰)[A-Za-z0-9_.-]*[\"']\s*:\s*)([\"'])([^\"']*)([\"'])"
 )
+# Magpie providers.json 等設定把憑證欄位命名為裸 key；只遮無空白／冒號／斜線且英數混合的長值，保留一般識別字與 v2:... 快取鍵。
+BARE_KEY_SECRET_RE = re.compile(r"(?i)([\"']key[\"']\s*:\s*)([\"'])([^\"'\r\n]+)([\"'])")
 AUTHORIZATION_RE = re.compile(r"(?im)\bAuthorization\s*:\s*[^\r\n]+")
 COOKIE_RE = re.compile(r"(?im)\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]+")
 URI_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@/\s]+)@")
@@ -376,6 +378,17 @@ def sensitive_key(name):
   )
 
 
+def bare_key_secret(value):
+  if not isinstance(value, str):
+    return False
+  stripped = value.strip()
+  if len(stripped) < 20 or PLACEHOLDER_RE.match(stripped):
+    return False
+  if any(ch.isspace() or ch in ":/\\" for ch in stripped):
+    return False
+  return any(ch.isalpha() for ch in stripped) and any(ch.isdigit() for ch in stripped)
+
+
 PLACEHOLDER_RE = re.compile(r"^(?:\$|<|\[REDACTED|\*{3}|x{3,}$|your[-_])", re.IGNORECASE)
 # 偵測比遮罩嚴：遮罩寧可多遮，偵測要少誤報。只認 env 檔寫法（大寫名、等號、帶前綴的憑證字尾），
 # 「token: 說明文字」「PASS: 測試名」這類冒號寫法在歷史資料裡幾乎都是誤報（2026-10-08 量到 1347 行、106 個 session）。
@@ -443,6 +456,12 @@ def redact_text(value):
     lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]{match.group(4)}",
     text,
   )
+  text = BARE_KEY_SECRET_RE.sub(
+    lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]{match.group(4)}"
+    if bare_key_secret(match.group(3))
+    else match.group(0),
+    text,
+  )
   # HTTP 標頭要先整行遮掉。assignment 只吃到第一個空白，會把 Bearer 後面的 token 留下。
   text = AUTHORIZATION_RE.sub("Authorization: [REDACTED]", text)
   text = COOKIE_RE.sub("Cookie: [REDACTED]", text)
@@ -459,7 +478,10 @@ def redact_text(value):
 
 
 def redact_obj(value, key_name=None):
-  if key_name and sensitive_key(key_name):
+  if key_name and (
+    sensitive_key(key_name)
+    or (key_name.strip().lower() == "key" and bare_key_secret(value))
+  ):
     return "[REDACTED]"
   if isinstance(value, dict):
     return {key: redact_obj(item, key) for key, item in value.items()}
