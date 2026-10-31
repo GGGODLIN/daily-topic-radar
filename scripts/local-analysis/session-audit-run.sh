@@ -28,7 +28,7 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
   --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-argon-low:2}" \
   --standby-legs "${SESSION_AUDIT_STANDBY_LEGS-audit-tail:10}" \
   --workdir-routes "${SESSION_AUDIT_WORKDIR_ROUTES-}" \
-  --backfill-legs "${SESSION_AUDIT_BACKFILL_LEGS-swe2-high:5,mimo26-pool:5,grok-4.7:5}" \
+  --backfill-legs "${SESSION_AUDIT_BACKFILL_LEGS-swe2-high:5,mimo26-pool:5}" \
   --max-sessions "${SESSION_AUDIT_MAX_SESSIONS:-2}"
 # 2026-10-19 拍板：發現與規則違規改由 session-audit-consume.py 按 ID 水位線直接從 state.sqlite 全量分批消費，
 # 停止每輪重寫 43.4 MB 的隔離 workflow-general.md（避免無人讀取的死庫存與反覆 I/O）；需舊式匯出時設 SESSION_AUDIT_PROMOTE_FRICTION=1。

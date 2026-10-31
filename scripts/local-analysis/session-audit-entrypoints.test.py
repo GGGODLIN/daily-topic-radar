@@ -82,7 +82,7 @@ bash "$1"
       '--direct-legs': 'argon-low:2',
       '--standby-legs': 'audit-tail:10',
       '--workdir-routes': '',
-      '--backfill-legs': 'swe2-high:5,mimo26-pool:5,grok-4.7:5',
+      '--backfill-legs': 'swe2-high:5,mimo26-pool:5',
       '--max-sessions': '2',
     }
     for flag, value in expected.items():
