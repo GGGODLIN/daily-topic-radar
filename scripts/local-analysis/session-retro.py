@@ -126,7 +126,7 @@ def human_input(row):
   return row.get("promptSource") == "typed" or (origin.get("kind") == "human" and text.startswith(("<command-name>", "<command-message>")))
 
 
-def classify(rows, source):
+def classify(rows, source, limits=None):
   human = any(human_input(row) for row in rows)
   reasons = set()
   for row in rows:
@@ -147,6 +147,8 @@ def classify(rows, source):
     return "human", []
   if any(row.get("promptSource") == "sdk" for row in rows):
     return "excluded", ["sdk-without-human"]
+  if not any(active(row) for row in rows) and not limits:
+    return "excluded", ["no-active-messages"]
   return "unknown", ["human-origin-unconfirmed"]
 
 
@@ -365,7 +367,7 @@ def inventory(args):
       if active(row):
         activities.append(iso(stamp))
         numbered_active.append((number, stamp, row))
-    category, reasons = classify(selected, source)
+    category, reasons = classify(selected, source, limits)
     snapshot = private / f"s{len(sessions) + 1:02d}.jsonl"
     snapshot.write_text("\n".join(kept), encoding="utf-8")
     snapshot.chmod(0o600)
@@ -564,9 +566,19 @@ def prepare(args):
                      "api_request_blobs_omitted": True, "duplicate_assistant_blocks_omitted": True,
                      "narrow_coverage": args.depth == "window", "media_not_read": True,
                      "redaction": "existing session-audit patterns only; not arbitrary private content"}}
-  # Private inventory snapshots are never part of a reader packet.
-  plan["unknown"] = [{k: v for k, v in row.items() if k != "snapshot"} for row in plan["unknown"]]
-  plan["excluded"] = [{k: v for k, v in row.items() if k != "snapshot"} for row in plan["excluded"]]
+  selected_ids = {row["session"] for row in selection}
+
+  def in_window_scope(row):
+    return ((not project_filter or row["project"] in project_filter)
+            and row["session"] not in args.exclude_session
+            and row["session"] not in selected_ids
+            and any(start <= moment(t) <= cutoff for t in row.get("activity", [])))
+
+  # Private inventory snapshots and full historical activity timestamp arrays are omitted from plan.json.
+  plan["unknown"] = [{k: v for k, v in row.items() if k not in ("snapshot", "activity")}
+                     for row in plan["unknown"] if in_window_scope(row)]
+  plan["excluded"] = [{k: v for k, v in row.items() if k not in ("snapshot", "activity")}
+                      for row in plan["excluded"] if in_window_scope(row)]
   save(out / "canonical.json", canonical)
   save(out / "plan.json", plan)
   return {"plan_path": str(out / "plan.json"), "session_count": plan["session_count"], "shard_count": plan["shard_count"],
