@@ -181,6 +181,17 @@ class ImportCLI(unittest.TestCase):
     self.assertEqual(packet["issues"][1]["id"], "imported:mapped:S1")
     self.assertEqual(packet["discoveries"][0]["issue_id"], "stable-issue")
 
+  def test_matched_issue_id_in_record_binds_without_external_map(self):
+    cross = modern_cross()
+    cross["patterns"][0]["matched_issue_id"] = "prior-issue-1"
+    cross["patterns"][0]["matched_issue_title"] = "prior canonical title"
+    run = self.run_dir("inline-mapped", cross, "plan.json", reviews=False)
+    out = self.root / "inline-mapped-packet.json"
+    self.cli("--run", run, "--out", out)
+    packet = json.loads(out.read_text(encoding="utf-8"))
+    self.assertEqual(packet["issues"][0], {"id": "prior-issue-1", "title": "prior canonical title"})
+    self.assertEqual(packet["discoveries"][0]["issue_id"], "prior-issue-1")
+
   def test_missing_cross_missing_cutoff_and_existing_output_are_rejected(self):
     bare = self.root / "bare"
     bare.mkdir()

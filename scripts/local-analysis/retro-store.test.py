@@ -823,6 +823,11 @@ class StoreCLI(unittest.TestCase):
     )
     brief = self.cli("list")
     self.assertNotIn("records", brief["issues"][0])
+    self.assertIn("source_sessions", brief["issues"][0])
+    summary_list = self.cli("list", "--summary", "--decision", "approve", "--with-changes")
+    self.assertEqual(len(summary_list["issues"]), 1)
+    self.assertEqual(summary_list["counts"]["approved"], 1)
+    self.assertEqual(summary_list["counts"]["with_changes"], 1)
     named = self.cli("list", "--issue", "issue-1")
     records = named["issues"][0]["records"]
     self.assertEqual(records["progress_entries"][0]["next"], "watch the next handoff")

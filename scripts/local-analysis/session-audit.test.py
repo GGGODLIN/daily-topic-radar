@@ -2674,6 +2674,28 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertTrue(fresh("VIOL_FB").endswith("（上次處置：休眠 2026-11-02）"), fresh("VIOL_FB"))
     self.assertTrue(fresh("VIOL_IN").endswith("（上次處置：已折／已否決 2026-09-30（捕捉日））"), fresh("VIOL_IN"))
 
+  def test_redact_text_covers_url_query_keys_vendor_tokens_and_cjk_paren_passwords(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fake_url_key = "synth9876543210abcdef1234567890"
+    fake_resend = "re_AbCdEf12_34567890abcdefghijkLMNOP"
+    fake_paren_pw = "SynthPass998877"
+    sample = (
+      f"open http://127.0.0.1:8318/?k={fake_url_key} and "
+      f"send via {fake_resend} with 登入密碼（`{fake_paren_pw}`） "
+      "while keeping 密碼（含英文大小寫與數字） and ?k=short1 and ?client_id=abc123def456ghi789jkl012 untouched"
+    )
+    redacted = mod.redact_text(sample)
+    self.assertFalse(fake_url_key in redacted, "url query token was not redacted")
+    self.assertFalse(fake_resend in redacted, "vendor token was not redacted")
+    self.assertFalse(fake_paren_pw in redacted, "cjk paren password was not redacted")
+    self.assertIn("http://127.0.0.1:8318/?k=[REDACTED]", redacted)
+    self.assertIn("登入密碼（[REDACTED]）", redacted)
+    self.assertIn("密碼（含英文大小寫與數字）", redacted)
+    self.assertIn("?k=short1", redacted)
+    self.assertIn("?client_id=abc123def456ghi789jkl012", redacted)
+
 
 def analysis_with_media(media):
   return openai(
