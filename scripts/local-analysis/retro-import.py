@@ -121,6 +121,14 @@ def readable_title(record):
 
 def issue_binding(pattern_id, record, issue_map):
   mapped = issue_map.get(pattern_id)
+  if mapped is None and isinstance(record.get("matched_issue_id"), str) and record["matched_issue_id"].strip():
+    matched_id = record["matched_issue_id"].strip()
+    matched_title = record.get("matched_issue_title")
+    mapped = (
+      {"id": matched_id, "title": matched_title.strip()}
+      if isinstance(matched_title, str) and matched_title.strip()
+      else matched_id
+    )
   if isinstance(mapped, str):
     issue_id = mapped
     title = readable_title(record)

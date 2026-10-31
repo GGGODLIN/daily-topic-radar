@@ -730,9 +730,30 @@ def counts(rows, issue):
   return bucket, events
 
 
+def issue_sessions(rows, issue):
+  seen = []
+  for row in rows:
+    if row["type"] == "discovery" and row["issue_id"] == issue:
+      raw = row.get("raw")
+      if isinstance(raw, dict):
+        for s in raw.get("source_sessions") or []:
+          if isinstance(s, str) and s.strip() and s.strip() not in seen:
+            seen.append(s.strip())
+        for ev in raw.get("evidence") or []:
+          s = ev.get("session") if isinstance(ev, dict) else None
+          if isinstance(s, str) and s.strip() and s.strip() not in seen:
+            seen.append(s.strip())
+    elif row["type"] == "event" and issue in row.get("issue_ids", []):
+      s = row.get("session")
+      if isinstance(s, str) and s.strip() and s.strip() not in seen:
+        seen.append(s.strip())
+  return seen
+
+
 def project_issue(rows, issue_row):
   issue = issue_row["issue_id"]
   bucket, events = counts(rows, issue)
+  sessions = issue_sessions(rows, issue)
   decision = latest(rows, "decision", issue)
   progress_row = latest(rows, "progress", issue)
   changes = [row for row in rows if row["type"] == "change" and row["issue_id"] == issue]
@@ -745,6 +766,7 @@ def project_issue(rows, issue_row):
     "id": issue,
     "title": issue_row["title"],
     "related_to": issue_row.get("related_to", []),
+    "source_sessions": sessions,
     "discoveries": bucket,
     "events": events,
     "decision": None if decision is None else {"action": decision["action"], "id": decision["id"]},
@@ -791,24 +813,67 @@ def detail(rows, issue):
   }
 
 
-def list_issues(store, issue):
+def list_issues(store, issue, summary=False, decision_filter=None, with_changes=False):
   target = os.path.join(os.path.abspath(os.path.expanduser(store)), RECORDS)
   if not os.path.lexists(os.path.abspath(os.path.expanduser(store))) or not os.path.lexists(target):
     require(issue is None, "unknown issue reference: " + str(issue))
-    return {"ok": True, "command": "list", "issues": []}
+    out = {"ok": True, "command": "list", "issues": []}
+    if summary:
+      out["counts"] = {
+        "total_issues": 0,
+        "approved": 0,
+        "hold": 0,
+        "decline": 0,
+        "undecided": 0,
+        "with_changes": 0,
+      }
+    return out
   with locked(store) as (_folder, handle):
     rows = load_entries(handle)
   selected = [
     row for row in rows if row["type"] == "issue" and (issue is None or row["issue_id"] == issue)
   ]
   require(issue is None or selected, "unknown issue reference: " + str(issue))
-  issues = []
+  all_projected = []
   for row in selected:
     projected = project_issue(rows, row)
     if issue is not None:
       projected["records"] = detail(rows, row["issue_id"])
-    issues.append(projected)
-  return {"ok": True, "command": "list", "issues": issues}
+    all_projected.append(projected)
+  issues = all_projected
+  if decision_filter is not None:
+    if decision_filter == "undecided":
+      issues = [item for item in issues if item["decision"] is None]
+    else:
+      issues = [
+        item for item in issues if (item["decision"] or {}).get("action") == decision_filter
+      ]
+  if with_changes:
+    issues = [item for item in issues if item["changes"]]
+  if summary and issue is None:
+    issues = [
+      item
+      for item in issues
+      if item["decision"] is not None
+      or item["changes"]
+      or len(item.get("source_sessions", [])) >= 4
+    ]
+  out = {"ok": True, "command": "list", "issues": issues}
+  if summary:
+    out["counts"] = {
+      "total_issues": len(all_projected),
+      "returned_issues": len(issues),
+      "approved": sum(
+        1 for item in all_projected if (item["decision"] or {}).get("action") == "approve"
+      ),
+      "hold": sum(1 for item in all_projected if (item["decision"] or {}).get("action") == "hold"),
+      "decline": sum(
+        1 for item in all_projected if (item["decision"] or {}).get("action") == "decline"
+      ),
+      "undecided": sum(1 for item in all_projected if item["decision"] is None),
+      "with_changes": sum(1 for item in all_projected if item["changes"]),
+    }
+  return out
 
 
 def emit(payload):
@@ -826,6 +891,9 @@ def build():
 
   listed = commands.add_parser("list")
   listed.add_argument("--issue")
+  listed.add_argument("--summary", action="store_true")
+  listed.add_argument("--decision", choices=[*ACTIONS, "undecided"])
+  listed.add_argument("--with-changes", action="store_true")
 
   decision = commands.add_parser("decide")
   decision.add_argument("--issue", required=True)
@@ -876,7 +944,13 @@ def main(argv):
     if args.command == "ingest":
       payload = ingest(args.store, args.packet, args.apply)
     elif args.command == "list":
-      payload = list_issues(args.store, args.issue)
+      payload = list_issues(
+        args.store,
+        args.issue,
+        summary=args.summary,
+        decision_filter=args.decision,
+        with_changes=args.with_changes,
+      )
     elif args.command == "decide":
       payload = decide(args)
     elif args.command == "progress":

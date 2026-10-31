@@ -121,7 +121,11 @@ EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.
 TOKEN_RE = re.compile(
   r"\b(?:sk_(?:live|test)_[A-Za-z0-9_-]{6,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{10,}"
   r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
-  r"|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,})\b"
+  r"|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,}"
+  r"|re_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}"
+  r"|hf_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{20,}"
+  r"|npm_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|dop_v1_[a-f0-9]{30,}"
+  r"|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|glpat-[A-Za-z0-9_-]{20,})\b"
 )
 JSON_SECRET_RE = re.compile(
   r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|token|secret"
@@ -148,6 +152,16 @@ CJK_SECRET_LABEL_RE = re.compile(
   r"(?<!忘記|重設|修改|變更|設定|輸入|驗證|確認)"
   r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
   r"(\s*[：:=]\s*)(?:`[^`\r\n]+`|\"[^\"\r\n]*\"|'[^'\r\n]*'|(?:(?!(?:\\[nrt\"'\\]))[^\s,，。；;、\r\n\"'`])+)"
+)
+# 口語括號註記（如「密碼（`abc123...`）」）只遮引號／反引號或無空白純 ASCII 密碼，避免誤殺「密碼（含大小寫英文）」等規則描述。
+CJK_SECRET_PAREN_RE = re.compile(
+  r"(?<!忘記|重設|修改|變更|設定|輸入|驗證|確認)"
+  r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
+  r"(\s*[（(]\s*)(?:`[^`\r\n）)]+`|\"[^\"\r\n）)]*\"|'[^'\r\n）)]*'|[A-Za-z0-9!@#$%^&*_+=.-]{6,})(\s*[）)])"
+)
+# 本機服務或 webhook URL 常以 ?k= 或 ?key= 傳遞長隨機 token；限縮於憑證參數名且值符合 bare_key_secret（>=20 碼英數混合，排除短參數與純字母）。
+URL_KEY_PARAM_RE = re.compile(
+  r"(?i)([?&](?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password)=)([^&#\s\"'<>`]+)"
 )
 LOCK_RE = re.compile(
   r"^<!-- friction-review-lock:v1 session=(\S+) "
@@ -409,6 +423,8 @@ def credential_names(text):
     names.add("PRIVATE_KEY")
   if TOKEN_RE.search(text):
     names.add("API_TOKEN")
+  if any(bare_key_secret(match.group(2)) for match in URL_KEY_PARAM_RE.finditer(text)):
+    names.add("URL_KEY_PARAM")
   if any(not PLACEHOLDER_RE.match(match.group(3)) for match in URI_USERINFO_RE.finditer(text)):
     names.add("URI_PASSWORD")
   return names
@@ -468,8 +484,15 @@ def redact_text(value):
   text = BEARER_RE.sub("Bearer [REDACTED]", text)
   text = BASIC_RE.sub("Basic [REDACTED]", text)
   text = URI_USERINFO_RE.sub(lambda match: f"{match.group(1)}[REDACTED]:[REDACTED]@", text)
+  text = URL_KEY_PARAM_RE.sub(
+    lambda match: f"{match.group(1)}[REDACTED]"
+    if bare_key_secret(match.group(2))
+    else match.group(0),
+    text,
+  )
   text = ASSIGNMENT_RE.sub(replace_assignment, text)
   text = CJK_SECRET_LABEL_RE.sub(r"\1\2[REDACTED]", text)
+  text = CJK_SECRET_PAREN_RE.sub(r"\1\2[REDACTED]\3", text)
   text = TOKEN_RE.sub("[REDACTED]", text)
   text = JWT_RE.sub("[JWT_REDACTED]", text)
   text = EMAIL_RE.sub("[EMAIL]", text)
