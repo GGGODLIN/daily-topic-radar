@@ -387,27 +387,20 @@ else
   echo "FAIL: Vercel source projection baseline mismatch: $vercel_sample_output"; fail=$((fail+1))
 fi
 
-python3 - "$HOME/.agents/.skill-lock.json" "$FIX/accepted-mirror-lock.json" <<'PY'
+accepted_names_raw=$(python3 - "$HOME/.agents/.skill-lock.json" "/Users/linhancheng/code/social-info/scripts/local-analysis/skill-lock-source-baseline.json" "$FIX/accepted-mirror-lock.json" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 source = json.loads(Path(sys.argv[1]).read_text())
-names = (
-    "vercel-composition-patterns",
-    "vercel-react-best-practices",
-    "vercel-react-native-skills",
-    "caveman",
-    "find-skills",
-    "grill-me",
-    "grill-with-docs",
-    "strategic-compact",
-    "zoom-out",
-    "design-taste-frontend",
-)
+baseline = json.loads(Path(sys.argv[2]).read_text())
+names = [name for name in baseline["scope"] if name in source["skills"]]
+assert len(names) >= 10, f"expected at least 10 installed baseline skills, got {len(names)}"
 entries = {name: source["skills"][name] for name in names}
-Path(sys.argv[2]).write_text(json.dumps({"version": source["version"], "skills": entries}))
+Path(sys.argv[3]).write_text(json.dumps({"version": source["version"], "skills": entries}))
+print(" ".join(names))
 PY
+)
 accepted_mirror_output=$(python3 "$HASH_HELPER" --skills-dir "$HOME/.agents/skills" --lock-file "$FIX/accepted-mirror-lock.json" 2>&1)
 accepted_mirror_status=$?
 if [ "$accepted_mirror_status" -eq 0 ] && [ -z "$accepted_mirror_output" ]; then
@@ -417,14 +410,16 @@ else
 fi
 
 mkdir -p "$FIX/accepted-tamper"
-for accepted_name in vercel-composition-patterns vercel-react-best-practices vercel-react-native-skills caveman find-skills grill-me grill-with-docs strategic-compact zoom-out design-taste-frontend; do
+expected_tamper_count=0
+for accepted_name in $accepted_names_raw; do
   cp -R "$HOME/.agents/skills/$accepted_name" "$FIX/accepted-tamper/$accepted_name"
   printf '\ntampered runtime byte\n' >> "$FIX/accepted-tamper/$accepted_name/SKILL.md"
+  expected_tamper_count=$((expected_tamper_count+1))
 done
 tampered_mirror_output=$(python3 "$HASH_HELPER" --skills-dir "$FIX/accepted-tamper" --lock-file "$FIX/accepted-mirror-lock.json" 2>&1)
 tampered_mirror_status=$?
 tampered_mirror_count=$(printf '%s\n' "$tampered_mirror_output" | grep -c 'installed skill 與 lock hash 不符' || true)
-if [ "$tampered_mirror_status" -eq 0 ] && [ "$tampered_mirror_count" -eq 10 ]; then
+if [ "$tampered_mirror_status" -eq 0 ] && [ "$tampered_mirror_count" -eq "$expected_tamper_count" ]; then
   echo "PASS: every accepted baseline runtime tamper reports"; pass=$((pass+1))
 else
   echo "FAIL: accepted baseline runtime tamper count was $tampered_mirror_count: $tampered_mirror_output"; fail=$((fail+1))
