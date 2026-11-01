@@ -21,6 +21,7 @@ PLATFORM_GROUP_ORDER = [
     ("clawhub", "Agent Skills (ClawHub / OpenClaw)"),
     ("product_hunt", "Product Hunt"),
     ("huggingface", "HuggingFace"),
+    ("devpost", "AI Hackathons (Devpost)"),
     ("new_term_radar", "新來源觀察"),
     ("rss_lab", "Lab Blogs & Releases"),
     ("rss_media", "English Tech Media"),

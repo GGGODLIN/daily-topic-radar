@@ -15,6 +15,7 @@ from social_info.db import Database
 from social_info.dedup import Deduper, compute_item_id, compute_title_hash
 from social_info.fetchers import (
     clawhub,
+    devpost,
     free_radar,
     github_search,
     github_trending,
@@ -113,6 +114,7 @@ FETCHER_REGISTRY = {
     "skills_sh": skills_sh.fetch,
     "skillhub_cn": skillhub_cn.fetch,
     "clawhub": clawhub.fetch,
+    "devpost": devpost.fetch,
     "twitter": twitter.fetch,
     "threads": threads.fetch,
     "threads_apify": threads_apify.fetch,
