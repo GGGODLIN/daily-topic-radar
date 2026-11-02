@@ -159,9 +159,13 @@ CJK_SECRET_PAREN_RE = re.compile(
   r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
   r"(\s*[（(]\s*)(?:`[^`\r\n）)]+`|\"[^\"\r\n）)]*\"|'[^'\r\n）)]*'|[A-Za-z0-9!@#$%^&*_+=.-]{6,})(\s*[）)])"
 )
-# 本機服務或 webhook URL 常以 ?k= 或 ?key= 傳遞長隨機 token；限縮於憑證參數名且值符合 bare_key_secret（>=20 碼英數混合，排除短參數與純字母）。
+# 本機服務、webhook 或 OAuth callback URL 常以查詢參數傳遞長隨機 token／授權碼；限縮於憑證參數名且值符合 bare_key_secret（>=20 碼英數混合，排除 ?code=200 或 ?state=open 等短參數）。
 URL_KEY_PARAM_RE = re.compile(
-  r"(?i)([?&](?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password)=)([^&#\s\"'<>`]+)"
+  r"(?i)([?&](?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|code|state)=)([^&#\s\"'<>`\\]+)"
+)
+# Discord Webhook 把憑證放在路徑末段（/api/webhooks/<id>/<token>），非查詢參數。
+DISCORD_WEBHOOK_URL_RE = re.compile(
+  r"(?i)(https?://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/)([A-Za-z0-9_-]{20,})"
 )
 LOCK_RE = re.compile(
   r"^<!-- friction-review-lock:v1 session=(\S+) "
@@ -484,6 +488,7 @@ def redact_text(value):
   text = BEARER_RE.sub("Bearer [REDACTED]", text)
   text = BASIC_RE.sub("Basic [REDACTED]", text)
   text = URI_USERINFO_RE.sub(lambda match: f"{match.group(1)}[REDACTED]:[REDACTED]@", text)
+  text = DISCORD_WEBHOOK_URL_RE.sub(r"\1[WEBHOOK_REDACTED]", text)
   text = URL_KEY_PARAM_RE.sub(
     lambda match: f"{match.group(1)}[REDACTED]"
     if bare_key_secret(match.group(2))
