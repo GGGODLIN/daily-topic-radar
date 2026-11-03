@@ -2684,23 +2684,29 @@ class SessionAuditCliTest(unittest.TestCase):
     fake_webhook_tok = "0TJdBG9pPFyG2pZokdWgnrRPylHpBdW9BGY14GbjjJzxDu_zHJjJDQboUntshJorFS99"
     fake_oauth_code = "ac_SynthOAuthCode9876543210abcdef1234567890"
     fake_oauth_state = "st_SynthOAuthState9876543210abcdef"
+    fake_vapid_priv = "vapid_SynthPrivateKey9876543210abcdef1234567890"
     sample = (
       f"open http://127.0.0.1:8318/?k={fake_url_key} and "
       f"https://discord.com/api/webhooks/1566086967630762033/{fake_webhook_tok} and "
       f"http://localhost:1455/auth/callback?code={fake_oauth_code}&scope=openid&state={fake_oauth_state} and "
+      f"COLLIE_VAPID_PRIVATE={fake_vapid_priv} and "
       f"send via {fake_resend} with 登入密碼（`{fake_paren_pw}`） "
-      "while keeping 密碼（含英文大小寫與數字） and ?k=short1 and ?code=200&state=open and ?client_id=abc123def456ghi789jkl012 untouched"
+      "while keeping 密碼（含英文大小寫與數字） and is_private=false and ?k=short1 and ?code=200&state=open and ?client_id=abc123def456ghi789jkl012 untouched"
     )
     redacted = mod.redact_text(sample)
     self.assertFalse(fake_url_key in redacted, "url query token was not redacted")
     self.assertFalse(fake_webhook_tok in redacted, "discord webhook path token was not redacted")
     self.assertFalse(fake_oauth_code in redacted, "oauth callback code was not redacted")
     self.assertFalse(fake_oauth_state in redacted, "oauth callback state was not redacted")
+    self.assertFalse(fake_vapid_priv in redacted, "vapid private key was not redacted")
     self.assertFalse(fake_resend in redacted, "vendor token was not redacted")
     self.assertFalse(fake_paren_pw in redacted, "cjk paren password was not redacted")
     self.assertIn("http://127.0.0.1:8318/?k=[REDACTED]", redacted)
     self.assertIn("https://discord.com/api/webhooks/1566086967630762033/[WEBHOOK_REDACTED]", redacted)
     self.assertIn("http://localhost:1455/auth/callback?code=[REDACTED]&scope=openid&state=[REDACTED]", redacted)
+    self.assertIn("COLLIE_VAPID_PRIVATE=[REDACTED]", redacted)
+    self.assertIn("is_private=false", redacted)
+    self.assertIn("COLLIE_VAPID_PRIVATE", mod.credential_names(f"COLLIE_VAPID_PRIVATE={fake_vapid_priv}"))
     self.assertIn("登入密碼（[REDACTED]）", redacted)
     self.assertIn("密碼（含英文大小寫與數字）", redacted)
     self.assertIn("?k=short1", redacted)
