@@ -6,20 +6,22 @@
 # 1. 依 consume-cursor.json 的自增 ID 水位線（last_finding_id / last_rule_tag_id）抽取新發現並分批；
 # 2. 分批全量讀取 -> 中間層現況核對 -> 頂層合成完整報告正文；
 # 3. 報告由 main 落檔至 /Users/linhancheng/code/social-info/reports/local-analysis/<date>-session-audit-consume.md 後，
-#    才依 deferred_writeback 執行 commit-cursor 推進水位線（不得提前提交 checkpoint）。
+#    才依 deferred_writeback 執行 commit-cursor：先將報告內嵌的全域環境待決項（session-audit-ledger-findings）
+#    透過 ledger-reconcile.py 冪等寫入 pending-actions.jsonl，確認入帳成功後才推進 ID 水位線（不得提前提交 checkpoint）。
 
 cat <<'EOF'
 # session-audit-consume-weekly 回寫規則（供 main 落檔後對照執行 deferred_writeback）
 
-當 `<date>-session-audit-consume.md` 報告已成功寫入磁碟並確認非空後，執行 `deferred_writeback` 內提供的固定指令以推進 ID 水位線：
+當 `<date>-session-audit-consume.md` 報告已成功寫入磁碟並確認非空後，執行 `deferred_writeback` 內提供的固定指令（該指令會先將報告尾端 `<!-- session-audit-ledger-findings: ... -->` 的合格全域環境待決項寫入 `pending-actions.jsonl`，確認成功後才推進 `consume-cursor.json` 的 ID 水位線）：
 
 ```bash
 python3 /Users/linhancheng/code/social-info/scripts/local-analysis/session-audit-consume.py commit-cursor \
   --state '/Users/linhancheng/code/social-info/reports/local-analysis/session-audit' \
   --finding-id <本次已讀完的最大 finding_id> \
   --rule-tag-id <本次已讀完的最大 rule_tag_id> \
+  --date '<date>' \
   --report '/Users/linhancheng/code/social-info/reports/local-analysis/<date>-session-audit-consume.md'
 ```
 
-只允許推進上述兩個整數水位線與報告路徑；若報告落檔失敗，不得執行 commit-cursor。
+只允許推進上述兩個整數水位線、日期與報告路徑；若報告落檔或帳本匯入失敗，不得推進 consume-cursor.json。
 EOF

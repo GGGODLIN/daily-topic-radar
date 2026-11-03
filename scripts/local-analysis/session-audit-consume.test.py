@@ -201,6 +201,111 @@ class SessionAuditConsumeTest(unittest.TestCase):
     self.assertNotIn("3d58135e,d48a54d7", rv_md)
     self.assertIn("1111aaaa,2222bbbb", rv_md)
 
+  def test_commit_cursor_ingests_embedded_findings_idempotently_and_aborts_on_bad_ledger(self):
+    report_path = self.root / "2026-10-31-session-audit-consume.md"
+    ledger_path = self.root / "pending-actions.jsonl"
+    embedded = [
+      {
+        "title": "session-audit-consume：修復 R01 反引號連結攔截",
+        "source_key": "session-audit-consume:r01-backtick-link",
+        "note": "R01 展示樣例確認真違規",
+      }
+    ]
+    report_path.write_text(
+      "# Report\n\nBody text.\n\n"
+      f"<!-- session-audit-ledger-findings: {json.dumps(embedded, ensure_ascii=False)} -->\n",
+      encoding="utf-8",
+    )
+
+    c1 = subprocess.run(
+      [
+        sys.executable,
+        str(SCRIPT),
+        "commit-cursor",
+        "--state",
+        str(self.state_dir),
+        "--finding-id",
+        "11",
+        "--rule-tag-id",
+        "5",
+        "--date",
+        "2026-10-31",
+        "--report",
+        str(report_path),
+        "--ledger",
+        str(ledger_path),
+      ],
+      text=True,
+      capture_output=True,
+      check=True,
+    )
+    out1 = json.loads(c1.stdout)
+    self.assertTrue(out1["ok"])
+    self.assertEqual(out1["ingested_findings"], 1)
+    rows1 = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    self.assertEqual(len(rows1), 1)
+    self.assertEqual(rows1[0]["source_key"], "session-audit-consume:r01-backtick-link")
+    self.assertEqual(rows1[0]["count"], 1)
+    self.assertEqual(rows1[0]["status"], "pending")
+
+    # 同日重播：不得重複新增 row，也不得虛增 count
+    c2 = subprocess.run(
+      [
+        sys.executable,
+        str(SCRIPT),
+        "commit-cursor",
+        "--state",
+        str(self.state_dir),
+        "--finding-id",
+        "11",
+        "--rule-tag-id",
+        "5",
+        "--date",
+        "2026-10-31",
+        "--report",
+        str(report_path),
+        "--ledger",
+        str(ledger_path),
+      ],
+      text=True,
+      capture_output=True,
+      check=True,
+    )
+    self.assertTrue(json.loads(c2.stdout)["ok"])
+    rows2 = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    self.assertEqual(len(rows2), 1)
+    self.assertEqual(rows2[0]["count"], 1)
+
+    # 若帳本損壞導致匯入失敗，不得推進 cursor
+    broken_ledger = self.root / "broken.jsonl"
+    broken_ledger.write_text("NOT-JSON\n", encoding="utf-8")
+    c_fail = subprocess.run(
+      [
+        sys.executable,
+        str(SCRIPT),
+        "commit-cursor",
+        "--state",
+        str(self.state_dir),
+        "--finding-id",
+        "99",
+        "--rule-tag-id",
+        "99",
+        "--date",
+        "2026-10-31",
+        "--report",
+        str(report_path),
+        "--ledger",
+        str(broken_ledger),
+      ],
+      text=True,
+      capture_output=True,
+      check=False,
+    )
+    self.assertNotEqual(c_fail.returncode, 0)
+    cursor_now = json.loads((self.state_dir / "consume-cursor.json").read_text(encoding="utf-8"))
+    self.assertEqual(cursor_now["last_finding_id"], 11)
+    self.assertEqual(cursor_now["last_rule_tag_id"], 5)
+
 
 if __name__ == "__main__":
   unittest.main()

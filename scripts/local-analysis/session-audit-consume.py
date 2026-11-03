@@ -13,10 +13,16 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import sys
+import tempfile
 
 
 CURSOR_FILENAME = "consume-cursor.json"
+DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "reports" / "local-analysis" / "pending-actions.jsonl"
+RECONCILE_SCRIPT = Path(__file__).with_name("ledger-reconcile.py")
+EMBEDDED_FINDINGS_RE = re.compile(r"<!--\s*session-audit-ledger-findings:\s*(\[.*?\])\s*-->", re.DOTALL)
+REPORT_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})-session-audit-consume\.md$")
 
 
 def load_cursor(state_dir: Path) -> dict:
@@ -260,16 +266,147 @@ def cmd_prepare(args: argparse.Namespace) -> int:
   return 0
 
 
+def sanitize_source_key(raw_key: str, fallback_idx: int, date_str: str) -> str:
+  cleaned = (raw_key or "").strip().lower()
+  if not cleaned.startswith("session-audit-consume:"):
+    cleaned = f"session-audit-consume:{cleaned}" if cleaned else f"session-audit-consume:{date_str}-{fallback_idx}"
+  cleaned = re.sub(r"[^a-z0-9:._-]+", "-", cleaned).strip("-._:")
+  if not re.match(r"^[a-z0-9]", cleaned):
+    cleaned = f"s-{cleaned}"
+  return cleaned[:128]
+
+
+def extract_findings_from_report(report_path: str) -> list:
+  if not report_path:
+    return []
+  p = Path(report_path).expanduser()
+  if not p.is_file():
+    return []
+  text = p.read_text(encoding="utf-8", errors="replace")
+  m = EMBEDDED_FINDINGS_RE.search(text)
+  if not m:
+    return []
+  data = json.loads(m.group(1))
+  if not isinstance(data, list):
+    raise ValueError("embedded session-audit-ledger-findings must be a JSON array")
+  return data
+
+
+def ingest_findings_to_ledger(raw_items: list, ledger_path: Path, date_str: str) -> int:
+  if not raw_items:
+    return 0
+  ledger_path.parent.mkdir(parents=True, exist_ok=True)
+  if not ledger_path.exists():
+    ledger_path.write_text("", encoding="utf-8")
+
+  existing_by_title = {}
+  existing_by_source_key = {}
+  for line in ledger_path.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line:
+      continue
+    row = json.loads(line)
+    title = row.get("title")
+    skey = row.get("source_key")
+    if title:
+      existing_by_title[title] = row
+    if skey:
+      existing_by_source_key[skey] = row
+
+  payload = []
+  seen_keys = set()
+  for idx, item in enumerate(raw_items, 1):
+    if not isinstance(item, dict):
+      continue
+    title = (item.get("title") or "").strip()
+    if not title:
+      continue
+    skey = sanitize_source_key(item.get("source_key") or "", idx, date_str)
+    if skey in seen_keys:
+      continue
+    seen_keys.add(skey)
+    note = (item.get("note") or "").strip()
+    match_title = item.get("match")
+    if not match_title:
+      if skey in existing_by_source_key:
+        match_title = existing_by_source_key[skey].get("title")
+      elif title in existing_by_title:
+        match_title = title
+    payload.append({
+      "title": title,
+      "match": match_title,
+      "channel": "session-audit-consume",
+      "source_key": skey,
+      "note": note,
+    })
+
+  if not payload:
+    return 0
+
+  with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as tf:
+    json.dump(payload, tf, ensure_ascii=False, indent=2)
+    tmp_json = tf.name
+  try:
+    proc = subprocess.run(
+      [
+        sys.executable,
+        str(RECONCILE_SCRIPT),
+        "--date",
+        date_str,
+        "--ledger",
+        str(ledger_path),
+        "--findings",
+        tmp_json,
+        "--apply",
+        "--no-health",
+      ],
+      text=True,
+      capture_output=True,
+      check=False,
+    )
+    if proc.returncode != 0:
+      sys.stderr.write(proc.stderr or proc.stdout or "ledger-reconcile failed\n")
+      raise RuntimeError(f"ledger-reconcile exited with {proc.returncode}")
+  finally:
+    try:
+      os.unlink(tmp_json)
+    except FileNotFoundError:
+      pass
+  return len(payload)
+
+
 def cmd_commit(args: argparse.Namespace) -> int:
   state_dir = Path(args.state).expanduser().resolve()
+  report_path = args.report or ""
+  date_str = args.date or ""
+  if not date_str and report_path:
+    m_date = REPORT_DATE_RE.search(report_path)
+    if m_date:
+      date_str = m_date.group(1)
+  if not date_str:
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+  try:
+    if args.findings_file:
+      raw_items = json.loads(Path(args.findings_file).expanduser().read_text(encoding="utf-8"))
+      if not isinstance(raw_items, list):
+        raise ValueError("--findings-file must contain a JSON array")
+    else:
+      raw_items = extract_findings_from_report(report_path)
+    ledger_path = Path(args.ledger).expanduser().resolve() if args.ledger else DEFAULT_LEDGER
+    ingested_count = ingest_findings_to_ledger(raw_items, ledger_path, date_str)
+  except Exception as exc:
+    print(json.dumps({"ok": False, "reason": "ledger-ingest-failed", "error": str(exc)}, ensure_ascii=False))
+    return 1
+
   updated = save_cursor(
     state_dir=state_dir,
     finding_id=int(args.finding_id),
     rule_tag_id=int(args.rule_tag_id),
-    report_path=args.report or "",
+    report_path=report_path,
     note=args.note or "",
   )
-  print(json.dumps({"ok": True, "cursor": updated}, ensure_ascii=False))
+  print(json.dumps({"ok": True, "ingested_findings": ingested_count, "cursor": updated}, ensure_ascii=False))
   return 0
 
 
@@ -291,6 +428,9 @@ def main() -> int:
   p_commit.add_argument("--finding-id", type=int, required=True)
   p_commit.add_argument("--rule-tag-id", type=int, required=True)
   p_commit.add_argument("--report", default="")
+  p_commit.add_argument("--date", default="")
+  p_commit.add_argument("--findings-file", default="")
+  p_commit.add_argument("--ledger", default="")
   p_commit.add_argument("--note", default="")
 
   args = parser.parse_args()
