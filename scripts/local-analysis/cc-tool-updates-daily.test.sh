@@ -37,6 +37,9 @@ assert by_name.get('prismantis') == {
   'path': '~/Desktop/projects/prismantis',
   'source': 'NahumLitvin/prismantis',
 }, by_name.get('prismantis')
+assert {'claude-mem-gggodlin', 'magpie-runtime', 'tokscale', 'VoiceInk'} <= {
+  name for name, item in by_name.items() if item.get('manager') == 'git-fork'
+}
 assert not {'dev-browser', 'yarn'} & by_name.keys()
 print('✅ 測 0 production 名單：go/ollama 忽略、Peekaboo 追蹤、dev-browser/yarn 非 active npm-g owner 已移除、agent-browser 保留')
 PY
