@@ -204,35 +204,66 @@ def install_date(git_dir, rel_path):
     return None
 
 
-def load_deep_check_ledger(state_dir, repo_dir):
-  if not state_dir or not os.path.isdir(state_dir):
-    return None
-  abs_repo = os.path.abspath(repo_dir)
-  base = os.path.basename(abs_repo)
-  parent = os.path.basename(os.path.dirname(abs_repo))
-  for slug in (base, f"{parent}-{base}"):
-    cand = os.path.join(state_dir, f"{slug}.json")
-    if os.path.exists(cand):
-      try:
-        data = json.load(open(cand))
-        if isinstance(data, dict) and os.path.abspath(str(data.get("repo_path", ""))) == abs_repo:
-          return data
-      except (OSError, json.JSONDecodeError):
-        continue
-  for cand in sorted(glob.glob(os.path.join(state_dir, "*.json"))):
-    try:
-      data = json.load(open(cand))
-      if isinstance(data, dict) and os.path.abspath(str(data.get("repo_path", ""))) == abs_repo:
-        return data
-    except (OSError, json.JSONDecodeError):
-      continue
+def norm_repo_path(val):
+  if not isinstance(val, str) or not val.strip():
+    return ""
+  return os.path.realpath(os.path.expanduser(val.strip()))
+
+
+def read_matching_ledger(cand_path, real_repo):
+  try:
+    with open(cand_path) as f:
+      data = json.load(f)
+    if isinstance(data, dict) and norm_repo_path(data.get("repo_path")) == real_repo:
+      return data
+  except (OSError, json.JSONDecodeError):
+    pass
   return None
 
 
-def nominate_deep_check_repos(state_dir, repo_roots, now, remind_days, min_commits=20):
-  import datetime
-  since_30d = datetime.datetime.fromtimestamp(now - 30 * 86400, datetime.timezone.utc).strftime("%Y-%m-%d")
-  candidates = []
+def load_deep_check_ledger(state_dir, repo_dir):
+  real_repo = norm_repo_path(repo_dir)
+  if not state_dir or not os.path.isdir(state_dir) or not real_repo:
+    return None
+  base = os.path.basename(real_repo)
+  parent = os.path.basename(os.path.dirname(real_repo))
+  candidates = [
+    os.path.join(state_dir, f"{base}.json"),
+    os.path.join(state_dir, f"{parent}-{base}.json"),
+    *sorted(glob.glob(os.path.join(state_dir, "*.json"))),
+  ]
+  for cand in candidates:
+    if os.path.exists(cand):
+      matched = read_matching_ledger(cand, real_repo)
+      if matched is not None:
+        return matched
+  return None
+
+
+def git_rev_list_count(repo_dir, *rev_args):
+  try:
+    r = subprocess.run(
+      ["git", "-C", repo_dir, "rev-list", "--count", *rev_args],
+      capture_output=True, text=True, timeout=10,
+    )
+    if r.returncode == 0 and r.stdout.strip().isdigit():
+      return int(r.stdout.strip())
+  except (OSError, subprocess.SubprocessError):
+    pass
+  return None
+
+
+def count_uninspected_commits(real_repo, ledger, since_30d):
+  head_sha = str(ledger.get("head_sha") or "").strip()
+  if head_sha:
+    cnt = git_rev_list_count(real_repo, f"{head_sha}..HEAD")
+    if cnt is not None:
+      return cnt
+  since = str(ledger.get("checked_at") or since_30d).strip()
+  return git_rev_list_count(real_repo, f"--since={since}", "HEAD") or 0
+
+
+def iter_candidate_repos(repo_roots):
   seen_repos = set()
   for root in repo_roots:
     root = os.path.expanduser(root.strip())
@@ -242,52 +273,31 @@ def nominate_deep_check_repos(state_dir, repo_roots, now, remind_days, min_commi
       repo_dir = os.path.join(root, entry)
       if not os.path.isdir(repo_dir) or not os.path.exists(os.path.join(repo_dir, ".git")):
         continue
-      abs_repo = os.path.abspath(repo_dir)
-      if abs_repo in seen_repos:
-        continue
-      seen_repos.add(abs_repo)
-      ledger = load_deep_check_ledger(state_dir, abs_repo)
-      if ledger:
-        chk_ts = parse_iso_date(ledger.get("checked_at"))
-        skp_ts = parse_iso_date(ledger.get("skipped_at"))
-        if max(chk_ts, skp_ts) > 0 and (now - max(chk_ts, skp_ts)) < remind_days * 86400:
-          continue
-        head_sha = str(ledger.get("head_sha") or "").strip()
-        count = None
-        if head_sha:
-          try:
-            r = subprocess.run(
-              ["git", "-C", abs_repo, "rev-list", "--count", f"{head_sha}..HEAD"],
-              capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode == 0 and r.stdout.strip().isdigit():
-              count = int(r.stdout.strip())
-          except (OSError, subprocess.SubprocessError):
-            pass
-        if count is None:
-          since = str(ledger.get("checked_at") or since_30d).strip()
-          try:
-            r = subprocess.run(
-              ["git", "-C", abs_repo, "rev-list", "--count", f"--since={since}", "HEAD"],
-              capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode == 0 and r.stdout.strip().isdigit():
-              count = int(r.stdout.strip())
-          except (OSError, subprocess.SubprocessError):
-            count = 0
-        if count and count >= min_commits:
-          candidates.append((count, f"{entry}（+{count} commits）"))
-      else:
-        try:
-          r = subprocess.run(
-            ["git", "-C", abs_repo, "rev-list", "--count", f"--since={since_30d}", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-          )
-          count = int(r.stdout.strip()) if (r.returncode == 0 and r.stdout.strip().isdigit()) else 0
-        except (OSError, subprocess.SubprocessError):
-          count = 0
-        if count >= min_commits:
-          candidates.append((count, f"{entry}（+{count} commits，首次健檢）"))
+      real_repo = norm_repo_path(repo_dir)
+      if real_repo and real_repo not in seen_repos:
+        seen_repos.add(real_repo)
+        yield entry, real_repo
+
+
+def evaluate_repo_candidate(entry, real_repo, state_dir, now, remind_days, since_30d, min_commits):
+  ledger = load_deep_check_ledger(state_dir, real_repo)
+  if ledger:
+    last_activity = max(parse_iso_date(ledger.get("checked_at")), parse_iso_date(ledger.get("skipped_at")))
+    if last_activity > 0 and (now - last_activity) < remind_days * 86400:
+      return None
+    count = count_uninspected_commits(real_repo, ledger, since_30d)
+    return (count, f"{entry}（+{count} commits）") if count >= min_commits else None
+  count = git_rev_list_count(real_repo, f"--since={since_30d}", "HEAD") or 0
+  return (count, f"{entry}（+{count} commits，首次健檢）") if count >= min_commits else None
+
+
+def nominate_deep_check_repos(state_dir, repo_roots, now, remind_days, min_commits=20):
+  import datetime
+  since_30d = datetime.datetime.fromtimestamp(now - 30 * 86400, datetime.timezone.utc).strftime("%Y-%m-%d")
+  candidates = [
+    cand for entry, real_repo in iter_candidate_repos(repo_roots)
+    if (cand := evaluate_repo_candidate(entry, real_repo, state_dir, now, remind_days, since_30d, min_commits))
+  ]
   candidates.sort(key=lambda x: (-x[0], x[1]))
   return [label for _, label in candidates[:2]]
 

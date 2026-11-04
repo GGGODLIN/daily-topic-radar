@@ -51,7 +51,9 @@ check "registry decided=true 不被覆寫" bash -c "
 "
 
 # Ticket 01: cadence reminder (remind_after_days), decided=false field preservation, Workflow scriptPath last_ts, deep-check repo nomination
-mkdir -p "$T/skills/hillclimb" "$T/skills/deep-check" "$T/skills/wf-skill" "$T/state" "$T/work/repo-alpha" "$T/work/repo-beta"
+mkdir -p "$T/skills/hillclimb" "$T/skills/deep-check" "$T/skills/wf-skill" "$T/state" "$T/work/repo-alpha" "$T/work/repo-beta" "$T/symlinks"
+ln -s "$T/work/repo-alpha" "$T/symlinks/repo-alpha"
+ln -s "$T/work/repo-beta" "$T/symlinks/repo-beta"
 printf -- '---\nname: hillclimb\ndescription: Hillclimb metric.\n---\n' > "$T/skills/hillclimb/SKILL.md"
 printf -- '---\nname: deep-check\ndescription: Deep check repo.\n---\n' > "$T/skills/deep-check/SKILL.md"
 printf -- '---\nname: wf-skill\ndescription: Workflow skill.\n---\n' > "$T/skills/wf-skill/SKILL.md"
@@ -103,11 +105,18 @@ cat > "$REG" <<EOF
 }
 EOF
 
+cat > "$T/state/empty-path.json" <<EOF
+{
+  "repo_path": "",
+  "checked_at": "$RECENT_DATE"
+}
+EOF
+
 python3 /Users/linhancheng/code/social-info/scripts/local-analysis/skill-trigger-health.py \
   --date 2026-11-04 --out "$T/report3.md" \
   --projects-dir "$T/projects" --skills-dir "$T/skills" --commands-dir "$T/commands" \
   --registry "$REG" --claude-git-dir "" \
-  --deep-check-state-dir "$T/state" --repo-roots "$T/work" > "$T/stdout3.txt"
+  --deep-check-state-dir "$T/state" --repo-roots "$T/symlinks" > "$T/stdout3.txt"
 
 check "decided=false 條目保留 remind_after_days 與 last_skipped_at" python3 -c "
 import json, sys
