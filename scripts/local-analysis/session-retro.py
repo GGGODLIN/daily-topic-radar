@@ -126,6 +126,18 @@ def human_input(row):
   return row.get("promptSource") == "typed" or (origin.get("kind") == "human" and text.startswith(("<command-name>", "<command-message>")))
 
 
+def local_command_only_rows(rows):
+  active_rows = [row for row in rows if active(row)]
+  return bool(active_rows) and all(
+    row.get("type") == "user" and not queued(row) and (
+      row.get("isMeta") is True or content_text(row.get("message", {}).get("content", row.get("content", ""))).lstrip().startswith(
+        ("<local-command-caveat>", "<local-command-stdout>", "<command-name>", "<command-message>")
+      )
+    )
+    for row in active_rows
+  )
+
+
 def classify(rows, source, limits=None):
   human = any(human_input(row) for row in rows)
   reasons = set()
@@ -149,6 +161,8 @@ def classify(rows, source, limits=None):
     return "excluded", ["sdk-without-human"]
   if not any(active(row) for row in rows) and not limits:
     return "excluded", ["no-active-messages"]
+  if local_command_only_rows(rows) and not limits:
+    return "excluded", ["local-command-only"]
   return "unknown", ["human-origin-unconfirmed"]
 
 
@@ -1227,9 +1241,24 @@ def usage(args):
           "limitations": ["visible transcript usage only; unknown fields are not measured zero"]}
 
 
+def is_local_command_only_entry(entry):
+  if not isinstance(entry, dict) or entry.get("reasons") != ["human-origin-unconfirmed"] or entry.get("limitations"):
+    return False
+  source = Path(entry.get("source", ""))
+  if not source.is_file():
+    return False
+  rows = []
+  for _, row, err in records(source):
+    if err:
+      return False
+    rows.append(row)
+  return local_command_only_rows(rows)
+
+
 def finish(args):
   plan, run = plan_context(args.plan)
-  require(not any(s.get("limitations") for s in plan["sessions"]) and not plan.get("unknown"), "source parsing or classification gaps prevent complete coverage")
+  unresolved_unknown = [u for u in plan.get("unknown", []) if not is_local_command_only_entry(u)]
+  require(not any(s.get("limitations") for s in plan["sessions"]) and not unresolved_unknown, "source parsing or classification gaps prevent complete coverage")
   for stage in STAGES:
     prior_validation(plan, run, stage)
   critics = prior_validation(plan, run, "verify")

@@ -2685,6 +2685,8 @@ class SessionAuditCliTest(unittest.TestCase):
     fake_oauth_code = "ac_SynthOAuthCode9876543210abcdef1234567890"
     fake_oauth_state = "st_SynthOAuthState9876543210abcdef"
     fake_vapid_priv = "vapid_SynthPrivateKey9876543210abcdef1234567890"
+    fake_mfa_pos = "654321"
+    fake_mfa_flag = "987654"
     sample = (
       f"open http://127.0.0.1:8318/?k={fake_url_key} and "
       f"https://discord.com/api/webhooks/1566086967630762033/{fake_webhook_tok} and "
@@ -2692,6 +2694,7 @@ class SessionAuditCliTest(unittest.TestCase):
       f"COLLIE_VAPID_PRIVATE={fake_vapid_priv} and "
       f'{{"vapid_private":"{fake_vapid_priv}","vapid_public":"SAFE_VAPID_PUB"}} and '
       f"'vapid_private':'{fake_vapid_priv}' and "
+      f"~/.claude/scripts/aws-mfa-refresh.sh {fake_mfa_pos} and /demo/aws-mfa-session.sh {fake_mfa_pos} and --token-code {fake_mfa_flag} and "
       f"send via {fake_resend} with 登入密碼（`{fake_paren_pw}`） "
       "while keeping 密碼（含英文大小寫與數字） and is_private=false and ?k=short1 and ?code=200&state=open and ?client_id=abc123def456ghi789jkl012 untouched"
     )
@@ -2701,8 +2704,13 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertFalse(fake_oauth_code in redacted, "oauth callback code was not redacted")
     self.assertFalse(fake_oauth_state in redacted, "oauth callback state was not redacted")
     self.assertFalse(fake_vapid_priv in redacted, "vapid private key was not redacted")
+    self.assertFalse(fake_mfa_pos in redacted, "aws-mfa-refresh positional code was not redacted")
+    self.assertFalse(fake_mfa_flag in redacted, "--token-code flag code was not redacted")
     self.assertFalse(fake_resend in redacted, "vendor token was not redacted")
     self.assertFalse(fake_paren_pw in redacted, "cjk paren password was not redacted")
+    self.assertIn("~/.claude/scripts/aws-mfa-refresh.sh [REDACTED]", redacted)
+    self.assertIn("/demo/aws-mfa-session.sh [REDACTED]", redacted)
+    self.assertIn("--token-code [REDACTED]", redacted)
     self.assertIn("http://127.0.0.1:8318/?k=[REDACTED]", redacted)
     self.assertIn("https://discord.com/api/webhooks/1566086967630762033/[WEBHOOK_REDACTED]", redacted)
     self.assertIn("http://localhost:1455/auth/callback?code=[REDACTED]&scope=openid&state=[REDACTED]", redacted)

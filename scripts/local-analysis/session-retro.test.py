@@ -234,9 +234,16 @@ class RetroCLI(unittest.TestCase):
     self.source("unknown", [user(promptSource=None, origin={})])
     self.source("old-unknown", [user(promptSource=None, origin={}, timestamp=OLD)])
     self.source("empty-meta", [{"type": "mode", "timestamp": RECENT}, {"type": "system", "timestamp": RECENT}])
+    self.source("local-cmd", [
+      {"type": "user", "isMeta": True, "timestamp": RECENT, "message": {"role": "user", "content": "<local-command-caveat>local</local-command-caveat>"}},
+      {"type": "user", "timestamp": RECENT, "message": {"role": "user", "content": "<command-name>/effort</command-name>"}},
+      {"type": "user", "timestamp": RECENT, "message": {"role": "user", "content": "<local-command-stdout>Cancelled</local-command-stdout>"}},
+    ])
     inventory, data = self.inventory()
     self.assertIn("empty-meta", {r["session"] for r in data["excluded"]})
+    self.assertIn("local-cmd", {r["session"] for r in data["excluded"]})
     self.assertNotIn("empty-meta", {r["session"] for r in data["unknown"]})
+    self.assertNotIn("local-cmd", {r["session"] for r in data["unknown"]})
     source.write_text(json.dumps(user("LIVE_CHANGED")))
     out = self.new("run")
     result = self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "day")

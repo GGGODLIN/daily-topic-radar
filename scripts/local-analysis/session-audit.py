@@ -167,6 +167,10 @@ URL_KEY_PARAM_RE = re.compile(
 DISCORD_WEBHOOK_URL_RE = re.compile(
   r"(?i)(https?://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/)([A-Za-z0-9_-]{20,})"
 )
+# AWS MFA 換證腳本與 sts get-session-token 的 6 位數驗證碼為位置參數或空白分隔旗標，不會被 KEY=VALUE 規則命中。
+MFA_CODE_RE = re.compile(
+  r"(?i)((?:aws-mfa-[A-Za-z0-9_-]*\.sh|--token-code)(?:\s+|=)[\"']?)\d{6}([\"']?(?!\d))"
+)
 LOCK_RE = re.compile(
   r"^<!-- friction-review-lock:v1 session=(\S+) "
   r"claimed_at=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) "
@@ -497,6 +501,7 @@ def redact_text(value):
     text,
   )
   text = ASSIGNMENT_RE.sub(replace_assignment, text)
+  text = MFA_CODE_RE.sub(r"\1[REDACTED]\2", text)
   text = CJK_SECRET_LABEL_RE.sub(r"\1\2[REDACTED]", text)
   text = CJK_SECRET_PAREN_RE.sub(r"\1\2[REDACTED]\3", text)
   text = TOKEN_RE.sub("[REDACTED]", text)
