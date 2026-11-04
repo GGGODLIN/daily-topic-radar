@@ -123,7 +123,7 @@ except Exception:
     print("HELLO_FAIL\tD\t[hello] Magpie providers.json 讀取或解析失敗——腿清單無法判定，全池 hello 證據未取得（fail-loud）")
     sys.exit(0)
 members = []
-for gid in ("free", "free-smart"):
+for gid in ("free", "free-smart", "glm53-pool", "mimopro-pool"):
     for m in groups.get(gid, []):
         if m not in members:
             members.append(m)
