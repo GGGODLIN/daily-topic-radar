@@ -31,6 +31,12 @@ assert by_name['steipete/tap/peekaboo'] == {
 assert {'go', 'yarn', 'ollama'} <= ignore
 assert not {'chungchihhan/tap/tracce', 'serena-agent', 'ollama'} & by_name.keys()
 assert 'agent-browser' in by_name
+assert by_name.get('prismantis') == {
+  'name': 'prismantis',
+  'manager': 'git-fork',
+  'path': '~/Desktop/projects/prismantis',
+  'source': 'NahumLitvin/prismantis',
+}, by_name.get('prismantis')
 assert not {'dev-browser', 'yarn'} & by_name.keys()
 print('✅ 測 0 production 名單：go/ollama 忽略、Peekaboo 追蹤、dev-browser/yarn 非 active npm-g owner 已移除、agent-browser 保留')
 PY
@@ -516,6 +522,52 @@ assert packet['errors'] == [], packet['errors']
 assert packet['updates'] == [], packet['updates']
 assert [(p['current'], p['version']) for p in packet['release_pending']] == [('0.21.6', '0.21.11')], packet['release_pending']
 print('✅ 測 14 npm 降版：已裝 0.21.6 比已滿 7 天的 0.21.5 新 → 不進有更新、0.21.11 仍進 ⏳')
+PY
+
+# ---- 測 15 git-fork：本地有自訂 commit 時以 merge-base --is-ancestor 判上游 release 是否已併入 ----
+FORK_REPO="$TMP/fork-repo"
+FORK_BIN="$TMP/fork-bin"
+mkdir -p "$FORK_REPO" "$FORK_BIN"
+git -C "$FORK_REPO" init -q
+git -C "$FORK_REPO" config user.email "test@example.com"
+git -C "$FORK_REPO" config user.name "Tester"
+printf 'v1\n' > "$FORK_REPO/file.txt"
+git -C "$FORK_REPO" add file.txt
+git -C "$FORK_REPO" commit -q -m "upstream v0.37.1"
+git -C "$FORK_REPO" tag v0.37.1
+BASE_SHA=$(git -C "$FORK_REPO" rev-parse HEAD)
+printf 'local patch\n' >> "$FORK_REPO/file.txt"
+git -C "$FORK_REPO" commit -q -am "feat: local patch"
+cat > "$FORK_BIN/gh" <<EOF
+#!/bin/bash
+case "\$*" in
+  "api repos/NahumLitvin/prismantis/releases/latest --jq .tag_name") printf '%s\n' "\${FORK_TAG:-v0.41.0}" ;;
+  "api repos/NahumLitvin/prismantis/commits/v0.41.0 --jq .sha") printf '9999999999999999999999999999999999999999\n' ;;
+  "api repos/NahumLitvin/prismantis/commits/v0.37.1 --jq .sha") printf '$BASE_SHA\n' ;;
+  "api repos/NahumLitvin/prismantis/releases/tags/v0.41.0 --jq .body") printf 'Added surfaces option\n' ;;
+  "api repos/NahumLitvin/prismantis/releases/tags/v0.37.1 --jq .body") printf 'Old release\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$FORK_BIN/gh"
+printf '[{"name":"prismantis","manager":"git-fork","path":"%s","source":"NahumLitvin/prismantis"},{"name":"missing-fork","manager":"git-fork","path":"%s/no-such-dir","source":"owner/repo"}]' "$FORK_REPO" "$TMP" > "$TMP/m-fork.json"
+out_fork_behind=$(PATH="$FORK_BIN:/usr/bin:/bin" FORK_TAG=v0.41.0 CCTOOL_MANIFEST="$TMP/m-fork.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+out_fork_synced=$(PATH="$FORK_BIN:/usr/bin:/bin" FORK_TAG=v0.37.1 CCTOOL_MANIFEST="$TMP/m-fork.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_fork_behind" "$out_fork_synced" "$FORK_REPO" <<'PY' || fail "git-fork 斷言失敗"
+import json, sys
+behind, synced, repo_path = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
+assert behind['updates'] == [{
+  'name': 'prismantis',
+  'manager': 'git-fork',
+  'current': 'v0.37.1',
+  'latest': 'v0.41.0',
+  'source': 'NahumLitvin/prismantis',
+  'notes': 'Added surfaces option',
+  'path': repo_path,
+}], behind['updates']
+assert any(e['name'] == 'missing-fork' and 'not a git repo' in e['reason'] for e in behind['errors']), behind['errors']
+assert synced['updates'] == [], synced['updates']
+print('✅ 測 15 git-fork：上游新 release 未併入時報 v0.37.1→v0.41.0；已併入本地分支歷史（即使 HEAD 有自訂 commit）時靜默；路徑不存在進 errors')
 PY
 
 echo "🎉 ALL PASS"

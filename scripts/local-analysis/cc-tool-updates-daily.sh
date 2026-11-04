@@ -484,6 +484,36 @@ for e in manifest:
             if len(pins) > 1:
                 errors.append({"name": name, "reason": f"config mismatch: pins {pins} across " + ", ".join(e["config"] for e in entries)}); continue
             add_update(name, mgr, pins[0], npm_latest(pkg), pkg, configs=[e["config"] for e in entries])
+        elif mgr == "git-fork":
+            repo_path = os.path.expanduser(e.get("path") or "")
+            if not repo_path or not os.path.exists(os.path.join(repo_path, ".git")):
+                errors.append({"name": name, "reason": f"not a git repo: {repo_path or '(missing path)'}"}); continue
+            head_sha = (run(["git", "-C", repo_path, "rev-parse", "HEAD"]) or "").strip()
+            if not head_sha:
+                errors.append({"name": name, "reason": "cannot resolve local HEAD"}); continue
+            track = e.get("track") or "release"
+            if track == "head":
+                latest_sha = gh_head(src)
+                if not latest_sha:
+                    errors.append({"name": name, "reason": "cannot resolve upstream HEAD"}); continue
+                latest_label, notes = latest_sha[:8], ""
+            else:
+                latest_tag = gh_latest(src)
+                if not latest_tag:
+                    errors.append({"name": name, "reason": "cannot resolve upstream release/tag"}); continue
+                latest_sha = (run(["gh", "api", f"repos/{src}/commits/{latest_tag}", "--jq", ".sha"]) or "").strip()
+                if not latest_sha:
+                    errors.append({"name": name, "reason": f"cannot resolve upstream commit for {latest_tag}"}); continue
+                latest_label, notes = latest_tag, gh_notes(src, latest_tag)
+            is_anc = subprocess.run(["git", "-C", repo_path, "merge-base", "--is-ancestor", latest_sha, "HEAD"], capture_output=True).returncode == 0
+            if is_anc:
+                continue
+            if track == "head":
+                cur = head_sha[:8]
+            else:
+                desc_tag = (run(["git", "-C", repo_path, "describe", "--tags", "--abbrev=0", "HEAD"]) or "").strip()
+                cur = desc_tag if (desc_tag and norm(desc_tag) != norm(latest_label)) else head_sha[:8]
+            add_update(name, mgr, cur, latest_label, src, notes, path=repo_path)
         else:
             errors.append({"name": name, "reason": f"unknown manager {mgr}"})
     except Exception as ex:
