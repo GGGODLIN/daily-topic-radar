@@ -102,6 +102,8 @@ class SessionAuditConsumeTest(unittest.TestCase):
     self.assertEqual(m1["cursor_candidate"]["last_finding_id"], 11)
     self.assertEqual(m1["cursor_candidate"]["last_rule_tag_id"], 5)
 
+    report1 = self.root / "report1.md"
+    report1.write_text("# Empty report\n\n<!-- session-audit-ledger-findings: [] -->\n", encoding="utf-8")
     subprocess.run(
       [
         sys.executable,
@@ -114,7 +116,7 @@ class SessionAuditConsumeTest(unittest.TestCase):
         "--rule-tag-id",
         "5",
         "--report",
-        "/tmp/report1.md",
+        str(report1),
       ],
       text=True,
       capture_output=True,
@@ -151,6 +153,72 @@ class SessionAuditConsumeTest(unittest.TestCase):
     self.assertEqual(m3["dedup_finding_count"], 1)
     self.assertEqual(m3["cursor_before"]["last_finding_id"], 11)
     self.assertEqual(m3["cursor_candidate"]["last_finding_id"], 15)
+
+  def test_commit_cursor_rejects_missing_report_or_missing_marker(self):
+    cursor_path = self.state_dir / "consume-cursor.json"
+    cursor_path.write_text(
+      json.dumps({"last_finding_id": 3, "last_rule_tag_id": 2, "updated_at": None, "history": []}) + "\n",
+      encoding="utf-8",
+    )
+    cursor_before = cursor_path.read_bytes()
+    db_before = self.db_path.read_bytes()
+    missing_report = self.root / "missing.md"
+    unmarked_report = self.root / "unmarked.md"
+    unmarked_report.write_text("# Report without findings marker\n", encoding="utf-8")
+
+    for report_path, expected_error in (
+      (missing_report, f"report file not found: {missing_report}"),
+      (unmarked_report, f"missing embedded session-audit-ledger-findings marker in {unmarked_report}"),
+    ):
+      with self.subTest(report_path=report_path):
+        result = subprocess.run(
+          [
+            sys.executable,
+            str(SCRIPT),
+            "commit-cursor",
+            "--state",
+            str(self.state_dir),
+            "--finding-id",
+            "11",
+            "--rule-tag-id",
+            "5",
+            "--report",
+            str(report_path),
+          ],
+          text=True,
+          capture_output=True,
+          check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        response = json.loads(result.stdout)
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"], expected_error)
+        self.assertEqual(cursor_path.read_bytes(), cursor_before)
+        self.assertEqual(self.db_path.read_bytes(), db_before)
+
+  def test_commit_cursor_without_report(self):
+    result = subprocess.run(
+      [
+        sys.executable,
+        str(SCRIPT),
+        "commit-cursor",
+        "--state",
+        str(self.state_dir),
+        "--finding-id",
+        "11",
+        "--rule-tag-id",
+        "5",
+      ],
+      text=True,
+      capture_output=True,
+      check=True,
+    )
+    response = json.loads(result.stdout)
+    self.assertTrue(response["ok"])
+    self.assertEqual(response["ingested_findings"], 0)
+    self.assertEqual(response["cursor"]["last_finding_id"], 11)
+    self.assertEqual(response["cursor"]["last_rule_tag_id"], 5)
+    self.assertEqual(json.loads((self.state_dir / "consume-cursor.json").read_text(encoding="utf-8")), response["cursor"])
 
   def test_rule_grouping_preserves_distinct_unknown_rids_and_full_why_text(self):
     wf_dir = self.state_dir / "friction"

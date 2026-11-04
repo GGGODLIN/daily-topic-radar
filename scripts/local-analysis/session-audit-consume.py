@@ -281,11 +281,11 @@ def extract_findings_from_report(report_path: str) -> list:
     return []
   p = Path(report_path).expanduser()
   if not p.is_file():
-    return []
+    raise ValueError(f"report file not found: {report_path}")
   text = p.read_text(encoding="utf-8", errors="replace")
   m = EMBEDDED_FINDINGS_RE.search(text)
   if not m:
-    return []
+    raise ValueError(f"missing embedded session-audit-ledger-findings marker in {report_path}")
   data = json.loads(m.group(1))
   if not isinstance(data, list):
     raise ValueError("embedded session-audit-ledger-findings must be a JSON array")
