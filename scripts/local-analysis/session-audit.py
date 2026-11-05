@@ -128,7 +128,7 @@ TOKEN_RE = re.compile(
   r"|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|glpat-[A-Za-z0-9_-]{20,})\b"
 )
 JSON_SECRET_RE = re.compile(
-  r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|token|secret"
+  r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|management[_-]?key|token|secret"
   r"|private[_-]?key|privatekey|vapid[_-]?private|cookie|authorization"
   r"|初始密碼|預設密碼|臨時密碼|登入密碼|密碼|口令|金鑰|密鑰|私鑰)[A-Za-z0-9_.-]*[\"']\s*:\s*)([\"'])([^\"']*)([\"'])"
 )
@@ -180,6 +180,7 @@ SENSITIVE_SUFFIXES = (
   "API_KEY",
   "ACTIVE_KEY",
   "ACCESS_KEY",
+  "MANAGEMENT_KEY",
   "AUTH_TOKEN",
   "ACCESS_TOKEN",
   "REFRESH_TOKEN",
@@ -416,7 +417,7 @@ PLACEHOLDER_RE = re.compile(r"^(?:\$|<|\[REDACTED|\*{3}|x{3,}$|your[-_])", re.IG
 # 偵測比遮罩嚴：遮罩寧可多遮，偵測要少誤報。只認 env 檔寫法（大寫名、等號、帶前綴的憑證字尾），
 # 「token: 說明文字」「PASS: 測試名」這類冒號寫法在歷史資料裡幾乎都是誤報（2026-10-08 量到 1347 行、106 個 session）。
 ENV_SECRET_RE = re.compile(
-  r"(?m)(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:PASS|PWD|PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|VAPID_PRIVATE))"
+  r"(?m)(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:PASS|PWD|PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|VAPID_PRIVATE|MANAGEMENT_KEY))"
   r"\s*=\s*[\"']?([^\s\"'`]+)"
 )
 
