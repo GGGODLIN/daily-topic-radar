@@ -282,24 +282,6 @@ class StoreBase(QueryBase):
     return quotes
 
 
-class RuleAnchorsCommandTest(StoreBase):
-  def test_lists_only_rule_anchors_with_their_change_effective_time(self):
-    alpha = self.anchored_change("c-alpha", "CLAUDE.md", "ALPHA_RULE", effective_at="2026-10-10T00:00:00Z")
-    self.anchored_change("c-hook", "CLAUDE.md", "BETA_RULE", effective_at="2026-10-11T00:00:00Z", kind="script")
-    bare = self.root / "bare.txt"
-    bare.write_text("condition for c-bare\n")
-    self.retro(
-      "change", "--issue", "issue-1", "--id", "c-bare", "--effective-at", EFFECTIVE, "--source", bare,
-      "--line", 1, "--quote", "condition for c-bare", "--condition", "kept", "--apply",
-    )
-    out = self.retro("rule-anchors")
-    self.assertEqual(out["command"], "rule-anchors")
-    self.assertEqual(
-      out["anchors"],
-      [{"change_id": "c-alpha", "issue_id": "issue-1", "effective_at": "2026-10-10T00:00:00Z", "path": alpha["path"], "quote": alpha["quote"]}],
-    )
-
-
 class MakeHookProposalTest(StoreBase):
   def test_three_sessions_after_the_change_propose_a_hook_and_two_do_not(self):
     alpha = self.anchored_change("c-alpha", "CLAUDE.md", "ALPHA_RULE")

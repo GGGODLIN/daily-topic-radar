@@ -3423,10 +3423,6 @@ def rule_text(repo, violation):
   return ""
 
 
-def squash(text):
-  return " ".join(text.split())
-
-
 def rule_relative_path(repo, path):
   # 累積庫的錨點是絕對路徑；規則身分裡的路徑相對規則 repo 根。
   text = str(path)
@@ -3450,10 +3446,9 @@ def resolve_rule(repo, path, quote):
   if loaded is None:
     return None, "rules-unavailable"
   relative = rule_relative_path(repo, path)
-  needle = squash(quote)
   pool = [rule for rule in loaded["labels"].values() if rule["path"] == relative]
-  exact = [rule for rule in pool if squash(rule["text"]) == needle]
-  found = exact or [rule for rule in pool if needle and needle in squash(rule["text"])]
+  exact = [rule for rule in pool if rule["text"] == quote]
+  found = exact or [rule for rule in pool if quote and quote in rule["text"]]
   if not found:
     return None, "rule-not-found"
   if len(found) > 1:
