@@ -23,6 +23,7 @@ DEFAULT_MODEL = "gpt-6.1-sol[1m]"
 DEFAULT_TERRA_MODEL = "gpt-6.1-terra"
 DEFAULT_SOL_MODEL = "gpt-6.1-sol"
 DEFAULT_EFFORTS = {"read": "max", "merge": "max", "verify": "xhigh"}
+DEFAULT_REPAIR_MODEL = "devin-plugin/swe-2:high"
 WORKFLOW_TEMPLATE = Path.home() / ".claude/workflows/retro-workflow.js"
 REFERENCES = [str(Path.home() / ".claude/references/retro-workflow" / name)
               for name in ("matt-retro.md", "writing-for-agents.md")]
@@ -577,7 +578,10 @@ def prepare(args):
   models = {"read": args.read_model if args.read_model is not None else format_model(table["GPT_TERRA"], efforts["read"]),
             "merge": args.merge_model if args.merge_model is not None else format_model(table["GPT_TERRA"], efforts["merge"]),
             "verify": args.verify_model if args.verify_model is not None else format_model(table["GPT_SOL"], efforts["verify"])}
-  scope = "all" if not project_filter and not args.exclude_session else {"projects": sorted(project_filter), "excluded_sessions": args.exclude_session}
+  # Quote-only repairs find and copy one sentence; on the 16 historical cases the program could not settle,
+  # free swe-2 passed all 16 after re-validation, reading ranges only (2026-11-05 replay).
+  models["repair"] = args.repair_model if args.repair_model is not None else DEFAULT_REPAIR_MODEL
+  scope ="all" if not project_filter and not args.exclude_session else {"projects": sorted(project_filter), "excluded_sessions": args.exclude_session}
   plan = {"schema_version": 1, "run_id": out.name, "scope": scope, "window_start": iso(start), "cutoff": iso(cutoff),
           "depth": args.depth, "focus": args.focus, "models": models, "effort": args.effort or DEFAULT_EFFORTS["read"],
           "efforts": efforts, "concurrency": args.concurrency,
@@ -694,7 +698,9 @@ def stage_args(args):
       failures.append({"unit": "validation", "errors": ["previous validation stale or invalid; no units reused"]})
     if previous:
       reused = [unit["unit"] for unit in previous["units"] if unit["pass"]]
-      failures.extend({"unit": unit["unit"], "errors": unit["errors"]} for unit in previous["units"] if not unit["pass"])
+      failures.extend({"unit": unit["unit"], "errors": unit["errors"],
+                       **({"quote_failures": unit["quote_failures"]} if unit.get("quote_failures") else {})}
+                      for unit in previous["units"] if not unit["pass"])
       items = [item for item in items if item["unit"] not in reused]
   payload = {"stage": args.stage, "plan_path": str(Path(args.plan).resolve()), "models": plan["models"],
              "effort": plan.get("efforts", {}).get("read" if args.stage == "reading" else "verify" if args.stage == "verify" else "merge", plan["effort"]), "concurrency": plan["concurrency"], "items": items, "confirmed": False,
@@ -1005,6 +1011,79 @@ def canonical_strings(text, depth=0):
   yield from strings(decoded)
 
 
+class EvidenceErrors(ValueError):
+  """Every unmatched quote in one report, so a repair sees them all instead of one per round."""
+
+  def __init__(self, failures):
+    super().__init__("; ".join(failure["error"] for failure in failures))
+    self.failures = failures
+
+
+QUOTE_MISS = "quote is not a contiguous source block match"
+FORMAT_NOISE = re.compile(r"[\s*`_#>]")
+# Agents miscopy line numbers and drop markdown markers; 2026-11-02..11-04 repairs were mostly those two.
+# Limits come from replaying those 54 failures against the fixes Terra made: the auto fixes that picked an
+# irrelevant event were a 7-character phrase, "(Bash completed with no output)" (in 11 events), a
+# format-only match 1948 lines away and a unique match 820 lines away; agreeing rebinds reached 155 lines.
+NEAR_LINES = 3
+LOOSE_MIN_CHARS = 8
+FAR_LINES = 200
+BOILERPLATE_EVENTS = 10
+
+
+def quote_variants(quote):
+  quotes = [quote]
+  try:
+    decoded = json.loads('"' + quote + '"')
+    if isinstance(decoded, str):
+      quotes.append(decoded)
+  except ValueError:
+    pass
+  return quotes
+
+
+def strict_match(event, quotes):
+  return any(q in text for text in canonical_strings(event["text"]) for q in quotes)
+
+
+def loose_span(event, quotes):
+  """The exact source text a quote names once markdown markers and whitespace are ignored, if it occurs once."""
+  targets = [t for t in (FORMAT_NOISE.sub("", q) for q in quotes) if len(t) >= LOOSE_MIN_CHARS]
+  for text in canonical_strings(event["text"]):
+    kept = [i for i, ch in enumerate(text) if not FORMAT_NOISE.match(ch)]
+    squeezed = "".join(text[i] for i in kept)
+    for target in targets:
+      start = squeezed.find(target)
+      if start >= 0 and squeezed.find(target, start + 1) < 0:
+        return text[kept[start]:kept[start + len(target) - 1] + 1]
+  return None
+
+
+def only(rows):
+  return rows[0] if len({row[0]["source_line"] for row in rows}) == 1 else None
+
+
+def correct_quote(events, source_line, quotes):
+  """A cited quote's single unambiguous home; None leaves the decision to a model."""
+  near = lambda e: abs(e["source_line"] - source_line) <= NEAR_LINES
+  cited = [(e, span) for e in events if e["source_line"] == source_line for span in [loose_span(e, quotes)] if span]
+  if cited:
+    return "format-same-line", cited[0]
+  if len(FORMAT_NOISE.sub("", quotes[0])) < LOOSE_MIN_CHARS:
+    return None, None
+  exact = [(e, None) for e in events if strict_match(e, quotes)]
+  if len({e["source_line"] for e, _ in exact}) > BOILERPLATE_EVENTS:
+    return None, None
+  within = [r for r in exact if abs(r[0]["source_line"] - source_line) <= FAR_LINES]
+  for rule, rows in (("unique-line", within if only(exact) else []), ("nearest-line", [r for r in exact if near(r[0])])):
+    if only(rows):
+      return rule, only(rows)
+  loose = [(e, span) for e in events if near(e) for span in [loose_span(e, quotes)] if span]
+  if only(loose):
+    return "format-nearest-line", only(loose)
+  return None, None
+
+
 def normalize_evidence(evidence, item, canonical):
   require(isinstance(evidence, dict), "evidence must be an object")
   session = evidence.get("session", item.get("session"))
@@ -1013,20 +1092,68 @@ def normalize_evidence(evidence, item, canonical):
   require(isinstance(source_line, int) and not isinstance(source_line, bool), "source_line must be an integer")
   quote = evidence.get("quote")
   require(isinstance(quote, str) and bool(quote.strip()), "empty evidence quote")
-  quotes = [quote]
-  try:
-    decoded = json.loads('"' + quote + '"')
-    if isinstance(decoded, str):
-      quotes.append(decoded)
-  except ValueError:
-    pass
-  matching = [event for event in canonical[session] if event["source_line"] == source_line
-              and any(q in text for text in canonical_strings(event["text"]) for q in quotes)]
-  require(bool(matching), f"quote is not a contiguous source block match (source_line={source_line}, quote={quote!r})")
-  event = matching[0]
-  if "event_time" in evidence:
-    require(moment(evidence["event_time"]) == moment(event["event_time"]), "event_time differs from source")
-  return {**evidence, "session": session, "event_time": event["event_time"], "scope": event["scope"]}
+  quotes = quote_variants(quote)
+  matching = [event for event in canonical[session] if event["source_line"] == source_line and strict_match(event, quotes)]
+  if matching:
+    event = matching[0]
+    if "event_time" in evidence:
+      require(moment(evidence["event_time"]) == moment(event["event_time"]), "event_time differs from source")
+    return {**evidence, "session": session, "event_time": event["event_time"], "scope": event["scope"]}
+  rule, found = correct_quote(canonical[session], source_line, quotes)
+  require(rule is not None, f"{QUOTE_MISS} (source_line={source_line}, quote={quote!r})")
+  event, span = found
+  # The original report keeps the agent's text; only the validated copy is corrected, and says so.
+  return {**evidence, "session": session, "source_line": event["source_line"], "quote": span or quote,
+          "event_time": event["event_time"], "scope": event["scope"],
+          "corrected_from": {"source_line": source_line, "quote": quote}, "correction": rule}
+
+
+EVENT_HEADER = re.compile(r"^\[line=(\d+) timestamp=")
+QUOTE_EVENTS_AROUND = 3
+QUOTE_WINDOW_MAX_LINES = 400
+
+
+def quote_windows(failures, plan):
+  """Where a repairer should look: the cited event and a few around it, not the whole document."""
+  documents = {s["session"]: s["document"] for s in plan["sessions"]}
+  headers = {}
+  windows = []
+  for failure in failures:
+    document = documents.get(failure["session"])
+    window = {**failure, "document": document}
+    if document and isinstance(failure.get("source_line"), int):
+      if document not in headers:
+        lines = Path(document).read_text(encoding="utf-8").split("\n")
+        headers[document] = ([(number, int(m.group(1))) for number, line in enumerate(lines, 1)
+                              for m in [EVENT_HEADER.match(line)] if m], len(lines))
+      marks, total = headers[document]
+      if marks:
+        at = next((i for i, (_, line) in enumerate(marks) if line >= failure["source_line"]), len(marks) - 1)
+        # Long neighbours must not push the cited event out of a capped window.
+        start = max(marks[max(0, at - QUOTE_EVENTS_AROUND)][0], marks[at][0] - QUOTE_WINDOW_MAX_LINES // 4)
+        after = at + QUOTE_EVENTS_AROUND + 1
+        end = marks[after][0] - 1 if after < len(marks) else total
+        window.update({"offset": start, "limit": min(end - start + 1, QUOTE_WINDOW_MAX_LINES)})
+    windows.append(window)
+  return windows
+
+
+def normalize_record_evidence(records, item, canonical):
+  failures = []
+  for record in records:
+    kept = []
+    for evidence in evidence_list(record):
+      try:
+        kept.append(normalize_evidence(evidence, item, canonical))
+      except ValueError as error:
+        if not str(error).startswith(QUOTE_MISS):
+          raise
+        failures.append({"error": str(error), "record_id": record.get("id"),
+                         "session": evidence.get("session", item.get("session")),
+                         "source_line": evidence.get("source_line"), "quote": evidence.get("quote")})
+    record["evidence"] = kept
+  if failures:
+    raise EvidenceErrors(failures)
 
 
 def evidence_list(record):
@@ -1137,12 +1264,10 @@ def check_report(report, item, stage, canonical):
   require(all(isinstance(key, str) and (key.startswith(item["unit"] + "-") or key.startswith(item["unit"] + ":") or (stage == "cross" and re.fullmatch(r"P\d+|S\d+", key))) for key in ids), "record id must have full unit prefix")
   require(len(ids) == len(set(ids)), "duplicate output record ids")
   if stage == "reading":
-    for record in all_records:
-      record["evidence"] = [normalize_evidence(e, item, canonical) for e in evidence_list(record)]
+    normalize_record_evidence(all_records, item, canonical)
   elif stage in {"session-merge", "cross"}:
     check_dispositions(normalized, item, stage)
-    for record in all_records:
-      record["evidence"] = [normalize_evidence(e, item, canonical) for e in evidence_list(record)]
+    normalize_record_evidence(all_records, item, canonical)
   else:
     verify_verdicts(normalized, item, canonical)
   return normalized
@@ -1194,16 +1319,26 @@ def validate(args):
     unit = {"unit": item["unit"], "pass": False, "errors": []}
     try:
       agent, target, original = report_writer(agents, item)
-      normalized = check_report(original, item, args.stage, canonical)
+      try:
+        normalized = check_report(original, item, args.stage, canonical)
+      except EvidenceErrors as misses:
+        normalized = None
+        unit["errors"].extend(failure["error"] for failure in misses.failures)
+        unit["quote_failures"] = quote_windows(misses.failures, plan)
       if args.stage == "reading":
         unit["errors"].extend(coverage_errors(agent, item))
-      if args.stage == "verify":
+      if args.stage == "verify" and normalized is not None:
         unit["errors"].extend(critic_read_errors(agent, item, normalized, canonical, plan))
       require(not unit["errors"], "; ".join(unit["errors"]))
       destination = validated_path(run, item["unit"])
       save(destination, normalized)
+      corrections = [{"record_id": record.get("id"), "rule": e["correction"], "from": e["corrected_from"],
+                      "to": {"source_line": e["source_line"], "quote": e["quote"]}}
+                     for record in report_records(normalized) for e in record.get("evidence", [])
+                     if isinstance(e, dict) and "correction" in e]
       unit.update({"pass": True, "agent": agent["path"], "actual_report_path": str(target),
-                   "validated_path": str(destination), "original_report": original, "report": normalized})
+                   "validated_path": str(destination), "original_report": original, "report": normalized,
+                   "auto_corrections": corrections})
     except (OSError, ValueError, KeyError, TypeError) as error:
       msg = str(error)
       if msg.startswith("no successful report") and Path(item["report_path"]).is_file():
@@ -1222,7 +1357,8 @@ def validate(args):
   success = all(unit["pass"] for unit in units)
   result = {"schema_version": 1, "run_id": plan["run_id"], "stage": args.stage, "pass": success,
             "binding": contract, "units": units,
-            "counts": {"expected": len(items), "passed": sum(u["pass"] for u in units), "failed": sum(not u["pass"] for u in units)},
+            "counts": {"expected": len(items), "passed": sum(u["pass"] for u in units), "failed": sum(not u["pass"] for u in units),
+                       "auto_corrected": sum(len(u.get("auto_corrections", [])) for u in units)},
             "reusable_units": [u["unit"] for u in units if u["pass"]]}
   path = run / f"validation-{args.stage}.json"
   save(path, result)
@@ -1319,6 +1455,7 @@ def parser():
     prep.add_argument("--" + stage + "-model")
     prep.add_argument("--" + stage + "-effort", choices=["low", "medium", "high", "xhigh", "max"] )
   prep.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
+  prep.add_argument("--repair-model")
   for name in ("stage-args", "validate", "finish"):
     sub = commands.add_parser(name)
     sub.add_argument("--plan", required=True)

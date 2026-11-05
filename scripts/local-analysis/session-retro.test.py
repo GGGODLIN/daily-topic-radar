@@ -260,7 +260,8 @@ class RetroCLI(unittest.TestCase):
     self.assertTrue(plan["limits"]["thinking_omitted"])
     self.assertEqual(plan["page_count"], 2)
     self.assertEqual(plan["models"]["read"], result["models"]["read"])
-    self.assertEqual(plan["models"], {"read": "gpt-6.1-terra(max)[1m]", "merge": "gpt-6.1-terra(max)[1m]", "verify": "gpt-6.1-sol(xhigh)[1m]"})
+    self.assertEqual(plan["models"], {"read": "gpt-6.1-terra(max)[1m]", "merge": "gpt-6.1-terra(max)[1m]", "verify": "gpt-6.1-sol(xhigh)[1m]",
+                                      "repair": "devin-plugin/swe-2:high"})
     self.assertEqual(plan["efforts"], {"read": "max", "merge": "max", "verify": "xhigh"})
     self.assertIn("[line=1 timestamp=2026-10-20T01:00:00Z window user]", document)
     for page in session["shards"][0]["pages"]:
@@ -277,7 +278,8 @@ class RetroCLI(unittest.TestCase):
              "--merge-model", "merge-sol", "--verify-model", "verify-sol", "--effort", "max", "--concurrency", "2")
     plan = json.loads((out / "plan.json").read_text())
     self.assertNotEqual(plan["scope"], "all")
-    self.assertEqual(plan["models"], {"read": "read-sol", "merge": "merge-sol", "verify": "verify-sol"})
+    self.assertEqual(plan["models"], {"read": "read-sol", "merge": "merge-sol", "verify": "verify-sol",
+                                      "repair": "devin-plugin/swe-2:high"})
     self.assertEqual(plan["concurrency"], 2)
     self.assertTrue(plan["limits"]["narrow_coverage"])
     self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "day", "--concurrency", "5", code=2)
@@ -347,7 +349,7 @@ class RetroCLI(unittest.TestCase):
     path, _ = self.prepare([user(), assistant([block])])
     item = self.stage(path, "reading")["items"][0]
     for quote, line, valid in [(text, 2, True), (json.dumps(text, ensure_ascii=False)[1:-1], 2, True),
-                               (text, 1, False), ('精確 "錯字"\n下一行', 2, False), ("不可拼接", 2, False)]:
+                               (text, 1, True), ('精確 "錯字"\n下一行', 2, False), ("不可拼接", 2, False)]:
       with self.subTest(quote=quote, line=line):
         report = self.report(item, [{"id": item["unit"] + "-F1", "evidence": [
           {"session": "human", "source_line": line, "quote": quote}]}])
@@ -355,7 +357,42 @@ class RetroCLI(unittest.TestCase):
         self.validate(path, "reading", [folder], code=0 if valid else 2)
         if valid:
           normalized = json.loads((path.parent / "validated" / (item["unit"] + ".json")).read_text())
-          self.assertEqual(normalized["findings"][0]["evidence"][0]["event_time"], RECENT)
+          evidence = normalized["findings"][0]["evidence"][0]
+          self.assertEqual(evidence["event_time"], RECENT)
+          # A miscopied line is rebound only in the validated copy, and the copy says what it changed.
+          self.assertEqual(evidence["source_line"], 2)
+          self.assertEqual("correction" in evidence, line != 2)
+          self.assertEqual(json.loads(Path(item["report_path"]).read_text())["findings"][0]["evidence"][0]["source_line"], line)
+
+  def test_quote_misses_are_auto_corrected_only_when_unambiguous_and_all_listed(self):
+    repeated = "repeat phrase that is long enough"
+    path, _ = self.prepare([user(repeated), assistant("filler a"), assistant("filler b"), assistant("filler c"),
+                            assistant("filler d"), assistant("ok"), user(repeated), assistant("**bold claim** about the plan")],
+                           repair_model="devin-plugin/swe-2:high")
+    plan = json.loads(path.read_text())
+    self.assertEqual(plan["models"]["repair"], "devin-plugin/swe-2:high")
+    item = self.stage(path, "reading")["items"][0]
+    unit = item["unit"]
+    formatting = {"session": "human", "source_line": 8, "quote": "bold claim about the plan"}
+    ambiguous = {"session": "human", "source_line": 4, "quote": repeated}
+    short_far = {"session": "human", "source_line": 2, "quote": "ok"}
+    report = self.report(item, [{"id": unit + "-F1", "evidence": [formatting, ambiguous, short_far]}])
+    self.validate(path, "reading", [self.transcript(item, report)], code=2)
+    failed = json.loads((path.parent / "validation-reading.json").read_text())["units"][0]
+    self.assertEqual(len(failed["errors"]), 2)
+    self.assertEqual([(f["source_line"], f["record_id"]) for f in failed["quote_failures"]], [(4, unit + "-F1"), (2, unit + "-F1")])
+    self.assertTrue(all(f["document"] == item["source_document"] and f["offset"] >= 1 and f["limit"] >= 1
+                        for f in failed["quote_failures"]))
+    repair = self.stage(path, "reading")["failures"][0]
+    self.assertEqual(len(repair["quote_failures"]), 2)
+
+    report = self.report(item, [{"id": unit + "-F1", "evidence": [formatting]}])
+    result = self.validate(path, "reading", [self.transcript(item, report)])
+    self.assertEqual(result["counts"]["auto_corrected"], 1)
+    evidence = json.loads((path.parent / "validated" / (unit + ".json")).read_text())["findings"][0]["evidence"][0]
+    self.assertEqual(evidence["quote"], "bold claim** about the plan")
+    self.assertEqual(evidence["correction"], "format-same-line")
+    self.assertEqual(evidence["corrected_from"], {"source_line": 8, "quote": "bold claim about the plan"})
 
   def test_json_inside_tool_text_decodes_without_joining_or_rewriting(self):
     encoded = json.dumps({"messages": "先按照你的建議處理", "pieces": ["不能", "拼接"]}, ensure_ascii=True)
