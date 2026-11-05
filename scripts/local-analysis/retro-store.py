@@ -34,6 +34,17 @@ LOAD_STATES = ("loaded", "not_loaded", "unchecked")
 STALE_LOAD_BASES = ("last_load_is_old_version", "load_time_outside_effective_window")
 DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
 COVERAGE = ("yes", "no", "unknown")
+# 判定值對照規格：有效、無效、幫倒忙、證據不足。
+VERDICTS = ("effective", "ineffective", "harmful", "insufficient")
+# 證據不足與沒判定的改動都是空值：未知不寫成 false。
+EFFECTIVE_OF = {"effective": True, "ineffective": False, "harmful": False, "insufficient": None}
+LEVELS = (1, 2, 3, 4)
+SIDE_EFFECTS = ("checked", "unchecked")
+CHANGE_KINDS = ("always_on_rule", "skill", "command", "hook", "script")
+PROPOSAL_KINDS = ("make_hook", "retract", "modify")
+PROPOSAL_DECISIONS = ("accepted", "rejected")
+# 這兩種提議的對象一定是改動；拒絕或接受其中之一就處理掉待決定清單裡的那一項。
+CHANGE_PROPOSALS = ("retract", "modify")
 NOTICE = ("<task-notification>", "<system-reminder>", "<cross-session-message", "[main]")
 
 
@@ -180,7 +191,7 @@ def user_texts(message):
   return texts
 
 
-def human_quote(path, line, quote):
+def human_row(path, line, quote):
   require(os.path.splitext(path)[1].lower() == ".jsonl", "decision source must be a jsonl file")
   matched = None
   for number, row in jsonl_records(path):
@@ -205,7 +216,11 @@ def human_quote(path, line, quote):
     require(quote in body, "decision quote is not in the user text")
     matched = row
   require(matched is not None, "decision source line is out of range")
-  return matched["uuid"]
+  return matched
+
+
+def human_quote(path, line, quote):
+  return human_row(path, line, quote)["uuid"]
 
 
 def verify_anchor(item, *, human=False):
@@ -1015,6 +1030,141 @@ def observe(args):
   }
 
 
+def count(value, label):
+  require(
+    isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+    label + " must be a non-negative integer",
+  )
+  return value
+
+
+def find_change(rows, change_id):
+  found = next(
+    (row for row in rows if row["type"] == "change" and row["id"] == "change:" + change_id), None
+  )
+  require(found is not None, "unknown change reference: " + change_id)
+  return found
+
+
+def numbered_id(rows, kind, change_id, body):
+  # 同一改動、同內容視為重播；換內容才用序號另立。判定的「最新」就是檔案裡最後一筆。
+  mine = [row for row in rows if row["type"] == kind and row["change_id"] == change_id]
+  for row in mine:
+    if same({key: row.get(key) for key in body}, body):
+      return row["id"]
+  return kind + ":" + change_id + ":" + str(len(mine) + 1)
+
+
+def append_one(args, build_row):
+  with locked(args.store, create=args.apply) as (_folder, handle):
+    existing = load_entries(handle)
+    row = build_row(existing)
+    fresh, skipped = plan_append(existing, [row])
+    if args.apply and fresh:
+      append_rows(handle, fresh)
+  return {
+    "ok": True,
+    "command": args.command,
+    "apply": args.apply,
+    "appended": len(fresh),
+    "noop": len(skipped),
+    "id": row["id"],
+  }
+
+
+def verdict(args):
+  source = anchor({"path": args.source, "line": args.line, "quote": args.quote}, "source")
+  verify_anchor(source)
+  change_id = ident(args.change, "change")
+  require(args.verdict in VERDICTS, "verdict must be one of " + ", ".join(VERDICTS))
+  require(args.level in LEVELS, "level must be 1, 2, 3 or 4")
+  require(args.side_effects in SIDE_EFFECTS, "side_effects must be checked or unchecked")
+  moment(args.at, "at")
+  body = {
+    "change_id": change_id,
+    "verdict": args.verdict,
+    "level": args.level,
+    "model": ident(args.model, "model"),
+    "route": ident(args.route, "route"),
+    "runs": count(args.runs, "runs"),
+    "old_recurrences": count(args.old_recurrences, "old_recurrences"),
+    "new_recurrences": count(args.new_recurrences, "new_recurrences"),
+    "source": source,
+    "judged_by": ident(args.by, "judged_by"),
+    "side_effects": args.side_effects,
+    "at": args.at,
+  }
+
+  def build(existing):
+    body["issue_id"] = find_change(existing, change_id)["issue_id"]
+    return entry("verdict", numbered_id(existing, "verdict", change_id, body), body)
+
+  return append_one(args, build)
+
+
+def backfill(args):
+  source = anchor({"path": args.source, "line": args.line, "quote": args.quote}, "source")
+  verify_anchor(source)
+  change_id = ident(args.change, "change")
+  require(args.kind in CHANGE_KINDS, "kind must be one of " + ", ".join(CHANGE_KINDS))
+  body = {"change_id": change_id, "kind": args.kind, "source": source}
+
+  def build(existing):
+    body["issue_id"] = find_change(existing, change_id)["issue_id"]
+    return entry("backfill", numbered_id(existing, "backfill", change_id, body), body)
+
+  return append_one(args, build)
+
+
+def proposal_target(args):
+  rule_flags = (args.rule_path, args.rule_line, args.rule_quote)
+  given = [flag is not None for flag in rule_flags]
+  require(all(given) or not any(given), "rule target needs path, line and quote together")
+  require(
+    (args.change is not None) != all(given), "give exactly one target: a change or a rule anchor"
+  )
+  if args.change is not None:
+    change_id = ident(args.change, "change")
+    return {"change_id": change_id}, "change:" + change_id
+  point = anchor({"path": args.rule_path, "line": args.rule_line, "quote": args.rule_quote}, "rule")
+  # 行號會隨規則檔編輯漂移；比對對象用路徑加原文。
+  return {"rule": point}, "rule:" + point["path"] + "|" + point["quote"]
+
+
+def proposal(args):
+  require(args.kind in PROPOSAL_KINDS, "kind must be one of " + ", ".join(PROPOSAL_KINDS))
+  require(
+    args.decision in PROPOSAL_DECISIONS, "decision must be one of " + ", ".join(PROPOSAL_DECISIONS)
+  )
+  target, key = proposal_target(args)
+  require(
+    args.kind == "make_hook" or "change_id" in target, args.kind + " needs a change as its target"
+  )
+  source = anchor({"path": args.source, "line": args.line, "quote": args.quote}, "source")
+  # 真人原話沿用 decide 的驗證；決定時間取自那筆 session 紀錄。
+  found = human_row(source["path"], source["line"], source["quote"])
+  decided_at = found["timestamp"]
+  moment(decided_at, "decision source timestamp")
+  uuid = found["uuid"]
+  body = {
+    "proposal": args.kind,
+    "target": target,
+    "target_key": key,
+    "decision": args.decision,
+    "source": source,
+    "event_uuid": uuid,
+    "decided_at": decided_at,
+  }
+  entry_id = "proposal-decision:" + uuid + ":" + args.kind + ":" + key
+
+  def build(existing):
+    if "change_id" in target:
+      body["issue_id"] = find_change(existing, target["change_id"])["issue_id"]
+    return entry("proposal_decision", entry_id, body)
+
+  return append_one(args, build)
+
+
 def counts(rows, issue):
   bucket = {name: 0 for name in VERIFICATIONS}
   for row in rows:
@@ -1050,14 +1200,143 @@ def issue_sessions(rows, issue):
   return seen
 
 
-def project_issue(rows, issue_row, current=None):
+def change_views(rows, now):
+  """One view per change: its latest verdict, `effective`, filed items, and whether it needs a re-judge."""
+  verdicts = {}
+  filed = {}
+  for row in rows:
+    if row["type"] == "verdict":
+      verdicts[row["change_id"]] = row
+    elif row["type"] == "backfill":
+      item = {"kind": row["kind"], "source": row["source"]}
+      known = filed.setdefault(row["change_id"], [])
+      if not any(same(item, old) for old in known):
+        known.append(item)
+  views = []
+  for row in rows:
+    if row["type"] != "change":
+      continue
+    change_id = row["change_id"]
+    latest_verdict = verdicts.get(change_id)
+    later = 0
+    if latest_verdict is not None:
+      cut = moment(latest_verdict["at"], "verdict.at")
+      # 只有已載入新版的再犯（outcome 為 recurrence）算判定之後的新證據。
+      later = sum(
+        1
+        for obs in now
+        if obs["change_id"] == change_id
+        and obs["outcome"] == "recurrence"
+        and isinstance(obs.get("event_time"), str)
+        and moment(obs["event_time"], "event_time") > cut
+      )
+    views.append(
+      {
+        "id": change_id,
+        "issue_id": row["issue_id"],
+        "effective_at": row["effective_at"],
+        "items": filed.get(change_id, []),
+        "verdict": "insufficient" if latest_verdict is None else latest_verdict["verdict"],
+        "verdict_id": None if latest_verdict is None else latest_verdict["id"],
+        "verdict_at": None if latest_verdict is None else latest_verdict["at"],
+        "level": None if latest_verdict is None else latest_verdict["level"],
+        "effective": None if latest_verdict is None else EFFECTIVE_OF[latest_verdict["verdict"]],
+        "needs_rejudge": later > 0,
+        "recurrences_after_verdict": later,
+        "side_effects_unchecked": latest_verdict is not None
+        and latest_verdict["side_effects"] == "unchecked",
+      }
+    )
+  return views
+
+
+def latest_proposals(rows):
+  found = {}
+  for row in rows:
+    if row["type"] == "proposal_decision":
+      found[(row["proposal"], row["target_key"])] = row
+  return found
+
+
+def open_proposals(view, proposals):
+  """Retract/modify proposals still waiting on the user for a bad verdict; [] once one was accepted."""
+  cut = moment(view["verdict_at"], "verdict.at")
+  waiting = []
+  for kind in CHANGE_PROPOSALS:
+    row = proposals.get((kind, "change:" + view["id"]))
+    # 只有不早於判定的決定算數；判定在拒絕之後才下的，就是拒絕之後的新證據。
+    stands = row is not None and moment(row["decided_at"], "decided_at") >= cut
+    if stands and row["decision"] == "accepted":
+      return []
+    if not (stands and row["decision"] == "rejected"):
+      waiting.append(kind)
+  return waiting
+
+
+def pending_decisions(rows, views):
+  proposals = latest_proposals(rows)
+  out = {
+    "ineffective": [],
+    "harmful": [],
+    "needs_rejudge": [],
+    "effective": [],
+    "side_effects_unchecked": [],
+    "level_four_only": 0,
+  }
+  for view in views:
+    if view["verdict_id"] is None:
+      continue
+    core = {
+      "change_id": view["id"],
+      "issue_id": view["issue_id"],
+      "verdict_id": view["verdict_id"],
+      "level": view["level"],
+    }
+    if view["verdict"] in ("ineffective", "harmful"):
+      waiting = open_proposals(view, proposals)
+      if waiting:
+        out[view["verdict"]].append({**core, "open_proposals": waiting})
+    if view["needs_rejudge"]:
+      out["needs_rejudge"].append(
+        {
+          **core,
+          "verdict": view["verdict"],
+          "recurrences_after_verdict": view["recurrences_after_verdict"],
+        }
+      )
+    if view["verdict"] == "effective":
+      out["effective"].append({**core, "side_effects_unchecked": view["side_effects_unchecked"]})
+      if view["side_effects_unchecked"]:
+        out["side_effects_unchecked"].append(core)
+    if view["level"] == 4:
+      out["level_four_only"] += 1
+  return out
+
+
+def proposal_summary(rows):
+  return [
+    {
+      "id": row["id"],
+      "proposal": row["proposal"],
+      "target": row["target"],
+      "target_key": row["target_key"],
+      "decision": row["decision"],
+      "decided_at": row["decided_at"],
+    }
+    for row in latest_proposals(rows).values()
+  ]
+
+
+def project_issue(rows, issue_row, current=None, views=None):
   issue = issue_row["issue_id"]
   bucket, events = counts(rows, issue)
   sessions = issue_sessions(rows, issue)
   decision = latest(rows, "decision", issue)
   progress_row = latest(rows, "progress", issue)
-  changes = [row for row in rows if row["type"] == "change" and row["issue_id"] == issue]
   now = current_observations(rows) if current is None else current
+  changes = [
+    view for view in (change_views(rows, now) if views is None else views) if view["issue_id"] == issue
+  ]
   mine = [row for row in now if row["issue_id"] == issue]
   # 沒有事件時間的舊觀察，時間多半是寫入時間；另列、不算次數。
   observations = [row for row in mine if "event_time" in row]
@@ -1078,7 +1357,7 @@ def project_issue(rows, issue_row, current=None):
     "progress": None
     if progress_row is None
     else {"state": progress_row["state"], "id": progress_row["id"]},
-    "changes": [{"id": row["change_id"], "effective_at": row["effective_at"]} for row in changes],
+    "changes": changes,
     "observations": {
       "correct": correct,
       "recurrence": recurrence,
@@ -1091,6 +1370,7 @@ def project_issue(rows, issue_row, current=None):
       },
       "legacy": legacy,
       "evidence": evidence,
+      # 一個問題可有好幾個改動、各自有判定；問題層級不合併成單一值，值在每個改動上。
       "effective": None,
     },
   }
@@ -1119,6 +1399,13 @@ def detail(rows, issue):
       row for row in rows if row["type"] == "progress" and row["issue_id"] == issue
     ],
     "change_entries": [row for row in rows if row["type"] == "change" and row["issue_id"] == issue],
+    "verdict_entries": [row for row in rows if row["type"] == "verdict" and row["issue_id"] == issue],
+    "backfill_entries": [
+      row for row in rows if row["type"] == "backfill" and row["issue_id"] == issue
+    ],
+    "proposal_decisions": [
+      row for row in rows if row["type"] == "proposal_decision" and row.get("issue_id") == issue
+    ],
     "observation_entries": [
       row for row in rows if row["type"] == "observation" and row["issue_id"] == issue
     ],
@@ -1144,6 +1431,8 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
         "with_changes": 0,
         "legacy_observations": 0,
       }
+      out["pending_decisions"] = pending_decisions([], [])
+      out["proposal_decisions"] = []
     return out
   with locked(store) as (_folder, handle):
     rows = load_entries(handle)
@@ -1153,8 +1442,9 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
   require(issue is None or selected, "unknown issue reference: " + str(issue))
   all_projected = []
   now = current_observations(rows)
+  views = change_views(rows, now)
   for row in selected:
-    projected = project_issue(rows, row, now)
+    projected = project_issue(rows, row, now, views)
     if issue is not None:
       projected["records"] = detail(rows, row["issue_id"])
     all_projected.append(projected)
@@ -1192,6 +1482,9 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
       "with_changes": sum(1 for item in all_projected if item["changes"]),
       "legacy_observations": sum(item["observations"]["legacy"] for item in all_projected),
     }
+    # 待決定清單看全庫的改動，不受 --issue 或 --decision 篩選影響。
+    out["pending_decisions"] = pending_decisions(rows, views)
+    out["proposal_decisions"] = proposal_summary(rows)
   return out
 
 
@@ -1253,6 +1546,43 @@ def build():
   observed.add_argument("--line", required=True, type=int)
   observed.add_argument("--quote", required=True)
   observed.add_argument("--apply", action="store_true")
+
+  judged = commands.add_parser("verdict")
+  judged.add_argument("--change", required=True)
+  judged.add_argument("--verdict", required=True)
+  judged.add_argument("--level", required=True, type=int)
+  judged.add_argument("--model", required=True)
+  judged.add_argument("--route", required=True)
+  judged.add_argument("--runs", required=True, type=int)
+  judged.add_argument("--old-recurrences", required=True, type=int)
+  judged.add_argument("--new-recurrences", required=True, type=int)
+  judged.add_argument("--source", required=True)
+  judged.add_argument("--line", required=True, type=int)
+  judged.add_argument("--quote", required=True)
+  judged.add_argument("--by", required=True)
+  judged.add_argument("--side-effects", required=True)
+  judged.add_argument("--at", required=True)
+  judged.add_argument("--apply", action="store_true")
+
+  filed = commands.add_parser("backfill")
+  filed.add_argument("--change", required=True)
+  filed.add_argument("--kind", required=True)
+  filed.add_argument("--source", required=True)
+  filed.add_argument("--line", required=True, type=int)
+  filed.add_argument("--quote", required=True)
+  filed.add_argument("--apply", action="store_true")
+
+  proposed = commands.add_parser("proposal")
+  proposed.add_argument("--kind", required=True)
+  proposed.add_argument("--decision", required=True)
+  proposed.add_argument("--change")
+  proposed.add_argument("--rule-path")
+  proposed.add_argument("--rule-line", type=int)
+  proposed.add_argument("--rule-quote")
+  proposed.add_argument("--source", required=True)
+  proposed.add_argument("--line", required=True, type=int)
+  proposed.add_argument("--quote", required=True)
+  proposed.add_argument("--apply", action="store_true")
   return parser
 
 
@@ -1276,6 +1606,12 @@ def main(argv):
       payload = progress(args)
     elif args.command == "change":
       payload = change(args)
+    elif args.command == "verdict":
+      payload = verdict(args)
+    elif args.command == "backfill":
+      payload = backfill(args)
+    elif args.command == "proposal":
+      payload = proposal(args)
     else:
       payload = observe(args)
   except Invalid as error:

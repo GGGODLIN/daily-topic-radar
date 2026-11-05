@@ -1539,5 +1539,298 @@ class StoreCLI(unittest.TestCase):
     self.assertEqual([row for row in self.rows() if row["type"] == "observation"], [])
 
 
+  # ---- ticket 05: verdicts, backfill, proposal decisions, pending list -------------------
+
+  def judge(self, change, verdict="effective", level=2, at="2026-10-21T00:00:00Z", side="checked",
+            apply=True, code=0, evidence=None, over=None):
+    point = evidence or self.pointer("evidence for " + change + " " + verdict + " " + at)
+    flags = {
+      "--change": change, "--verdict": verdict, "--level": level, "--model": "model-x",
+      "--route": "relay-main", "--runs": 5, "--old-recurrences": 4, "--new-recurrences": 1,
+      "--source": point["path"], "--line": point["line"], "--quote": point["quote"],
+      "--by": "main", "--side-effects": side, "--at": at,
+    }
+    flags.update(over or {})
+    args = ["verdict"]
+    for name, value in flags.items():
+      if value is not None:
+        args += [name, value]
+    if apply:
+      args.append("--apply")
+    return self.cli(*args, code=code)
+
+  def backfill(self, change, kind, point=None, apply=True, code=0):
+    point = point or self.pointer("section for " + change + " " + kind)
+    args = ["backfill", "--change", change, "--kind", kind, "--source", point["path"],
+            "--line", point["line"], "--quote", point["quote"]]
+    if apply:
+      args.append("--apply")
+    return self.cli(*args, code=code)
+
+  def propose(self, kind, decision, change=None, text="no to that", at="2026-10-21T06:00:00Z",
+              uuid=None, source=None, rule=None, apply=True, code=0):
+    uuid = uuid or "human-" + str(self.serial + 1)
+    path = source or self.human(text, uuid=uuid, timestamp=at)
+    args = ["proposal", "--kind", kind, "--decision", decision, "--source", path, "--line", 1,
+            "--quote", text]
+    if change is not None:
+      args += ["--change", change]
+    if rule is not None:
+      args += ["--rule-path", rule["path"], "--rule-line", rule["line"], "--rule-quote", rule["quote"]]
+    if apply:
+      args.append("--apply")
+    return self.cli(*args, code=code)
+
+  def change_view(self, change, issue="issue-1"):
+    views = self.cli("list", "--issue", issue)["issues"][0]["changes"]
+    return next(view for view in views if view["id"] == change)
+
+  def pending(self):
+    return self.cli("list", "--summary")["pending_decisions"]
+
+  def pending_ids(self, name):
+    return [item["change_id"] for item in self.pending()[name]]
+
+  def test_verdict_is_appended_bound_to_one_change_with_every_field(self):
+    self.ready()
+    point = self.pointer("replay output shows the miss")
+    dry = self.judge("fix-1", "ineffective", level=2, apply=False, evidence=point)
+    self.assertEqual((dry["appended"], dry["apply"]), (1, False))
+    self.assertEqual([row for row in self.rows() if row["type"] == "verdict"], [])
+    done = self.judge("fix-1", "ineffective", level=2, evidence=point)
+    self.assertEqual(done["appended"], 1)
+    rows = [row for row in self.rows() if row["type"] == "verdict"]
+    self.assertEqual(len(rows), 1)
+    row = rows[0]
+    self.assertEqual(row["id"], done["id"])
+    expected = {
+      "issue_id": "issue-1", "change_id": "fix-1", "verdict": "ineffective", "level": 2,
+      "model": "model-x", "route": "relay-main", "runs": 5, "old_recurrences": 4,
+      "new_recurrences": 1, "source": point, "judged_by": "main", "side_effects": "checked",
+      "at": "2026-10-21T00:00:00Z",
+    }
+    for key, value in expected.items():
+      self.assertEqual(row[key], value, key)
+    # Replaying the same verdict adds nothing.
+    again = self.judge("fix-1", "ineffective", level=2, evidence=point)
+    self.assertEqual((again["appended"], again["noop"]), (0, 1))
+    # Each refusal changes exactly one argument of the accepted call above.
+    before = (self.store / "records.jsonl").read_bytes()
+    refusals = [
+      ("unknown change", {"change": "nope"}, None),
+      ("verdict must", {"verdict": "great"}, None),
+      ("level must", {"level": 5}, None),
+      ("level must", {"level": 0}, None),
+      ("runs must", {}, {"--runs": -1}),
+      ("side_effects must", {"side": "maybe"}, None),
+      ("model must", {}, {"--model": " "}),
+      ("judged_by must", {}, {"--by": ""}),
+      ("not ISO", {}, {"--at": "yesterday"}),
+      ("quote is not on the source line", {}, {"--quote": "not on that line"}),
+    ]
+    for reason, kwargs, over in refusals:
+      call = {"change": "fix-1", "verdict": "ineffective", "level": 2, "evidence": point}
+      call.update(kwargs)
+      error = self.judge(call.pop("change"), call.pop("verdict"), code=2, over=over, **call)
+      self.assertIn(reason, error["error"])
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def test_latest_verdict_wins_and_unjudged_change_shows_insufficient(self):
+    self.ready()
+    self.judge("fix-1", "ineffective", at="2026-10-21T00:00:00Z")
+    self.assertEqual(self.change_view("fix-1")["verdict"], "ineffective")
+    self.judge("fix-1", "effective", level=3, at="2026-10-22T00:00:00Z")
+    view = self.change_view("fix-1")
+    self.assertEqual((view["verdict"], view["level"], view["effective"]), ("effective", 3, True))
+    self.assertEqual(len([row for row in self.rows() if row["type"] == "verdict"]), 2)
+    bare = self.change_view("fix-2")
+    self.assertEqual((bare["verdict"], bare["verdict_id"], bare["level"], bare["effective"]),
+                     ("insufficient", None, None, None))
+
+  def test_effective_follows_the_mapping_and_is_never_merged_per_issue(self):
+    self.ready(changes=("c-eff", "c-no", "c-harm", "c-weak", "c-none"))
+    self.judge("c-eff", "effective")
+    self.judge("c-no", "ineffective")
+    self.judge("c-harm", "harmful")
+    self.judge("c-weak", "insufficient")
+    listed = self.cli("list", "--issue", "issue-1")["issues"][0]
+    got = {view["id"]: view["effective"] for view in listed["changes"]}
+    self.assertEqual(got, {"c-eff": True, "c-no": False, "c-harm": False, "c-weak": None, "c-none": None})
+    self.assertIs(got["c-eff"], True)
+    self.assertIs(got["c-no"], False)
+    # The issue carries several changes with different values, so it has no single value.
+    self.assertIsNone(listed["observations"]["effective"])
+
+  def test_backfill_adds_kind_and_anchor_without_touching_the_change_row(self):
+    self.ready()
+    before = next(row for row in self.rows() if row["id"] == "change:fix-1")
+    rule = self.pointer("rule section text")
+    script = self.pointer("script section text")
+    first = self.backfill("fix-1", "always_on_rule", rule)
+    self.assertEqual(first["appended"], 1)
+    self.backfill("fix-1", "script", script)
+    after = next(row for row in self.rows() if row["id"] == "change:fix-1")
+    self.assertEqual(after, before)
+    self.assertEqual(len([row for row in self.rows() if row["id"] == "change:fix-1"]), 1)
+    items = self.change_view("fix-1")["items"]
+    self.assertEqual(
+      items, [{"kind": "always_on_rule", "source": rule}, {"kind": "script", "source": script}]
+    )
+    self.assertEqual(self.change_view("fix-2")["items"], [])
+    # Replay is a no-op; refusals leave the store alone.
+    self.assertEqual(self.backfill("fix-1", "script", script)["appended"], 0)
+    size = (self.store / "records.jsonl").read_bytes()
+    self.backfill("nope", "script", script, code=2)
+    self.backfill("fix-1", "poem", script, code=2)
+    self.backfill("fix-1", "script", {"path": script["path"], "line": 1, "quote": "not there"}, code=2)
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), size)
+
+  def test_proposal_decision_needs_a_real_human_quote_and_keeps_its_fields(self):
+    self.ready()
+    at = "2026-10-21T06:30:00Z"
+    done = self.propose("retract", "rejected", change="fix-1", text="do not retract it", at=at, uuid="h-1")
+    row = next(row for row in self.rows() if row["type"] == "proposal_decision")
+    self.assertEqual(row["id"], done["id"])
+    self.assertEqual(row["proposal"], "retract")
+    self.assertEqual(row["decision"], "rejected")
+    self.assertEqual(row["target"], {"change_id": "fix-1"})
+    self.assertEqual(row["decided_at"], at)
+    self.assertEqual(row["event_uuid"], "h-1")
+    self.assertEqual(row["source"]["quote"], "do not retract it")
+    # A rule anchor is a legal target for make_hook, and the same call shape accepts it.
+    rule = self.pointer("search rule section")
+    hooked = self.propose("make_hook", "accepted", rule=rule, text="yes make it a hook", uuid="h-2")
+    stored = next(row for row in self.rows() if row["id"] == hooked["id"])
+    self.assertEqual(stored["target"], {"rule": rule})
+    # Tool output and wrapped notifications are not a human decision, as for decide.
+    tool = self.new("tool.jsonl")
+    tool.write_text(json.dumps({
+      "type": "user", "timestamp": WHEN, "uuid": "t-1",
+      "message": {"role": "user", "content": [{"type": "tool_result", "content": "no to that"}]},
+    }) + "\n", encoding="utf-8")
+    error = self.propose("retract", "rejected", change="fix-1", source=tool, code=2)
+    self.assertIn("tool_result", error["error"])
+    notice = self.human("<task-notification>no to that", uuid="n-1")
+    error = self.propose("retract", "rejected", change="fix-1", source=notice, code=2)
+    self.assertIn("notification", error["error"])
+    before = (self.store / "records.jsonl").read_bytes()
+    self.propose("retract", "rejected", change="nope", code=2)
+    self.propose("burn", "rejected", change="fix-1", code=2)
+    self.propose("retract", "maybe", change="fix-1", code=2)
+    self.propose("retract", "rejected", code=2)
+    self.propose("retract", "rejected", rule=rule, code=2)
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def test_rejecting_a_proposal_leaves_the_issue_approval_and_later_work_alone(self):
+    self.ready()
+    self.propose("retract", "rejected", change="fix-1", text="no retract please")
+    listed = self.cli("list", "--issue", "issue-1")["issues"][0]
+    self.assertEqual(listed["decision"]["action"], "approve")
+    evidence = self.lines("progress after rejection")
+    note = self.cli(
+      "progress", "--issue", "issue-1", "--state", "in_progress", "--note", "still going",
+      "--source", evidence, "--line", 1, "--quote", "progress after rejection", "--apply",
+    )
+    self.assertEqual(note["appended"], 1)
+    source = self.lines("another condition")
+    changed = self.cli(
+      "change", "--issue", "issue-1", "--id", "fix-3", "--effective-at", LATER, "--source", source,
+      "--line", 1, "--quote", "another condition", "--condition", "kept", "--apply",
+    )
+    self.assertEqual(changed["appended"], 1)
+    # Positive control: a real decline on the issue does flip approval and blocks the same calls.
+    self.cli(
+      "decide", "--issue", "issue-1", "--action", "decline", "--source",
+      self.human("decline the issue", uuid="decline-uuid"), "--line", 1, "--quote", "decline the issue", "--apply",
+    )
+    self.assertEqual(self.cli("list", "--issue", "issue-1")["issues"][0]["decision"]["action"], "decline")
+    error = self.cli(
+      "progress", "--issue", "issue-1", "--state", "blocked", "--note", "x", "--source", evidence,
+      "--line", 1, "--quote", "progress after rejection", "--apply", code=2,
+    )
+    self.assertIn("not approved", error["error"])
+
+  def test_pending_list_names_ineffective_harmful_and_rejudge(self):
+    self.ready(changes=("c-no", "c-harm", "c-eff", "c-again"))
+    self.judge("c-no", "ineffective", level=3)
+    self.judge("c-harm", "harmful", level=2)
+    self.judge("c-eff", "effective", level=2)
+    self.judge("c-again", "effective", level=2, at="2026-10-21T00:00:00Z")
+    # A loaded recurrence after the verdict, and a counter-example before it.
+    for name, change, outcome, at in (
+      ("late", "c-again", "recurrence", "2026-10-21T08:00:00Z"),
+      ("early", "c-eff", "recurrence", "2026-10-20T08:00:00Z"),
+      ("met", "c-harm", "opportunity_met", "2026-10-21T08:00:00Z"),
+    ):
+      point = self.lines("obs " + name)
+      self.cli("observe", "--issue", "issue-1", "--id", name, "--change", change, "--outcome", outcome,
+               "--at", at, "--source", point, "--line", 1, "--quote", "obs " + name, "--apply")
+    pending = self.pending()
+    self.assertEqual(self.pending_ids("ineffective"), ["c-no"])
+    self.assertEqual(self.pending_ids("harmful"), ["c-harm"])
+    self.assertEqual(self.pending_ids("needs_rejudge"), ["c-again"])
+    self.assertTrue(self.change_view("c-again")["needs_rejudge"])
+    self.assertFalse(self.change_view("c-eff")["needs_rejudge"])
+    self.assertFalse(self.change_view("c-harm")["needs_rejudge"])
+    # The verdict value is unchanged by the re-judge flag.
+    self.assertEqual(self.change_view("c-again")["effective"], True)
+    self.assertEqual(pending["ineffective"][0]["level"], 3)
+    self.assertEqual(pending["ineffective"][0]["open_proposals"], ["retract", "modify"])
+
+  def test_summary_lists_effective_changes_with_level_side_effects_and_level_four_count(self):
+    self.ready(changes=("c-a", "c-b", "c-c", "c-d", "c-e"))
+    self.judge("c-a", "effective", level=3, side="checked")
+    self.judge("c-b", "effective", level=1, side="unchecked")
+    self.judge("c-c", "insufficient", level=4)
+    self.judge("c-d", "ineffective", level=4)
+    # Went to layer 4 first, then a later verdict from layer 2: no longer layer-4 only.
+    self.judge("c-e", "ineffective", level=4, at="2026-10-21T00:00:00Z")
+    self.judge("c-e", "ineffective", level=2, at="2026-10-22T00:00:00Z")
+    pending = self.pending()
+    effective = {item["change_id"]: item for item in pending["effective"]}
+    self.assertEqual(set(effective), {"c-a", "c-b"})
+    self.assertEqual((effective["c-a"]["level"], effective["c-a"]["side_effects_unchecked"]), (3, False))
+    self.assertEqual((effective["c-b"]["level"], effective["c-b"]["side_effects_unchecked"]), (1, True))
+    self.assertEqual(self.pending_ids("side_effects_unchecked"), ["c-b"])
+    self.assertEqual(pending["level_four_only"], 2)
+    self.assertTrue(self.change_view("c-b")["side_effects_unchecked"])
+    self.assertFalse(self.change_view("c-a")["side_effects_unchecked"])
+    # The existing summary counts are still there.
+    self.assertEqual(self.cli("list", "--summary")["counts"]["with_changes"], 1)
+
+  def test_rejected_retract_and_modify_leave_the_list_until_newer_evidence(self):
+    self.ready(changes=("c-both", "c-half", "c-yes", "c-open"))
+    for change in ("c-both", "c-half", "c-yes", "c-open"):
+      self.judge(change, "harmful", at="2026-10-21T00:00:00Z")
+    self.assertEqual(sorted(self.pending_ids("harmful")), ["c-both", "c-half", "c-open", "c-yes"])
+    # Rejections after the verdict.
+    self.propose("retract", "rejected", change="c-both", text="keep it a", at="2026-10-21T06:00:00Z", uuid="r1")
+    self.propose("modify", "rejected", change="c-both", text="keep it b", at="2026-10-21T06:01:00Z", uuid="r2")
+    self.propose("retract", "rejected", change="c-half", text="keep it c", at="2026-10-21T06:02:00Z", uuid="r3")
+    self.propose("retract", "accepted", change="c-yes", text="retract it", at="2026-10-21T06:03:00Z", uuid="r4")
+    harmful = {item["change_id"]: item for item in self.pending()["harmful"]}
+    # Positive control: the same list still shows the changes nobody refused.
+    self.assertEqual(set(harmful), {"c-half", "c-open"})
+    self.assertEqual(harmful["c-half"]["open_proposals"], ["modify"])
+    self.assertEqual(harmful["c-open"]["open_proposals"], ["retract", "modify"])
+    # New evidence after the rejection brings it back; a verdict that is no longer bad does not.
+    self.judge("c-both", "harmful", at="2026-10-22T00:00:00Z")
+    self.assertIn("c-both", self.pending_ids("harmful"))
+    self.judge("c-half", "effective", at="2026-10-22T00:00:00Z")
+    self.assertNotIn("c-half", self.pending_ids("harmful"))
+    # The summary exposes the latest decision per proposal so a later query can start from its time.
+    decisions = {(item["proposal"], item["target_key"]): item for item in self.cli("list", "--summary")["proposal_decisions"]}
+    self.assertEqual(decisions[("retract", "change:c-both")]["decided_at"], "2026-10-21T06:00:00Z")
+    self.assertEqual(decisions[("retract", "change:c-both")]["decision"], "rejected")
+    self.assertEqual(decisions[("retract", "change:c-yes")]["decision"], "accepted")
+
+  def test_empty_store_summary_has_an_empty_pending_list(self):
+    out = self.cli("list", "--summary")
+    self.assertEqual(out["pending_decisions"]["level_four_only"], 0)
+    for name in ("ineffective", "harmful", "needs_rejudge", "effective", "side_effects_unchecked"):
+      self.assertEqual(out["pending_decisions"][name], [])
+    self.assertEqual(out["proposal_decisions"], [])
+
+
 if __name__ == "__main__":
   unittest.main()
