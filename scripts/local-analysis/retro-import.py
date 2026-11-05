@@ -374,6 +374,9 @@ def build_packet(run, issue_map):
   }
   tracking = cross.get("tracking_observations", [])
   require(isinstance(tracking, list), "tracking_observations must be a list")
+  # 去向跟觀察一起進 packet，ingest 才能核對每個去向都有落點；舊 cross 沒有這欄就是空表。
+  destinations = cross.get("tracking_dispositions", [])
+  require(isinstance(destinations, list), "tracking_dispositions must be a list")
   if isinstance(cross.get("dispositions"), list):
     report["dispositions"] = dispositions(cross)
   elif "retained_original_finding_ids" in (cross.get("coverage") or {}):
@@ -411,6 +414,7 @@ def build_packet(run, issue_map):
       "tracking_observations": tracking,
     },
     "observation_proposals": tracking,
+    "tracking_dispositions": destinations,
     "import_report": report,
   }
   return packet

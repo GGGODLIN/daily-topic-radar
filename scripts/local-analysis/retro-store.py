@@ -27,6 +27,11 @@ VERIFICATIONS = ("pending", "confirmed", "refuted", "uncertain")
 ACTIONS = ("approve", "hold", "decline")
 PROGRESS = ("planned", "in_progress", "blocked", "implemented")
 OUTCOMES = ("opportunity_met", "recurrence", "not_applicable", "unreviewed")
+# ingest 才寫得出的結果。observe 的人工補單仍只收 OUTCOMES。
+RESULTS = ("invalid", "not_loaded", "unchecked")
+LOAD_STATES = ("loaded", "not_loaded", "unchecked")
+DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
+COVERAGE = ("yes", "no", "unknown")
 NOTICE = ("<task-notification>", "<system-reminder>", "<cross-session-message", "[main]")
 
 
@@ -504,34 +509,314 @@ def packet_entries(packet):
   return rows
 
 
+def packet_destinations(value):
+  require(isinstance(value, list), "tracking_dispositions must be a list")
+  found = {}
+  for index, item in enumerate(value):
+    label = "tracking_dispositions[" + str(index) + "]"
+    require(isinstance(item, dict), label + " must be an object")
+    key = ident(item.get("observation_key"), label + ".observation_key")
+    require(key not in found, label + " repeats the destination of " + key)
+    decision = item.get("disposition")
+    require(decision in DESTINATIONS, label + ".disposition is invalid")
+    if decision in ("reclassified", "rejected"):
+      require(
+        isinstance(item.get("reason"), str) and item["reason"].strip(), label + " needs a reason"
+      )
+    if decision == "reclassified":
+      require(item.get("to_outcome") in OUTCOMES, label + ".to_outcome is invalid")
+    if decision == "merged":
+      require(isinstance(item.get("merged_from"), list), label + ".merged_from must be a list")
+    found[key] = item
+  return found
+
+
+def optional_coverage(value, label):
+  require(value is None or value in COVERAGE, label + " must be yes, no or unknown")
+  return value
+
+
+def proposal_events(item, label, destinations):
+  require(isinstance(item, dict), label + " must be an object")
+  issue = ident(item.get("issue_id"), label + ".issue_id")
+  change_id = ident(item.get("change_id"), label + ".change_id")
+  outcome = item.get("outcome")
+  require(outcome in OUTCOMES, label + ".outcome is invalid")
+  covered = optional_coverage(item.get("covered"), label + ".covered")
+  evidence = item.get("evidence")
+  events = item.get("events")
+  require(isinstance(evidence, list) and evidence, label + ".evidence must be a non-empty list")
+  # events[] 由驗收器逐筆從 evidence 產生；缺少或對不上，代表它沒走過驗收，不當舊格式收。
+  require(
+    isinstance(events, list) and len(events) == len(evidence),
+    label + ".events must match evidence one to one",
+  )
+  found = []
+  for position, (event, point) in enumerate(zip(events, evidence)):
+    where = label + ".events[" + str(position) + "]"
+    require(isinstance(event, dict), where + " must be an object")
+    key = ident(event.get("observation_key"), where + ".observation_key")
+    event_key = ident(event.get("event_key"), where + ".event_key")
+    require(
+      event.get("change_id") == change_id and key == event_key + "|" + change_id,
+      where + " does not match its event key and change",
+    )
+    loaded = event.get("loaded")
+    require(loaded in LOAD_STATES, where + ".loaded is invalid")
+    require(isinstance(event.get("basis"), str) and event["basis"], where + ".basis is required")
+    reason = event.get("reason")
+    require(reason is None or isinstance(reason, str), where + ".reason must be a string")
+    if loaded != "loaded":
+      require(reason is not None and reason.strip(), where + " needs a reason unless loaded")
+    at = event.get("event_time")
+    if at is not None:
+      moment(at, where + ".event_time")
+    require(at is not None or loaded != "loaded", where + " is loaded but has no event_time")
+    require(isinstance(point, dict), label + ".evidence[" + str(position) + "] must be an object")
+    session = point.get("session")
+    line = point.get("source_line")
+    quote = point.get("quote")
+    require(isinstance(session, str) and session.strip(), where + " evidence needs a session")
+    require(
+      isinstance(line, int) and not isinstance(line, bool) and line >= 1,
+      where + " evidence source_line must be a positive integer",
+    )
+    require(isinstance(quote, str) and quote.strip(), where + " evidence needs a quote")
+    coverage = optional_coverage(event.get("covered", covered), where + ".covered")
+    destination = destinations.get(key)
+    if destination is not None:
+      require(
+        destination["disposition"] != "rejected",
+        where + " is rejected in tracking_dispositions but still cited: " + key,
+      )
+      if destination["disposition"] == "reclassified":
+        require(destination["to_outcome"] == outcome, where + " outcome is not the to_outcome")
+    found.append(
+      {
+        "key": key,
+        "label": where,
+        "issue_id": issue,
+        "change_id": change_id,
+        "outcome": outcome,
+        "event": event,
+        "point": {"session": session, "source_line": line, "quote": quote},
+        "covered": coverage if coverage is not None else "unknown",
+        "destination": destination,
+      }
+    )
+  return found
+
+
+def packet_observations(packet):
+  """Validate the observation sections alone; the store is not needed to say a packet is malformed."""
+  proposals = packet.get("observation_proposals", [])
+  require(isinstance(proposals, list), "observation_proposals must be a list")
+  destinations = packet_destinations(packet.get("tracking_dispositions", []))
+  found = []
+  for index, item in enumerate(proposals):
+    found.extend(proposal_events(item, "observation_proposals[" + str(index) + "]", destinations))
+  landed = {item["key"] for item in found}
+  for key, destination in destinations.items():
+    require(
+      destination["disposition"] == "rejected" or key in landed,
+      "tracking_dispositions says " + destination["disposition"] + " but no observation carries " + key,
+    )
+  rejected = [
+    {"observation_key": key, "reason": item["reason"]}
+    for key, item in destinations.items()
+    if item["disposition"] == "rejected"
+  ]
+  return found, rejected, bool(proposals) or bool(destinations)
+
+
+def judge(event, outcome, effective_at):
+  """What the stored change says about one event. The store's effective_at outranks the packet's claim."""
+  at = event.get("event_time")
+  if at is not None and moment(at, "event_time") < moment(effective_at, "effective_at"):
+    return "invalid", "event at " + at + " is before the change took effect at " + effective_at
+  if event["basis"] == "event_before_effective":
+    return "unchecked", "the packet put the event before the change took effect, but the stored effective_at does not"
+  if event["loaded"] == "loaded":
+    return outcome, event.get("reason")
+  return event["loaded"], event["reason"]
+
+
+def observation_bodies(rows, run_id, proposals):
+  changes = {row["id"]: row for row in rows if row["type"] == "change"}
+  built = []
+  for item in proposals:
+    found = changes.get("change:" + item["change_id"])
+    require(
+      found is not None and found["issue_id"] == item["issue_id"],
+      item["label"] + ": observation change is not on this issue",
+    )
+    event = item["event"]
+    result, why = judge(event, item["outcome"], found["effective_at"])
+    body = {
+      "issue_id": item["issue_id"],
+      "observation_id": item["key"],
+      "change_id": item["change_id"],
+      "outcome": result,
+      "reported_outcome": item["outcome"],
+      "at": event.get("event_time"),
+      "event_time": event.get("event_time"),
+      "event_key": event["event_key"],
+      "session": item["point"]["session"],
+      "loaded": event["loaded"],
+      "basis": event["basis"],
+      "reason": why,
+      "evidence": item["point"],
+      "run_id": run_id,
+    }
+    if result == "recurrence":
+      body["covered"] = item["covered"]
+    destination = item["destination"]
+    if destination is not None:
+      body["cross_disposition"] = {
+        name: value for name, value in destination.items() if name != "observation_key"
+      }
+    built.append({"key": item["key"], "body": body, "destination": destination})
+  return built
+
+
+def observation_core(body):
+  # 判斷結果的欄位。載入原因的文字改寫不構成改判。
+  return (
+    body["issue_id"],
+    body["change_id"],
+    body["outcome"],
+    body.get("event_time"),
+    body.get("covered"),
+  )
+
+
+def observation_history(rows):
+  """Per observation id: its base row and corrections in file order, plus every evidence point and run seen."""
+  history = {}
+  points = {}
+  runs = {}
+  for row in rows:
+    kind = row["type"]
+    if kind not in ("observation", "observation_correction", "observation_evidence"):
+      continue
+    key = row["observation_id"]
+    if kind != "observation_evidence":
+      history.setdefault(key, []).append(row)
+    if isinstance(row.get("evidence"), dict):
+      point = row["evidence"]
+      points.setdefault(key, {})[(point["session"], point["source_line"])] = point["quote"]
+    if isinstance(row.get("run_id"), str):
+      runs.setdefault(key, set()).add(row["run_id"])
+  return history, points, runs
+
+
+def current_observations(rows):
+  history, _points, _runs = observation_history(rows)
+  return [states[-1] for states in history.values()]
+
+
+def plan_observations(rows, built):
+  history, points, runs = observation_history(rows)
+  fresh = []
+  tally = {"new": 0, "replayed": 0, "supplemented": 0, "corrected": 0}
+
+  def settle(key, body):
+    # 同一事件的證據點：已記過就是重播，沒記過才是補證。
+    point = body["evidence"]
+    place = (point["session"], point["source_line"])
+    known = points.setdefault(key, {}).get(place)
+    if known is None:
+      row = entry(
+        "observation_evidence",
+        "observation-evidence:" + key + ":" + place[0] + ":" + str(place[1]),
+        {"observation_id": key, "run_id": body["run_id"], "evidence": point},
+      )
+      fresh.append(row)
+      points[key][place] = point["quote"]
+      tally["supplemented"] += 1
+      return
+    require(known == point["quote"], "conflicting source quote: " + key)
+    tally["replayed"] += 1
+
+  for item in built:
+    key, body = item["key"], item["body"]
+    states = history.get(key, [])
+    if not states:
+      row = entry("observation", "observation:" + key, body)
+      fresh.append(row)
+      history[key] = [row]
+      points.setdefault(key, {})[(body["evidence"]["session"], body["evidence"]["source_line"])] = (
+        body["evidence"]["quote"]
+      )
+      runs.setdefault(key, set()).add(body["run_id"])
+      tally["new"] += 1
+      continue
+    same_run = next((state for state in states if state.get("run_id") == body["run_id"]), None)
+    if same_run is not None:
+      require(
+        observation_core(same_run) == observation_core(body),
+        "conflicting observation in one run: " + key,
+      )
+      settle(key, body)
+    elif body["run_id"] in runs.get(key, set()):
+      # 這一輪先前只補過證，結果之後可能已被更正；重播它不能把結果改回去。
+      settle(key, body)
+    elif observation_core(states[-1]) == observation_core(body):
+      settle(key, body)
+      runs.setdefault(key, set()).add(body["run_id"])
+    else:
+      destination = item["destination"] or {}
+      reason = destination.get("reason") if destination.get("disposition") == "reclassified" else None
+      require(reason, "a changed observation needs a reclassification reason: " + key)
+      number = sum(1 for state in states if state["type"] == "observation_correction") + 1
+      row = entry(
+        "observation_correction",
+        "observation-correction:" + key + ":" + str(number),
+        {**body, "supersedes": states[-1]["id"], "correction_reason": reason},
+      )
+      fresh.append(row)
+      states.append(row)
+      points.setdefault(key, {})[(body["evidence"]["session"], body["evidence"]["source_line"])] = (
+        body["evidence"]["quote"]
+      )
+      runs.setdefault(key, set()).add(body["run_id"])
+      tally["corrected"] += 1
+  return fresh, tally
+
+
 def ingest(store, packet_path, apply):
   packet = json.loads(read_regular(packet_path))
   proposed = packet_entries(packet)
+  proposals, rejected, tracked = packet_observations(packet)
+  run_id = packet["run"]["id"]
+
+  def summary(fresh, noop, tally):
+    out = {
+      "ok": True,
+      "command": "ingest",
+      "apply": apply,
+      "appended": len(fresh),
+      "noop": noop,
+      "ids": [row["id"] for row in fresh],
+    }
+    if tracked:
+      out["observations"] = {**tally, "rejected": rejected}
+    return out
+
   # 驗證先於開檔。全新 dry-run 不建立空 records。
   if not apply and not os.path.lexists(
     os.path.join(os.path.abspath(os.path.expanduser(store)), RECORDS)
   ):
-    return {
-      "ok": True,
-      "command": "ingest",
-      "apply": False,
-      "appended": len(proposed),
-      "noop": 0,
-      "ids": [row["id"] for row in proposed],
-    }
+    extra, tally = plan_observations([], observation_bodies([], run_id, proposals))
+    return summary(proposed + extra, 0, tally)
   with locked(store, create=apply) as (_folder, handle):
     existing = load_entries(handle)
     fresh, skipped = plan_append(existing, proposed)
+    extra, tally = plan_observations(existing, observation_bodies(existing, run_id, proposals))
+    fresh = fresh + extra
     if apply and fresh:
       append_rows(handle, fresh)
-  return {
-    "ok": True,
-    "command": "ingest",
-    "apply": apply,
-    "appended": len(fresh),
-    "noop": len(skipped),
-    "ids": [row["id"] for row in fresh],
-  }
+  return summary(fresh, len(skipped) + tally["replayed"], tally)
 
 
 def read_regular(path):
@@ -679,6 +964,7 @@ def observe(args):
       "change_id": change_id,
       "outcome": args.outcome,
       "at": args.at,
+      "event_time": args.at,
       "source": source,
     },
   )
@@ -750,16 +1036,21 @@ def issue_sessions(rows, issue):
   return seen
 
 
-def project_issue(rows, issue_row):
+def project_issue(rows, issue_row, current=None):
   issue = issue_row["issue_id"]
   bucket, events = counts(rows, issue)
   sessions = issue_sessions(rows, issue)
   decision = latest(rows, "decision", issue)
   progress_row = latest(rows, "progress", issue)
   changes = [row for row in rows if row["type"] == "change" and row["issue_id"] == issue]
-  observations = [row for row in rows if row["type"] == "observation" and row["issue_id"] == issue]
+  now = current_observations(rows) if current is None else current
+  mine = [row for row in now if row["issue_id"] == issue]
+  # 沒有事件時間的舊觀察，時間多半是寫入時間；另列、不算次數。
+  observations = [row for row in mine if "event_time" in row]
+  legacy = len(mine) - len(observations)
   correct = sum(1 for row in observations if row["outcome"] == "opportunity_met")
-  recurrence = sum(1 for row in observations if row["outcome"] == "recurrence")
+  recurring = [row for row in observations if row["outcome"] == "recurrence"]
+  recurrence = len(recurring)
   # 不適用與未讀不是機會。沒有 correct/recurrence 仍是證據不足，不把未知寫成無效。
   evidence = "observed" if correct or recurrence else "insufficient_evidence"
   return {
@@ -778,6 +1069,13 @@ def project_issue(rows, issue_row):
       "correct": correct,
       "recurrence": recurrence,
       "total": len(observations),
+      "invalid": sum(1 for row in observations if row["outcome"] == "invalid"),
+      "not_loaded": sum(1 for row in observations if row["outcome"] == "not_loaded"),
+      "unchecked": sum(1 for row in observations if row["outcome"] == "unchecked"),
+      "recurrence_by_coverage": {
+        name: sum(1 for row in recurring if row.get("covered") == name) for name in COVERAGE
+      },
+      "legacy": legacy,
       "evidence": evidence,
       "effective": None,
     },
@@ -810,6 +1108,10 @@ def detail(rows, issue):
     "observation_entries": [
       row for row in rows if row["type"] == "observation" and row["issue_id"] == issue
     ],
+    "observation_corrections": [
+      row for row in rows if row["type"] == "observation_correction" and row["issue_id"] == issue
+    ],
+    "observation_latest": [row for row in current_observations(rows) if row["issue_id"] == issue],
   }
 
 
@@ -826,6 +1128,7 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
         "decline": 0,
         "undecided": 0,
         "with_changes": 0,
+        "legacy_observations": 0,
       }
     return out
   with locked(store) as (_folder, handle):
@@ -835,8 +1138,9 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
   ]
   require(issue is None or selected, "unknown issue reference: " + str(issue))
   all_projected = []
+  now = current_observations(rows)
   for row in selected:
-    projected = project_issue(rows, row)
+    projected = project_issue(rows, row, now)
     if issue is not None:
       projected["records"] = detail(rows, row["issue_id"])
     all_projected.append(projected)
@@ -872,6 +1176,7 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
       ),
       "undecided": sum(1 for item in all_projected if item["decision"] is None),
       "with_changes": sum(1 for item in all_projected if item["changes"]),
+      "legacy_observations": sum(item["observations"]["legacy"] for item in all_projected),
     }
   return out
 

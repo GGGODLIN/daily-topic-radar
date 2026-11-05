@@ -1069,5 +1069,432 @@ class StoreCLI(unittest.TestCase):
     self.assertFalse((self.store / "records.jsonl").exists())
 
 
+  # ---- ticket 04: ingest writes tracking observations -------------------------------------
+
+  def ready(self, changes=("fix-1", "fix-2")):
+    """Issue approved with changes effective at WHEN, set up only through the CLI."""
+    path, _body = self.packet()
+    self.cli("ingest", "--packet", path, "--apply")
+    self.cli(
+      "decide", "--issue", "issue-1", "--action", "approve", "--source", self.human("approve this issue"),
+      "--line", 1, "--quote", "approve this issue", "--apply",
+    )
+    for name in changes:
+      source = self.lines("condition for " + name)
+      self.cli(
+        "change", "--issue", "issue-1", "--id", name, "--effective-at", WHEN, "--source", source,
+        "--line", 1, "--quote", "condition for " + name, "--condition", "next time it is kept", "--apply",
+      )
+
+  def event(self, key, change, at, loaded="loaded", basis="instructions_attachment", reason=None, line=3):
+    # Same shape as session-retro event-evidence output; the values are written by hand per case.
+    return {
+      "session": "session-a", "change_id": change, "event_key": key, "event_key_kind": "tool_call_id",
+      "observation_key": key + "|" + change, "source_line": line, "event_time": at, "loaded": loaded,
+      "basis": basis, "load_line": None, "load_time": None, "reason": reason,
+    }
+
+  def tracked(self, change, outcome, *pairs, issue="issue-1", **extra):
+    return {
+      "issue_id": issue, "change_id": change, "outcome": outcome,
+      "evidence": [
+        {"session": e["session"], "source_line": e["source_line"], "quote": quote, "event_time": e["event_time"]}
+        for e, quote in pairs
+      ],
+      "events": [e for e, _ in pairs],
+      **extra,
+    }
+
+  def observation_packet(self, run_id, observations, dispositions):
+    path, body = self.packet(run={"id": run_id, "source": "fixture", "status": "partial", "cutoff": LATER})
+    body["issues"], body["discoveries"], body["events"] = [], [], []
+    body["observation_proposals"] = observations
+    body["tracking_dispositions"] = dispositions
+    dump(path, body)
+    return path, body
+
+  def kept(self, key):
+    return {"observation_key": key, "disposition": "kept"}
+
+  def cases(self):
+    """Every result the ticket names, as (observations, dispositions) plus the hand-written expectations."""
+    at = "2026-10-20T03:00:00Z"
+    a1 = self.event("toolu_A", "fix-1", at)
+    a2 = self.event("toolu_A", "fix-2", at)
+    b1 = self.event("toolu_B", "fix-1", "2026-10-20T03:10:00Z", line=4)
+    b2 = self.event("toolu_B", "fix-1", "2026-10-20T03:10:00Z", line=6)
+    c = self.event("toolu_C", "fix-1", "2026-10-20T03:20:00Z")
+    d = self.event(
+      "toolu_D", "fix-1", BEFORE, loaded="not_loaded", basis="event_before_effective",
+      reason="event happened before the change took effect",
+    )
+    # The packet claims loaded, but the stored effective_at is later than the event: the store wins.
+    d2 = self.event("toolu_D2", "fix-1", BEFORE)
+    e = self.event(
+      "toolu_E", "fix-1", "2026-10-20T03:30:00Z", loaded="not_loaded", basis="last_load_is_old_version",
+      reason="the last load before the event does not contain the new text",
+    )
+    f = self.event(
+      "toolu_F", "fix-1", "2026-10-20T03:40:00Z", loaded="unchecked", basis="unchecked",
+      reason="no instructions attachment before the event",
+    )
+    g = self.event("toolu_G", "fix-1", "2026-10-20T03:50:00Z")
+    observations = [
+      self.tracked("fix-1", "recurrence", (a1, "grep again"), covered="no"),
+      self.tracked("fix-2", "recurrence", (a2, "grep again"), covered="yes"),
+      self.tracked("fix-1", "recurrence", (b1, "ls first"), (b2, "ls second")),
+      self.tracked("fix-1", "opportunity_met", (c, "did it right")),
+      self.tracked("fix-1", "recurrence", (d, "old event")),
+      self.tracked("fix-1", "recurrence", (d2, "old event two")),
+      self.tracked("fix-1", "recurrence", (e, "not loaded")),
+      self.tracked("fix-1", "recurrence", (f, "cannot tell")),
+      self.tracked("fix-1", "unreviewed", (g, "later judged unreviewed")),
+    ]
+    dispositions = [
+      self.kept("toolu_A|fix-1"),
+      self.kept("toolu_A|fix-2"),
+      {
+        "observation_key": "toolu_B|fix-1", "disposition": "merged", "merged_into": "toolu_B|fix-1",
+        "merged_from": [{"unit": "u1", "issue_id": "issue-1"}, {"unit": "u2", "issue_id": "issue-1"}],
+      },
+      self.kept("toolu_C|fix-1"),
+      self.kept("toolu_D|fix-1"),
+      self.kept("toolu_D2|fix-1"),
+      self.kept("toolu_E|fix-1"),
+      self.kept("toolu_F|fix-1"),
+      {
+        "observation_key": "toolu_G|fix-1", "disposition": "reclassified", "to_outcome": "unreviewed",
+        "reason": "the model only skimmed it",
+      },
+      {"observation_key": "toolu_H|fix-1", "disposition": "rejected", "reason": "the hook never ran here"},
+    ]
+    expected = {
+      "toolu_A|fix-1": ("recurrence", "no"),
+      "toolu_A|fix-2": ("recurrence", "yes"),
+      "toolu_B|fix-1": ("recurrence", "unknown"),
+      "toolu_C|fix-1": ("opportunity_met", None),
+      "toolu_D|fix-1": ("invalid", None),
+      "toolu_D2|fix-1": ("invalid", None),
+      "toolu_E|fix-1": ("not_loaded", None),
+      "toolu_F|fix-1": ("unchecked", None),
+      "toolu_G|fix-1": ("unreviewed", None),
+    }
+    return observations, dispositions, expected
+
+  def observation_rows(self):
+    return {
+      row["observation_id"]: row for row in self.rows() if row["type"] == "observation" and "event_time" in row
+    }
+
+  def test_ingest_writes_every_tracking_observation_with_its_result(self):
+    self.ready()
+    observations, dispositions, expected = self.cases()
+    path, _body = self.observation_packet("run-obs", observations, dispositions)
+    summary = self.cli("ingest", "--packet", path, "--apply")
+    rows = self.observation_rows()
+    self.assertEqual(set(rows), set(expected))
+    for key, (result, covered) in expected.items():
+      self.assertEqual(rows[key]["outcome"], result, key)
+      self.assertEqual(rows[key].get("covered"), covered, key)
+      self.assertEqual(rows[key]["issue_id"], "issue-1")
+    # Event time comes from the event, never from the cutoff or the moment of writing.
+    self.assertEqual(rows["toolu_A|fix-1"]["event_time"], "2026-10-20T03:00:00Z")
+    self.assertEqual(rows["toolu_A|fix-1"]["evidence"], {"session": "session-a", "source_line": 3, "quote": "grep again"})
+    self.assertEqual(rows["toolu_G|fix-1"]["reported_outcome"], "unreviewed")
+    self.assertEqual(rows["toolu_G|fix-1"]["cross_disposition"]["reason"], "the model only skimmed it")
+    # Invalid and not-loaded rows say why; the stored effective_at, not the packet claim, decides invalid.
+    self.assertTrue(rows["toolu_D|fix-1"]["reason"].strip())
+    self.assertTrue(rows["toolu_D2|fix-1"]["reason"].strip())
+    self.assertEqual(rows["toolu_E|fix-1"]["reason"], "the last load before the event does not contain the new text")
+    self.assertEqual(rows["toolu_F|fix-1"]["reason"], "no instructions attachment before the event")
+    # One action, two changes: two observations.
+    self.assertEqual(rows["toolu_A|fix-1"]["event_key"], rows["toolu_A|fix-2"]["event_key"])
+    counts = summary["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 9, "replayed": 0, "supplemented": 1, "corrected": 0})
+    self.assertEqual(counts["rejected"], [{"observation_key": "toolu_H|fix-1", "reason": "the hook never ran here"}])
+    self.assertFalse(any("toolu_H" in row["id"] for row in self.rows()))
+
+  def test_only_loaded_recurrences_after_the_change_are_counted(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    path, _body = self.observation_packet("run-obs", observations, dispositions)
+    self.cli("ingest", "--packet", path, "--apply")
+    stats = self.cli("list", "--issue", "issue-1")["issues"][0]["observations"]
+    # Recurrences: A1, A2, B. D, D2 (before the change), E (not loaded), F (unchecked) are not among them.
+    self.assertEqual(stats["recurrence"], 3)
+    self.assertEqual(stats["correct"], 1)
+    self.assertEqual(stats["invalid"], 2)
+    self.assertEqual(stats["not_loaded"], 1)
+    self.assertEqual(stats["unchecked"], 1)
+    self.assertEqual(stats["total"], 9)
+    self.assertEqual(stats["recurrence_by_coverage"], {"yes": 1, "no": 1, "unknown": 1})
+    self.assertEqual(stats["legacy"], 0)
+    self.assertIsNone(stats["effective"])
+
+  def test_replaying_the_same_packet_adds_nothing(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    path, _body = self.observation_packet("run-obs", observations, dispositions)
+    first = self.cli("ingest", "--packet", path, "--apply")
+    self.assertEqual(first["observations"]["new"], 9)
+    before = (self.store / "records.jsonl").read_bytes()
+    again = self.cli("ingest", "--packet", path, "--apply")
+    self.assertEqual(again["appended"], 0)
+    self.assertEqual(again["ids"], [])
+    counts = again["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 0, "replayed": 10, "supplemented": 0, "corrected": 0})
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def test_new_evidence_for_a_known_observation_is_a_supplement(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    first, _ = self.observation_packet("run-obs", observations, dispositions)
+    self.cli("ingest", "--packet", first, "--apply")
+    base = self.observation_rows()["toolu_C|fix-1"]
+    again = self.event("toolu_C", "fix-1", "2026-10-20T03:20:00Z", line=9)
+    second, _ = self.observation_packet(
+      "run-two", [self.tracked("fix-1", "opportunity_met", (again, "another look"))], [self.kept("toolu_C|fix-1")]
+    )
+    summary = self.cli("ingest", "--packet", second, "--apply")
+    counts = summary["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 0, "replayed": 0, "supplemented": 1, "corrected": 0})
+    supplement = next(row for row in self.rows() if row["id"] in summary["ids"] and row["type"] == "observation_evidence")
+    self.assertEqual(summary["appended"], 2)  # the new run row and the supplement
+    self.assertEqual(supplement["type"], "observation_evidence")
+    self.assertEqual(supplement["observation_id"], "toolu_C|fix-1")
+    self.assertEqual(supplement["evidence"]["quote"], "another look")
+    self.assertEqual(self.observation_rows()["toolu_C|fix-1"], base)
+    # Positive control for the "replayed" bucket: the same second packet again is a plain replay.
+    third = self.cli("ingest", "--packet", second, "--apply")
+    self.assertEqual(third["observations"]["supplemented"], 0)
+    self.assertEqual(third["observations"]["replayed"], 1)
+
+  def test_reclassification_is_an_appended_correction_with_a_reason(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    first, _ = self.observation_packet("run-obs", observations, dispositions)
+    self.cli("ingest", "--packet", first, "--apply")
+    original = self.observation_rows()["toolu_A|fix-1"]
+    event = self.event("toolu_A", "fix-1", "2026-10-20T03:00:00Z")
+    changed = [self.tracked("fix-1", "unreviewed", (event, "grep again"))]
+    before = (self.store / "records.jsonl").read_bytes()
+    # Without a reclassification reason the changed result is refused and nothing is written.
+    silent, _ = self.observation_packet("run-two", changed, [self.kept("toolu_A|fix-1")])
+    error = self.cli("ingest", "--packet", silent, "--apply", code=2)
+    self.assertIn("reason", error["error"])
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    reasoned = [{
+      "observation_key": "toolu_A|fix-1", "disposition": "reclassified", "to_outcome": "unreviewed",
+      "reason": "the quote only shows a listing",
+    }]
+    path, _ = self.observation_packet("run-two", changed, reasoned)
+    summary = self.cli("ingest", "--packet", path, "--apply")
+    counts = summary["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 0, "replayed": 0, "supplemented": 0, "corrected": 1})
+    correction = next(row for row in self.rows() if row["id"] in summary["ids"] and row["type"] == "observation_correction")
+    self.assertEqual(correction["type"], "observation_correction")
+    self.assertEqual(correction["supersedes"], original["id"])
+    self.assertEqual(correction["observation_id"], "toolu_A|fix-1")
+    self.assertEqual(correction["outcome"], "unreviewed")
+    self.assertEqual(correction["correction_reason"], "the quote only shows a listing")
+    # The superseded observation keeps its content; only the latest state changes.
+    self.assertEqual(self.observation_rows()["toolu_A|fix-1"], original)
+    stats = self.cli("list", "--issue", "issue-1")["issues"][0]["observations"]
+    self.assertEqual(stats["recurrence"], 2)
+    self.assertEqual(stats["total"], 9)
+    again = self.cli("ingest", "--packet", path, "--apply")
+    self.assertEqual(again["appended"], 0)
+    # Replaying the older run after the correction does not undo it.
+    old = self.cli("ingest", "--packet", first, "--apply")
+    self.assertEqual(old["observations"]["corrected"], 0)
+    self.assertEqual(old["appended"], 0)
+
+  def test_p3_latest_state_matches_cross_output_and_nothing_vanishes(self):
+    self.ready()
+    observations, dispositions, expected = self.cases()
+    first, _ = self.observation_packet("run-obs", observations, dispositions)
+    self.cli("ingest", "--packet", first, "--apply")
+    event = self.event("toolu_A", "fix-1", "2026-10-20T03:00:00Z")
+    second_dispositions = [
+      {"observation_key": "toolu_A|fix-1", "disposition": "reclassified", "to_outcome": "unreviewed",
+       "reason": "the quote only shows a listing"},
+      self.kept("toolu_C|fix-1"),
+    ]
+    c_again = self.event("toolu_C", "fix-1", "2026-10-20T03:20:00Z")
+    second, _ = self.observation_packet(
+      "run-two",
+      [self.tracked("fix-1", "unreviewed", (event, "grep again")),
+       self.tracked("fix-1", "opportunity_met", (c_again, "did it right"))],
+      second_dispositions,
+    )
+    self.cli("ingest", "--packet", second, "--apply")
+    # Expected latest state: first run's results, overridden by the second run's cross output.
+    final = dict(expected)
+    final["toolu_A|fix-1"] = ("unreviewed", None)
+    latest = {
+      row["observation_id"]: row
+      for row in self.cli("list", "--issue", "issue-1")["issues"][0]["records"]["observation_latest"]
+    }
+    self.assertEqual(set(latest), set(final))
+    for key, (result, covered) in final.items():
+      self.assertEqual(latest[key]["outcome"], result, key)
+    survivors = {
+      d["observation_key"] for d in dispositions + second_dispositions if d["disposition"] != "rejected"
+    }
+    self.assertEqual(set(latest), survivors)
+    rejected = {d["observation_key"] for d in dispositions if d["disposition"] == "rejected"}
+    self.assertTrue(rejected)
+    self.assertFalse(rejected & set(latest))
+
+  def test_legacy_observations_are_listed_apart_and_never_counted(self):
+    self.ready()
+    # An old observe row: it has a write-time `at` but no event time.
+    legacy = {
+      "id": "observation:old-1", "type": "observation", "issue_id": "issue-1", "observation_id": "old-1",
+      "change_id": "fix-1", "outcome": "recurrence", "at": LATER, "source": self.pointer("old recurrence"),
+    }
+    with open(self.store / "records.jsonl", "a", encoding="utf-8") as stream:
+      stream.write(json.dumps(legacy) + "\n")
+    stats = self.cli("list", "--issue", "issue-1")["issues"][0]["observations"]
+    self.assertEqual(stats["legacy"], 1)
+    self.assertEqual(stats["recurrence"], 0)
+    self.assertEqual(stats["total"], 0)
+    self.assertEqual(stats["evidence"], "insufficient_evidence")
+    summary = self.cli("list", "--summary")
+    self.assertEqual(summary["counts"]["legacy_observations"], 1)
+    # Positive control: a manual observe with an event time is counted by the same projection.
+    manual = self.lines("manual recurrence")
+    self.cli(
+      "observe", "--issue", "issue-1", "--id", "manual-1", "--change", "fix-1", "--outcome", "recurrence",
+      "--at", LATER, "--source", manual, "--line", 1, "--quote", "manual recurrence", "--apply",
+    )
+    stats = self.cli("list", "--issue", "issue-1")["issues"][0]["observations"]
+    self.assertEqual(stats["recurrence"], 1)
+    self.assertEqual(stats["legacy"], 1)
+    row = next(row for row in self.rows() if row["id"] == "observation:manual-1")
+    self.assertEqual(row["event_time"], LATER)
+    self.assertEqual(self.cli("list", "--summary")["counts"]["legacy_observations"], 1)
+
+  def test_malformed_observation_section_rejects_the_whole_batch(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    good = observations[:1]
+    before = (self.store / "records.jsonl").read_bytes()
+
+    def drop(name):
+      def mutate(item):
+        del item[name]
+      return mutate
+
+    def shorten(item):
+      item["events"] = []
+
+    def retype(item):
+      item["outcome"] = 7
+
+    def blank_quote(item):
+      item["evidence"][0]["quote"] = ""
+
+    def wrong_key(item):
+      item["events"][0]["observation_key"] = "toolu_other|fix-1"
+
+    def bad_coverage(item):
+      item["covered"] = "maybe"
+
+    broken = {
+      "no events": drop("events"),
+      "events do not match evidence": shorten,
+      "outcome type": retype,
+      "empty quote": blank_quote,
+      "key does not match": wrong_key,
+      "coverage value": bad_coverage,
+    }
+    for label, mutate in broken.items():
+      second = json.loads(json.dumps(observations[1]))
+      mutate(second)
+      path, _ = self.observation_packet("run-bad", good + [second], [self.kept("toolu_A|fix-1")])
+      error = self.cli("ingest", "--packet", path, "--apply", code=2)
+      self.assertIn("observation_proposals[1]", error["error"], label)
+      self.assertEqual((self.store / "records.jsonl").read_bytes(), before, label)
+    # Positive control: the same two observations without the corruption go in.
+    path, _ = self.observation_packet(
+      "run-ok", observations[:2], [self.kept("toolu_A|fix-1"), self.kept("toolu_A|fix-2")]
+    )
+    self.assertEqual(self.cli("ingest", "--packet", path, "--apply")["observations"]["new"], 2)
+
+  def test_observation_for_an_unknown_change_or_wrong_issue_is_refused(self):
+    self.ready(changes=("fix-1",))
+    observations, _dispositions, _expected = self.cases()
+    before = (self.store / "records.jsonl").read_bytes()
+    path, _ = self.observation_packet("run-x", [observations[1]], [self.kept("toolu_A|fix-2")])
+    error = self.cli("ingest", "--packet", path, "--apply", code=2)
+    self.assertIn("change", error["error"])
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    path, _ = self.observation_packet("run-y", [observations[0]], [self.kept("toolu_A|fix-1")])
+    self.assertEqual(self.cli("ingest", "--packet", path, "--apply")["observations"]["new"], 1)
+
+  def test_every_cross_destination_must_land_somewhere(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    before = (self.store / "records.jsonl").read_bytes()
+    # A kept destination whose observation is missing would vanish silently.
+    path, _ = self.observation_packet("run-v", observations[:1], [self.kept("toolu_A|fix-1"), self.kept("toolu_Z|fix-1")])
+    self.assertIn("toolu_Z|fix-1", self.cli("ingest", "--packet", path, "--apply", code=2)["error"])
+    # A rejected destination without a reason, or one that is still cited, is refused.
+    path, _ = self.observation_packet(
+      "run-w", observations[:1], [self.kept("toolu_A|fix-1"), {"observation_key": "toolu_Y|fix-1", "disposition": "rejected"}]
+    )
+    self.assertIn("reason", self.cli("ingest", "--packet", path, "--apply", code=2)["error"])
+    path, _ = self.observation_packet(
+      "run-u", observations[:1], [{"observation_key": "toolu_A|fix-1", "disposition": "rejected", "reason": "no"}]
+    )
+    self.assertIn("toolu_A|fix-1", self.cli("ingest", "--packet", path, "--apply", code=2)["error"])
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    # Positive control: the consistent version of the same packet is accepted.
+    path, _ = self.observation_packet("run-t", observations[:1], [self.kept("toolu_A|fix-1")])
+    self.assertEqual(self.cli("ingest", "--packet", path, "--apply")["observations"]["new"], 1)
+
+  def test_dry_run_reports_observation_buckets_without_writing(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    path, _ = self.observation_packet("run-obs", observations, dispositions)
+    before = (self.store / "records.jsonl").read_bytes()
+    summary = self.cli("ingest", "--packet", path)
+    self.assertFalse(summary["apply"])
+    self.assertEqual(summary["observations"]["new"], 9)
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def test_replaying_a_supplement_only_run_after_a_correction_keeps_the_correction(self):
+    self.ready()
+    observations, dispositions, _expected = self.cases()
+    first, _ = self.observation_packet("run-obs", observations, dispositions)
+    self.cli("ingest", "--packet", first, "--apply")
+    more = self.event("toolu_C", "fix-1", "2026-10-20T03:20:00Z", line=9)
+    supplement, _ = self.observation_packet(
+      "run-two", [self.tracked("fix-1", "opportunity_met", (more, "another look"))], [self.kept("toolu_C|fix-1")]
+    )
+    self.cli("ingest", "--packet", supplement, "--apply")
+    c = self.event("toolu_C", "fix-1", "2026-10-20T03:20:00Z")
+    reasoned = [{"observation_key": "toolu_C|fix-1", "disposition": "reclassified", "to_outcome": "unreviewed",
+                 "reason": "on a second read it was not a chance"}]
+    third, _ = self.observation_packet("run-three", [self.tracked("fix-1", "unreviewed", (c, "did it right"))], reasoned)
+    self.assertEqual(self.cli("ingest", "--packet", third, "--apply")["observations"]["corrected"], 1)
+    before = (self.store / "records.jsonl").read_bytes()
+    again = self.cli("ingest", "--packet", supplement, "--apply")
+    self.assertEqual(again["appended"], 0)
+    self.assertEqual(again["observations"]["corrected"], 0)
+    self.assertEqual(again["observations"]["replayed"], 1)
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    latest = {
+      row["observation_id"]: row
+      for row in self.cli("list", "--issue", "issue-1")["issues"][0]["records"]["observation_latest"]
+    }
+    self.assertEqual(latest["toolu_C|fix-1"]["outcome"], "unreviewed")
+
+
 if __name__ == "__main__":
   unittest.main()

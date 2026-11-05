@@ -286,5 +286,108 @@ class ImportCLI(unittest.TestCase):
     self.assertNotIn("confirmed", json.dumps(packet["observation_proposals"]))
 
 
+  # ---- ticket 04: the packet hands cross observations and destinations to the store ----------
+
+  def tracked_cross(self):
+    """Empty candidate lists plus three tracked events: kept, reclassified, rejected (rejected not in the output)."""
+    def event(key, at, loaded="loaded"):
+      return {
+        "session": "session-a", "change_id": "change-1", "event_key": key, "event_key_kind": "tool_call_id",
+        "observation_key": key + "|change-1", "source_line": 3, "event_time": at, "loaded": loaded,
+        "basis": "instructions_attachment", "load_line": None, "load_time": None, "reason": None,
+      }
+
+    def observation(outcome, key, at, quote):
+      item = event(key, at)
+      return {
+        "issue_id": "tracked-issue", "change_id": "change-1", "outcome": outcome,
+        "evidence": [{"session": "session-a", "source_line": 3, "quote": quote, "event_time": at}],
+        "events": [item],
+      }
+
+    return {
+      "status": "complete",
+      "patterns": [],
+      "secondary_patterns": [],
+      "dispositions": [],
+      "tracking_observations": [
+        observation("recurrence", "toolu_K", "2026-10-20T03:00:00Z", "kept quote"),
+        observation("unreviewed", "toolu_R", "2026-10-20T03:10:00Z", "reclassified quote"),
+      ],
+      "tracking_dispositions": [
+        {"observation_key": "toolu_K|change-1", "disposition": "kept"},
+        {"observation_key": "toolu_R|change-1", "disposition": "reclassified", "to_outcome": "unreviewed",
+         "reason": "only a listing"},
+        {"observation_key": "toolu_X|change-1", "disposition": "rejected", "reason": "hook did not run"},
+      ],
+    }
+
+  def test_packet_carries_the_cross_destinations_next_to_the_observations(self):
+    cross = self.tracked_cross()
+    run = self.run_dir("tracked", cross, "plan.json", reviews=False)
+    out = self.root / "tracked.json"
+    self.cli("--run", run, "--out", out)
+    packet = json.loads(out.read_text(encoding="utf-8"))
+    self.assertEqual(packet["observation_proposals"], cross["tracking_observations"])
+    self.assertEqual(packet["tracking_dispositions"], cross["tracking_dispositions"])
+    # A cross report from before ticket 03 has none, and the packet says so with an empty list.
+    old = self.run_dir("untracked", modern_cross(), "plan.json")
+    old_out = self.root / "untracked.json"
+    self.cli("--run", old, "--out", old_out)
+    self.assertEqual(json.loads(old_out.read_text(encoding="utf-8"))["tracking_dispositions"], [])
+
+  def test_destinations_that_are_not_a_list_are_refused(self):
+    cross = self.tracked_cross()
+    cross["tracking_dispositions"] = {"observation_key": "x"}
+    run = self.run_dir("bad-destinations", cross, "plan.json", reviews=False)
+    out = self.root / "bad-destinations.json"
+    error = self.cli("--run", run, "--out", out, code=2)
+    self.assertIn("tracking_dispositions", error["error"])
+    self.assertFalse(out.exists())
+
+  def test_imported_packet_ingests_into_observation_records(self):
+    store = self.root / "store"
+    base = self.root / "base-packet.json"
+    anchor = self.root / "anchor.txt"
+    anchor.write_text("base source line\n", encoding="utf-8")
+    dump(base, {
+      "schema_version": 1,
+      "run": {"id": "base", "source": "fixture", "status": "partial", "cutoff": CUTOFF},
+      "issues": [{"id": "tracked-issue", "title": "tracked", "related_to": []}],
+    })
+    human = self.root / "human.jsonl"
+    human.write_text(json.dumps({
+      "type": "user", "timestamp": CUTOFF, "uuid": "u-1", "message": {"role": "user", "content": "approve it"},
+    }) + "\n", encoding="utf-8")
+    self.store("--store", store, "ingest", "--packet", base, "--apply")
+    self.store("--store", store, "decide", "--issue", "tracked-issue", "--action", "approve",
+               "--source", human, "--line", 1, "--quote", "approve it", "--apply")
+    self.store("--store", store, "change", "--issue", "tracked-issue", "--id", "change-1",
+               "--effective-at", "2026-10-20T01:00:00Z", "--source", anchor, "--line", 1,
+               "--quote", "base source line", "--condition", "kept next time", "--apply")
+    run = self.run_dir("e2e", self.tracked_cross(), "plan.json", reviews=False)
+    out = self.root / "e2e-packet.json"
+    self.cli("--run", run, "--out", out)
+    summary = self.store("--store", store, "ingest", "--packet", out, "--apply")
+    counts = summary["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 2, "replayed": 0, "supplemented": 0, "corrected": 0})
+    self.assertEqual(counts["rejected"], [{"observation_key": "toolu_X|change-1", "reason": "hook did not run"}])
+    rows = [json.loads(line) for line in (store / "records.jsonl").read_text(encoding="utf-8").split("\n") if line]
+    stored = {row["observation_id"]: row["outcome"] for row in rows if row["type"] == "observation"}
+    self.assertEqual(stored, {"toolu_K|change-1": "recurrence", "toolu_R|change-1": "unreviewed"})
+    again = self.store("--store", store, "ingest", "--packet", out, "--apply")
+    self.assertEqual(again["appended"], 0)
+    self.assertEqual(again["observations"]["new"], 0)
+
+  def store(self, *args):
+    result = subprocess.run(
+      [sys.executable, "-I", str(Path(__file__).with_name("retro-store.py")), *[str(arg) for arg in args]],
+      text=True, capture_output=True,
+    )
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    return json.loads(result.stdout)
+
+
 if __name__ == "__main__":
   unittest.main()
