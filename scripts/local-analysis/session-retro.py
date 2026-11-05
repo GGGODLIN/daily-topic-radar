@@ -1310,10 +1310,6 @@ CONTENT_KINDS = ("rule", "skill", "command")
 SKILL_HEADER = re.compile(r"Base directory for this skill: (\S+)")
 
 
-def squash(text):
-  return " ".join(text.split())
-
-
 def flat_strings(value):
   if isinstance(value, str):
     yield value
@@ -1389,7 +1385,7 @@ def rule_loads(rows, before):
   for number, row, _ in rows:
     attachment = row.get("attachment") if row else None
     if number < before and isinstance(attachment, dict) and attachment.get("type") == "instructions":
-      loads.append((number, row.get("timestamp"), " ".join(squash(text) for text in flat_strings(attachment))))
+      loads.append((number, row.get("timestamp"), list(flat_strings(attachment))))
   return loads
 
 
@@ -1401,17 +1397,17 @@ def skill_loads(rows, before, kind, name):
     if isinstance(attachment, dict) and attachment.get("type") == "invoked_skills":
       for entry in attachment.get("skills") if isinstance(attachment.get("skills"), list) else []:
         if isinstance(entry, dict) and entry.get("name") == name:
-          loads.append((number, row.get("timestamp"), squash(str(entry.get("content", "")))))
+          loads.append((number, row.get("timestamp"), [str(entry.get("content", ""))]))
       continue
     for leaf in flat_strings(row.get("message", row.get("content", ""))):
       header = SKILL_HEADER.match(leaf.lstrip())
       if kind == "skill" and header and header.group(1).rstrip("/").rsplit("/", 1)[-1] == name:
-        loads.append((number, row.get("timestamp"), squash(leaf)))
+        loads.append((number, row.get("timestamp"), [leaf]))
       elif kind == "command" and any(f"<command-name>{slash}{name}</command-name>" in leaf for slash in ("/", "")):
-        body = [squash(text) for follow_number, follow in usable[at:]
+        body = [text for follow_number, follow in usable[at:]
                 if follow_number == number or (follow.get("isMeta") and follow_number > number)
                 for text in flat_strings(follow.get("message", follow.get("content", "")))]
-        loads.append((number, row.get("timestamp"), " ".join(body)))
+        loads.append((number, row.get("timestamp"), body))
   return loads
 
 
@@ -1466,8 +1462,8 @@ def event_evidence(session_file, change_id, change=None, source_line=None, tool_
   damaged = [number for number, parsed, _ in rows if parsed is None and number < line]
   if damaged:
     return unchecked("damaged session lines before the event: " + ",".join(map(str, damaged)))
-  new_text = squash(change.get("new_text") or "")
-  if not new_text:
+  new_text = change.get("new_text") or ""
+  if not new_text.strip():
     return unchecked("new_text is missing, so the version cannot be compared")
   if change["kind"] == "rule":
     loads = rule_loads(rows, line)
@@ -1480,14 +1476,14 @@ def event_evidence(session_file, change_id, change=None, source_line=None, tool_
     if not loads:
       return {**out, "loaded": "not_loaded", "basis": "never_loaded",
               "reason": f"{change['kind']} {change['name']} was never invoked or re-injected before the event"}
-  number, stamp, text = loads[-1]
+  number, stamp, leaves = loads[-1]
   out["load_line"] = number
   try:
     loaded_at = moment(stamp)
   except Invalid:
     return unchecked("the last load has no valid timestamp")
   out["load_time"] = iso(loaded_at)
-  if new_text not in text:
+  if not any(new_text in leaf for leaf in leaves):
     return {**out, "loaded": "not_loaded", "basis": "last_load_is_old_version",
             "reason": "the last load before the event does not contain the new text"}
   if not effective <= loaded_at <= event_time:
