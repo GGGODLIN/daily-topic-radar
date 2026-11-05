@@ -10,7 +10,7 @@
 - 01 — 回放可行性驗證（關卡）
 - 05 — 判定、提議決策、待決定清單
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:** None — a worker can check every item unaided（假模型端點與臨時累積庫）
 
@@ -25,11 +25,19 @@
 
 **Regression scope:** 05 的判定紀錄格式與待決定清單不變；現有 retro-store 測試全過。
 
-- [ ] 重犯條件可寫成程式判斷式時，用程式判斷，不呼叫模型 — Source: Requirement: 分層驗證（判斷有沒有重犯）
-- [ ] 交給模型判斷時，送出的內容不含哪一組是新規則、哪一組是舊規則的標籤 — Source: Requirement: 分層驗證（判斷有沒有重犯）
-- [ ] 目標動作沒有出現、但任務也沒有往前推進時，不算有效 — Source: Requirement: 分層驗證（判斷有沒有重犯） — Failure: F2
-- [ ] 第二、三層：舊規則組重現達凍結門檻、新規則組明顯下降時判有效；兩組差不多判無效；舊規則組重現不到時記為驗證不成立，判證據不足 — Source: Requirement: 判定與撤回（對應規則）
-- [ ] 第一層測試通過時判有效，證據層級標「只涵蓋已知輸入」 — Source: Story 4
-- [ ] 第四層只能判無效或證據不足 — Source: Requirement: 判定與撤回（對應規則）
-- [ ] 不相關時刻的結果顯示新規則多出原本沒有的動作時判幫倒忙，而且幫倒忙優先於有效；沒做副作用檢查時，判定標「副作用未檢查」 — Source: Story 10
-- [ ] 模型判斷呼叫失敗、逾時或回傳空內容時，不產生判定，並回報失敗原因 — Source: Requirement: 判定與撤回（判定流程） — Failure: F4
+- [x] 重犯條件可寫成程式判斷式時，用程式判斷，不呼叫模型 — Source: Requirement: 分層驗證（判斷有沒有重犯）
+- [x] 交給模型判斷時，送出的內容不含哪一組是新規則、哪一組是舊規則的標籤 — Source: Requirement: 分層驗證（判斷有沒有重犯）
+- [x] 目標動作沒有出現、但任務也沒有往前推進時，不算有效 — Source: Requirement: 分層驗證（判斷有沒有重犯） — Failure: F2
+- [x] 第二、三層：舊規則組重現達凍結門檻、新規則組明顯下降時判有效；兩組差不多判無效；舊規則組重現不到時記為驗證不成立，判證據不足 — Source: Requirement: 判定與撤回（對應規則）
+- [x] 第一層測試通過時判有效，證據層級標「只涵蓋已知輸入」 — Source: Story 4
+- [x] 第四層只能判無效或證據不足 — Source: Requirement: 判定與撤回（對應規則）
+- [x] 不相關時刻的結果顯示新規則多出原本沒有的動作時判幫倒忙，而且幫倒忙優先於有效；沒做副作用檢查時，判定標「副作用未檢查」 — Source: Story 10
+- [x] 模型判斷呼叫失敗、逾時或回傳空內容時，不產生判定，並回報失敗原因 — Source: Requirement: 判定與撤回（判定流程） — Failure: F4
+
+## Verification Log
+
+- 2026-11-06 完成（commit 7b19d0f，新檔 `retro-judge.py`、`retro-judge.test.py`）：紅燈基線 15 個測試全紅（stub 只回 not implemented，45 個失敗斷言）；worker 另對 14 處實作做變異，全被測試擋下。綠燈 retro-judge `Ran 20 tests ... OK`、retro-store 50 OK。
+- 介面：`retro-judge.py [--store DIR] --input FILE [--apply] [--endpoint URL] [--judge-model M] [--timeout 秒]`；條件含 `predicate:<名稱>@<版本>` 時用程式判（目前 `root-search-without-exclude`、`stale-element-index`，版本 `gate-2026-11-06-v1`）；判定一律透過 `retro-store.py verdict` 寫入；模型失敗 exit 3、不寫判定。第一層判有效時輸出 `evidence_scope: "known_inputs_only"`。
+- ticket-yagni：kill 1／demote 10／keep 23；審查員註明缺 01 凍結規則原文。照做 6 項：`Invalid`、`need`、`string`、`whole`、`run_list` 收斂成一個欄位層級檢查；`extra_actions` 門檻改成照規格字面出現 1 次就算。不採用 5 項，理由是 01 報告「凍結參數」第 5 點明寫：`reply_text`、`progressed`（沒推進＝沒有工具呼叫且文字少於 200 字元）、`root_search`、`stale_index`、`predicate_for`（判斷式寫進 condition、帶版本號）。v2 綠燈 retro-judge `Ran 20 tests ... OK`。
+- worker 自訂判斷：模型端點用 Anthropic Messages 格式（對真實端點未驗證）；每筆回應各一次模型呼叫，不送 id、組別、改動 id、thinking；第一層測試失敗判無效；第四層全部擋不住判無效、其餘證據不足；多出動作的鍵＝非 Bash 用工具名、Bash 用每段指令第一個詞；幫倒忙蓋過任何主判定。
+- Minor：retro-store `verdict` 指令本身仍不擋「第四層判有效／幫倒忙」，規則只在 retro-judge 強制。前置重現檢查（原樣 5 次至少 2 次）不在 retro-judge，由 08 負責。一次判定只對應一個事件，多事件合併規則沒做。hook 的副作用抽樣檢查沒做（本票驗收只要求「新規則多出動作」）。`stale-element-index` 判斷式沒用真實 LCU 輸出驗過。
