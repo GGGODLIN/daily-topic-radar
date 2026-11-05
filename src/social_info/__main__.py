@@ -242,6 +242,7 @@ async def _main() -> int:
     enabled_ids = {s.id for s in config.enabled_sources()}
     issues = [i for i in db.current_known_issues() if i["source"] in enabled_ids]
     issues_path = known_issues.write(issues, Path("."), now_tw)
+    db.compact()
 
     print(
         f"Wrote {out} ({len(all_items_today)} items rendered, "

@@ -267,3 +267,71 @@ def test_recent_fetch_runs(db):
     )
     rows = db.recent_fetch_runs(days=7)
     assert len(rows) == 2
+
+
+def test_compact_prunes_expired_rows_and_trims_old_excerpts(db):
+    now = datetime(2026, 11, 5, 6, 0, 0)
+    long_text = "x" * 500
+
+    def _make_item(item_id: str, fetched_days_ago: int, surfaced_days_ago: int | None = None) -> dict:
+        fetched = (now - timedelta(days=fetched_days_ago)).isoformat()
+        surfaced = (
+            (now - timedelta(days=surfaced_days_ago)).isoformat()
+            if surfaced_days_ago is not None
+            else fetched
+        )
+        return {
+            "id": item_id,
+            "url": f"https://example.com/{item_id}",
+            "canonical_url": f"https://example.com/{item_id}",
+            "title": f"title-{item_id}",
+            "title_hash": f"hash-{item_id}",
+            "source": "linuxdo",
+            "source_handle": "latest",
+            "source_tier": 2,
+            "posted_at": fetched,
+            "fetched_at": fetched,
+            "author": "alice",
+            "excerpt": long_text,
+            "language": "zh",
+            "engagement_json": "{}",
+            "also_appeared_in": "[]",
+            "comments_json": '[{"author":"bob","body":"hi"}]',
+            "last_surfaced_at": surfaced,
+        }
+
+    db.insert_item(_make_item("fresh", fetched_days_ago=1))
+    db.insert_item(_make_item("mid_age", fetched_days_ago=10))
+    db.insert_item(_make_item("old_but_resurfaced", fetched_days_ago=60, surfaced_days_ago=2))
+    db.insert_item(_make_item("expired", fetched_days_ago=46))
+
+    db.log_fetch_run("hn", now - timedelta(days=60), now - timedelta(days=60), "ok", 5, "")
+    db.log_fetch_run("hn", now - timedelta(days=1), now - timedelta(days=1), "ok", 8, "")
+    db.log_fetch_run("legacy_src", now - timedelta(days=90), now - timedelta(days=90), "ok", 3, "")
+    db.log_fetch_run("legacy_src", now - timedelta(days=10), now - timedelta(days=10), "failed", 0, "err")
+
+    stats = db.compact(retain_days=45, full_excerpt_days=3, max_excerpt_chars=200, now=now)
+    assert stats["deleted_items"] == 1
+    assert stats["trimmed_items"] == 1
+    assert stats["deleted_runs"] == 1
+
+    assert db.has_item_id("expired") is False
+    assert db.has_item_id("fresh") is True
+    assert db.has_item_id("mid_age") is True
+    assert db.has_item_id("old_but_resurfaced") is True
+
+    fresh_row = db.get_items_by_ids(["fresh"])[0]
+    assert len(fresh_row["excerpt"]) == 500
+    assert fresh_row["comments_json"] != "[]"
+
+    mid_row = db.get_items_by_ids(["mid_age"])[0]
+    assert len(mid_row["excerpt"]) == 200
+    assert mid_row["comments_json"] == "[]"
+
+    resurf_row = db.get_items_by_ids(["old_but_resurfaced"])[0]
+    assert len(resurf_row["excerpt"]) == 500
+
+    issues = {i["source"]: i for i in db.current_known_issues()}
+    assert "legacy_src" in issues
+    assert issues["legacy_src"]["last_ok_at"] is not None
+

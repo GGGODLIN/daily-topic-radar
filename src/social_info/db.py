@@ -298,5 +298,55 @@ class Database:
         )
         return [dict(r) for r in cur]
 
+    def compact(
+        self,
+        *,
+        retain_days: int = 45,
+        full_excerpt_days: int = 3,
+        max_excerpt_chars: int = 200,
+        now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Keep state.db bounded below GitHub's 100 MiB file limit.
+
+        Full multi-kilobyte excerpts (e.g. LINUX DO opening posts) are only
+        needed when re-rendering the current or recent day's raw report; older
+        rows only need dedup keys and a short excerpt for 30-day resurface.
+        """
+        ref = now or utcnow()
+        retain_cutoff = (ref - timedelta(days=retain_days)).isoformat()
+        full_cutoff = (ref - timedelta(days=full_excerpt_days)).isoformat()
+
+        del_items = self.conn.execute(
+            "DELETE FROM items "
+            "WHERE COALESCE(last_surfaced_at, fetched_at, posted_at) < ?",
+            (retain_cutoff,),
+        ).rowcount
+
+        trimmed_items = self.conn.execute(
+            "UPDATE items "
+            "SET excerpt = SUBSTR(excerpt, 1, ?), comments_json = '[]' "
+            "WHERE fetched_at < ? "
+            "AND COALESCE(last_surfaced_at, fetched_at) < ? "
+            "AND (LENGTH(excerpt) > ? OR (comments_json IS NOT NULL AND comments_json NOT IN ('', '[]')))",
+            (max_excerpt_chars, full_cutoff, full_cutoff, max_excerpt_chars),
+        ).rowcount
+
+        del_runs = self.conn.execute(
+            "DELETE FROM fetch_runs "
+            "WHERE started_at < ? "
+            "AND status = 'ok' "
+            "AND id NOT IN (SELECT MAX(id) FROM fetch_runs WHERE status = 'ok' GROUP BY source) "
+            "AND id NOT IN (SELECT MAX(id) FROM fetch_runs GROUP BY source)",
+            (retain_cutoff,),
+        ).rowcount
+
+        self.conn.commit()
+        self.conn.execute("VACUUM")
+        return {
+            "deleted_items": del_items,
+            "trimmed_items": trimmed_items,
+            "deleted_runs": del_runs,
+        }
+
     def close(self) -> None:
         self.conn.close()
