@@ -719,5 +719,214 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
       self.assertIn(safe, doc)
 
 
+  def test_validate_adds_event_time_and_load_judgement_to_tracking_observations(self):
+    # Times, keys and verdicts below are written out by hand from the fixture, not read back from the CLI.
+    instructions = {"type": "attachment", "timestamp": "2026-10-20T00:50:00Z", "attachment": {
+      "type": "instructions", "files": [{"path": "/fixture/RULES.md", "type": "User", "content": "搜尋大目錄時必須排除 node_modules"}]}}
+    action = assistant([{"type": "tool_use", "id": "toolu_fixture_X", "name": "Bash", "input": {"command": "ls"}}],
+                       timestamp="2026-10-20T01:05:00Z")
+    path, plan = self.prepare([instructions, user(), action])
+    run = path.parent
+    dump(run / "tracking-context.json", {"changes": [
+      {"id": "chg-rule", "kind": "rule", "effective_time": "2026-10-20T00:30:00Z", "new_text": "搜尋大目錄時必須排除 node_modules"},
+      {"id": "chg-hook", "kind": "hook", "effective_time": "2026-10-20T01:10:00Z"}]})
+    evidence = [{"session": "human", "source_line": 3, "quote": "ls", "event_time": "2000-01-01T00:00:00Z"}]
+    observations = [{"issue_id": "iss-1", "change_id": change, "outcome": "recurrence", "evidence": evidence}
+                    for change in ("chg-rule", "chg-hook", "chg-unknown")]
+    stray = {"issue_id": "iss-2", "change_id": "chg-rule", "outcome": "recurrence",
+             "evidence": [{"session": "human", "source_line": 999, "quote": "ls", "event_time": "2000-01-01T00:00:00Z"}]}
+    observations.append(stray)
+    items = self.stage(path, "reading")["items"]
+    dirs = [self.transcript(item, self.report(item, tracking_observations=observations)) for item in items]
+    self.validate(path, "reading", dirs)
+    validated = json.loads((run / "validated" / (items[0]["unit"] + ".json")).read_text())
+    by_change = {obs["change_id"]: obs["events"][0] for obs in validated["tracking_observations"][:3]}
+    for event in by_change.values():
+      self.assertEqual(event["event_key"], "toolu_fixture_X")
+      self.assertEqual(event["event_time"], "2026-10-20T01:05:00Z")
+    self.assertEqual(by_change["chg-rule"]["loaded"], "loaded")
+    self.assertEqual(by_change["chg-rule"]["observation_key"], "toolu_fixture_X|chg-rule")
+    self.assertEqual(by_change["chg-hook"]["loaded"], "not_loaded")
+    self.assertEqual(by_change["chg-hook"]["basis"], "event_before_effective")
+    self.assertEqual(by_change["chg-unknown"]["loaded"], "unchecked")
+    self.assertTrue(by_change["chg-unknown"]["reason"])
+    # The model-written event_time never survives into the validated copy.
+    for obs in validated["tracking_observations"][:3]:
+      self.assertEqual(obs["evidence"][0]["event_time"], "2026-10-20T01:05:00Z")
+    # Even when the raw time cannot be found, the model's value is dropped instead of kept.
+    unresolved = validated["tracking_observations"][3]
+    self.assertNotIn("event_time", unresolved["evidence"][0])
+    self.assertEqual(unresolved["events"][0]["loaded"], "unchecked")
+
+
+def inst(text, timestamp, path="/fixture/RULES.md"):
+  return {"type": "attachment", "timestamp": timestamp, "attachment": {
+    "type": "instructions", "files": [{"path": path, "type": "User", "content": text}]}}
+
+
+def call(call_id, timestamp):
+  return assistant([{"type": "tool_use", "id": call_id, "name": "Bash", "input": {"command": "ls"}}], timestamp=timestamp)
+
+
+def skill_text(name, body, timestamp, meta=True):
+  return {"type": "user", "isMeta": meta, "timestamp": timestamp, "message": {"role": "user", "content": [
+    {"type": "text", "text": f"Base directory for this skill: /fixture/skills/{name}\n\n{body}"}]}}
+
+
+def invoked(name, content, timestamp):
+  return {"type": "attachment", "timestamp": timestamp, "attachment": {
+    "type": "invoked_skills", "skills": [{"name": name, "path": "userSettings:" + name, "content": content}]}}
+
+
+EFFECTIVE = "2026-11-01T00:00:00Z"
+OLD_RULE = "搜尋時不需排除目錄"
+NEW_RULE = "搜尋大目錄時必須排除 .git 與 node_modules"
+BEFORE = "2026-10-30T00:00:00Z"
+AFTER = "2026-11-01T01:00:00Z"
+LATER = "2026-11-02T03:04:05Z"
+
+
+class EventEvidenceCLI(unittest.TestCase):
+  def setUp(self):
+    self.tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(self.tmp.cleanup)
+    self.root = Path(self.tmp.name).resolve()
+
+  def session(self, name, rows, raw=None):
+    path = self.root / f"{name}.jsonl"
+    lines = [json.dumps({"sessionId": name, **row}, ensure_ascii=False) for row in rows]
+    for position, text in (raw or {}).items():
+      lines.insert(position - 1, text)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+  def judge(self, path, change, line=None, tool_call_id=None, code=0):
+    args = ["event-evidence", "--session-file", path, "--change", json.dumps(change)]
+    if line is not None:
+      args += ["--source-line", line]
+    if tool_call_id is not None:
+      args += ["--tool-call-id", tool_call_id]
+    result = subprocess.run([sys.executable, "-I", str(SCRIPT), *map(str, args)], text=True, capture_output=True)
+    self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+    return json.loads(result.stdout)
+
+  def change(self, kind, change_id="chg-1", **extra):
+    base = {"id": change_id, "kind": kind, "effective_time": EFFECTIVE}
+    if kind in ("rule", "skill", "command"):
+      base["new_text"] = NEW_RULE
+    if kind in ("skill", "command"):
+      base["name"] = "demo"
+    return {**base, **extra}
+
+  def test_event_key_prefers_tool_call_id_then_session_line(self):
+    path = self.session("sess-alpha", [user(timestamp=AFTER), call("toolu_A", LATER), assistant("plain", timestamp=LATER)])
+    hook = self.change("hook")
+    by_line = self.judge(path, hook, line=2)
+    self.assertEqual((by_line["event_key"], by_line["event_key_kind"], by_line["source_line"]), ("toolu_A", "tool_call_id", 2))
+    by_id = self.judge(path, hook, line=99, tool_call_id="toolu_A")
+    self.assertEqual((by_id["event_key"], by_id["source_line"]), ("toolu_A", 2))
+    no_id = self.judge(path, hook, line=3)
+    self.assertEqual((no_id["event_key"], no_id["event_key_kind"]), ("sess-alpha:3", "session_line"))
+    missing = self.judge(path, hook, tool_call_id="toolu_nope")
+    self.assertEqual((missing["loaded"], missing["event_key"]), ("unchecked", "toolu_nope"))
+    self.assertTrue(missing["reason"])
+
+  def test_one_action_two_changes_share_event_key_but_not_observation_key(self):
+    path = self.session("sess-two", [user(timestamp=AFTER), call("toolu_B", LATER)])
+    first = self.judge(path, self.change("hook", "chg-1"), line=2)
+    second = self.judge(path, self.change("script", "chg-2"), line=2)
+    self.assertEqual(first["event_key"], second["event_key"])
+    self.assertEqual(first["observation_key"], "toolu_B|chg-1")
+    self.assertEqual(second["observation_key"], "toolu_B|chg-2")
+
+  def test_event_time_comes_from_the_raw_row(self):
+    path = self.session("sess-time", [user(timestamp=AFTER), call("toolu_T", "2026-11-02T11:04:05+08:00")])
+    result = self.judge(path, self.change("hook"), line=2)
+    self.assertEqual(result["event_time"], "2026-11-02T03:04:05Z")
+
+  def test_rule_loaded_only_when_last_instructions_attachment_has_new_text(self):
+    rule = self.change("rule")
+    loaded = self.session("rule-new", [inst(OLD_RULE, BEFORE), user(timestamp=AFTER), inst(NEW_RULE, AFTER), call("toolu_R", LATER)])
+    result = self.judge(loaded, rule, line=4)
+    self.assertEqual((result["loaded"], result["basis"], result["load_line"]), ("loaded", "instructions_attachment", 3))
+    stale = self.session("rule-old", [inst(OLD_RULE, BEFORE), user(timestamp=AFTER), call("toolu_R", LATER)])
+    result = self.judge(stale, rule, line=3)
+    self.assertEqual((result["loaded"], result["basis"]), ("not_loaded", "last_load_is_old_version"))
+    early = self.session("rule-early", [inst(NEW_RULE, BEFORE), call("toolu_R", LATER)])
+    result = self.judge(early, rule, line=2)
+    self.assertEqual((result["loaded"], result["basis"]), ("not_loaded", "load_time_outside_effective_window"))
+    before = self.session("rule-pre", [inst(NEW_RULE, BEFORE), call("toolu_R", BEFORE)])
+    self.assertEqual(self.judge(before, rule, line=2)["basis"], "event_before_effective")
+
+  def test_compact_reinjection_separates_events_before_and_after_it(self):
+    rows = [inst(OLD_RULE, BEFORE), call("toolu_E1", AFTER), {"type": "system", "subtype": "compact_boundary", "timestamp": AFTER},
+            inst(NEW_RULE, "2026-11-01T02:00:00Z"), call("toolu_E2", LATER)]
+    path = self.session("rule-compact", rows)
+    rule = self.change("rule")
+    self.assertEqual(self.judge(path, rule, line=2)["loaded"], "not_loaded")
+    self.assertEqual(self.judge(path, rule, line=5)["loaded"], "loaded")
+    # A re-injection of the old text after the new one supersedes it, since only the last injection counts.
+    regress = self.session("rule-regress", [inst(NEW_RULE, AFTER), inst(OLD_RULE, "2026-11-01T02:00:00Z"), call("toolu_E3", LATER)])
+    self.assertEqual(self.judge(regress, rule, line=3)["loaded"], "not_loaded")
+
+  def test_skill_and_command_use_the_last_invoke_or_reinjection(self):
+    skill = self.change("skill")
+    rows = [skill_text("demo", OLD_RULE, BEFORE), call("toolu_S1", AFTER), skill_text("demo", NEW_RULE, "2026-11-01T02:00:00Z"),
+            call("toolu_S2", LATER), invoked("demo", "stale " + OLD_RULE, "2026-11-02T04:00:00Z"), call("toolu_S3", "2026-11-02T05:00:00Z"),
+            skill_text("other", NEW_RULE, "2026-11-02T06:00:00Z"), call("toolu_S4", "2026-11-02T07:00:00Z")]
+    path = self.session("skill-flow", rows)
+    self.assertEqual(self.judge(path, skill, line=2)["loaded"], "not_loaded")
+    result = self.judge(path, skill, line=4)
+    self.assertEqual((result["loaded"], result["basis"], result["load_line"]), ("loaded", "skill_invoke", 3))
+    self.assertEqual(self.judge(path, skill, line=6)["loaded"], "not_loaded")
+    # Another skill carrying the new text must not count as this skill's load.
+    self.assertEqual(self.judge(path, skill, line=8)["loaded"], "not_loaded")
+    never = self.session("skill-never", [user(timestamp=AFTER), call("toolu_S5", LATER)])
+    self.assertEqual(self.judge(never, skill, line=2)["basis"], "never_loaded")
+    command = self.change("command")
+    marker = {"type": "user", "timestamp": AFTER, "message": {"role": "user", "content": "<command-name>/demo</command-name>"}}
+    body = {"type": "user", "isMeta": True, "timestamp": AFTER, "message": {"role": "user", "content": [{"type": "text", "text": NEW_RULE}]}}
+    path = self.session("command-flow", [marker, body, call("toolu_C1", LATER)])
+    self.assertEqual(self.judge(path, command, line=3)["loaded"], "loaded")
+    old_body = {**body, "message": {"role": "user", "content": [{"type": "text", "text": OLD_RULE}]}}
+    path = self.session("command-old", [marker, old_body, call("toolu_C2", LATER)])
+    self.assertEqual(self.judge(path, command, line=3)["loaded"], "not_loaded")
+
+  def test_hook_and_script_load_follows_effective_time_to_the_second(self):
+    for kind in ("hook", "script"):
+      exact = self.session(f"{kind}-exact", [user(timestamp=AFTER), call("toolu_H", EFFECTIVE)])
+      result = self.judge(exact, self.change(kind), line=2)
+      self.assertEqual((result["loaded"], result["basis"], result["load_time"]), ("loaded", "effective_time", EFFECTIVE))
+      early = self.session(f"{kind}-early", [user(timestamp=AFTER), call("toolu_H", "2026-10-31T23:59:59Z")])
+      result = self.judge(early, self.change(kind), line=2)
+      self.assertEqual((result["loaded"], result["basis"]), ("not_loaded", "event_before_effective"))
+
+  def test_unreadable_evidence_is_unchecked_with_a_reason_never_loaded(self):
+    rule = self.change("rule")
+    good = [inst(NEW_RULE, AFTER), call("toolu_U", LATER)]
+    self.assertEqual(self.judge(self.session("u-good", good), rule, line=2)["loaded"], "loaded")
+    results = {
+      "missing-file": self.judge(self.root / "absent.jsonl", rule, line=2),
+      "no-attachment": self.judge(self.session("u-none", [user(timestamp=AFTER), call("toolu_U", LATER)]), rule, line=2),
+      "damaged-before": self.judge(self.session("u-damaged", good, raw={1: "{not json"}), rule, line=3),
+      "damaged-event": self.judge(self.session("u-event", good, raw={2: "{not json"}), rule, line=2),
+      "line-out-of-range": self.judge(self.session("u-range", good), rule, line=40),
+      "no-new-text": self.judge(self.session("u-text", good), {**rule, "new_text": ""}, line=2),
+    }
+    for name, result in results.items():
+      self.assertEqual(result["loaded"], "unchecked", name)
+      self.assertTrue(result["reason"], name)
+    # A damaged line after the event cannot change what was loaded before it.
+    after = self.session("u-after", good, raw={3: "{not json"})
+    self.assertEqual(self.judge(after, rule, line=2)["loaded"], "loaded")
+
+  def test_malformed_change_is_a_usage_error(self):
+    path = self.session("bad-change", [user(timestamp=AFTER)])
+    for change, line, word in (({"id": "c", "kind": "mystery", "effective_time": EFFECTIVE}, 1, "kind"),
+                               ({"id": "c", "kind": "hook", "effective_time": "tomorrow"}, 1, "timestamp"),
+                               (self.change("hook"), None, "source-line")):
+      self.assertIn(word, self.judge(path, change, line=line, code=2)["error"])
+
+
 if __name__ == "__main__":
   unittest.main(verbosity=2)

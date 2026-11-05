@@ -1305,6 +1305,249 @@ def critic_read_errors(agent, item, report, canonical, plan):
   return errors
 
 
+CHANGE_KINDS = ("rule", "skill", "command", "hook", "script")
+CONTENT_KINDS = ("rule", "skill", "command")
+SKILL_HEADER = re.compile(r"Base directory for this skill: (\S+)")
+
+
+def squash(text):
+  return " ".join(text.split())
+
+
+def flat_strings(value):
+  if isinstance(value, str):
+    yield value
+  elif isinstance(value, dict):
+    for child in value.values():
+      yield from flat_strings(child)
+  elif isinstance(value, list):
+    for child in value:
+      yield from flat_strings(child)
+
+
+def parse_change(change):
+  """A caller mistake (bad kind or time) is a usage error; unreadable session evidence is not."""
+  require(isinstance(change, dict), "change must be an object")
+  require(isinstance(change.get("id"), str) and bool(change["id"]), "change requires id")
+  require(change.get("kind") in CHANGE_KINDS, "change kind must be one of " + ", ".join(CHANGE_KINDS))
+  parsed = {**change, "effective": moment(change.get("effective_time"))}
+  if change["kind"] in ("skill", "command"):
+    require(isinstance(change.get("name"), str) and bool(change["name"]), "skill and command changes require name")
+  return parsed
+
+
+def raw_session_rows(path):
+  """Raw line numbers, the same ones prepare writes as source_line."""
+  rows = []
+  for number, raw in enumerate(Path(path).read_bytes().split(b"\n"), 1):
+    if not raw.strip():
+      continue
+    try:
+      row = json.loads(raw.decode("utf-8"))
+      require(isinstance(row, dict), "record is not an object")
+      rows.append((number, row, None))
+    except (ValueError, TypeError):
+      rows.append((number, None, "damaged line"))
+  return rows
+
+
+def tool_ids(row):
+  message = row.get("message")
+  content = message.get("content") if isinstance(message, dict) else None
+  uses, results = [], []
+  for block in content if isinstance(content, list) else []:
+    if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("id"), str):
+      uses.append((block["id"], block))
+    elif isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str):
+      results.append((block["tool_use_id"], block))
+  return uses, results
+
+
+def locate_event(rows, source_line, tool_call_id):
+  """(line, key, kind) or an error; the call ID wins over any cited line."""
+  if tool_call_id is not None:
+    for want in (0, 1):
+      for number, row, _ in rows:
+        if row is not None and any(key == tool_call_id for key, _ in tool_ids(row)[want]):
+          return number, tool_call_id, "tool_call_id", None
+    return None, tool_call_id, "tool_call_id", "tool call id not found in session"
+  by_line = {number: row for number, row, _ in rows}
+  if source_line not in by_line:
+    return None, None, None, "source_line is outside the session file"
+  if by_line[source_line] is None:
+    return None, None, None, "event line is damaged"
+  uses, results = tool_ids(by_line[source_line])
+  calls = uses or results
+  # Several calls on one line cannot be told apart without a call ID, so that action keeps the line key.
+  if len(calls) == 1:
+    return source_line, calls[0][0], "tool_call_id", None
+  return source_line, None, None, None
+
+
+def rule_loads(rows, before):
+  loads = []
+  for number, row, _ in rows:
+    attachment = row.get("attachment") if row else None
+    if number < before and isinstance(attachment, dict) and attachment.get("type") == "instructions":
+      loads.append((number, row.get("timestamp"), " ".join(squash(text) for text in flat_strings(attachment))))
+  return loads
+
+
+def skill_loads(rows, before, kind, name):
+  loads = []
+  usable = [(number, row) for number, row, _ in rows if row and number < before and row.get("type") != "assistant"]
+  for at, (number, row) in enumerate(usable):
+    attachment = row.get("attachment")
+    if isinstance(attachment, dict) and attachment.get("type") == "invoked_skills":
+      for entry in attachment.get("skills") if isinstance(attachment.get("skills"), list) else []:
+        if isinstance(entry, dict) and entry.get("name") == name:
+          loads.append((number, row.get("timestamp"), squash(str(entry.get("content", "")))))
+      continue
+    for leaf in flat_strings(row.get("message", row.get("content", ""))):
+      header = SKILL_HEADER.match(leaf.lstrip())
+      if kind == "skill" and header and header.group(1).rstrip("/").rsplit("/", 1)[-1] == name:
+        loads.append((number, row.get("timestamp"), squash(leaf)))
+      elif kind == "command" and any(f"<command-name>{slash}{name}</command-name>" in leaf for slash in ("/", "")):
+        body = [squash(text) for follow_number, follow in usable[at:]
+                if follow_number == number or (follow.get("isMeta") and follow_number > number)
+                for text in flat_strings(follow.get("message", follow.get("content", "")))]
+        loads.append((number, row.get("timestamp"), " ".join(body)))
+  return loads
+
+
+def event_evidence(session_file, change_id, change=None, source_line=None, tool_call_id=None):
+  """Which event this is, when it happened, and whether the changed text was loaded then.
+
+  Every answer is derived from the raw session file. The caller supplies no time, so a model-written
+  event_time can never reach the result. "unchecked" always carries a reason and is never read as loaded.
+  """
+  require(source_line is not None or tool_call_id is not None, "event-evidence requires --source-line or --tool-call-id")
+  session = Path(session_file).expanduser()
+  out = {"session": session.stem, "change_id": change_id, "event_key": None, "event_key_kind": None,
+         "observation_key": None, "source_line": source_line, "event_time": None, "loaded": "unchecked",
+         "basis": "unchecked", "load_line": None, "load_time": None, "reason": None}
+
+  def unchecked(reason):
+    return {**out, "reason": reason}
+
+  def keyed(key, kind):
+    out.update({"event_key": key, "event_key_kind": kind, "observation_key": f"{key}|{change_id}"})
+
+  if tool_call_id is not None:
+    keyed(tool_call_id, "tool_call_id")
+  elif isinstance(source_line, int) and not isinstance(source_line, bool):
+    keyed(f"{session.stem}:{source_line}", "session_line")
+  else:
+    return unchecked("source_line must be an integer")
+  if not session.is_file():
+    return unchecked("session file not found")
+  rows = raw_session_rows(session)
+  line, key, kind, error = locate_event(rows, source_line, tool_call_id)
+  if error:
+    return unchecked(error)
+  if key is not None:
+    keyed(key, kind)
+  out["source_line"] = line
+  row = next(row for number, row, _ in rows if number == line)
+  try:
+    event_time = moment(row.get("timestamp"))
+  except Invalid:
+    return unchecked("event row has no valid timestamp")
+  out["event_time"] = iso(event_time)
+  if change is None:
+    return unchecked("change definition (kind, effective_time) not found")
+  effective = change["effective"]
+  if event_time < effective:
+    return {**out, "loaded": "not_loaded", "basis": "event_before_effective",
+            "reason": "event happened before the change took effect"}
+  if change["kind"] in ("hook", "script"):
+    return {**out, "loaded": "loaded", "basis": "effective_time", "load_time": iso(effective),
+            "reason": "event is at or after the effective time, so the file on disk was the new version"}
+  damaged = [number for number, parsed, _ in rows if parsed is None and number < line]
+  if damaged:
+    return unchecked("damaged session lines before the event: " + ",".join(map(str, damaged)))
+  new_text = squash(change.get("new_text") or "")
+  if not new_text:
+    return unchecked("new_text is missing, so the version cannot be compared")
+  if change["kind"] == "rule":
+    loads = rule_loads(rows, line)
+    if not loads:
+      return unchecked("no instructions attachment before the event")
+    basis = "instructions_attachment"
+  else:
+    loads = skill_loads(rows, line, change["kind"], change["name"])
+    basis = change["kind"] + "_invoke"
+    if not loads:
+      return {**out, "loaded": "not_loaded", "basis": "never_loaded",
+              "reason": f"{change['kind']} {change['name']} was never invoked or re-injected before the event"}
+  number, stamp, text = loads[-1]
+  out["load_line"] = number
+  try:
+    loaded_at = moment(stamp)
+  except Invalid:
+    return unchecked("the last load has no valid timestamp")
+  out["load_time"] = iso(loaded_at)
+  if new_text not in text:
+    return {**out, "loaded": "not_loaded", "basis": "last_load_is_old_version",
+            "reason": "the last load before the event does not contain the new text"}
+  if not effective <= loaded_at <= event_time:
+    return {**out, "loaded": "not_loaded", "basis": "load_time_outside_effective_window",
+            "reason": "load time is not within effective time <= load time <= event time"}
+  return {**out, "loaded": "loaded", "basis": basis, "reason": "the last load before the event contains the new text"}
+
+
+def find_change(context, change_id):
+  if isinstance(context, dict):
+    if change_id in (context.get("change_id"), context.get("id")) and "kind" in context and "effective_time" in context:
+      return context
+    for child in context.values():
+      found = find_change(child, change_id)
+      if found:
+        return found
+  elif isinstance(context, list):
+    for child in context:
+      found = find_change(child, change_id)
+      if found:
+        return found
+  return None
+
+
+def add_event_evidence(report, item, plan, run):
+  """Tracking observations carry model-written evidence; time and load judgement come from the raw session."""
+  observations = report.get("tracking_observations")
+  if not isinstance(observations, list):
+    return
+  sources = {s["session"]: s["source"] for s in plan["sessions"]}
+  context = None
+  if (run / "tracking-context.json").is_file():
+    with suppress(ValueError, OSError):
+      context = load(run / "tracking-context.json")
+  for observation in observations:
+    evidence = observation.get("evidence") if isinstance(observation, dict) else None
+    entries = [evidence] if isinstance(evidence, dict) else evidence if isinstance(evidence, list) else []
+    change_id = observation.get("change_id") if isinstance(observation, dict) else None
+    spec = find_change(context, change_id)
+    try:
+      change = parse_change({"id": change_id, **spec}) if spec else None
+    except Invalid:
+      change = None
+    events = []
+    for entry in entries:
+      if not isinstance(entry, dict):
+        continue
+      entry.pop("event_time", None)
+      session = entry.get("session", item.get("session"))
+      try:
+        event = event_evidence(sources.get(session, ""), str(change_id), change, source_line=entry.get("source_line"))
+      except Invalid as error:
+        event = {"loaded": "unchecked", "basis": "unchecked", "reason": str(error), "event_time": None}
+      if event["event_time"]:
+        entry["event_time"] = event["event_time"]
+      events.append(event)
+    if events:
+      observation["events"] = events
+
+
 def validate(args):
   plan, run = plan_context(args.plan)
   items = stage_items(plan, run, args.stage)
@@ -1322,6 +1565,8 @@ def validate(args):
       agent, target, original = report_writer(agents, item)
       try:
         normalized = check_report(original, item, args.stage, canonical)
+        if args.stage in ("reading", "session-merge", "cross"):
+          add_event_evidence(normalized, item, plan, run)
       except EvidenceErrors as misses:
         normalized = None
         unit["errors"].extend(failure["error"] for failure in misses.failures)
@@ -1464,16 +1709,32 @@ def parser():
       sub.add_argument("--stage", required=True, choices=STAGES)
     if name == "validate":
       sub.add_argument("--transcript-dir", action="append", default=[])
+  event = commands.add_parser("event-evidence")
+  event.add_argument("--session-file", required=True)
+  event.add_argument("--source-line", type=int)
+  event.add_argument("--tool-call-id")
+  event.add_argument("--change", required=True, help="JSON object, or a path to one: id, kind, effective_time, new_text, name")
   metering = commands.add_parser("usage")
   metering.add_argument("--transcript-dir", action="append", required=True)
   return root
+
+
+def event_evidence_command(args):
+  text = args.change.strip()
+  try:
+    spec = json.loads(text if text.startswith("{") else Path(text).read_text(encoding="utf-8"))
+  except (ValueError, OSError) as error:
+    raise Invalid("--change is neither a JSON object nor a readable JSON file") from error
+  change = parse_change(spec)
+  return event_evidence(args.session_file, change["id"], change, args.source_line, args.tool_call_id)
 
 
 def main():
   try:
     args = parser().parse_args()
     handlers = {"inventory": inventory, "prepare": prepare, "stage-args": stage_args,
-                "validate": validate, "usage": usage, "finish": finish}
+                "validate": validate, "usage": usage, "finish": finish,
+                "event-evidence": event_evidence_command}
     result = handlers[args.command](args)
     print(json.dumps(result, ensure_ascii=False))
     return 2 if result.get("pass") is False else 0
