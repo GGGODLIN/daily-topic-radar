@@ -1818,18 +1818,12 @@ class StoreCLI(unittest.TestCase):
     self.assertIn("c-both", self.pending_ids("harmful"))
     self.judge("c-half", "effective", at="2026-10-22T00:00:00Z")
     self.assertNotIn("c-half", self.pending_ids("harmful"))
-    # The summary exposes the latest decision per proposal so a later query can start from its time.
-    decisions = {(item["proposal"], item["target_key"]): item for item in self.cli("list", "--summary")["proposal_decisions"]}
-    self.assertEqual(decisions[("retract", "change:c-both")]["decided_at"], "2026-10-21T06:00:00Z")
-    self.assertEqual(decisions[("retract", "change:c-both")]["decision"], "rejected")
-    self.assertEqual(decisions[("retract", "change:c-yes")]["decision"], "accepted")
 
   def test_empty_store_summary_has_an_empty_pending_list(self):
     out = self.cli("list", "--summary")
     self.assertEqual(out["pending_decisions"]["level_four_only"], 0)
     for name in ("ineffective", "harmful", "needs_rejudge", "effective", "side_effects_unchecked"):
       self.assertEqual(out["pending_decisions"][name], [])
-    self.assertEqual(out["proposal_decisions"], [])
 
 
 if __name__ == "__main__":

@@ -1313,20 +1313,6 @@ def pending_decisions(rows, views):
   return out
 
 
-def proposal_summary(rows):
-  return [
-    {
-      "id": row["id"],
-      "proposal": row["proposal"],
-      "target": row["target"],
-      "target_key": row["target_key"],
-      "decision": row["decision"],
-      "decided_at": row["decided_at"],
-    }
-    for row in latest_proposals(rows).values()
-  ]
-
-
 def project_issue(rows, issue_row, current=None, views=None):
   issue = issue_row["issue_id"]
   bucket, events = counts(rows, issue)
@@ -1432,7 +1418,6 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
         "legacy_observations": 0,
       }
       out["pending_decisions"] = pending_decisions([], [])
-      out["proposal_decisions"] = []
     return out
   with locked(store) as (_folder, handle):
     rows = load_entries(handle)
@@ -1484,7 +1469,6 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
     }
     # 待決定清單看全庫的改動，不受 --issue 或 --decision 篩選影響。
     out["pending_decisions"] = pending_decisions(rows, views)
-    out["proposal_decisions"] = proposal_summary(rows)
   return out
 
 
