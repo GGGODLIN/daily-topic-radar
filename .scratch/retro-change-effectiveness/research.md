@@ -138,7 +138,9 @@
 ### 第 1 題確認：cross 階段把觀察壓成每組一筆（正式輸入清單重算）
 - 驗收器只比對 (issue_id, change_id) 組合是否保留，不看 outcome 或筆數：session-retro.py:1188、:1196、:1197（`expected_tracking <= actual_tracking`）。
 - 這和 cross 的 prompt 契約一致：「每組配對保留代表觀察即可」（2026-11-03-full-1/workflow-cross.js），所以缺口在契約，不只在驗收器。
-- 下游照筆數計數：retro-import.py:375-413 直接轉入；retro-store.py:761-762 依筆數算 correct／recurrence。
+- 下游照筆數計數：retro-store.py:761-762 依觀察紀錄筆數算 correct／recurrence。
+
+> 更正行 2026-11-06：撤下「retro-import.py:375-413 直接轉入」；retro-import 只把 cross 的追蹤觀察放進 packet 的 `observation_proposals`，retro-store 的 ingest 不讀這一段，觀察紀錄只能由 main 逐筆執行 `observe` 建立；現況來源：`command grep -c observation_proposals scripts/local-analysis/retro-store.py` 為 0。
 - 2026-11-03-full-1：輸入 252 筆／79 個組合＋outcome／41 組合 → 輸出 70 筆，41 組合都在，9 個組合＋outcome 消失。其中可能真遺失的只有 S34 的 1 筆 opportunity_met、P6 的 1 筆 recurrence（證據弱）；P4 recurrence→unreviewed 是有理由的改判，但輸出沒留來源對照。
 - 2026-11-01-full-1：輸入 223 → 輸出 35；recurrence 改成 unreviewed 的有 4 組合共 5 筆，但每筆都附 `source_observations` 與改判理由，可追溯。
 - 2026-11-04-full-1：輸入 213 → 輸出 39；recurrence 筆數被壓縮，例如 P6 10→1、pipestatus P2 4→1、P13 4→1、P23 2→1；輸出沒有 `source_observations`。
@@ -160,6 +162,17 @@
 - 除了 /retro-workflow 本身，沒有任何程式讀 retro-store 的觀察來撤回改動（`command grep -rl retro-store` 結果）；`effective` 從 commit 5dfcd36 起就寫死成 None。
 - /rules-slim 只因大小超標或零使用砍規則，不看改動有沒有效（rules-slim.md:40、:210）。
 - session-audit 從 2026-07-05 起逐段標記常駐規則 applied／violated，`state.sqlite` 的 `rule_tags` 有 25,684 筆 violated。生效後 browser-routing 有 31 筆、code-search 有 52 筆 violated。這可以直接拿來量 D 類，不必另外重讀 session。
+
+## 第三輪補充：模型與違反數（2026-11-05～06 本 session 統計）
+
+- **再犯 session 的模型**：15 筆再犯拆回單場共 18 個 session，取每個 session 出現最多次的 assistant 模型：16 個是 gemini-4-argon（含 `google/gemini-4-argon:high`），2 個是 claude-opus-5-5（P7 pgrep 的 B 類、P13 `tab.page` 的 C 類）。4 筆「載入也涵蓋卻沒照做」全是 Argon；其中 54162473 是混用 session，事件行（:1005–1012）的模型是 Argon。
+- **分母（估計）**：10-30 之後的主對話，第一個 assistant 模型是 Argon 143 份、Luna 125 份、Opus 80 份，Argon 約占三分之一，不只算回顧範圍內的場次（2026-11-06 架構審查 Opus 席粗估）。
+- **session-audit 違反數（檔案層）**：10-31 08:42Z 之後，`rule_tags` 的 violated 依 session 主模型分組：browser-routing 有 Argon 7 場 29 次、Opus 2 場 3 次；code-search 有 Argon 14 場 20 次、Opus 14 場 31 次；同期分析的 session 有 Argon 66 場、Opus 49 場。這是整份規則檔的計數。
+- **段落層級重算**（2026-11-06 架構審查 Opus 席，10-30 之後）：code-search 的「Code search」標題下有 5 個不同 rule_id，共 36 場；真正的目標段落（完整枚舉）只有 22 場。browser-routing 檔案層 10 場，目標條目 8 場。
+- **載入舊版的例子**（第二組分類）：
+  - s06（36089ede）：事件在改動生效後，但 session 在生效前開始，載入的是舊版（`instructions` 附件在 :1688，08:28Z），這個 session 自己寫了新版。
+  - s20（0f8be4f5）：最後一次 compact 在 10-30T21:52Z，載入的是舊版。
+  - compact 之後 `instructions` 附件會重新注入新版；沒有 compact、只換模型時也會重記一次（9b02764b:1342）。
 
 ## 對照本機 /retro-workflow（第一輪：只讀了 grep 命中的行；框架已被「追問更正」段取代）
 
