@@ -30,6 +30,8 @@ OUTCOMES = ("opportunity_met", "recurrence", "not_applicable", "unreviewed")
 # ingest 才寫得出的結果。observe 的人工補單仍只收 OUTCOMES。
 RESULTS = ("invalid", "not_loaded", "unchecked")
 LOAD_STATES = ("loaded", "not_loaded", "unchecked")
+# 這兩種依據下，最後一次載入若早於生效時間，是 session 開場時改動還不存在，不是改動放錯位置。
+STALE_LOAD_BASES = ("last_load_is_old_version", "load_time_outside_effective_window")
 DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
 COVERAGE = ("yes", "no", "unknown")
 NOTICE = ("<task-notification>", "<system-reminder>", "<cross-session-message", "[main]")
@@ -571,6 +573,8 @@ def proposal_events(item, label, destinations):
     at = event.get("event_time")
     if at is not None:
       moment(at, where + ".event_time")
+    if event.get("load_time") is not None:
+      moment(event["load_time"], where + ".load_time")
     require(at is not None or loaded != "loaded", where + " is loaded but has no event_time")
     require(isinstance(point, dict), label + ".evidence[" + str(position) + "] must be an object")
     session = point.get("session")
@@ -634,6 +638,16 @@ def judge(event, outcome, effective_at):
   at = event.get("event_time")
   if at is not None and moment(at, "event_time") < moment(effective_at, "effective_at"):
     return "invalid", "event at " + at + " is before the change took effect at " + effective_at
+  loaded_at = event.get("load_time")
+  if (
+    event["loaded"] == "not_loaded"
+    and event["basis"] in STALE_LOAD_BASES
+    and loaded_at is not None
+    and moment(loaded_at, "load_time") < moment(effective_at, "effective_at")
+  ):
+    return "invalid", (
+      "session 載入的版本早於生效時間（最後載入 " + loaded_at + "，生效 " + effective_at + "）"
+    )
   if event["basis"] == "event_before_effective":
     return "unchecked", "the packet put the event before the change took effect, but the stored effective_at does not"
   if event["loaded"] == "loaded":

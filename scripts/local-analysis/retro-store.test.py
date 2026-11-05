@@ -1086,12 +1086,14 @@ class StoreCLI(unittest.TestCase):
         "--line", 1, "--quote", "condition for " + name, "--condition", "next time it is kept", "--apply",
       )
 
-  def event(self, key, change, at, loaded="loaded", basis="instructions_attachment", reason=None, line=3):
+  def event(
+    self, key, change, at, loaded="loaded", basis="instructions_attachment", reason=None, line=3, load_time=None
+  ):
     # Same shape as session-retro event-evidence output; the values are written by hand per case.
     return {
       "session": "session-a", "change_id": change, "event_key": key, "event_key_kind": "tool_call_id",
       "observation_key": key + "|" + change, "source_line": line, "event_time": at, "loaded": loaded,
-      "basis": basis, "load_line": None, "load_time": None, "reason": reason,
+      "basis": basis, "load_line": None, "load_time": load_time, "reason": reason,
     }
 
   def tracked(self, change, outcome, *pairs, issue="issue-1", **extra):
@@ -1494,6 +1496,47 @@ class StoreCLI(unittest.TestCase):
       for row in self.cli("list", "--issue", "issue-1")["issues"][0]["records"]["observation_latest"]
     }
     self.assertEqual(latest["toolu_C|fix-1"]["outcome"], "unreviewed")
+
+  def test_session_loaded_before_the_change_is_invalid_not_a_missed_load(self):
+    self.ready()
+    after = "2026-10-20T03:00:00Z"
+    stale = "the last load before the event does not contain the new text"
+    window = "load time is not within effective time <= load time <= event time"
+    cases = {
+      # The session's last load predates the change: the change did not exist when it started.
+      "toolu_S1": self.event("toolu_S1", "fix-1", after, "not_loaded", "last_load_is_old_version", stale, load_time=BEFORE),
+      "toolu_S2": self.event("toolu_S2", "fix-1", after, "not_loaded", "load_time_outside_effective_window", window, load_time=BEFORE),
+      # The change was already in force at the last load, yet the old text was still what got loaded.
+      "toolu_S3": self.event("toolu_S3", "fix-1", after, "not_loaded", "last_load_is_old_version", stale, load_time="2026-10-20T02:30:00Z"),
+      "toolu_S4": self.event("toolu_S4", "fix-1", after, "not_loaded", "never_loaded", "skill was never invoked before the event"),
+      # The basis alone does not decide: the same basis with a load at or after the change is a missed load.
+      "toolu_S5": self.event("toolu_S5", "fix-1", after, "not_loaded", "load_time_outside_effective_window", window, load_time="2026-10-20T04:00:00Z"),
+      # Positive control: a load after the change that has the new text is a real recurrence.
+      "toolu_S6": self.event("toolu_S6", "fix-1", after, "loaded", "instructions_attachment", None, load_time="2026-10-20T02:30:00Z"),
+    }
+    observations = [self.tracked("fix-1", "recurrence", (e, "again")) for e in cases.values()]
+    path, _ = self.observation_packet("run-session", observations, [self.kept(e["observation_key"]) for e in cases.values()])
+    self.cli("ingest", "--packet", path, "--apply")
+    rows = self.observation_rows()
+    expected = {
+      "toolu_S1|fix-1": "invalid", "toolu_S2|fix-1": "invalid", "toolu_S3|fix-1": "not_loaded",
+      "toolu_S4|fix-1": "not_loaded", "toolu_S5|fix-1": "not_loaded", "toolu_S6|fix-1": "recurrence",
+    }
+    self.assertEqual({key: rows[key]["outcome"] for key in expected}, expected)
+    for key in ("toolu_S1|fix-1", "toolu_S2|fix-1"):
+      self.assertIn("session 載入的版本早於生效時間", rows[key]["reason"])
+    for key in ("toolu_S3|fix-1", "toolu_S4|fix-1", "toolu_S5|fix-1"):
+      self.assertNotIn("session 載入的版本早於生效時間", rows[key]["reason"])
+    stats = self.cli("list", "--issue", "issue-1")["issues"][0]["observations"]
+    self.assertEqual((stats["recurrence"], stats["invalid"], stats["not_loaded"]), (1, 2, 3))
+
+  def test_a_load_time_that_is_not_a_time_rejects_the_batch(self):
+    self.ready()
+    bad = self.event("toolu_S7", "fix-1", "2026-10-20T03:00:00Z", "not_loaded", "last_load_is_old_version", "old", load_time="yesterday")
+    path, _ = self.observation_packet("run-bad-load", [self.tracked("fix-1", "recurrence", (bad, "again"))], [])
+    error = self.cli("ingest", "--packet", path, "--apply", code=2)
+    self.assertIn("load_time", error["error"])
+    self.assertEqual([row for row in self.rows() if row["type"] == "observation"], [])
 
 
 if __name__ == "__main__":
