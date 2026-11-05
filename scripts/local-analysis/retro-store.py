@@ -559,8 +559,40 @@ def optional_coverage(value, label):
   return value
 
 
+def unkeyed_reason(item):
+  """Why an unreviewed observation with no evidence cannot become an event observation, else None.
+
+  Evidence is what gives an observation its event key. Only an unreviewed one may lack it; every other
+  gap or wrong type is a malformed packet and still rejects the batch.
+  """
+  if not isinstance(item, dict) or item.get("outcome") != "unreviewed":
+    return None
+  if item.get("evidence") not in (None, []) or item.get("events") not in (None, []):
+    return None
+  issue = item.get("issue_id")
+  change_id = item.get("change_id")
+  if not (isinstance(issue, str) and issue.strip()):
+    return None
+  if change_id is not None and not (isinstance(change_id, str) and change_id.strip()):
+    return None
+  return "unreviewed and no evidence, so there is no event to key" + (
+    "" if change_id is not None else "; change_id is also missing"
+  )
+
+
+def unkeyed_observations(packet):
+  found = []
+  for item in packet.get("observation_proposals", []):
+    reason = unkeyed_reason(item)
+    if reason is not None:
+      found.append({"issue_id": item["issue_id"], "change_id": item.get("change_id"), "reason": reason})
+  return found
+
+
 def proposal_events(item, label, destinations):
   require(isinstance(item, dict), label + " must be an object")
+  if unkeyed_reason(item) is not None:
+    return []
   issue = ident(item.get("issue_id"), label + ".issue_id")
   change_id = ident(item.get("change_id"), label + ".change_id")
   outcome = item.get("outcome")
@@ -725,6 +757,14 @@ def observation_core(body):
   )
 
 
+def remember(points, key, point):
+  """Quotes already stored for one observation, per cited line, in the order they were written."""
+  quotes = points.setdefault(key, {}).setdefault((point["session"], point["source_line"]), [])
+  if point["quote"] not in quotes:
+    quotes.append(point["quote"])
+  return quotes
+
+
 def observation_history(rows):
   """Per observation id: its base row and corrections in file order, plus every evidence point and run seen."""
   history = {}
@@ -738,8 +778,7 @@ def observation_history(rows):
     if kind != "observation_evidence":
       history.setdefault(key, []).append(row)
     if isinstance(row.get("evidence"), dict):
-      point = row["evidence"]
-      points.setdefault(key, {})[(point["session"], point["source_line"])] = point["quote"]
+      remember(points, key, row["evidence"])
     if isinstance(row.get("run_id"), str):
       runs.setdefault(key, set()).add(row["run_id"])
   return history, points, runs
@@ -756,22 +795,24 @@ def plan_observations(rows, built):
   tally = {"new": 0, "replayed": 0, "supplemented": 0, "corrected": 0}
 
   def settle(key, body):
-    # 同一事件的證據點：已記過就是重播，沒記過才是補證。
+    # 同一事件的證據點：這句引文記過就是重播，沒記過才是補證。引文是證據、不是事件身分，
+    # 同一行換引文不構成衝突。
     point = body["evidence"]
     place = (point["session"], point["source_line"])
-    known = points.setdefault(key, {}).get(place)
-    if known is None:
-      row = entry(
-        "observation_evidence",
-        "observation-evidence:" + key + ":" + place[0] + ":" + str(place[1]),
-        {"observation_id": key, "run_id": body["run_id"], "evidence": point},
-      )
-      fresh.append(row)
-      points[key][place] = point["quote"]
-      tally["supplemented"] += 1
+    known = points.get(key, {}).get(place, [])
+    if point["quote"] in known:
+      tally["replayed"] += 1
       return
-    require(known == point["quote"], "conflicting source quote: " + key)
-    tally["replayed"] += 1
+    # 同一行的第二句起加序號：id 不能和第一句的補證撞在一起，又要重播時算得出同一個 id。
+    suffix = ":" + str(len(known)) if known else ""
+    row = entry(
+      "observation_evidence",
+      "observation-evidence:" + key + ":" + place[0] + ":" + str(place[1]) + suffix,
+      {"observation_id": key, "run_id": body["run_id"], "evidence": point},
+    )
+    fresh.append(row)
+    remember(points, key, point)
+    tally["supplemented"] += 1
 
   for item in built:
     key, body = item["key"], item["body"]
@@ -780,9 +821,7 @@ def plan_observations(rows, built):
       row = entry("observation", "observation:" + key, body)
       fresh.append(row)
       history[key] = [row]
-      points.setdefault(key, {})[(body["evidence"]["session"], body["evidence"]["source_line"])] = (
-        body["evidence"]["quote"]
-      )
+      remember(points, key, body["evidence"])
       runs.setdefault(key, set()).add(body["run_id"])
       tally["new"] += 1
       continue
@@ -811,9 +850,7 @@ def plan_observations(rows, built):
       )
       fresh.append(row)
       states.append(row)
-      points.setdefault(key, {})[(body["evidence"]["session"], body["evidence"]["source_line"])] = (
-        body["evidence"]["quote"]
-      )
+      remember(points, key, body["evidence"])
       runs.setdefault(key, set()).add(body["run_id"])
       tally["corrected"] += 1
   return fresh, tally
@@ -823,6 +860,7 @@ def ingest(store, packet_path, apply):
   packet = json.loads(read_regular(packet_path))
   proposed = packet_entries(packet)
   proposals, rejected, tracked = packet_observations(packet)
+  unkeyed = unkeyed_observations(packet)
   run_id = packet["run"]["id"]
 
   def summary(fresh, noop, tally):
@@ -835,7 +873,7 @@ def ingest(store, packet_path, apply):
       "ids": [row["id"] for row in fresh],
     }
     if tracked:
-      out["observations"] = {**tally, "rejected": rejected}
+      out["observations"] = {**tally, "rejected": rejected, "unkeyed": unkeyed}
     return out
 
   # 驗證先於開檔。全新 dry-run 不建立空 records。
@@ -1584,6 +1622,102 @@ def list_issues(
   return out
 
 
+def kind_from_path(path):
+  """(kind, name) the file's location implies, in session-retro's vocabulary; (None, None) when it says nothing."""
+  parts = Path(path).parts
+  base, folders = parts[-1], parts[:-1]
+  if base == "SKILL.md" and "skills" in folders:
+    return "skill", folders[-1]
+  # 最近的目錄優先：skills/x/scripts/run.sh 是 script，不是 skill。
+  for folder in reversed(folders):
+    if folder == "rules" and base.endswith(".md"):
+      return "rule", None
+    if folder == "commands" and base.endswith(".md"):
+      return "command", base[: -len(".md")]
+    if folder == "hooks":
+      return "hook", None
+    if folder == "scripts":
+      return "script", None
+  return None, None
+
+
+def tracking_change(row, filed):
+  """What session-retro validate reads for one change: kind, effective_time, new_text, name."""
+  out = {
+    "id": row["change_id"],
+    "issue_id": row["issue_id"],
+    "effective_time": row["effective_at"],
+    "new_text": row["source"]["quote"],
+    "condition": row["condition"],
+    "source": row["source"],
+    "kind_source": None,
+  }
+  kind, name = None, None
+  if filed is not None:
+    # 補登的類型比路徑準；store 的 always_on_rule 在 session-retro 叫 rule。
+    kind = "rule" if filed["kind"] == "always_on_rule" else filed["kind"]
+    out["kind_source"] = "backfill"
+    for source in (filed["source"], row["source"]):
+      path_kind, path_name = kind_from_path(source["path"])
+      if path_kind == kind:
+        name = path_name
+        break
+  else:
+    kind, name = kind_from_path(row["source"]["path"])
+    if kind is not None:
+      out["kind_source"] = "path"
+  if kind is not None:
+    out["kind"] = kind
+  if name is not None:
+    out["name"] = name
+  return out
+
+
+def tracking_context(store, issue):
+  """Read-only: the issues and change definitions a retro run's tracking-context.json needs from the store."""
+  folder = os.path.abspath(os.path.expanduser(store))
+  if not os.path.lexists(folder) or not os.path.lexists(os.path.join(folder, RECORDS)):
+    require(issue is None, "unknown issue reference: " + str(issue))
+    return {"ok": True, "command": "tracking-context", "issues": [], "changes": []}
+  with locked(store) as (_folder, handle):
+    rows = load_entries(handle)
+  require(
+    issue is None or any(row["type"] == "issue" and row["issue_id"] == issue for row in rows),
+    "unknown issue reference: " + str(issue),
+  )
+  filed = {}
+  for row in rows:
+    if row["type"] == "backfill":
+      filed[row["change_id"]] = row
+  changes = [
+    tracking_change(row, filed.get(row["change_id"]))
+    for row in rows
+    if row["type"] == "change" and (issue is None or row["issue_id"] == issue)
+  ]
+  issues = []
+  for row in rows:
+    if row["type"] != "issue" or (issue is not None and row["issue_id"] != issue):
+      continue
+    mine = [change["id"] for change in changes if change["issue_id"] == row["issue_id"]]
+    sessions = issue_sessions(rows, row["issue_id"])
+    decision = latest(rows, "decision", row["issue_id"])
+    progress_row = latest(rows, "progress", row["issue_id"])
+    # 與 list --summary 同一個門檻：已決定、有改動或跨 4 場以上的問題才是 cross 要比對的背景。
+    if issue is None and decision is None and not mine and len(sessions) < 4:
+      continue
+    issues.append(
+      {
+        "id": row["issue_id"],
+        "title": row["title"],
+        "source_sessions": sessions,
+        "decision": None if decision is None else decision["action"],
+        "progress": None if progress_row is None else progress_row["state"],
+        "change_ids": mine,
+      }
+    )
+  return {"ok": True, "command": "tracking-context", "issues": issues, "changes": changes}
+
+
 def emit(payload):
   print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
@@ -1607,6 +1741,9 @@ def build():
   listed.add_argument("--rules-repo")
 
   commands.add_parser("rule-anchors")
+
+  context_cmd = commands.add_parser("tracking-context")
+  context_cmd.add_argument("--issue")
 
   decision = commands.add_parser("decide")
   decision.add_argument("--issue", required=True)
@@ -1705,6 +1842,8 @@ def main(argv):
       )
     elif args.command == "rule-anchors":
       payload = rule_anchors(args.store)
+    elif args.command == "tracking-context":
+      payload = tracking_context(args.store, args.issue)
     elif args.command == "decide":
       payload = decide(args)
     elif args.command == "progress":

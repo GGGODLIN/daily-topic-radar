@@ -1460,6 +1460,85 @@ class StoreCLI(unittest.TestCase):
     path, _ = self.observation_packet("run-t", observations[:1], [self.kept("toolu_A|fix-1")])
     self.assertEqual(self.cli("ingest", "--packet", path, "--apply")["observations"]["new"], 1)
 
+  # ---- real-data fixes (ticket 10 findings F4, F5) -----------------------------------------
+
+  def test_unreviewed_observation_without_evidence_is_listed_not_written_and_does_not_reject_the_batch(self):
+    self.ready()
+    keyed = self.tracked("fix-1", "recurrence", (self.event("toolu_A", "fix-1", "2026-10-20T03:00:00Z"), "grep again"))
+    bare = {"issue_id": "issue-1", "change_id": "fix-1", "outcome": "unreviewed"}
+    no_change = {"issue_id": "issue-1", "change_id": None, "outcome": "unreviewed", "evidence": [], "events": []}
+    path, _ = self.observation_packet("run-unkeyed", [keyed, bare, no_change], [self.kept("toolu_A|fix-1")])
+    summary = self.cli("ingest", "--packet", path, "--apply")
+    counts = summary["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 1, "replayed": 0, "supplemented": 0, "corrected": 0})
+    self.assertEqual([(u["issue_id"], u["change_id"]) for u in counts["unkeyed"]],
+                     [("issue-1", "fix-1"), ("issue-1", None)])
+    self.assertTrue(all(isinstance(u["reason"], str) and u["reason"].strip() for u in counts["unkeyed"]))
+    self.assertEqual(sorted(self.observation_rows()), ["toolu_A|fix-1"])
+    # Replaying lists them again and writes nothing.
+    again = self.cli("ingest", "--packet", path, "--apply")
+    self.assertEqual(again["appended"], 0)
+    self.assertEqual(len(again["observations"]["unkeyed"]), 2)
+
+  def test_only_unreviewed_without_evidence_is_exempt_every_other_gap_still_rejects(self):
+    self.ready()
+    event = self.event("toolu_A", "fix-1", "2026-10-20T03:00:00Z")
+    good = self.tracked("fix-1", "recurrence", (event, "grep again"))
+    before = (self.store / "records.jsonl").read_bytes()
+    broken = {
+      "recurrence without evidence": {"issue_id": "issue-1", "change_id": "fix-1", "outcome": "recurrence"},
+      "unreviewed with evidence but no events": {**self.tracked("fix-1", "unreviewed", (event, "x")), "events": []},
+      "unreviewed with evidence and no change": {**self.tracked("fix-1", "unreviewed", (event, "x")), "change_id": None},
+      "unreviewed with a wrong outcome type": {"issue_id": "issue-1", "change_id": "fix-1", "outcome": 7},
+      "unreviewed without an issue": {"change_id": "fix-1", "outcome": "unreviewed"},
+    }
+    for label, item in broken.items():
+      path, _ = self.observation_packet("run-bad", [good, item], [self.kept("toolu_A|fix-1")])
+      error = self.cli("ingest", "--packet", path, "--apply", code=2)
+      self.assertIn("observation_proposals[1]", error["error"], label)
+      self.assertEqual((self.store / "records.jsonl").read_bytes(), before, label)
+    # Positive control: the exempt shape alone goes in.
+    path, _ = self.observation_packet("run-ok", [good, {"issue_id": "issue-1", "change_id": "fix-1", "outcome": "unreviewed"}],
+                                      [self.kept("toolu_A|fix-1")])
+    self.assertEqual(len(self.cli("ingest", "--packet", path, "--apply")["observations"]["unkeyed"]), 1)
+
+  def test_same_event_with_a_different_quote_on_the_same_line_is_a_supplement_not_a_conflict(self):
+    self.ready()
+    at = "2026-10-20T03:00:00Z"
+    event = self.event("toolu_A", "fix-1", at, line=3)
+    first = self.tracked("fix-1", "recurrence", (event, "first quote"))
+    second = self.tracked("fix-1", "recurrence", (event, "second quote"))
+    path, _ = self.observation_packet("run-quotes", [first, second], [self.kept("toolu_A|fix-1")])
+    counts = self.cli("ingest", "--packet", path, "--apply")["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 1, "replayed": 0, "supplemented": 1, "corrected": 0})
+    extra = [row for row in self.rows() if row["type"] == "observation_evidence"]
+    self.assertEqual([(row["observation_id"], row["evidence"]["source_line"], row["evidence"]["quote"]) for row in extra],
+                     [("toolu_A|fix-1", 3, "second quote")])
+    self.assertEqual(self.observation_rows()["toolu_A|fix-1"]["evidence"]["quote"], "first quote")
+    # Replay adds nothing; a later run citing the same line with a third quote is one more supplement.
+    replay = self.cli("ingest", "--packet", path, "--apply")
+    self.assertEqual((replay["appended"], replay["observations"]["replayed"], replay["observations"]["supplemented"]), (0, 2, 0))
+    third = self.tracked("fix-1", "recurrence", (event, "third quote"))
+    later, _ = self.observation_packet("run-quotes-two", [third], [self.kept("toolu_A|fix-1")])
+    counts = self.cli("ingest", "--packet", later, "--apply")["observations"]
+    self.assertEqual((counts["supplemented"], counts["replayed"], counts["new"]), (1, 0, 0))
+    self.assertEqual(len([row for row in self.rows() if row["type"] == "observation_evidence"]), 2)
+    again = self.cli("ingest", "--packet", later, "--apply")
+    self.assertEqual((again["appended"], again["observations"]["replayed"]), (0, 1))
+
+  def test_a_different_outcome_for_the_same_event_in_one_run_is_still_a_conflict(self):
+    self.ready()
+    event = self.event("toolu_A", "fix-1", "2026-10-20T03:00:00Z")
+    first = self.tracked("fix-1", "recurrence", (event, "grep again"))
+    second = self.tracked("fix-1", "opportunity_met", (event, "other quote"))
+    path, _ = self.observation_packet("run-clash", [first, second], [self.kept("toolu_A|fix-1")])
+    before = (self.store / "records.jsonl").read_bytes()
+    error = self.cli("ingest", "--packet", path, "--apply", code=2)
+    self.assertIn("conflicting observation in one run", error["error"])
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
   def test_dry_run_reports_observation_buckets_without_writing(self):
     self.ready()
     observations, dispositions, _expected = self.cases()
@@ -1537,6 +1616,113 @@ class StoreCLI(unittest.TestCase):
     error = self.cli("ingest", "--packet", path, "--apply", code=2)
     self.assertIn("load_time", error["error"])
     self.assertEqual([row for row in self.rows() if row["type"] == "observation"], [])
+
+
+  # ---- real-data fix F8: tracking-context from the store ----------------------------------
+
+  def put(self, relative, text):
+    path = self.root / "home" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text + "\n", encoding="utf-8")
+    return {"path": str(path), "line": 1, "quote": text}
+
+  def change_at(self, change_id, relative, text, effective=WHEN):
+    point = self.put(relative, text)
+    self.cli(
+      "change", "--issue", "issue-1", "--id", change_id, "--effective-at", effective, "--source", point["path"],
+      "--line", 1, "--quote", text, "--condition", "kept next time for " + change_id, "--apply",
+    )
+    return point
+
+  def contexts(self, *args):
+    return {item["id"]: item for item in self.cli("tracking-context", *args)["changes"]}
+
+  def test_tracking_context_names_kind_time_text_and_name_for_every_change(self):
+    self.ready(changes=())
+    expected = {
+      "c-rule": ("rules/common/search.md", "rule", None),
+      "c-command": ("commands/self-closeout.md", "command", "self-closeout"),
+      "c-skill": ("skills/demo-skill/SKILL.md", "skill", "demo-skill"),
+      "c-hook": ("hooks/gate.py", "hook", None),
+      "c-script": ("scripts/run.sh", "script", None),
+      "c-nested": ("skills/demo-skill/scripts/helper.sh", "script", None),
+      "c-skill-note": ("skills/demo-skill/tests.md", None, None),
+      "c-docs": ("docs/notes.md", None, None),
+      "c-rule-json": ("rules/common/data.json", None, None),
+      "c-command-sh": ("commands/tests/check.sh", None, None),
+    }
+    for change_id, (relative, _kind, _name) in expected.items():
+      self.change_at(change_id, relative, "new text of " + change_id)
+    found = self.contexts()
+    self.assertEqual(set(found), set(expected))
+    for change_id, (_relative, kind, name) in expected.items():
+      item = found[change_id]
+      self.assertEqual(item.get("kind"), kind, change_id)
+      self.assertEqual(item.get("kind_source"), None if kind is None else "path", change_id)
+      self.assertEqual(item.get("name"), name, change_id)
+      self.assertEqual(item["effective_time"], WHEN, change_id)
+      self.assertEqual(item["new_text"], "new text of " + change_id, change_id)
+      self.assertEqual(item["issue_id"], "issue-1", change_id)
+
+  def test_the_latest_backfill_decides_the_kind_and_says_so(self):
+    self.ready(changes=())
+    self.change_at("c-docs", "docs/notes.md", "docs text")
+    self.change_at("c-two", "rules/common/two.md", "two text")
+    self.change_at("c-skillbf", "docs/bf.md", "bf text")
+    self.change_at("c-plain", "rules/common/plain.md", "plain text")
+    self.backfill("c-docs", "script")
+    self.backfill("c-two", "hook")
+    self.backfill("c-two", "always_on_rule")
+    self.backfill("c-skillbf", "skill", self.put("skills/bf-skill/SKILL.md", "skill section"))
+    found = self.contexts()
+    self.assertEqual((found["c-docs"]["kind"], found["c-docs"]["kind_source"]), ("script", "backfill"))
+    # The store's always_on_rule is session-retro's rule; the latest filing wins over an earlier one and over the path.
+    self.assertEqual((found["c-two"]["kind"], found["c-two"]["kind_source"]), ("rule", "backfill"))
+    self.assertEqual((found["c-skillbf"]["kind"], found["c-skillbf"]["name"]), ("skill", "bf-skill"))
+    # Control: without a backfill the kind comes from the path.
+    self.assertEqual((found["c-plain"]["kind"], found["c-plain"]["kind_source"]), ("rule", "path"))
+
+  def test_tracking_context_carries_issue_background_and_filters_by_issue(self):
+    self.ready(changes=())
+    self.change_at("c-rule", "rules/common/search.md", "rule text")
+    everything = self.cli("tracking-context")
+    issue = next(item for item in everything["issues"] if item["id"] == "issue-1")
+    self.assertEqual((issue["title"], issue["source_sessions"], issue["change_ids"]), ("Lost handoff", ["session-a"], ["c-rule"]))
+    self.assertEqual(issue["decision"], "approve")
+    self.assertEqual(set(self.contexts("--issue", "issue-1")), {"c-rule"})
+    self.cli("tracking-context", "--issue", "no-such-issue", code=2)
+    # An empty or missing store gives empty lists, not an error.
+    empty = self.cli("--store", self.root / "nowhere", "tracking-context")
+    self.assertEqual((empty["issues"], empty["changes"]), ([], []))
+
+  def test_tracking_context_is_read_only(self):
+    self.ready(changes=())
+    self.change_at("c-rule", "rules/common/search.md", "rule text")
+    before = (self.store / "records.jsonl").read_bytes()
+    self.cli("tracking-context")
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def test_a_change_from_tracking_context_is_understood_by_session_retro(self):
+    self.ready(changes=())
+    new_text = "搜尋大目錄時必須排除 node_modules"
+    self.change_at("c-rule", "rules/common/search.md", new_text, effective="2026-10-20T00:30:00Z")
+    change = self.contexts()["c-rule"]
+    session = self.root / "sess-ctx.jsonl"
+    rows = [
+      {"type": "attachment", "timestamp": "2026-10-20T00:50:00Z", "attachment": {
+        "type": "instructions", "files": [{"path": "/fixture/RULES.md", "type": "User", "content": new_text}]}},
+      {"type": "assistant", "timestamp": "2026-10-20T01:05:00Z", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_ctx", "name": "Bash", "input": {"command": "ls"}}]}},
+    ]
+    session.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+    result = subprocess.run(
+      [sys.executable, "-I", str(Path(__file__).with_name("session-retro.py")), "event-evidence",
+       "--session-file", str(session), "--source-line", "2", "--change", json.dumps(change, ensure_ascii=False)],
+      text=True, capture_output=True,
+    )
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    judged = json.loads(result.stdout)
+    self.assertEqual((judged["event_key"], judged["loaded"], judged["basis"]), ("toolu_ctx", "loaded", "instructions_attachment"))
 
 
   # ---- ticket 05: verdicts, backfill, proposal decisions, pending list -------------------

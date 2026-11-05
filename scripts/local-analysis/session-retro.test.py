@@ -525,7 +525,7 @@ class RetroCLI(unittest.TestCase):
       finding = {"id": ids[-1], "evidence": [{"session": "human", "source_line": 1, "quote": "source finding"}],
                  "counterevidence": "bounded counterevidence"}
       dirs.append(self.transcript(item, self.report(item, [finding], tracking_observations=[
-        {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "not_applicable"}])))
+        {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "unreviewed"}])))
     self.validate(path, "reading", dirs)
     merge = self.stage(path, "session-merge")["items"][0]
     evidence = [{"session": "human", "source_line": 1, "quote": "source finding"}]
@@ -536,7 +536,7 @@ class RetroCLI(unittest.TestCase):
     # Dropping tracking_observations or counterevidence must fail validation.
     folder = self.transcript(merge, report, reads=[])
     self.validate(path, "session-merge", [folder], code=2)
-    report["tracking_observations"] = [{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "not_applicable"}]
+    report["tracking_observations"] = [{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "unreviewed"}]
     folder = self.transcript(merge, report, reads=[])
     self.validate(path, "session-merge", [folder], code=2)
     report["patterns"][0]["counterevidence"] = "bounded counterevidence"
@@ -546,7 +546,7 @@ class RetroCLI(unittest.TestCase):
     sid = report["patterns"][0]["id"]
     cross_report = self.report(cross, patterns=[{"id": "P1", "source_finding_ids": [sid], "evidence": evidence,
       "counterevidence": "bounded counterevidence"}],
-      tracking_observations=[{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "not_applicable"}], dispositions=[])
+      tracking_observations=[{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "unreviewed"}], dispositions=[])
     folder = self.transcript(cross, cross_report, reads=[])
     self.validate(path, "cross", [folder], code=2)
     cross_report["dispositions"] = [{"source_record_id": sid, "disposition": "kept", "reason": "relevant"}]
@@ -957,6 +957,125 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.assertEqual(keys, {"reading": ["toolu_F5|chg-1"], "session-merge": ["toolu_F5|chg-1"], "cross": ["toolu_F5|chg-1"]})
 
 
+  # ---- real-data fixes (ticket 10 findings F1, F4, F9) ------------------------------------
+
+  def test_every_line_of_one_tool_call_gives_the_same_event_time_in_validate(self):
+    called, answered = "2026-10-20T01:05:00Z", "2026-10-20T01:07:00Z"
+    path, _ = self.prepare([user(), call("toolu_R1", called), result_row("toolu_R1", answered)])
+    dump(path.parent / "tracking-context.json", {"changes": [
+      {"id": "chg-1", "kind": "hook", "effective_time": "2026-10-20T00:30:00Z"}]})
+    observations = [
+      {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence",
+       "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]},
+      {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence",
+       "evidence": [{"session": "human", "source_line": 3, "quote": "output"}]}]
+    items = self.stage(path, "reading")["items"]
+    self.validate(path, "reading", [self.transcript(item, self.report(item, tracking_observations=observations)) for item in items])
+    validated = json.loads((path.parent / "validated" / (items[0]["unit"] + ".json")).read_text())
+    for observation in validated["tracking_observations"]:
+      event = observation["events"][0]
+      self.assertEqual((event["event_key"], event["event_time"], event["source_line"]), ("toolu_R1", called, 2))
+      self.assertEqual(observation["evidence"][0]["event_time"], called)
+    # The cited line and quote stay as written: the result line is still the evidence the model pointed at.
+    self.assertEqual([o["evidence"][0]["source_line"] for o in validated["tracking_observations"]], [2, 3])
+    self.assertEqual(validated["tracking_observations"][1]["evidence"][0]["quote"], "output")
+
+  def tracking_errors(self, observations, code=2):
+    path, _ = self.prepare([user(), call("toolu_T", RECENT)])
+    items = self.stage(path, "reading")["items"]
+    dirs = [self.transcript(item, self.report(item, tracking_observations=observations)) for item in items]
+    result = self.validate(path, "reading", dirs, code=code)
+    return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+  def test_tracking_observation_without_a_change_id_fails_and_names_which_one(self):
+    good = {"issue_id": "iss-ok", "change_id": "chg-1", "outcome": "recurrence",
+            "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]}
+    self.tracking_errors([good], code=0)
+    for label, mutate in (("null", lambda o: o.update(change_id=None)), ("missing", lambda o: o.pop("change_id")),
+                          ("blank", lambda o: o.update(change_id=" "))):
+      bad = {**good, "issue_id": "iss-" + label}
+      mutate(bad)
+      errors = self.tracking_errors([good, bad])
+      self.assertIn("tracking_observations[1]", errors, label)
+      self.assertIn("iss-" + label, errors, label)
+      self.assertIn("change_id", errors, label)
+    # An unreviewed observation still has to say which change it is about.
+    self.assertIn("change_id", self.tracking_errors([{"issue_id": "iss-u", "change_id": None, "outcome": "unreviewed"}]))
+
+  def test_tracking_observation_needs_structured_evidence_unless_unreviewed(self):
+    pointer = {"session": "human", "source_line": 2, "quote": "ls"}
+    for outcome in ("recurrence", "opportunity_met", "not_applicable"):
+      errors = self.tracking_errors([{"issue_id": "iss-" + outcome, "change_id": "chg-1", "outcome": outcome}])
+      self.assertIn("iss-" + outcome, errors)
+      self.assertIn("evidence", errors)
+    free_text = {"issue_id": "iss-free", "change_id": "chg-1", "outcome": "recurrence", "evidence": "ran ls at line 2"}
+    self.assertIn("iss-free", self.tracking_errors([free_text]))
+    for label, broken in (("quote", {k: v for k, v in pointer.items() if k != "quote"}),
+                          ("source_line", {**pointer, "source_line": "2"}), ("session", {**pointer, "session": ""})):
+      errors = self.tracking_errors([{"issue_id": "iss-" + label, "change_id": "chg-1", "outcome": "recurrence", "evidence": [broken]}])
+      self.assertIn("iss-" + label, errors, label)
+    # Positive controls: the same shapes pass when they are complete, and unreviewed may have no evidence at all.
+    self.tracking_errors([{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence", "evidence": [pointer]},
+                          {"issue_id": "iss-2", "change_id": "chg-1", "outcome": "unreviewed"}], code=0)
+
+  def test_session_merge_and_cross_apply_the_same_tracking_checks(self):
+    path, _ = self.prepare([user("source finding"), assistant("x" * 850000)])
+    evidence = [{"session": "human", "source_line": 1, "quote": "source finding"}]
+    seen = {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "unreviewed"}
+    ids, dirs = [], []
+    for item in self.stage(path, "reading")["items"]:
+      ids.append(item["unit"] + ":f")
+      finding = {"id": ids[-1], "evidence": evidence, "counterevidence": "bounded counterevidence"}
+      dirs.append(self.transcript(item, self.report(item, [finding], tracking_observations=[seen])))
+    self.validate(path, "reading", dirs)
+    merge = self.stage(path, "session-merge")["items"][0]
+    pattern = {"id": merge["unit"] + "-P1", "source_finding_ids": ids, "evidence": evidence, "counterevidence": "bounded counterevidence"}
+    merged = [{"source_finding_id": key, "disposition": "merged", "reason": "same cause"} for key in ids]
+
+    def merge_with(observations, code):
+      report = self.report(merge, patterns=[pattern], tracking_observations=observations, dispositions=merged)
+      result = self.validate(path, "session-merge", [self.transcript(merge, report, reads=[])], code=code)
+      return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+    errors = merge_with([seen, {"issue_id": "iss-null", "change_id": None, "outcome": "unreviewed"}], 2)
+    self.assertIn("tracking_observations[1]", errors)
+    self.assertIn("iss-null", errors)
+    errors = merge_with([seen, {"issue_id": "iss-bare", "change_id": "chg-1", "outcome": "recurrence"}], 2)
+    self.assertIn("iss-bare", errors)
+    merge_with([seen, {"issue_id": "iss-ok", "change_id": "chg-2", "outcome": "unreviewed"}], 0)
+    cross = self.stage(path, "cross")["items"][0]
+    cross_pattern = {"id": "P1", "source_finding_ids": [pattern["id"]], "evidence": evidence, "counterevidence": "bounded counterevidence"}
+    kept = [{"source_record_id": pattern["id"], "disposition": "kept", "reason": "relevant"}]
+
+    def cross_with(observations, code):
+      report = self.report(cross, patterns=[cross_pattern], tracking_observations=observations, dispositions=kept)
+      result = self.validate(path, "cross", [self.transcript(cross, report, reads=[])], code=code)
+      return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+    errors = cross_with([seen, {"issue_id": "iss-null", "change_id": None, "outcome": "unreviewed"}], 2)
+    self.assertIn("tracking_observations[1]", errors)
+    self.assertIn("iss-null", errors)
+    self.assertIn("iss-bare", cross_with([seen, {"issue_id": "iss-bare", "change_id": "chg-1", "outcome": "not_applicable"}], 2))
+    cross_with([seen, {"issue_id": "iss-ok", "change_id": "chg-2", "outcome": "unreviewed"}], 0)
+
+  def test_an_observation_without_a_change_never_becomes_a_none_key(self):
+    path, _ = self.prepare([user(), call("toolu_N", RECENT)])
+    dump(path.parent / "tracking-context.json", {"changes": [
+      {"id": "chg-1", "kind": "hook", "effective_time": "2026-10-20T00:30:00Z"}]})
+    bad = {"issue_id": "iss-null", "change_id": None, "outcome": "recurrence",
+           "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]}
+    items = self.stage(path, "reading")["items"]
+    dirs = [self.transcript(item, self.report(item, tracking_observations=[bad])) for item in items]
+    self.validate(path, "reading", dirs, code=2)
+    # A rejected unit leaves no validated copy for a later stage to read an "…|None" key from.
+    self.assertFalse((path.parent / "validated" / (items[0]["unit"] + ".json")).exists())
+    good = {**bad, "change_id": "chg-1"}
+    dirs = [self.transcript(item, self.report(item, tracking_observations=[good])) for item in items]
+    self.validate(path, "reading", dirs)
+    validated = json.loads((path.parent / "validated" / (items[0]["unit"] + ".json")).read_text())
+    self.assertEqual(validated["tracking_observations"][0]["events"][0]["observation_key"], "toolu_N|chg-1")
+
+
 def inst(text, timestamp, path="/fixture/RULES.md"):
   return {"type": "attachment", "timestamp": timestamp, "attachment": {
     "type": "instructions", "files": [{"path": path, "type": "User", "content": text}]}}
@@ -964,6 +1083,11 @@ def inst(text, timestamp, path="/fixture/RULES.md"):
 
 def call(call_id, timestamp):
   return assistant([{"type": "tool_use", "id": call_id, "name": "Bash", "input": {"command": "ls"}}], timestamp=timestamp)
+
+
+def result_row(call_id, timestamp):
+  return {"type": "user", "timestamp": timestamp, "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": call_id, "content": "output"}]}}
 
 
 def skill_text(name, body, timestamp, meta=True):
@@ -1221,6 +1345,30 @@ class EventEvidenceCLI(unittest.TestCase):
     # A damaged line after the event cannot change what was loaded before it.
     after = self.session("u-after", good, raw={3: "{not json"})
     self.assertEqual(self.judge(after, rule, line=2)["loaded"], "loaded")
+
+  def test_every_line_of_one_tool_call_is_one_event_at_the_calls_own_time(self):
+    answered = "2026-11-02T03:09:00Z"
+    path = self.session("sess-beta", [user(timestamp=AFTER), call("toolu_A", LATER), result_row("toolu_A", answered),
+                                      assistant("plain", timestamp="2026-11-02T05:00:00Z")])
+    hook = self.change("hook")
+    for line in (2, 3):
+      found = self.judge(path, hook, line=line)
+      self.assertEqual((found["event_key"], found["source_line"], found["event_time"]), ("toolu_A", 2, LATER), line)
+    self.assertEqual(self.judge(path, hook, tool_call_id="toolu_A")["event_time"], LATER)
+    # Controls: an action with no call keeps the line it was cited on, and a result whose call is missing keeps its own line.
+    plain = self.judge(path, hook, line=4)
+    self.assertEqual((plain["event_key"], plain["source_line"], plain["event_time"]), ("sess-beta:4", 4, "2026-11-02T05:00:00Z"))
+    orphan = self.session("sess-orphan", [user(timestamp=AFTER), result_row("toolu_Z", answered)])
+    found = self.judge(orphan, hook, line=2)
+    self.assertEqual((found["event_key"], found["source_line"], found["event_time"]), ("toolu_Z", 2, answered))
+
+  def test_event_evidence_needs_a_change_id_and_never_builds_a_none_key(self):
+    path = self.session("sess-gamma", [user(timestamp=AFTER), call("toolu_A", LATER)])
+    for change in ({"kind": "hook", "effective_time": EFFECTIVE}, {"id": None, "kind": "hook", "effective_time": EFFECTIVE}):
+      error = self.judge(path, change, line=2, code=2)["error"]
+      self.assertIn("id", error)
+      self.assertNotIn("None", error)
+    self.assertEqual(self.judge(path, self.change("hook", change_id="chg-ok"), line=2)["observation_key"], "toolu_A|chg-ok")
 
   def test_malformed_change_is_a_usage_error(self):
     path = self.session("bad-change", [user(timestamp=AFTER)])

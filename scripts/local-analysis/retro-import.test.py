@@ -99,7 +99,7 @@ class ImportCLI(unittest.TestCase):
     self.assertNotIn("Traceback", result.stderr)
     return json.loads(payload)
 
-  def run_dir(self, name, cross, plan, reviews=True, cross_at="reports/cross-session.json"):
+  def run_dir(self, name, cross, plan, reviews=True, cross_at="validated/cross-session.json"):
     root = self.root / name
     dump(root / cross_at, cross)
     dump(root / plan, {"run_id": name, "cutoff": CUTOFF, "window_start": CUTOFF})
@@ -151,7 +151,7 @@ class ImportCLI(unittest.TestCase):
 
   def test_legacy_top_level_cross_uses_directory_name_without_run_id(self):
     run = self.root / "legacy-run"
-    dump(run / "cross-session.json", legacy_cross())
+    dump(run / "validated" / "cross-session.json", legacy_cross())
     dump(run / "input-plan.json", {"cutoff": CUTOFF, "start": CUTOFF})
     out = self.root / "legacy-packet.json"
     summary = self.cli("--run", run, "--out", out)
@@ -196,7 +196,7 @@ class ImportCLI(unittest.TestCase):
     bare = self.root / "bare"
     bare.mkdir()
     missing = self.cli("--run", bare, "--out", self.root / "unused.json", code=2)
-    self.assertIn("missing cross-session.json", missing["error"])
+    self.assertIn("validated/cross-session.json", missing["error"])
     run = self.run_dir("no-cutoff", modern_cross(), "plan.json", reviews=False)
     (run / "plan.json").write_text("{}\n", encoding="utf-8")
     no_cutoff = self.cli("--run", run, "--out", self.root / "no-cutoff.json", code=2)
@@ -241,7 +241,7 @@ class ImportCLI(unittest.TestCase):
     cross = modern_cross()
     cross["patterns"][0]["observation"] = "before after"
     run = self.run_dir("lines", cross, "plan.json", reviews=False)
-    target = run / "reports" / "cross-session.json"
+    target = run / "validated" / "cross-session.json"
     target.write_text(target.read_text(encoding="utf-8").replace("\\u2028", " "), encoding="utf-8")
     out = self.root / "lines.json"
     self.cli("--run", run, "--out", out)
@@ -335,6 +335,34 @@ class ImportCLI(unittest.TestCase):
     old_out = self.root / "untracked.json"
     self.cli("--run", old, "--out", old_out)
     self.assertEqual(json.loads(old_out.read_text(encoding="utf-8"))["tracking_dispositions"], [])
+
+  # ---- real-data fixes: the packet is built from the validated cross report (F2) ------------
+
+  def test_packet_reads_the_validated_cross_report_not_the_model_draft(self):
+    validated = self.tracked_cross()
+    draft = json.loads(json.dumps(validated))
+    for observation in draft["tracking_observations"]:
+      del observation["events"]
+    draft["tracking_observations"][0]["outcome"] = "not_applicable"
+    run = self.run_dir("two-copies", validated, "plan.json", reviews=False)
+    dump(run / "reports" / "cross-session.json", draft)
+    out = self.root / "two-copies.json"
+    self.cli("--run", run, "--out", out)
+    packet = json.loads(out.read_text(encoding="utf-8"))
+    self.assertEqual(packet["observation_proposals"], validated["tracking_observations"])
+    self.assertTrue(all(item["events"] for item in packet["observation_proposals"]))
+    self.assertEqual(packet["run"]["source"], str((run / "validated" / "cross-session.json").resolve()))
+
+  def test_missing_validated_cross_report_is_an_error_not_a_fallback_to_the_draft(self):
+    run = self.run_dir("draft-only", modern_cross(), "plan.json", reviews=False, cross_at="reports/cross-session.json")
+    out = self.root / "draft-only.json"
+    error = self.cli("--run", run, "--out", out, code=2)
+    self.assertIn("validated/cross-session.json", error["error"])
+    self.assertFalse(out.exists())
+    # Positive control: the same cross report in the validated place is accepted.
+    ok = self.run_dir("validated-only", modern_cross(), "plan.json", reviews=False)
+    self.cli("--run", ok, "--out", self.root / "validated-only.json")
+    self.assertTrue((self.root / "validated-only.json").exists())
 
   def test_destinations_that_are_not_a_list_are_refused(self):
     cross = self.tracked_cross()

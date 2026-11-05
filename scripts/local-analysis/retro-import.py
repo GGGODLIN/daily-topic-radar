@@ -16,7 +16,8 @@ sys.dont_write_bytecode = True
 
 SCHEMA_VERSION = 1
 SCOPE = "整項候選未逐事件語意核查；原始裁決另存"
-CROSS_NAMES = ("cross-session.json", "reports/cross-session.json")
+# 驗收器只把補好 events[] 的 cross 寫在這裡；reports/ 下是模型原稿，沒有 events[]，ingest 會整批拒收。
+VALIDATED_CROSS = "validated/cross-session.json"
 PLAN_NAMES = ("plan.json", "input-plan.json")
 REVIEW_NAMES = (
   "reports/verify-source.json",
@@ -281,18 +282,12 @@ def legacy_dispositions(cross):
 
 
 def select_cross(run):
-  found = [
-    os.path.join(run, relative)
-    for relative in CROSS_NAMES
-    if os.path.isfile(os.path.join(run, relative))
-    and not os.path.islink(os.path.join(run, relative))
-  ]
-  require(found, "missing cross-session.json")
-  if len(found) == 1:
-    return found[0]
-  preferred = os.path.join(run, "reports", "cross-session.json")
-  require(preferred in found, "cross-session.json location is not one of the two known formats")
-  return preferred
+  path = os.path.join(run, VALIDATED_CROSS)
+  require(
+    os.path.isfile(path) and not os.path.islink(path),
+    "missing validated cross report (" + VALIDATED_CROSS + "); run session-retro validate --stage cross first",
+  )
+  return path
 
 
 def select_plan(run):

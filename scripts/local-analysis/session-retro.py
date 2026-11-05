@@ -1353,6 +1353,38 @@ def verify_verdicts(report, item, canonical):
   require(len(found) == len(ids) and set(found) == ids, "missing or duplicate critic verdicts")
 
 
+def check_tracking_shape(report):
+  """Each tracking observation names its change, and carries structured evidence unless it is unreviewed.
+
+  Without a change id the observation key becomes "...|None"; without evidence there is no event to key.
+  Both used to pass here and then made ingest refuse the whole run.
+  """
+  observations = report.get("tracking_observations")
+  if observations is None:
+    return
+  require(isinstance(observations, list), "tracking_observations must be an array")
+  errors = []
+  for index, obs in enumerate(observations):
+    if not isinstance(obs, dict):
+      errors.append(f"tracking_observations[{index}] is not an object")
+      continue
+    name = f"tracking_observations[{index}] (issue_id={obs.get('issue_id')}, change_id={obs.get('change_id')})"
+    if not (isinstance(obs.get("change_id"), str) and obs["change_id"].strip()):
+      errors.append(f"{name}: change_id is missing or null")
+    evidence = obs.get("evidence")
+    if obs.get("outcome") == "unreviewed" and evidence in (None, []):
+      continue
+    points = evidence if isinstance(evidence, list) else None
+    if not points:
+      errors.append(f"{name}: evidence must be a nonempty list of {{session, source_line, quote}} unless the outcome is unreviewed")
+    elif not all(isinstance(point, dict) and isinstance(point.get("session"), str) and point["session"].strip()
+                 and isinstance(point.get("source_line"), int) and not isinstance(point["source_line"], bool) and point["source_line"] >= 1
+                 and isinstance(point.get("quote"), str) and point["quote"].strip() for point in points):
+      errors.append(f"{name}: every evidence entry needs session, a positive integer source_line and a quote")
+  shown = errors[:ACCOUNTING_ERROR_CAP]
+  require(not errors, "; ".join(shown + ([f"(+{len(errors) - len(shown)} more tracking observation errors)"] if len(errors) > len(shown) else [])))
+
+
 def check_report(report, item, stage, canonical):
   require(isinstance(report, dict), "report must be an object")
   require(report.get("status") == "complete", "report is missing, partial, or failed")
@@ -1362,6 +1394,8 @@ def check_report(report, item, stage, canonical):
   record_key = "findings" if stage == "reading" else "patterns" if stage in {"session-merge", "cross"} else "findings" if "findings" in report else "verdicts"
   require(isinstance(report.get(record_key), list), record_key + " must be an array; missing/null is not zero")
   require(not report.get("overflow"), "overflow requires partial coverage")
+  if stage != "verify":
+    check_tracking_shape(report)
   normalized = copy.deepcopy(report)
   all_records = report_records(normalized)
   ids = [r.get("id") for r in all_records]
@@ -1479,7 +1513,9 @@ def locate_event(rows, source_line, tool_call_id):
   calls = uses or results
   # Several calls on one line cannot be told apart without a call ID, so that action keeps the line key.
   if len(calls) == 1:
-    return source_line, calls[0][0], "tool_call_id", None
+    # The call row and its result row are one event. Taking the cited row's own time gave one event two
+    # times, and ingest rejects an event whose time changes between reports.
+    return locate_event(rows, source_line, calls[0][0])
   return source_line, None, None, None
 
 
@@ -1521,6 +1557,8 @@ def event_evidence(session_file, change_id, change=None, source_line=None, tool_
   event_time can never reach the result. "unchecked" always carries a reason and is never read as loaded.
   """
   require(source_line is not None or tool_call_id is not None, "event-evidence requires --source-line or --tool-call-id")
+  # A missing change would otherwise become the key suffix "|None" and look like a real observation.
+  require(isinstance(change_id, str) and bool(change_id.strip()), "event-evidence requires a change id")
   session = Path(session_file).expanduser()
   out = {"session": session.stem, "change_id": change_id, "event_key": None, "event_key_kind": None,
          "observation_key": None, "source_line": source_line, "event_time": None, "loaded": "unchecked",
@@ -1637,7 +1675,7 @@ def add_event_evidence(report, item, plan, run):
       entry.pop("event_time", None)
       session = entry.get("session", item.get("session"))
       try:
-        event = event_evidence(sources.get(session, ""), str(change_id), change, source_line=entry.get("source_line"))
+        event = event_evidence(sources.get(session, ""), change_id, change, source_line=entry.get("source_line"))
       except Invalid as error:
         event = {"loaded": "unchecked", "basis": "unchecked", "reason": str(error), "event_time": None}
       if event["event_time"]:
