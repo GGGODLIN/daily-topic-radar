@@ -912,7 +912,7 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     def gamma_vanishes(report):
       report["tracking_observations"] = [o for o in report["tracking_observations"] if o["evidence"][0]["session"] != "gamma"]
     def rejected_returns(report):
-      report["tracking_observations"][1]["evidence"] += seen("beta", 4)
+      report["tracking_observations"][1]["evidence"].append({"session": "beta", "source_line": 4, "quote": "ls"})
     for label, mutate, key, wording in (("kept but gone", gamma_vanishes, "toolu_C1", "absent"),
                                          ("rejected but cited", rejected_returns, "toolu_B3", "still cited")):
       with self.subTest(label):
@@ -976,44 +976,48 @@ def invoked(name, content, timestamp):
     "type": "invoked_skills", "skills": [{"name": name, "path": "userSettings:" + name, "content": content}]}}
 
 
-def tool_record(call_id):
-  return call(call_id, RECENT)
-
-
 # Deidentified from the 2026-11-03/04 cross reports: one observation may cite several events, one action can break
 # two changes, one event can be reported twice, and the four destinations all occur.
 CROSS_SESSIONS = {
-  "alpha": lambda: [user(), tool_record("toolu_A1"), tool_record("toolu_A2"), tool_record("toolu_A3")],
-  "beta": lambda: [user(), tool_record("toolu_B1"), tool_record("toolu_B2"), tool_record("toolu_B3")],
-  "gamma": lambda: [user(), tool_record("toolu_C1")],
+  "alpha": lambda: [user(), call("toolu_A1", RECENT), call("toolu_A2", RECENT), call("toolu_A3", RECENT)],
+  "beta": lambda: [user(), call("toolu_B1", RECENT), call("toolu_B2", RECENT), call("toolu_B3", RECENT)],
+  "gamma": lambda: [user(), call("toolu_C1", RECENT)],
 }
 
-
-def seen(session, *lines):
-  return [{"session": session, "source_line": line, "quote": "ls"} for line in lines]
-
-
-def obs(issue, change, outcome, evidence):
-  return {"issue_id": issue, "change_id": change, "outcome": outcome, "evidence": evidence}
-
-
 CROSS_READINGS = {
-  "alpha": [obs("iss-1", "chg-search", "recurrence", seen("alpha", 2, 3)),
-            obs("iss-1", "chg-hook", "recurrence", seen("alpha", 2)),
-            obs("iss-2", "chg-search", "not_applicable", seen("alpha", 4))],
-  "beta": [obs("iss-1", "chg-search", "recurrence", seen("beta", 2)),
-           obs("iss-4", "chg-search", "recurrence", seen("beta", 2)),
-           obs("iss-1", "chg-search", "recurrence", seen("beta", 3)),
-           obs("iss-3", "chg-hook", "recurrence", seen("beta", 4))],
-  "gamma": [obs("iss-2", "chg-search", "opportunity_met", seen("gamma", 2))],
+  "alpha": [
+    {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
+     "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}, {"session": "alpha", "source_line": 3, "quote": "ls"}]},
+    {"issue_id": "iss-1", "change_id": "chg-hook", "outcome": "recurrence",
+     "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}]},
+    {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "not_applicable",
+     "evidence": [{"session": "alpha", "source_line": 4, "quote": "ls"}]}],
+  "beta": [
+    {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
+     "evidence": [{"session": "beta", "source_line": 2, "quote": "ls"}]},
+    {"issue_id": "iss-4", "change_id": "chg-search", "outcome": "recurrence",
+     "evidence": [{"session": "beta", "source_line": 2, "quote": "ls"}]},
+    {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
+     "evidence": [{"session": "beta", "source_line": 3, "quote": "ls"}]},
+    {"issue_id": "iss-3", "change_id": "chg-hook", "outcome": "recurrence",
+     "evidence": [{"session": "beta", "source_line": 4, "quote": "ls"}]}],
+  "gamma": [
+    {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "opportunity_met",
+     "evidence": [{"session": "gamma", "source_line": 2, "quote": "ls"}]}],
 }
 
 CROSS_OUTPUT_OBSERVATIONS = [
-  obs("iss-1", "chg-search", "recurrence", seen("alpha", 2, 3) + seen("beta", 2)),
-  obs("iss-1", "chg-hook", "recurrence", seen("alpha", 2)),
-  obs("iss-2", "chg-search", "not_applicable", seen("alpha", 4)),
-  obs("iss-1", "chg-search", "unreviewed", seen("beta", 3)),
-  obs("iss-2", "chg-search", "opportunity_met", seen("gamma", 2)),
+  {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
+   "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}, {"session": "alpha", "source_line": 3, "quote": "ls"},
+                {"session": "beta", "source_line": 2, "quote": "ls"}]},
+  {"issue_id": "iss-1", "change_id": "chg-hook", "outcome": "recurrence",
+   "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}]},
+  {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "not_applicable",
+   "evidence": [{"session": "alpha", "source_line": 4, "quote": "ls"}]},
+  {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "unreviewed",
+   "evidence": [{"session": "beta", "source_line": 3, "quote": "ls"}]},
+  {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "opportunity_met",
+   "evidence": [{"session": "gamma", "source_line": 2, "quote": "ls"}]},
 ]
 
 
