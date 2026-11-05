@@ -260,9 +260,9 @@ class RetroCLI(unittest.TestCase):
     self.assertTrue(plan["limits"]["thinking_omitted"])
     self.assertEqual(plan["page_count"], 2)
     self.assertEqual(plan["models"]["read"], result["models"]["read"])
-    self.assertEqual(plan["models"], {"read": "gpt-6.1-terra(max)[1m]", "merge": "gpt-6.1-terra(max)[1m]", "verify": "gpt-6.1-sol(xhigh)[1m]",
+    self.assertEqual(plan["models"], {"read": "google/gemini-4-argon:high", "merge": "google/gemini-4-argon:high", "verify": "gpt-6.1-sol(xhigh)[1m]",
                                       "repair": "devin-plugin/swe-2:high"})
-    self.assertEqual(plan["efforts"], {"read": "max", "merge": "max", "verify": "xhigh"})
+    self.assertEqual(plan["efforts"], {"read": "high", "merge": "high", "verify": "xhigh"})
     self.assertIn("[line=1 timestamp=2026-10-20T01:00:00Z window user]", document)
     for page in session["shards"][0]["pages"]:
       self.assertTrue(Path(page["path"]).read_text().endswith("END_PAGE " + page["id"] + "\n"))

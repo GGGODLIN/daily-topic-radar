@@ -20,9 +20,10 @@ MAX_PAGE_LINES = 1800
 SHARD_CHARS = 6 * 140000
 STAGES = ("reading", "session-merge", "cross", "verify")
 DEFAULT_MODEL = "gpt-6.1-sol[1m]"
+DEFAULT_ARGON_MODEL = "google/gemini-4-argon:high"
 DEFAULT_TERRA_MODEL = "gpt-6.1-terra"
 DEFAULT_SOL_MODEL = "gpt-6.1-sol"
-DEFAULT_EFFORTS = {"read": "max", "merge": "max", "verify": "xhigh"}
+DEFAULT_EFFORTS = {"read": "high", "merge": "high", "verify": "xhigh"}
 DEFAULT_REPAIR_MODEL = "devin-plugin/swe-2:high"
 WORKFLOW_TEMPLATE = Path.home() / ".claude/workflows/retro-workflow.js"
 REFERENCES = [str(Path.home() / ".claude/references/retro-workflow" / name)
@@ -575,8 +576,8 @@ def prepare(args):
     sessions.append(session)
   table = read_model_table()
   efforts = {key: getattr(args, key + "_effort") or args.effort or DEFAULT_EFFORTS[key] for key in ("read", "merge", "verify")}
-  models = {"read": args.read_model if args.read_model is not None else format_model(table["GPT_TERRA"], efforts["read"]),
-            "merge": args.merge_model if args.merge_model is not None else format_model(table["GPT_TERRA"], efforts["merge"]),
+  models = {"read": args.read_model if args.read_model is not None else DEFAULT_ARGON_MODEL,
+            "merge": args.merge_model if args.merge_model is not None else DEFAULT_ARGON_MODEL,
             "verify": args.verify_model if args.verify_model is not None else format_model(table["GPT_SOL"], efforts["verify"])}
   # Quote-only repairs find and copy one sentence; on the 16 historical cases the program could not settle,
   # free swe-2 passed all 16 after re-validation, reading ranges only (2026-11-05 replay).
