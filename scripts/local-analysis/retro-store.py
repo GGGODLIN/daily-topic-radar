@@ -11,6 +11,7 @@ import fcntl
 import json
 import os
 import stat
+import subprocess
 import sys
 from contextlib import contextmanager
 from datetime import datetime
@@ -45,6 +46,11 @@ PROPOSAL_KINDS = ("make_hook", "retract", "modify")
 PROPOSAL_DECISIONS = ("accepted", "rejected")
 # 這兩種提議的對象一定是改動；拒絕或接受其中之一就處理掉待決定清單裡的那一項。
 CHANGE_PROPOSALS = ("retract", "modify")
+# 使用者定的值：同一條規則在改動生效後於 3 個以上不同 session 被違反，才提出「要不要做成 hook」。
+MAKE_HOOK_THRESHOLD = 3
+# 最多附幾場的原文指針；門檻是 3，所以永遠夠用。
+MAKE_HOOK_EVIDENCE = 10
+AUDIT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session-audit.py")
 NOTICE = ("<task-notification>", "<system-reminder>", "<cross-session-message", "[main]")
 
 
@@ -1282,6 +1288,8 @@ def pending_decisions(rows, views):
     "effective": [],
     "side_effects_unchecked": [],
     "level_four_only": 0,
+    "make_hook": [],
+    "make_hook_unchecked": [],
   }
   for view in views:
     if view["verdict_id"] is None:
@@ -1311,6 +1319,107 @@ def pending_decisions(rows, views):
     if view["level"] == 4:
       out["level_four_only"] += 1
   return out
+
+
+def rule_anchor_list(rows):
+  """Paragraph anchors of always-on-rule changes: the filed items (backfill) of kind always_on_rule."""
+  changes = {row["change_id"]: row for row in rows if row["type"] == "change"}
+  found = []
+  for row in rows:
+    if row["type"] != "backfill" or row["kind"] != "always_on_rule" or row["change_id"] not in changes:
+      continue
+    change = changes[row["change_id"]]
+    item = {
+      "change_id": change["change_id"],
+      "issue_id": change["issue_id"],
+      "effective_at": change["effective_at"],
+      "path": row["source"]["path"],
+      "quote": row["source"]["quote"],
+    }
+    if not any(same(item, old) for old in found):
+      found.append(item)
+  return found
+
+
+def rule_anchors(store):
+  target = os.path.join(os.path.abspath(os.path.expanduser(store)), RECORDS)
+  if not os.path.lexists(target):
+    return {"ok": True, "command": "rule-anchors", "anchors": []}
+  with locked(store) as (_folder, handle):
+    rows = load_entries(handle)
+  return {"ok": True, "command": "rule-anchors", "anchors": rule_anchor_list(rows)}
+
+
+def audit_query(audit_state, rules_repo, anchor_item, since):
+  command = [
+    sys.executable, "-I", AUDIT, "rule-violations", "--state", audit_state,
+    "--rule-path", anchor_item["path"], "--rule-quote", anchor_item["quote"], "--since", since,
+  ]
+  if rules_repo:
+    command += ["--rules-repo", rules_repo]
+  try:
+    done = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+    result = json.loads(done.stdout) if done.returncode == 0 else None
+  except (OSError, subprocess.TimeoutExpired, ValueError):
+    result = None
+  return result if isinstance(result, dict) else None
+
+
+def make_hook_pending(rows, audit_state, rules_repo):
+  """Rules with a change anchor that were broken in >= 3 distinct sessions since the change (or the last refusal).
+
+  Only proposes. A rule the audit could not resolve or has not analyzed is listed as unchecked, never as zero.
+  """
+  anchors = rule_anchor_list(rows)
+  if not anchors:
+    return {"make_hook": [], "make_hook_unchecked": []}
+  if not audit_state:
+    return {"make_hook": [], "make_hook_unchecked": [{"reason": "audit-state-not-given"}]}
+  proposals = latest_proposals(rows)
+  latest = {}
+  for item in anchors:
+    key = (item["path"], item["quote"])
+    if key not in latest or moment(item["effective_at"], "effective_at") >= moment(
+      latest[key]["effective_at"], "effective_at"
+    ):
+      latest[key] = item
+  proposed = []
+  unchecked = []
+  for (path, quote), item in latest.items():
+    since = item["effective_at"]
+    decision = proposals.get(("make_hook", "rule:" + path + "|" + quote))
+    if decision is not None:
+      if decision["decision"] == "accepted":
+        continue
+      # 拒絕只重置這一個提議的起點：之後又累積到門檻才再提。
+      if moment(decision["decided_at"], "decided_at") > moment(since, "since"):
+        since = decision["decided_at"]
+    rule = {"path": path, "quote": quote}
+    result = audit_query(audit_state, rules_repo, item, since)
+    if result is None:
+      unchecked.append({"rule": rule, "change_id": item["change_id"], "reason": "query-failed"})
+    elif not result.get("found"):
+      unchecked.append({"rule": rule, "change_id": item["change_id"], "reason": result.get("reason", "rule-not-found")})
+    elif result.get("status") == "not_analyzed":
+      unchecked.append({"rule": rule, "change_id": item["change_id"], "reason": "not-analyzed"})
+    elif result["violating_sessions"] >= MAKE_HOOK_THRESHOLD:
+      newest = {}
+      for entry in result["violations"]:
+        newest[entry["session_id"]] = entry
+      evidence = sorted(newest.values(), key=lambda entry: entry["event_time"])[-MAKE_HOOK_EVIDENCE:]
+      proposed.append(
+        {
+          "proposal": "make_hook",
+          "rule": rule,
+          "change_id": item["change_id"],
+          "issue_id": item["issue_id"],
+          "since": since,
+          "violating_sessions": result["violating_sessions"],
+          "evidence": evidence,
+          "coverage": result["coverage"],
+        }
+      )
+  return {"make_hook": proposed, "make_hook_unchecked": unchecked}
 
 
 def project_issue(rows, issue_row, current=None, views=None):
@@ -1402,7 +1511,9 @@ def detail(rows, issue):
   }
 
 
-def list_issues(store, issue, summary=False, decision_filter=None, with_changes=False):
+def list_issues(
+  store, issue, summary=False, decision_filter=None, with_changes=False, audit_state=None, rules_repo=None
+):
   target = os.path.join(os.path.abspath(os.path.expanduser(store)), RECORDS)
   if not os.path.lexists(os.path.abspath(os.path.expanduser(store))) or not os.path.lexists(target):
     require(issue is None, "unknown issue reference: " + str(issue))
@@ -1469,6 +1580,7 @@ def list_issues(store, issue, summary=False, decision_filter=None, with_changes=
     }
     # 待決定清單看全庫的改動，不受 --issue 或 --decision 篩選影響。
     out["pending_decisions"] = pending_decisions(rows, views)
+    out["pending_decisions"].update(make_hook_pending(rows, audit_state, rules_repo))
   return out
 
 
@@ -1490,6 +1602,11 @@ def build():
   listed.add_argument("--summary", action="store_true")
   listed.add_argument("--decision", choices=[*ACTIONS, "undecided"])
   listed.add_argument("--with-changes", action="store_true")
+  # 要不要做成 hook 的提議要查 session-audit 的狀態庫；不給就不查，清單會標明沒查。
+  listed.add_argument("--audit-state")
+  listed.add_argument("--rules-repo")
+
+  commands.add_parser("rule-anchors")
 
   decision = commands.add_parser("decide")
   decision.add_argument("--issue", required=True)
@@ -1583,7 +1700,11 @@ def main(argv):
         summary=args.summary,
         decision_filter=args.decision,
         with_changes=args.with_changes,
+        audit_state=args.audit_state,
+        rules_repo=args.rules_repo,
       )
+    elif args.command == "rule-anchors":
+      payload = rule_anchors(args.store)
     elif args.command == "decide":
       payload = decide(args)
     elif args.command == "progress":

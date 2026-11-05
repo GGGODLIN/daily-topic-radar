@@ -3423,6 +3423,195 @@ def rule_text(repo, violation):
   return ""
 
 
+def squash(text):
+  return " ".join(text.split())
+
+
+def rule_relative_path(repo, path):
+  # 累積庫的錨點是絕對路徑；規則身分裡的路徑相對規則 repo 根。
+  text = str(path)
+  if not os.path.isabs(text):
+    return text[2:] if text.startswith("./") else text
+  try:
+    return Path(text).resolve().relative_to(Path(repo).expanduser().resolve()).as_posix()
+  except (ValueError, OSError):
+    pass
+  if "/" + RULES_DIR in text:
+    return RULES_DIR + text.split("/" + RULES_DIR, 1)[1]
+  return "CLAUDE.md" if Path(text).name == "CLAUDE.md" else text
+
+
+def resolve_rule(repo, path, quote):
+  # 錨點只有路徑與原文，沒有 session-audit 的雜湊 id；規則身分含標題，
+  # 所以用規則 repo 現行版把原文對回它自己的規則，同一標題下其他規則不會被帶進來。
+  # 回 (規則, None) 或 (None, 原因)：原文之後被改過就是「找不到」，不回零。
+  head = run_git(repo, "rev-parse", "HEAD")
+  loaded = load_rules(str(repo), head.decode("ascii", "replace").strip()) if head else None
+  if loaded is None:
+    return None, "rules-unavailable"
+  relative = rule_relative_path(repo, path)
+  needle = squash(quote)
+  pool = [rule for rule in loaded["labels"].values() if rule["path"] == relative]
+  exact = [rule for rule in pool if squash(rule["text"]) == needle]
+  found = exact or [rule for rule in pool if needle and needle in squash(rule["text"])]
+  if not found:
+    return None, "rule-not-found"
+  if len(found) > 1:
+    return None, "rule-ambiguous"
+  return found[0], None
+
+
+def line_times(path, wanted):
+  # 事件時間 = 該行自己的時間戳；沒有就取前面最近一筆，前面都沒有才取後面第一筆。
+  # 讀不到來源就不回這幾行，由呼叫端標成「時間未解析」，不拿 session 開始時間頂替。
+  raw, _failure = read_source(Path(path))
+  if raw is None:
+    return {}
+  targets = sorted(set(wanted))
+  found = {}
+  waiting = []
+  last = None
+  at = 0
+  for number, _start, _end, line in iter_lines(raw):
+    if at >= len(targets) and not waiting:
+      break
+    moment = None
+    if b'"timestamp"' in line:
+      try:
+        obj = json.loads(line)
+      except json.JSONDecodeError:
+        obj = None
+      moment = parse_time(obj.get("timestamp")) if isinstance(obj, dict) else None
+    if moment is not None:
+      last = moment
+      for item in waiting:
+        found[item] = moment
+      waiting = []
+    while at < len(targets) and targets[at] == number:
+      if last is not None:
+        found[number] = last
+      else:
+        waiting.append(number)
+      at += 1
+  return found
+
+
+def iso_utc(moment):
+  return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def rule_query(connection, repo, path, quote, since):
+  base = {"command": "rule-violations", "rule_path": rule_relative_path(repo, path), "since": iso_utc(since)}
+  rule, reason = resolve_rule(repo, path, quote)
+  if rule is None:
+    return {**base, "found": False, "reason": reason}
+  needed = ("sources", "rule_sessions", "rule_coverage", "rule_tags")
+  ready = all(table_exists(connection, name) for name in needed)
+  contains = {}
+
+  def loaded_with_rule(commit):
+    if commit not in contains:
+      loaded = load_rules(str(repo), commit)
+      contains[commit] = loaded is not None and any(item["id"] == rule["id"] for item in loaded["labels"].values())
+    return contains[commit]
+
+  covered = []
+  if ready:
+    query = """
+      SELECT sources.inode, sources.mtime, rule_sessions.commit_sha
+      FROM sources JOIN rule_sessions ON rule_sessions.inode = sources.inode
+      WHERE sources.included = 1 AND sources.status IN ('complete', 'partial') AND sources.mtime >= ?
+        AND rule_sessions.unavailable = '' AND rule_sessions.commit_sha != ''
+        AND EXISTS (SELECT 1 FROM rule_coverage WHERE rule_coverage.inode = sources.inode AND rule_coverage.generation = sources.generation)
+    """
+    covered = [row for row in connection.execute(query, (since.timestamp(),)) if loaded_with_rule(row["commit_sha"])]
+  coverage = {
+    "sessions": len(covered),
+    "latest": iso_utc(datetime.fromtimestamp(max(row["mtime"] for row in covered), UTC)) if covered else None,
+  }
+  if not covered:
+    # 沒分析過不等於沒違反：不回計數，讓呼叫端分得出「尚未分析」。
+    return {**base, "found": True, "status": "not_analyzed", "label": "尚未分析", "violating_sessions": None, "violations": [], "coverage": coverage}
+  rows = connection.execute(
+    """
+    SELECT rule_tags.inode, rule_tags.source_line, rule_tags.source_ref, rule_tags.quote, sources.path, sources.session_id
+    FROM rule_tags JOIN sources ON sources.inode = rule_tags.inode AND sources.generation = rule_tags.generation
+    WHERE rule_tags.rule_id = ? AND rule_tags.verdict = 'violated'
+      AND sources.included = 1 AND sources.status IN ('complete', 'partial')
+    """,
+    (rule["id"],),
+  ).fetchall()
+  times = {}
+  for path_name in {row["path"] for row in rows}:
+    times[path_name] = line_times(path_name, [row["source_line"] for row in rows if row["path"] == path_name])
+  kept = []
+  unresolved = 0
+  for row in rows:
+    moment = times[row["path"]].get(row["source_line"])
+    if moment is None:
+      unresolved += 1
+    elif moment >= since:
+      kept.append(
+        {
+          "source_ref": row["source_ref"],
+          "session_id": row["session_id"],
+          "line": row["source_line"],
+          "event_time": iso_utc(moment),
+          "quote": row["quote"],
+        }
+      )
+  kept.sort(key=lambda item: (item["event_time"], item["session_id"], item["line"]))
+  return {
+    **base,
+    "found": True,
+    "status": "analyzed",
+    "violating_sessions": len({item["session_id"] for item in kept}),
+    "violations": kept,
+    "coverage": coverage,
+    "unresolved_time": unresolved,
+  }
+
+
+def cmd_rule_violations(args):
+  since = parse_time(args.since)
+  if since is None:
+    fail("invalid-since")
+  if not args.rule_path or not args.rule_quote:
+    fail("rule-anchor-required")
+  state = Path(args.state)
+  if guard_state(state, write=False) == "missing":
+    fail("state-missing")
+  connection = connect(state, write=False)
+  if connection is None:
+    fail("state-missing")
+  try:
+    result = rule_query(connection, Path(args.rules_repo).expanduser(), args.rule_path, args.rule_quote, since)
+  finally:
+    connection.close()
+  print(json.dumps(result, ensure_ascii=False))
+  return 0
+
+
+def anchored_rule_ids(repo, store):
+  # 已經做過改動的規則歸累積庫的待決定清單管；單向唯讀，讀失敗就回原因，由呼叫端不寫規則條目。
+  try:
+    done = subprocess.run(
+      [sys.executable, "-I", str(Path(__file__).with_name("retro-store.py")), "--store", str(store), "rule-anchors"],
+      capture_output=True, text=True, timeout=60, check=False,
+    )
+    anchors = json.loads(done.stdout)["anchors"] if done.returncode == 0 else None
+  except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+    anchors = None
+  if not isinstance(anchors, list):
+    return set(), "retro-store-unreadable"
+  ids = set()
+  for item in anchors:
+    rule, _reason = resolve_rule(repo, item["path"], item["quote"])
+    if rule is not None:
+      ids.add(rule["id"])
+  return ids, None
+
+
 def scan_rule_entries(lines):
   # pending: target -> 本工具寫的待折首行位置；left: target -> (處置日期, 段名, 是否退回捕捉日)，取已離開待折的最新處置。
   pending = {}
@@ -3524,6 +3713,12 @@ def cmd_promote(args):
   # 分析器自己判「無法判斷」的發現，Opus 回原文抽樣只有 13% 是真問題（2026-10-08，127 條）；留在資料庫可查，不進待折。
   candidates = snapshot_candidates(connection, statuses=("complete", "partial"), include_uncertain=False)
   violations = rule_violations(connection)
+  withheld = None
+  if violations:
+    skipped, withheld = anchored_rule_ids(Path(args.rules_repo).expanduser(), args.retro_store)
+    # 讀不到累積庫時整批規則條目先扣住（下一輪 promote 會重算）；寫了會讓同一條規則兩邊都有。
+    violations = [] if withheld else [item for item in violations if item["rule_id"] not in skipped]
+  held = {"rules_withheld": withheld} if withheld else {}
   exposures = connection.execute(
     """
     SELECT sources.session_id, MIN(secret_exposures.line), secret_exposures.name
@@ -3536,7 +3731,7 @@ def cmd_promote(args):
   ).fetchall() if table_exists(connection, "secret_exposures") else []
   connection.close()
   if not candidates and not violations and not exposures:
-    print(json.dumps({"command": "promote", "appended": 0}))
+    print(json.dumps({"command": "promote", "appended": 0, **held}))
     return 0
   root = Path(args.friction_root)
   target = root / "workflow-general.md"
@@ -3593,7 +3788,7 @@ def cmd_promote(args):
     )
     counts = {"rule_entries": rule_entries, "rule_sublines": rule_sublines} if violations else {}
     if not rows and not fresh and base == original:
-      print(json.dumps({"command": "promote", "appended": 0, **counts}))
+      print(json.dumps({"command": "promote", "appended": 0, **counts, **held}))
       return 0
     updated = insert_pending(base, [*rows, *fresh]) if rows or fresh else base
     if updated is None or not preserved(original, updated) or updated == original:
@@ -3607,7 +3802,7 @@ def cmd_promote(args):
   finally:
     fcntl.flock(handle, fcntl.LOCK_UN)
     os.close(handle)
-  print(json.dumps({"command": "promote", "appended": len(rows), **counts}))
+  print(json.dumps({"command": "promote", "appended": len(rows), **counts, **held}))
   return 0
 
 
@@ -3615,11 +3810,15 @@ def production_state():
   return Path(__file__).resolve().parents[2] / "reports" / "local-analysis" / "session-audit"
 
 
+def production_retro_store():
+  return Path(__file__).resolve().parents[2] / "reports" / "local-analysis" / "retro-accumulation"
+
+
 def build_parser():
   parser = argparse.ArgumentParser(prog="session-audit")
   parser.add_argument(
     "command",
-    choices=("enqueue", "scan", "run", "status", "report", "promote", "zero-use"),
+    choices=("enqueue", "scan", "run", "status", "report", "promote", "zero-use", "rule-violations"),
   )
   parser.add_argument("--projects", default="")
   parser.add_argument("--state", default=str(production_state()))
@@ -3632,6 +3831,11 @@ def build_parser():
   parser.add_argument("--relay-url", default="http://127.0.0.1:8317")
   parser.add_argument("--self-session", default="")
   parser.add_argument("--rules-repo", default=str(Path.home() / ".claude"))
+  parser.add_argument("--retro-store", default=str(production_retro_store()))
+  # rule-violations 的輸入：被改段落的路徑與原文，以及起始時間。
+  parser.add_argument("--rule-path", default="")
+  parser.add_argument("--rule-quote", default="")
+  parser.add_argument("--since", default="")
   # SessionEnd 漏報時的兜底：多久沒寫入才視為已關閉。
   parser.add_argument("--quiet-seconds", type=int, default=600)
   parser.add_argument("--max-run-seconds", type=float, default=MAX_RUN_SECONDS)
@@ -3665,6 +3869,7 @@ def main(argv=None):
     "report": cmd_report,
     "promote": cmd_promote,
     "zero-use": cmd_zero_use,
+    "rule-violations": cmd_rule_violations,
   }
   return commands[args.command](args)
 

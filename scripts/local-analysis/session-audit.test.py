@@ -338,6 +338,9 @@ class SessionAuditCliTest(unittest.TestCase):
       url,
       "--rules-repo",
       str(self.rules_repo),
+      # promote 會讀累積庫的改動錨點；預設路徑是正式庫，測試一律指到不存在的臨時目錄。
+      "--retro-store",
+      str(self.root / "retro-store"),
       # fixture 剛寫完的檔一律算已關閉；寫入中跳過的行為由 throughput 測試單獨覆蓋。
       "--quiet-seconds",
       "0",
