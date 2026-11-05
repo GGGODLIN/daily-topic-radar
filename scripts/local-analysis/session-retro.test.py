@@ -283,6 +283,32 @@ class RetroCLI(unittest.TestCase):
     self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "day", "--concurrency", "5", code=2)
     self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "last-success", code=2)
 
+  def test_default_window_keeps_older_context_on_demand_but_out_of_evidence(self):
+    path, plan = self.prepare([user("rule: never touch migrations", timestamp=OLD), assistant("ok", timestamp=OLD),
+                               user("continue", timestamp=OLD), assistant("edited migrations"), user("you broke the rule")])
+    self.assertEqual(plan["depth"], "window")
+    session = plan["sessions"][0]
+    document = Path(session["document"]).read_text()
+    context = Path(session["context_document"]).read_text()
+    self.assertNotIn("never touch migrations", document)
+    self.assertIn("[line=3 timestamp=2026-10-18T01:00:00Z older user]\ncontinue", document)
+    self.assertIn("[line=1 timestamp=2026-10-18T01:00:00Z older user]\nrule: never touch migrations", context)
+    self.assertNotIn("continue", context)
+    packet = json.loads(Path(session["shards"][0]["packet"]).read_text())
+    self.assertEqual(packet["context_document"], session["context_document"])
+    item = self.stage(path, "reading")["items"][0]
+    self.assertEqual(item["context_document"], session["context_document"])
+    canonical = json.loads((path.parent / "canonical.json").read_text())
+    self.assertEqual([e["source_line"] for e in canonical[session["session"]]], [3, 4, 5])
+
+  def test_full_depth_has_no_context_document(self):
+    path, plan = self.prepare([user("old rule", timestamp=OLD), assistant("recent")], depth="full")
+    session = plan["sessions"][0]
+    self.assertNotIn("context_document", session)
+    self.assertIn("old rule", Path(session["document"]).read_text())
+    self.assertFalse((Path(session["document"]).parent / "context.txt").exists())
+    self.assertNotIn("context_document", self.stage(path, "reading")["items"][0])
+
   def test_reading_requires_every_page_and_index_from_report_writer(self):
     path, plan = self.prepare([user(), assistant("a" * 30000)])
     item = self.stage(path, "reading")["items"][0]

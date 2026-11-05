@@ -520,12 +520,15 @@ def prepare(args):
         seen.add(key)
         events.append({"source_line": line, "event_time": iso(stamp), "label": label, "text": text,
                        "human": human_input(obj) or (args.include_forwarded and forwarded_input(obj)), "scope": "window" if start <= stamp else "older"})
+    context_events = []
     if args.depth == "window":
       current = [i for i, event in enumerate(events) if event["scope"] == "window"]
       first = min(current) if current else len(events)
       prior_humans = [i for i, event in enumerate(events[:first]) if event["human"]]
       context_start = prior_humans[-1] if prior_humans else first
+      context_events = events[:context_start]
       events = events[context_start:]
+    # canonical stays window-only so evidence cannot cite the on-demand context; earlier runs already read it.
     canonical[row["session"]] = events
     rendered = []
     requests = []
@@ -541,6 +544,11 @@ def prepare(args):
     index_paths = [page["path"] for page in index_pages]
     human_context = home / "human.txt"
     human_context.write_text(request_text, encoding="utf-8")
+    context_ref = {}
+    if context_events:
+      context_document = home / "context.txt"
+      context_document.write_text(render_events_body(context_events), encoding="utf-8")
+      context_ref = {"context_document": str(context_document)}
     body = document.read_text(encoding="utf-8")
     shards = []
     for unit_number, position in enumerate(range(0, max(1, len(body)), SHARD_CHARS), 1):
@@ -549,7 +557,7 @@ def prepare(args):
       page_list = pages(body[position:position + SHARD_CHARS], unit_dir, unit)
       packet_path = unit_dir / "packet.json"
       report_path = out / "reports" / f"{unit}.json"
-      packet = {"session": row["session"], "unit": unit, "source_document": str(document),
+      packet = {"session": row["session"], "unit": unit, "source_document": str(document), **context_ref,
                 "window_start": iso(start), "cutoff": iso(cutoff), "pages": page_list,
                 "request_index_pages": index_paths, "report_path": str(report_path)}
       save(packet_path, packet)
@@ -557,11 +565,11 @@ def prepare(args):
     session_report = out / "reports" / f"{name}-session.json"
     session_packet = home / "session.json"
     session = {"session": row["session"], "source": row["source"], "project": row["project"],
-               "document": str(document), "human_context": str(human_context), "request_index_pages": index_paths,
+               "document": str(document), **context_ref, "human_context": str(human_context), "request_index_pages": index_paths,
                "shards": shards, "report": str(session_report), "packet": str(session_packet),
                "limitations": row["limitations"]}
     save(session_packet, {"session": row["session"], "unit": row["session"] + "-session",
-                         "source_document": str(document), "input_reports": [s["report"] for s in shards],
+                         "source_document": str(document), **context_ref, "input_reports": [s["report"] for s in shards],
                          "report_path": str(session_report)})
     sessions.append(session)
   table = read_model_table()
@@ -609,7 +617,8 @@ def plan_context(path):
 
 
 def binding(plan, run):
-  require(all(Path(s["document"]).resolve().is_relative_to(run) for s in plan["sessions"]), "plan source outside run")
+  require(all(Path(path).resolve().is_relative_to(run) for s in plan["sessions"]
+              for path in (s["document"], s.get("context_document", s["document"]))), "plan source outside run")
   return {"plan": plan}
 
 
@@ -646,21 +655,28 @@ def stage_items(plan, run, stage, enforce=True):
     for previous in STAGES[:STAGES.index(stage)]:
       prior_validation(plan, run, previous)
   documents = [s["document"] for s in plan["sessions"]]
+  contexts = {"context_documents": [s["context_document"] for s in plan["sessions"] if s.get("context_document")]}
+  contexts = contexts if contexts["context_documents"] else {}
+
+  def context(s):
+    return {"context_document": s["context_document"]} if s.get("context_document") else {}
+
   if stage == "reading":
     return [{"session": s["session"], "unit": u["id"], "packet_path": u["packet"], "report_path": u["report"],
-             "source_document": s["document"], "request_index_pages": s["request_index_pages"]}
+             "source_document": s["document"], **context(s), "request_index_pages": s["request_index_pages"]}
             for s in plan["sessions"] for u in s["shards"]]
   if stage == "session-merge":
     return [{"session": s["session"], "unit": s["session"] + "-session", "packet_path": s["packet"],
-             "report_path": s["report"], "source_document": s["document"],
+             "report_path": s["report"], "source_document": s["document"], **context(s),
              "request_index_pages": s["request_index_pages"],
              "input_reports": [str(validated_path(run, u["id"])) for u in s["shards"]]}
             for s in plan["sessions"] if len(s["shards"]) > 1]
   if stage == "cross":
     return [{"session": "cross-session", "unit": "cross-session", "report_path": str(run / "reports/cross-session.json"),
-             "input_reports": [selected_report(plan, run, s) for s in plan["sessions"]], "source_documents": documents}]
+             "input_reports": [selected_report(plan, run, s) for s in plan["sessions"]], "source_documents": documents,
+             **contexts}]
   return [{"session": "cross-session", "unit": unit, "report_path": str(run / "reports" / (unit + ".json")),
-           "input_reports": [str(validated_path(run, "cross-session"))], "source_documents": documents}
+           "input_reports": [str(validated_path(run, "cross-session"))], "source_documents": documents, **contexts}
           for unit in ("verify-source", "verify-current")]
 
 
@@ -1295,7 +1311,8 @@ def parser():
   prep.add_argument("--exclude-session", action="append", default=[])
   prep.add_argument("--include-forwarded", dest="include_forwarded", action="store_true", default=True)
   prep.add_argument("--exclude-forwarded", dest="include_forwarded", action="store_false")
-  prep.add_argument("--depth", choices=["full", "window"], default="full")
+  # window re-reads only the last request before the window; full re-read ~half of each daily run (2026-10-31..11-04).
+  prep.add_argument("--depth", choices=["full", "window"], default="window")
   prep.add_argument("--focus", default="全面")
   prep.add_argument("--concurrency", type=int, choices=range(1, 5), default=4)
   for stage in ("read", "merge", "verify"):
