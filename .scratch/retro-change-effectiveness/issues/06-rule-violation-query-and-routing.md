@@ -8,7 +8,7 @@
 
 **Blocked by:** 05 — 判定、提議決策、待決定清單
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:** None — a worker can check every item unaided（fixture 資料庫與臨時累積庫）
 
@@ -31,12 +31,22 @@
 - session-audit 的標記與零使用報告不變。
 - 現有測試全過。
 
-- [ ] 查詢輸入段落位置與原文，在 session-audit 內部對應自己的規則身分；累積庫不存 session-audit 的雜湊 id — Source: Requirement: 常駐規則被違反時（只讀查詢）
-- [ ] 同一標題下其他規則的違反不算進這一段的計數 — Source: Requirement: 常駐規則被違反時（只讀查詢） — Failure: F2
-- [ ] 以每筆違反的事件時間過濾：拒絕之前開始、拒絕之後才違反的長 session 要算進去 — Source: Story 13 — Failure: F1
-- [ ] 回傳不同 session 數、每筆來源指針，以及覆蓋量（起始時間後分析了幾場、最近分析到何時）；覆蓋量為 0 時明確顯示「尚未分析」，不顯示「零違反」 — Source: Requirement: 常駐規則被違反時（只讀查詢） — Failure: F4
-- [ ] 被改段落的原文之後又改過、查不到對應規則時，回報「找不到對應規則」，不回 0 次違反 — Source: Requirement: 常駐規則被違反時（只讀查詢） — Failure: F2
-- [ ] 改動生效後剛好 3 場違反時提出「要不要做成 hook」，2 場時不提；系統不自動建立 hook — Source: Story 9 — Failure: F6
-- [ ] 提議附至少 3 筆原文指針 — Source: Requirement: 常駐規則被違反時（附原文指針）
-- [ ] 使用者拒絕後，以拒絕時間作為新起始時間重新計算，之後又滿 3 場才再提 — Source: Story 13
-- [ ] session-audit 寫入摩擦檔時，跳過累積庫裡已有改動錨點的規則；其他規則照常寫入；同一條規則不會同時出現在摩擦檔與待決定清單 — Source: Requirement: 常駐規則被違反時（管道分工） — Failure: F5
+- [x] 查詢輸入段落位置與原文，在 session-audit 內部對應自己的規則身分；累積庫不存 session-audit 的雜湊 id — Source: Requirement: 常駐規則被違反時（只讀查詢）
+- [x] 同一標題下其他規則的違反不算進這一段的計數 — Source: Requirement: 常駐規則被違反時（只讀查詢） — Failure: F2
+- [x] 以每筆違反的事件時間過濾：拒絕之前開始、拒絕之後才違反的長 session 要算進去 — Source: Story 13 — Failure: F1
+- [x] 回傳不同 session 數、每筆來源指針，以及覆蓋量（起始時間後分析了幾場、最近分析到何時）；覆蓋量為 0 時明確顯示「尚未分析」，不顯示「零違反」 — Source: Requirement: 常駐規則被違反時（只讀查詢） — Failure: F4
+- [x] 被改段落的原文之後又改過、查不到對應規則時，回報「找不到對應規則」，不回 0 次違反 — Source: Requirement: 常駐規則被違反時（只讀查詢） — Failure: F2
+- [x] 改動生效後剛好 3 場違反時提出「要不要做成 hook」，2 場時不提；系統不自動建立 hook — Source: Story 9 — Failure: F6
+- [x] 提議附至少 3 筆原文指針 — Source: Requirement: 常駐規則被違反時（附原文指針）
+- [x] 使用者拒絕後，以拒絕時間作為新起始時間重新計算，之後又滿 3 場才再提 — Source: Story 13
+- [x] session-audit 寫入摩擦檔時，跳過累積庫裡已有改動錨點的規則；其他規則照常寫入；同一條規則不會同時出現在摩擦檔與待決定清單 — Source: Requirement: 常駐規則被違反時（管道分工） — Failure: F5
+
+## Verification Log
+
+- 2026-11-06 完成（commit 062c048、368eba6）：紅燈基線 16 個驗收測試 15 failures＋1 error，原因 `invalid choice: 'rule-violations'／'rule-anchors'`、`unrecognized arguments`、`KeyError: 'make_hook'`；worker 另做 6 種變異（門檻 3 改 2、拿掉事件時間過濾等），各自讓測試失敗。綠燈 session-audit-rule-query `Ran 17 tests ... OK`、session-audit 71 OK、retro-store 50 OK、session-retro 51 OK、retro-import 12 OK；其他 session-audit-*.test.py（throughput 4、replies 10、consume 5、entrypoints 4）全 OK。
+- 介面：`session-audit.py rule-violations --state S --rules-repo R --rule-path P --rule-quote Q --since T`，輸出 `status: analyzed|not_analyzed（label 尚未分析）`、`violating_sessions`、`violations[{source_ref, session_id, line, event_time, quote}]`、`coverage{sessions, latest}`；找不到時 `found:false, reason: rule-not-found|rule-ambiguous|rules-unavailable`。retro-store 新增 `rule-anchors`；`list --summary --audit-state S` 的 `pending_decisions` 多 `make_hook`、`make_hook_unchecked`。
+- 串法：累積庫只存路徑＋原文；retro-store 摘要以 subprocess 呼叫 session-audit 查詢，起始時間取改動 `effective_at` 與最新 rejected `decided_at` 較晚者；session-audit promote 以 subprocess 呼叫 `retro-store rule-anchors`，有錨點的規則整條跳過。目前只有 `backfill` 且 `kind=always_on_rule` 會被認作規則錨點，新改動要先 backfill。
+- ticket-yagni：kill 0／demote 2／keep 28。刪 `RuleAnchorsCommandTest`（分流測試已涵蓋）；`squash` 拿掉，規則原文改成直接比對（整段相等，其次子字串）。
+- worker 自訂判斷：規則對應用規則 repo 現行 HEAD，多條規則都含該原文回 `rule-ambiguous`；事件時間取該行時間戳，沒有就取前面最近一筆，讀不到的違反另列 `unresolved_time`；覆蓋量只算載入的規則版本含這一段的 session；讀不到累積庫時 promote 扣住規則條目並回 `rules_withheld`；`--retro-store` 預設指正式累積庫（只讀）。
+- Minor：規則段落之後被改寫（含打字修正、搬標題）會讓錨點解析不到，查詢與清單標「找不到」，之後的違反走摩擦檔，要補新的 backfill 錨點才接得回。
+- Minor：session-audit promote 每次都以 subprocess 讀一次累積庫（約 5MB）；promote 的執行頻率高時要留意成本，未量測。
