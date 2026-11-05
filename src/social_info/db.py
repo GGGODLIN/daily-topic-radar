@@ -301,7 +301,7 @@ class Database:
     def compact(
         self,
         *,
-        retain_days: int = 45,
+        retain_days: int = 35,
         full_excerpt_days: int = 3,
         max_excerpt_chars: int = 200,
         now: datetime | None = None,
