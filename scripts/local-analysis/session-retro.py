@@ -19,6 +19,8 @@ MAX_PAGE_BYTES = 240000
 MAX_PAGE_LINES = 1800
 SHARD_CHARS = 6 * 140000
 STAGES = ("reading", "session-merge", "cross", "verify")
+DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
+ACCOUNTING_ERROR_CAP = 25
 DEFAULT_MODEL = "gpt-6.1-sol[1m]"
 DEFAULT_ARGON_MODEL = "google/gemini-4-argon:high"
 DEFAULT_TERRA_MODEL = "gpt-6.1-terra"
@@ -1185,7 +1187,8 @@ def check_dispositions(report, item, stage):
     require(isinstance(source, dict) and source.get("status") == "complete", "input report missing or incomplete")
     source_records.extend(report_records(source))
     for obs in source.get("tracking_observations") or []:
-      if isinstance(obs, dict):
+      # A cross observation with evidence is accounted event by event (check_tracking_accounting), not by pair.
+      if isinstance(obs, dict) and not (stage == "cross" and obs.get("evidence")):
         expected_tracking.add((obs.get("issue_id"), obs.get("change_id")))
   source_ids = [r.get("id") for r in source_records]
   require(all(isinstance(key, str) for key in source_ids) and len(set(source_ids)) == len(source_ids), "invalid or duplicate input record ids")
@@ -1223,6 +1226,106 @@ def check_dispositions(report, item, stage):
       require(bool(record.get("counterevidence")), "output record dropped source counterevidence")
     cited.update(refs)
   require(retained <= cited, "kept/merged source not cited by any output")
+
+
+def accounting_inputs(item):
+  """observation_key -> what the inputs said about it. Evidence without a derived event key is a problem, not zero."""
+  inputs = {}
+  problems = []
+  for path in item["input_reports"]:
+    source = load(path)
+    for obs in source.get("tracking_observations") or []:
+      if not isinstance(obs, dict) or not obs.get("evidence"):
+        continue
+      events = [e for e in obs.get("events") or [] if isinstance(e, dict) and isinstance(e.get("observation_key"), str)]
+      if not events:
+        problems.append(f"input observation has evidence but no event identity (unit={source.get('unit')}, "
+                        f"issue_id={obs.get('issue_id')}, change_id={obs.get('change_id')}); validate the earlier stage again")
+      for event in events:
+        entry = inputs.setdefault(event["observation_key"], {"event_key": event.get("event_key"), "change_id": event.get("change_id"),
+                                                             "outcomes": set(), "sources": set()})
+        entry["outcomes"].add(obs.get("outcome"))
+        entry["sources"].add((source.get("unit"), obs.get("issue_id")))
+  return inputs, problems
+
+
+def output_outcomes(report):
+  outcomes = {}
+  for obs in report.get("tracking_observations") or []:
+    if isinstance(obs, dict):
+      for event in obs.get("events") or []:
+        if isinstance(event, dict) and isinstance(event.get("observation_key"), str):
+          outcomes.setdefault(event["observation_key"], set()).add(obs.get("outcome"))
+  return outcomes
+
+
+def check_tracking_accounting(report, item):
+  """Every input observation (event + change) has exactly one destination; changed or dropped ones carry a reason.
+
+  Needs the events[] that add_event_evidence derives, so it runs after that. Event keys are the same
+  ones reading and session-merge already carry, so the three stages cannot disagree about identity.
+  """
+  inputs, problems = accounting_inputs(item)
+  if not inputs and not problems:
+    return
+  errors = problems[:ACCOUNTING_ERROR_CAP] + ([f"(+{len(problems) - ACCOUNTING_ERROR_CAP} more without event identity)"]
+                                              if len(problems) > ACCOUNTING_ERROR_CAP else [])
+  entries = report.get("tracking_dispositions")
+  require(entries is not None, f"legacy cross report format: tracking_dispositions missing, so {len(inputs)} input "
+                               "observations have no per-observation destination")
+  require(isinstance(entries, list), "tracking_dispositions must be an array")
+
+  def label(key):
+    known = inputs.get(key)
+    return f"event_key={known['event_key']}, change_id={known['change_id']}" if known else f"observation_key={key}"
+
+  by_key = {}
+  for entry in entries:
+    key = entry.get("observation_key") if isinstance(entry, dict) else None
+    if key not in inputs:
+      errors.append(f"destination for an unknown input observation (observation_key={key})")
+      continue
+    if key in by_key:
+      errors.append(f"more than one destination for input observation ({label(key)})")
+      continue
+    by_key[key] = entry
+  for key in inputs:
+    if key not in by_key:
+      errors.append(f"no destination for input observation ({label(key)})")
+  outputs = output_outcomes(report)
+  for key, entry in by_key.items():
+    decision = entry.get("disposition")
+    if decision not in DESTINATIONS:
+      errors.append(f"invalid destination {decision!r} ({label(key)})")
+      continue
+    if decision in ("reclassified", "rejected") and not (isinstance(entry.get("reason"), str) and entry["reason"].strip()):
+      errors.append(f"{decision} requires a reason ({label(key)})")
+    shown = outputs.get(key)
+    if decision == "rejected":
+      if shown is not None:
+        errors.append(f"rejected but still cited in tracking_observations ({label(key)})")
+    elif shown is None:
+      errors.append(f"{decision} but absent from tracking_observations ({label(key)})")
+    elif decision == "reclassified":
+      if shown != {entry.get("to_outcome")}:
+        errors.append(f"to_outcome {entry.get('to_outcome')!r} does not match the output outcome ({label(key)})")
+    elif shown != inputs[key]["outcomes"]:
+      errors.append(f"outcome differs from the input but the destination is {decision}; use reclassified with a reason ({label(key)})")
+    sources = inputs[key]["sources"]
+    if decision == "kept" and len(sources) > 1:
+      errors.append(f"reported by {len(sources)} input observations, so it must be merged with merged_from listing each ({label(key)})")
+    if decision == "merged":
+      if entry.get("merged_into") != key:
+        errors.append(f"cannot merge across events or changes: {key} into {entry.get('merged_into')}")
+      elif len(sources) < 2:
+        errors.append(f"nothing to merge: only one input observation reported it ({label(key)})")
+      else:
+        listed = {(m.get("unit"), m.get("issue_id")) for m in entry.get("merged_from") or [] if isinstance(m, dict)}
+        if listed != sources:
+          errors.append(f"merged_from must list exactly the merged sources ({label(key)})")
+  # A whole run can owe hundreds of destinations; the first ones are enough to repair from and the rest are counted.
+  shown = errors[:ACCOUNTING_ERROR_CAP * 2]
+  require(not errors, "; ".join(shown + ([f"(+{len(errors) - len(shown)} more errors)"] if len(errors) > len(shown) else [])))
 
 
 def verify_verdicts(report, item, canonical):
@@ -1563,6 +1666,8 @@ def validate(args):
         normalized = check_report(original, item, args.stage, canonical)
         if args.stage in ("reading", "session-merge", "cross"):
           add_event_evidence(normalized, item, plan, run)
+        if args.stage == "cross":
+          check_tracking_accounting(normalized, item)
       except EvidenceErrors as misses:
         normalized = None
         unit["errors"].extend(failure["error"] for failure in misses.failures)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Acceptance tests at the local retrospective CLI seam; fixtures never call agents."""
 
+import copy
 import json
 import subprocess
 import sys
@@ -759,6 +760,203 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.assertEqual(unresolved["events"][0]["loaded"], "unchecked")
 
 
+  def cross_case(self):
+    """Reading validated for three small sessions; returns what a cross writer would see."""
+    for name, records in CROSS_SESSIONS.items():
+      self.source(name, records())
+    path, _ = self.prepare()
+    items = {item["session"]: item for item in self.stage(path, "reading")["items"]}
+    dirs = [self.transcript(items[name], self.report(items[name], tracking_observations=observations))
+            for name, observations in CROSS_READINGS.items()]
+    self.validate(path, "reading", dirs)
+    self.validate(path, "session-merge", [])
+    return path, self.stage(path, "cross")["items"][0], {name: item["unit"] for name, item in items.items()}
+
+  def cross_report(self, cross, units, mutate=None):
+    report = self.report(cross, patterns=[], secondary_patterns=[], dispositions=[],
+                         tracking_observations=copy.deepcopy(CROSS_OUTPUT_OBSERVATIONS),
+                         tracking_dispositions=cross_destinations(units))
+    if mutate:
+      mutate(report)
+    return report
+
+  def cross_errors(self, path, cross, report, code=2):
+    result = self.validate(path, "cross", [self.transcript(cross, report, reads=[])], code=code)
+    return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+  def test_cross_gives_every_input_observation_exactly_one_destination(self):
+    path, cross, units = self.cross_case()
+    inputs = fixture_inputs(units)
+    report = self.cross_report(cross, units)
+    # Reachability witnesses: the fixture must exercise all four destinations, or P1/P2 below prove little.
+    self.assertEqual({d["disposition"] for d in report["tracking_dispositions"]},
+                     {"kept", "merged", "reclassified", "rejected"})
+    self.assertEqual(len(inputs), 8)
+    self.assertTrue(oracle_p1(inputs, report["tracking_dispositions"]))
+    self.assertTrue(oracle_p2(inputs, report))
+    self.cross_errors(path, cross, report, code=0)
+    validated = json.loads((path.parent / "validated" / "cross-session.json").read_text())
+    self.assertTrue(oracle_p1(inputs, validated["tracking_dispositions"]))
+    self.assertTrue(oracle_p2(inputs, validated))
+
+  def test_cross_rejects_an_input_observation_without_a_destination_and_names_it(self):
+    path, cross, units = self.cross_case()
+    inputs = fixture_inputs(units)
+    for key in inputs:
+      def drop(report, key=key):
+        report["tracking_dispositions"] = [d for d in report["tracking_dispositions"] if d["observation_key"] != key]
+      event_key, change_id = key.split("|")
+      with self.subTest(key=key):
+        # Calibration: the test's own P1 must fail on the mutated report, or this case proves nothing.
+        mutated = self.cross_report(cross, units, drop)
+        self.assertFalse(oracle_p1(inputs, mutated["tracking_dispositions"]))
+        errors = self.cross_errors(path, cross, mutated)
+        self.assertTrue(event_key in errors and change_id in errors, errors)
+
+  def test_cross_rejects_reclassified_or_rejected_without_a_reason(self):
+    path, cross, units = self.cross_case()
+    inputs = fixture_inputs(units)
+    for key, disposition in (("toolu_B2|chg-search", "reclassified"), ("toolu_B3|chg-hook", "rejected")):
+      for blank in (None, "", "   "):
+        def strip(report, key=key, blank=blank):
+          entry = next(d for d in report["tracking_dispositions"] if d["observation_key"] == key)
+          if blank is None:
+            entry.pop("reason")
+          else:
+            entry["reason"] = blank
+        with self.subTest(key=key, reason=blank):
+          mutated = self.cross_report(cross, units, strip)
+          self.assertEqual(next(d for d in mutated["tracking_dispositions"] if d["observation_key"] == key)["disposition"], disposition)
+          self.assertFalse(oracle_p2(inputs, mutated))
+          errors = self.cross_errors(path, cross, mutated)
+          self.assertTrue(key.split("|")[0] in errors and "reason" in errors, errors)
+
+  def test_cross_only_merges_the_same_event_and_never_across_events(self):
+    path, cross, units = self.cross_case()
+    cases = {
+      "different event, same rule": ("toolu_B1|chg-search", "toolu_B2|chg-search"),
+      "same event, different change": ("toolu_A1|chg-hook", "toolu_A1|chg-search"),
+    }
+    for label, (key, into) in cases.items():
+      def wrong_target(report, key=key, into=into):
+        entry = next(d for d in report["tracking_dispositions"] if d["observation_key"] == key)
+        entry.update({"disposition": "merged", "merged_into": into})
+      with self.subTest(label):
+        errors = self.cross_errors(path, cross, self.cross_report(cross, units, wrong_target))
+        self.assertTrue(key.split("|")[0] in errors and into.split("|")[0] in errors and "merge" in errors, errors)
+
+  def test_legacy_cross_report_without_per_observation_destinations_is_reported_as_legacy(self):
+    path, cross, units = self.cross_case()
+    def legacy(report):
+      del report["tracking_dispositions"]
+    errors = self.cross_errors(path, cross, self.cross_report(cross, units, legacy))
+    self.assertIn("legacy", errors)
+    self.assertIn("tracking_dispositions", errors)
+
+  def test_cross_rejects_a_second_destination_for_the_same_observation(self):
+    path, cross, units = self.cross_case()
+    def twice(report):
+      report["tracking_dispositions"].append({"observation_key": "toolu_A1|chg-search", "disposition": "rejected", "reason": "also dropped"})
+    mutated = self.cross_report(cross, units, twice)
+    self.assertFalse(oracle_p1(fixture_inputs(units), mutated["tracking_dispositions"]))
+    errors = self.cross_errors(path, cross, mutated)
+    self.assertTrue("toolu_A1" in errors and "chg-search" in errors and "more than one" in errors, errors)
+
+  def test_cross_requires_merge_with_every_source_listed_when_an_event_was_reported_twice(self):
+    path, cross, units = self.cross_case()
+    beta = units["beta"]
+    def entry(report):
+      return next(d for d in report["tracking_dispositions"] if d["observation_key"] == "toolu_B1|chg-search")
+    def as_kept(report):
+      for field in ("merged_into", "merged_from"):
+        entry(report).pop(field)
+      entry(report)["disposition"] = "kept"
+    def missing_source(report):
+      entry(report)["merged_from"] = [{"unit": beta, "issue_id": "iss-1"}]
+    def invented_source(report):
+      entry(report)["merged_from"].append({"unit": beta, "issue_id": "iss-9"})
+    for label, mutate in (("kept though reported twice", as_kept), ("a source left out", missing_source), ("a source invented", invented_source)):
+      with self.subTest(label):
+        errors = self.cross_errors(path, cross, self.cross_report(cross, units, mutate))
+        self.assertTrue("toolu_B1" in errors and "chg-search" in errors and "merged_from" in errors, errors)
+
+  def test_cross_rejects_merging_an_observation_only_one_input_reported(self):
+    path, cross, units = self.cross_case()
+    def lone_merge(report):
+      next(d for d in report["tracking_dispositions"] if d["observation_key"] == "toolu_C1|chg-search").update(
+        {"disposition": "merged", "merged_into": "toolu_C1|chg-search", "merged_from": [{"unit": units["gamma"], "issue_id": "iss-2"}]})
+    errors = self.cross_errors(path, cross, self.cross_report(cross, units, lone_merge))
+    self.assertTrue("toolu_C1" in errors and "nothing to merge" in errors, errors)
+
+  def test_cross_rejects_an_outcome_that_differs_from_the_input_without_being_reclassified(self):
+    path, cross, units = self.cross_case()
+    inputs = fixture_inputs(units)
+    def silently_changed(report):
+      entry = next(d for d in report["tracking_dispositions"] if d["observation_key"] == "toolu_B2|chg-search")
+      entry.update({"disposition": "kept"})
+      entry.pop("reason"), entry.pop("to_outcome")
+    mutated = self.cross_report(cross, units, silently_changed)
+    self.assertFalse(oracle_p2(inputs, mutated))
+    errors = self.cross_errors(path, cross, mutated)
+    self.assertTrue("toolu_B2" in errors and "chg-search" in errors and "outcome" in errors, errors)
+
+  def test_cross_rejects_a_reclassification_that_the_output_does_not_show(self):
+    path, cross, units = self.cross_case()
+    def wrong_target(report):
+      next(d for d in report["tracking_dispositions"] if d["observation_key"] == "toolu_B2|chg-search")["to_outcome"] = "not_applicable"
+    errors = self.cross_errors(path, cross, self.cross_report(cross, units, wrong_target))
+    self.assertTrue("toolu_B2" in errors and "to_outcome" in errors, errors)
+
+  def test_cross_rejects_a_kept_observation_missing_from_the_output_and_a_rejected_one_still_in_it(self):
+    path, cross, units = self.cross_case()
+    def gamma_vanishes(report):
+      report["tracking_observations"] = [o for o in report["tracking_observations"] if o["evidence"][0]["session"] != "gamma"]
+    def rejected_returns(report):
+      report["tracking_observations"][1]["evidence"] += seen("beta", 4)
+    for label, mutate, key, wording in (("kept but gone", gamma_vanishes, "toolu_C1", "absent"),
+                                         ("rejected but cited", rejected_returns, "toolu_B3", "still cited")):
+      with self.subTest(label):
+        errors = self.cross_errors(path, cross, self.cross_report(cross, units, mutate))
+        self.assertTrue(key in errors and wording in errors, errors)
+
+  def test_cross_rejects_an_unknown_destination_name(self):
+    path, cross, units = self.cross_case()
+    def odd(report):
+      report["tracking_dispositions"][0]["disposition"] = "dropped"
+    errors = self.cross_errors(path, cross, self.cross_report(cross, units, odd))
+    self.assertTrue("toolu_A1" in errors and "dropped" in errors, errors)
+
+  def test_all_three_stages_derive_the_same_event_key(self):
+    path, _ = self.prepare([user("source finding"), call("toolu_F5", RECENT), assistant("x" * 850000)])
+    items = self.stage(path, "reading")["items"]
+    self.assertEqual(len(items), 2)
+    evidence = [{"session": "human", "source_line": 2, "quote": "ls"}]
+    observation = {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence", "evidence": evidence}
+    ids = [item["unit"] + ":f" for item in items]
+    finding = lambda key: {"id": key, "evidence": [{"session": "human", "source_line": 1, "quote": "source finding"}],
+                           "counterevidence": "bounded counterevidence"}
+    dirs = [self.transcript(item, self.report(item, [finding(key)], tracking_observations=[observation] if n == 0 else []))
+            for n, (item, key) in enumerate(zip(items, ids))]
+    self.validate(path, "reading", dirs)
+    merge = self.stage(path, "session-merge")["items"][0]
+    quote = [{"session": "human", "source_line": 1, "quote": "source finding"}]
+    pattern = {"id": merge["unit"] + "-P1", "source_finding_ids": ids, "evidence": quote, "counterevidence": "bounded counterevidence"}
+    merged = self.report(merge, patterns=[pattern], tracking_observations=[observation],
+                         dispositions=[{"source_finding_id": key, "disposition": "merged", "reason": "same cause"} for key in ids])
+    self.validate(path, "session-merge", [self.transcript(merge, merged, reads=[])])
+    cross = self.stage(path, "cross")["items"][0]
+    sid = pattern["id"]
+    report = self.report(cross, patterns=[{"id": "P1", "source_finding_ids": [sid], "evidence": quote, "counterevidence": "bounded counterevidence"}],
+                         tracking_observations=[observation], dispositions=[{"source_record_id": sid, "disposition": "kept", "reason": "relevant"}],
+                         tracking_dispositions=[{"observation_key": "toolu_F5|chg-1", "disposition": "kept"}])
+    self.validate(path, "cross", [self.transcript(cross, report, reads=[])])
+    keys = {}
+    for stage, unit in (("reading", items[0]["unit"]), ("session-merge", merge["unit"]), ("cross", "cross-session")):
+      validated = json.loads((path.parent / "validated" / (unit + ".json")).read_text())
+      keys[stage] = [event["observation_key"] for obs in validated["tracking_observations"] for event in obs["events"]]
+    self.assertEqual(keys, {"reading": ["toolu_F5|chg-1"], "session-merge": ["toolu_F5|chg-1"], "cross": ["toolu_F5|chg-1"]})
+
+
 def inst(text, timestamp, path="/fixture/RULES.md"):
   return {"type": "attachment", "timestamp": timestamp, "attachment": {
     "type": "instructions", "files": [{"path": path, "type": "User", "content": text}]}}
@@ -776,6 +974,106 @@ def skill_text(name, body, timestamp, meta=True):
 def invoked(name, content, timestamp):
   return {"type": "attachment", "timestamp": timestamp, "attachment": {
     "type": "invoked_skills", "skills": [{"name": name, "path": "userSettings:" + name, "content": content}]}}
+
+
+def tool_record(call_id):
+  return call(call_id, RECENT)
+
+
+# Deidentified from the 2026-11-03/04 cross reports: one observation may cite several events, one action can break
+# two changes, one event can be reported twice, and the four destinations all occur.
+CROSS_SESSIONS = {
+  "alpha": lambda: [user(), tool_record("toolu_A1"), tool_record("toolu_A2"), tool_record("toolu_A3")],
+  "beta": lambda: [user(), tool_record("toolu_B1"), tool_record("toolu_B2"), tool_record("toolu_B3")],
+  "gamma": lambda: [user(), tool_record("toolu_C1")],
+}
+
+
+def seen(session, *lines):
+  return [{"session": session, "source_line": line, "quote": "ls"} for line in lines]
+
+
+def obs(issue, change, outcome, evidence):
+  return {"issue_id": issue, "change_id": change, "outcome": outcome, "evidence": evidence}
+
+
+CROSS_READINGS = {
+  "alpha": [obs("iss-1", "chg-search", "recurrence", seen("alpha", 2, 3)),
+            obs("iss-1", "chg-hook", "recurrence", seen("alpha", 2)),
+            obs("iss-2", "chg-search", "not_applicable", seen("alpha", 4))],
+  "beta": [obs("iss-1", "chg-search", "recurrence", seen("beta", 2)),
+           obs("iss-4", "chg-search", "recurrence", seen("beta", 2)),
+           obs("iss-1", "chg-search", "recurrence", seen("beta", 3)),
+           obs("iss-3", "chg-hook", "recurrence", seen("beta", 4))],
+  "gamma": [obs("iss-2", "chg-search", "opportunity_met", seen("gamma", 2))],
+}
+
+CROSS_OUTPUT_OBSERVATIONS = [
+  obs("iss-1", "chg-search", "recurrence", seen("alpha", 2, 3) + seen("beta", 2)),
+  obs("iss-1", "chg-hook", "recurrence", seen("alpha", 2)),
+  obs("iss-2", "chg-search", "not_applicable", seen("alpha", 4)),
+  obs("iss-1", "chg-search", "unreviewed", seen("beta", 3)),
+  obs("iss-2", "chg-search", "opportunity_met", seen("gamma", 2)),
+]
+
+
+def cross_destinations(units):
+  beta = units["beta"]
+  return [
+    {"observation_key": "toolu_A1|chg-search", "disposition": "kept"},
+    {"observation_key": "toolu_A2|chg-search", "disposition": "kept"},
+    {"observation_key": "toolu_A1|chg-hook", "disposition": "kept"},
+    {"observation_key": "toolu_A3|chg-search", "disposition": "kept"},
+    {"observation_key": "toolu_B1|chg-search", "disposition": "merged", "merged_into": "toolu_B1|chg-search",
+     "merged_from": [{"unit": beta, "issue_id": "iss-1"}, {"unit": beta, "issue_id": "iss-4"}]},
+    {"observation_key": "toolu_B2|chg-search", "disposition": "reclassified", "to_outcome": "unreviewed",
+     "reason": "the event predates the change taking effect"},
+    {"observation_key": "toolu_B3|chg-hook", "disposition": "rejected", "reason": "the hook never ran on this action"},
+    {"observation_key": "toolu_C1|chg-search", "disposition": "kept"},
+  ]
+
+
+def fixture_tool_id(session, line):
+  record = CROSS_SESSIONS[session]()[line - 1]
+  return record["message"]["content"][0]["id"]
+
+
+def fixture_inputs(units):
+  """key -> {"outcomes": set, "sources": set of (unit, issue)}, recomputed only from the fixture above."""
+  inputs = {}
+  for session, observations in CROSS_READINGS.items():
+    for observation in observations:
+      for evidence in observation["evidence"]:
+        key = f"{fixture_tool_id(session, evidence['source_line'])}|{observation['change_id']}"
+        entry = inputs.setdefault(key, {"outcomes": set(), "sources": set()})
+        entry["outcomes"].add(observation["outcome"])
+        entry["sources"].add((units[session], observation["issue_id"]))
+  return inputs
+
+
+def output_outcomes(report):
+  outcomes = {}
+  for observation in report["tracking_observations"]:
+    for evidence in observation["evidence"]:
+      key = f"{fixture_tool_id(evidence['session'], evidence['source_line'])}|{observation['change_id']}"
+      outcomes.setdefault(key, set()).add(observation["outcome"])
+  return outcomes
+
+
+def oracle_p1(inputs, destinations):
+  keys = [d["observation_key"] for d in destinations]
+  return all(keys.count(key) == 1 for key in inputs) and all(key in inputs for key in keys)
+
+
+def oracle_p2(inputs, report):
+  """Wherever the output differs from the input (or the observation is dropped), a nonblank reason exists."""
+  outputs = output_outcomes(report)
+  for entry in report["tracking_dispositions"]:
+    key = entry["observation_key"]
+    changed = key not in outputs or outputs[key] != inputs[key]["outcomes"]
+    if changed and not (isinstance(entry.get("reason"), str) and entry["reason"].strip()):
+      return False
+  return True
 
 
 EFFECTIVE = "2026-11-01T00:00:00Z"
