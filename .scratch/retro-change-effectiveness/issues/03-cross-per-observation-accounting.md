@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — 事件與「有沒有載入新版」的共用判斷
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:** None — a worker can check every item unaided（去敏固定案例）
 
@@ -30,10 +30,21 @@
 - 適用輸入：去敏固定案例，包含重複事件、四種去向、合併與改判。
 - 獨立判準：預期值由測試從案例本身重算，不呼叫驗收器的程式，也不沿用研究筆記的數字。
 
-- [ ] cross 流程腳本的契約文字改為「每筆輸入觀察都有去向」，列出四種去向 — Source: Requirement: 再犯紀錄（cross 契約）
-- [ ] 任一輸入觀察在輸出找不到去向時驗收不通過，錯誤指出事件鍵與改動識別 — Source: Story 2 — Failure: F4
-- [ ] 改判或剔除沒有理由時驗收不通過 — Source: Story 3
-- [ ] 只有事件鍵相同的觀察可以合併；不同事件即使屬於同一條規則也不能合併 — Source: Requirement: 再犯紀錄（事件與觀察分開定義）
-- [ ] reading、session-merge、cross 三個階段都用 02 的同一個事件鍵 — Source: Requirement: 再犯紀錄（事件與觀察分開定義） — Failure: F5
-- [ ] 舊格式的 cross 報告（沒有逐筆去向）在驗收時明確報為舊格式，不判通過 — Source: Requirement: 再犯紀錄（驗收器逐筆核對） — Failure: F2
-- [ ] 固定案例的 P1、P2 斷言通過，預期值由測試從案例本身重算 — Source: Requirement: 再犯紀錄（驗收器逐筆核對）
+- [x] cross 流程腳本的契約文字改為「每筆輸入觀察都有去向」，列出四種去向 — Source: Requirement: 再犯紀錄（cross 契約）
+- [x] 任一輸入觀察在輸出找不到去向時驗收不通過，錯誤指出事件鍵與改動識別 — Source: Story 2 — Failure: F4
+- [x] 改判或剔除沒有理由時驗收不通過 — Source: Story 3
+- [x] 只有事件鍵相同的觀察可以合併；不同事件即使屬於同一條規則也不能合併 — Source: Requirement: 再犯紀錄（事件與觀察分開定義）
+- [x] reading、session-merge、cross 三個階段都用 02 的同一個事件鍵 — Source: Requirement: 再犯紀錄（事件與觀察分開定義） — Failure: F5
+- [x] 舊格式的 cross 報告（沒有逐筆去向）在驗收時明確報為舊格式，不判通過 — Source: Requirement: 再犯紀錄（驗收器逐筆核對） — Failure: F2
+- [x] 固定案例的 P1、P2 斷言通過，預期值由測試從案例本身重算 — Source: Requirement: 再犯紀錄（驗收器逐筆核對）
+
+## Verification Log
+
+- 2026-11-06 完成（social-info 7ffbe1a；~/.claude 576d3e36）：先寫的驗收批次 5 個 test 紅（16 個失敗），原因是舊的配對核對收不到預期錯誤，不是 harness；批次外 9 種情況一次一個先紅再綠。綠燈：session-retro `Ran 51 tests ... OK`；retro-workflow.test.mjs 9/9；retro-workflow-contract.test.mjs 6/6。`node --check workflows/retro-workflow.js` 報頂層 return，是腳本本來就有的寫法，不是本票新增。
+- 去向格式（worker 自訂，工作單沒寫）：`tracking_dispositions[]` 每個 `observation_key` 恰好一項；`kept | merged | reclassified | rejected`；merged 附 `merged_into` 與完整 `merged_from:[{unit, issue_id}]`；reclassified 附非空 `reason` 與 `to_outcome`；rejected 附非空 `reason`。錯誤訊息帶 `event_key=…, change_id=…`。
+- Minor：11-03、11-04 的 validated 閱讀報告產生於 02 之前，沒有 `events[]`；照新契約重跑 cross 前要先重跑 reading 與 session-merge 的驗收。10 要照這個順序做。此路徑沒有用真實資料或測試驗過。
+- Minor：沒有 evidence 的輸入觀察沒有事件鍵，仍走舊的 `(issue_id, change_id)` 配對核對。要不要也逐筆核對未決，留給 09 或使用者。
+- Minor：`merged_from` 以 `(unit, issue_id)` 識別來源，同一 unit 內兩筆 issue 與事件鍵都相同的觀察會被當成同一來源。
+- Minor：cross 要求每個輸入事件以 `source_line` 出現在輸出 evidence，除非標 rejected；真實跑一輪後要看模型的遵守度。
+- Minor：`retro-import.py` 是否容忍 cross 輸出多出的 `tracking_dispositions` 欄位未查，04 接手。
+- 2026-11-06 ticket-yagni：kill 1／demote 2／keep 10。刪 `tool_record`，`seen`、`obs` 內聯成直接寫出的 fixture（commit 795e76b）；`Ran 51 tests ... OK`；~/.claude 沒變動。
