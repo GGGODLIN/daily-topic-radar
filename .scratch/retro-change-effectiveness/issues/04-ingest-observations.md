@@ -9,7 +9,7 @@
 
 **Blocked by:** 03 — cross 逐筆去向＋驗收器逐筆核對
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:** None — a worker can check every item unaided（臨時累積庫與 fixture packet）
 
@@ -34,11 +34,24 @@
 - 適用輸入：fixture packet，包含四種結果、更正與重播。
 - 獨立判準：預期值從 fixture 本身重算。
 
-- [ ] ingest 把 cross 每筆追蹤觀察寫成觀察紀錄，不需要手動 observe — Source: Requirement: 再犯紀錄（匯入）
-- [ ] 事件或 session 早於生效時間的觀察記為無效並附理由；已生效但沒載入的記為「沒載入」；兩者都不算再犯 — Source: Story 1
-- [ ] 再犯觀察帶涵蓋與否（是／否／不明） — Source: Requirement: 再犯紀錄（涵蓋與否）
-- [ ] 改判寫成追加的更正紀錄，連到被取代的觀察，舊紀錄內容不變 — Source: Story 3
-- [ ] ingest 輸出分列新增、重播、補證、更正；同一 packet 重播一次，新增為 0 — Source: Requirement: 再犯紀錄（改判與重播） — Failure: F1
-- [ ] 沒有事件時間的舊觀察標為舊格式，摘要另外列出，不算進再犯次數，也不把它的時間當成事件時間 — Source: Requirement: 再犯紀錄（舊紀錄的處理） — Failure: F2
-- [ ] packet 的觀察段缺欄位或型別錯誤時，整批拒收並指出是哪一筆，不寫入部分資料 — Source: Requirement: 再犯紀錄（匯入） — Failure: F2
-- [ ] observe 仍可人工補單筆，並同樣用事件時間檢查 — Source: Requirement: 再犯紀錄（匯入）
+- [x] ingest 把 cross 每筆追蹤觀察寫成觀察紀錄，不需要手動 observe — Source: Requirement: 再犯紀錄（匯入）
+- [x] 事件或 session 早於生效時間的觀察記為無效並附理由；已生效但沒載入的記為「沒載入」；兩者都不算再犯 — Source: Story 1
+- [x] 再犯觀察帶涵蓋與否（是／否／不明） — Source: Requirement: 再犯紀錄（涵蓋與否）
+- [x] 改判寫成追加的更正紀錄，連到被取代的觀察，舊紀錄內容不變 — Source: Story 3
+- [x] ingest 輸出分列新增、重播、補證、更正；同一 packet 重播一次，新增為 0 — Source: Requirement: 再犯紀錄（改判與重播） — Failure: F1
+- [x] 沒有事件時間的舊觀察標為舊格式，摘要另外列出，不算進再犯次數，也不把它的時間當成事件時間 — Source: Requirement: 再犯紀錄（舊紀錄的處理） — Failure: F2
+- [x] packet 的觀察段缺欄位或型別錯誤時，整批拒收並指出是哪一筆，不寫入部分資料 — Source: Requirement: 再犯紀錄（匯入） — Failure: F2
+- [x] observe 仍可人工補單筆，並同樣用事件時間檢查 — Source: Requirement: 再犯紀錄（匯入）
+
+## Verification Log
+
+- 2026-11-06 整合（commit 821e16c）：紅燈基線 retro-store 新測試 5 failures＋6 errors、retro-import 1 fail＋2 errors，原因是功能缺失；綠燈 retro-store `Ran 38 tests ... OK`、retro-import `Ran 12 tests ... OK`、session-retro `Ran 51 tests ... OK`。
+- 新紀錄型別：`observation`（id `observation:<observation_key>`，帶 `outcome`、`reported_outcome`、`event_time`、`event_key`、`loaded`、`basis`、`evidence`、`covered`、`cross_disposition`）、`observation_correction`（`supersedes`、`correction_reason`）、`observation_evidence`（補證）。ingest 輸出多 `observations:{new, replayed, supplemented, corrected, rejected}`。list 多 `invalid`、`not_loaded`、`unchecked`、`recurrence_by_coverage`、`legacy`；`--summary` 多 `legacy_observations`。
+- Acceptance-miss — 「事件或 session 早於生效時間記為無效」→ worker 只比事件時間，沒處理 session 早於生效（庫裡沒有 session 起始時間）。待送回 worker 補。
+- worker 自訂判斷：生效時間以庫裡 change 為準；舊格式＝紀錄沒有 `event_time`；packet 缺 `tracking_dispositions` 照收；cross 剔除的觀察不入庫、只在輸出列出；`covered` 沒給記 `unknown`；同輪同事件重複回報算補證，結果不同就整批拒收；跨輪結果不同要有 reclassified 理由才寫更正。
+- Minor：02 之前產生、觀察沒有 `events[]` 的 packet（例如 2026-11-04-full-1）會整批被拒，連問題與發現也不進庫；以前是靜默忽略觀察。10 要先依 03 的發現重跑前段驗收再匯入。
+- Minor：人工 observe 新寫的列多了 `event_time`，用同一 id 重打舊的人工 observe 會被當成 conflicting id 拒收。
+- Minor：`covered` 上游還沒有欄位，09 要在單場報告契約裡要求模型填涵蓋與否，否則全部是 `unknown`。
+- Minor：`not_applicable` 類觀察若事件早於生效或沒載入，也會被改記為 `invalid`／`not_loaded`，原結果留在 `reported_outcome`。
+- 2026-11-06 ticket-yagni：keep 15／demote 0／kill 0，沒有要砍的。
+- 2026-11-06 補 Acceptance-miss（commit f54f1d3）：用 02 的 `load_time` 對生效時間判斷「session 早於生效」。`not_loaded` 且 basis 為 `last_load_is_old_version`／`load_time_outside_effective_window`、`load_time` 早於生效 → 無效並附理由；`never_loaded` 或 `load_time` 不早於生效 → 沒載入；`load_time` 不是合法時間 → 整批拒收。紅燈 2 個（功能缺失），綠燈 retro-store `Ran 40 tests ... OK`、retro-import 12 OK、session-retro 51 OK。限制：只看 `load_time`，不知道 session 實際開場時間；規則類找不到載入附件時是未查，skill／command 從未載入時是沒載入。
