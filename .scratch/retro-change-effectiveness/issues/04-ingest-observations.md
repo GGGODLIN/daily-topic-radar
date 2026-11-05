@@ -55,3 +55,9 @@
 - Minor：`not_applicable` 類觀察若事件早於生效或沒載入，也會被改記為 `invalid`／`not_loaded`，原結果留在 `reported_outcome`。
 - 2026-11-06 ticket-yagni：keep 15／demote 0／kill 0，沒有要砍的。
 - 2026-11-06 補 Acceptance-miss（commit f54f1d3）：用 02 的 `load_time` 對生效時間判斷「session 早於生效」。`not_loaded` 且 basis 為 `last_load_is_old_version`／`load_time_outside_effective_window`、`load_time` 早於生效 → 無效並附理由；`never_loaded` 或 `load_time` 不早於生效 → 沒載入；`load_time` 不是合法時間 → 整批拒收。紅燈 2 個（功能缺失），綠燈 retro-store `Ran 40 tests ... OK`、retro-import 12 OK、session-retro 51 OK。限制：只看 `load_time`，不知道 session 實際開場時間；規則類找不到載入附件時是未查，skill／command 從未載入時是沒載入。
+- 2026-11-06 真實資料修正（commit 0cba21e，來源：工作單 10 的 F1、F2、F4、F5、F8、F9）：Acceptance-miss — 「ingest 把 cross 每筆追蹤觀察寫成觀察紀錄」→ 真實 11-04 資料整批被拒。修正後 session-retro `Ran 58 tests ... OK`、retro-store 59 OK、retro-import 14 OK、session-audit-rule-query 17 OK、retro-judge 20 OK。整合時 retro-store.py 指令分派處與 06 的 `rule-anchors` 衝突，兩邊都保留。
+  - F1：工具呼叫 ID 的事件，時間與行號一律取工具呼叫那一行。F2：retro-import 只讀 `validated/cross-session.json`，找不到就報錯；run 根目錄與 `reports/` 的舊位置不再讀。F4／F9：三階段驗收擋下 change_id 缺或為 null、以及非 unreviewed 卻沒有結構化 evidence 的追蹤觀察；ingest 把沒有 evidence 的 unreviewed 觀察列在 `unkeyed`。F5：同一事件只差引文時記為補證，補證 id 第二句起加序號。F8：新指令 `retro-store.py tracking-context [--issue ID]`，kind 先取最新 backfill，否則依 `source.path` 推，標 `kind_source`。
+  - 11-04 副本重跑（不呼叫模型，正式累積庫仍 3216 行）：reading 驗收 93 過 89，擋下 4 筆缺 change_id 或缺 evidence 的觀察；「搜尋輸出過大」10 筆來源觀察原樣匯入成功，新增 29、補證 7、未進庫 0，重播新增 0；用 `tracking-context` 產生的定義重算後 29 筆全是已載入的再犯（原本全是未查）。29 筆含 F6 待決定的 7 個補救動作。
+  - 既有測試 fixture 有改：session-retro 3 處沒有 evidence 的 `not_applicable` 觀察改成 `unreviewed`；retro-import fixture 搬到 `validated/`。原因是契約改了，不是放寬斷言。
+  - Minor：46 個真實改動裡 30 個能依路徑推出 kind，16 個推不出（`CLAUDE.md`、`workflows/`、`agents/` 等），載入判斷仍是未查，要靠 backfill。retro-import 不檢查 `validation-cross.json` 是否通過，只讀 validated 那份。
+  - ticket-yagni：這次自動審查的範圍錯了（verdict 記錄 worktree＝主 repo、base 6ca8030），60 項 kill 全是 06、07 的程式與其他 session 未提交的 `KNOWN_ISSUES.md`、`PROBES.md`，沒有一項是本次修正。判定無效，不送回 worker，也不重跑。
