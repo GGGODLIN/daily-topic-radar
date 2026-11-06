@@ -49,3 +49,4 @@
 - Minor：判斷式 v1 把「先重取狀態、還沒動索引」的 3 次歸成無適用機會，worker 人工補判為照做；凍結規則已寫明這類算照做，08 的判斷式要直接支援。
 - Minor：案例三換新規則第 1 次的回應文字裡產生了讀 Gmail 的指令。回放不執行工具；之後若有人拿回放輸出去實際執行，要注意這個風險。
 - 2026-11-06 ticket-yagni：worker 沒有自動登記，手動跑 runner（--worktree social-info-wt/t01 --base cbcbc3f）回 `skip: empty-diff`；本票只交付報告，不重跑。
+- 2026-11-06 架構圖候選關（implement Step 8）：判定 candidate（新增跨元件連線：session-audit 與 retro-store 互相以子程序呼叫；retro-replay、retro-judge 經中轉站呼叫模型；retro-import 改只讀驗收版 cross）。使用者回「b」（這次不用），waived；理由：個人本機工具，連線已寫進 spec 與 choices.md。feature_base_sha：social-info cbcbc3f、~/.claude 5aa167d0；head_sha：social-info c90b636、~/.claude e25513d9。未啟動 Archify 或 Plannotator。
