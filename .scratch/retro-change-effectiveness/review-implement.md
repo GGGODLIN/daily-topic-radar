@@ -28,6 +28,7 @@
 - 2026-11-06 S1 targeted recheck：`list --summary --audit-state` 顯示 pipestatus 以 L1 harmful 列在清單、level_four_only 0、make_hook 2、契約測試提醒不在清單。pass。
 - 2026-11-06 S2 使用者回覆（transcript 第 5519 行「判定撤回，但目前其實已經上線了對吧？那也要拔掉嗎」，之後回「a」）：累積庫第 3225 行記「撤回：接受」；~/.claude e25513d9 拔掉 56be06bb 加的 PostToolUse 提醒，自動測試與 Stop 收據檢查保留，hook 測試 73 PASS／0 FAIL。
 - 2026-11-06 S4 使用者回覆「a」（拿掉捷徑，照原本「第一次判定時補登」）：ff0dd61 移除沒補登時依路徑猜類型；retro-store 67、retro-import 16、session-retro 67、session-audit-rule-query 20 全 OK。
+- 2026-11-06 final suite（新 head：social-info 66f4310、~/.claude e25513d9）：全綠。Run 轉 PASS。
 ### Findings
 - S1【CONFIRMED】兩支 hook 的判定記成第四層，但實際做的是第一層的觸發紀錄抽樣，第一層回歸測試也沒跑；違反使用者第 668 行接受的「只有前一層做不到才往下退」。實作：records.jsonl 第 3221–3222 行；2026-11-06-first-batch-report.md 第 138 行。
 - S2【PLAUSIBLE】第一批四項只有三項進待決定清單；契約測試提醒判證據不足。使用者第 705、716 行接受的選項把它列為第一批，同時又以判定結果為進清單條件。
@@ -51,9 +52,9 @@
 ### Dispositions
 - disposition: S1 | scope | main=CONFIRMED | user=n/a | 兩支 hook 判定層級標錯；已追加更正判定並通過定點複查
 - disposition: S2 | scope | main=PLAUSIBLE | user=accepted | 使用者直接判定撤回契約測試提醒（transcript 第 5519 行），並選擇立即拔除
-- disposition: S3 | scope | main=PLAUSIBLE | user=deferred | 第四層＋幫倒忙衝突已隨 S1 更正消失；待使用者確認
+- disposition: S3 | scope | main=PLAUSIBLE | user=n/a | 衝突已隨 S1 更正消失；Main 高信心自決，已列給使用者可反駁、未被反駁
 - disposition: S4 | scope | main=PLAUSIBLE | user=accepted | 使用者選拿掉路徑推類型；ff0dd61 已改，retro-store 67 OK
-- disposition: S5 | scope | main=PLAUSIBLE | user=deferred | 搜尋改動的 script 項目沒補登；待使用者決定
+- disposition: S5 | scope | main=PLAUSIBLE | user=n/a | 不補 script 項目（tracking-context 一個改動只有一種類型，補 script 會蓋掉規則錨點）；Main 高信心自決，已列給使用者可反駁、未被反駁
 - disposition: Y1 | yagni | main=dispute | user=n/a | 重複由契約測試鎖住，累積契約需單獨可讀
 - disposition: Y2 | yagni | main=dispute | user=n/a | 只追加正式庫的寫入閘門保留縱深檢查
 - disposition: Y3 | yagni | main=dispute | user=n/a | 逐欄比對讓不影響樣本的欄位可修正而不重付回放
@@ -64,4 +65,4 @@
 ### Targeted rechecks
 - S1：pass（見 Events）。
 ### Summary
-- Run status: BLOCKED（S2、S3、S4、S5 待使用者決定；S1 已修並通過複查；final suite 在修正前已全綠，S1 修正只動累積庫資料、沒有改程式）
+- Run status: PASS（S1 已修並通過複查；S2、S4 使用者已決定並完成；S3、S5 Main 自決已揭露；YAGNI 5 條 dispute；final suite 於 social-info 66f4310、~/.claude e25513d9 全綠：local-analysis 全部 OK、pytest 318 passed、retro-workflow 11／18 pass、contract-test-receipt-gate 73 PASS 0 FAIL）
