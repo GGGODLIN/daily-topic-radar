@@ -231,17 +231,6 @@ def resolve(value, texts):
   return value
 
 
-def leaves(value):
-  if isinstance(value, str):
-    yield value
-  elif isinstance(value, dict):
-    for child in value.values():
-      yield from leaves(child)
-  elif isinstance(value, list):
-    for child in value:
-      yield from leaves(child)
-
-
 def snapshots_before(entries, line):
   return [row["attachment"] for number, row in entries
           if number < line and row.get("type") == "attachment"
@@ -380,8 +369,6 @@ def rebuild(rows, line, change, max_tokens):
   template = {"model": model, "max_tokens": max_tokens, "system": system, "messages": messages}
   if tools:
     template["tools"] = tools
-  report["outside"] = sum(1 for leaf in leaves(template["messages"])
-                          if change["old_text"] in leaf or change["new_text"] in leaf)
   usage = (event.get("message") or {}).get("usage") or {}
   original = sum(usage.get(k) or 0 for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
   facts = {
@@ -429,9 +416,6 @@ def describe_differences(report, facts):
      "detail": "depth rides on the model string only; whether the original also sent a separate effort "
                "parameter is not known"},
   ]
-  if report["outside"]:
-    items.append({"id": "rule_text_outside_instructions", "count": report["outside"],
-                  "detail": "the target paragraph also appears outside the instructions attachment and is not swapped"})
   return items
 
 
@@ -794,8 +778,7 @@ def run_command(args):
       "rule_versions": {"recorded": ctx["recorded"], "basis": ctx["evidence"]["basis"],
                         "load_line": ctx["evidence"]["load_line"], "load_time": ctx["evidence"]["load_time"],
                         "old_text": change["old_text"], "new_text": change["new_text"],
-                        "arms": {"original": ctx["recorded"], "swapped": ctx["versions"]["swapped"][-1]},
-                        "text_outside_instructions": ctx["report"]["outside"]},
+                        "arms": {"original": ctx["recorded"], "swapped": ctx["versions"]["swapped"][-1]}},
       "replacements": ctx["sites"],
       "model_config": {
         "model": ctx["facts"]["model"], "session_effort": ctx["facts"]["effort"],

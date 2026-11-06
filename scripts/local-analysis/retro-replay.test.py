@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """CLI seam tests for retro-replay. The model relay is an external service, so it is faked with a local
 HTTP server that returns pre-written replies and keeps every request it received. The session record is a
-synthetic, de-identified fixture; the replay tool, session-retro (event evidence), retro-judge and
-retro-store are the real ones."""
+synthetic, de-identified fixture; the replay tool and session-retro (event evidence) are the real ones.
+The hand-off to retro-judge is checked by the shape of judge-input.json only."""
 
 import json
 import math
@@ -18,8 +18,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("retro-replay.py")
-JUDGE_SCRIPT = Path(__file__).with_name("retro-judge.py")
-STORE_SCRIPT = Path(__file__).with_name("retro-store.py")
 
 CHANGE = "chg-search-exclude-1"
 EFFECTIVE = "2026-11-01T00:00:00Z"
@@ -685,67 +683,33 @@ class SideEffects(ReplayCase):
 
 
 class JudgeHandoff(ReplayCase):
-  def store_cli(self, store, *args):
-    result = subprocess.run([sys.executable, "-I", str(STORE_SCRIPT), "--store", str(store), *[str(a) for a in args]],
-                            text=True, capture_output=True)
-    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    return json.loads(result.stdout)
-
-  def make_store(self):
-    store = self.root / "store"
-    note = self.root / "note.txt"
-    note.write_text("original event text\n", encoding="utf-8")
-    review = self.root / "review.txt"
-    review.write_text("reviewer confirmed the event\n", encoding="utf-8")
-    anchor = {"path": str(note), "line": 1, "quote": "original event text"}
-    packet = {
-      "schema_version": 1,
-      "run": {"id": "run-1", "source": "fixture", "status": "complete", "cutoff": "2026-10-20T01:00:00Z"},
-      "issues": [{"id": "issue-1", "title": "Root search", "related_to": []}],
-      "discoveries": [{"id": "disc-1", "issue_id": "issue-1", "source": anchor, "verification": "pending",
-                       "review_sources": [], "scope": "session-a", "candidate": "exclude the dirs",
-                       "counterevidence": "none yet"}],
-      "events": [{"id": "episode-1", "session": "session-a", "event_at": "2026-10-20T01:00:00Z", "anchors": [anchor],
-                  "verification": "confirmed",
-                  "review_sources": [{"path": str(review), "line": 1, "quote": "reviewer confirmed the event"}],
-                  "scope": "session-a", "issue_ids": ["issue-1"]}],
-    }
-    packet_path = self.root / "packet.json"
-    packet_path.write_text(json.dumps(packet), encoding="utf-8")
-    self.store_cli(store, "ingest", "--packet", packet_path, "--apply")
-    human = self.root / "human.jsonl"
-    human.write_text(json.dumps({"type": "user", "timestamp": "2026-10-20T01:00:00Z", "uuid": "u-1", "message": {
-      "role": "user", "content": "approve this issue"}}) + "\n", encoding="utf-8")
-    self.store_cli(store, "decide", "--issue", "issue-1", "--action", "approve", "--source", human, "--line", 1,
-                   "--quote", "approve this issue", "--apply")
-    section = self.root / "section.txt"
-    section.write_text("condition for " + CHANGE + "\n", encoding="utf-8")
-    self.store_cli(store, "change", "--issue", "issue-1", "--id", CHANGE, "--effective-at", "2026-10-20T01:00:00Z",
-                   "--source", section, "--line", 1, "--quote", "condition for " + CHANGE, "--condition", PREDICATE,
-                   "--apply")
-    return store
-
-  def test_judge_input_is_accepted_by_retro_judge_and_the_tool_decides_nothing(self):
-    relay, payload = self.complete_run()
-    self.assertNotIn("verdict", payload)
-    self.assertNotIn("verdict", self.record())
+  def test_finished_run_writes_the_judge_input_and_decides_nothing(self):
+    _, payload = self.complete_run()
     document = json.loads(self.judge_input_path().read_text(encoding="utf-8"))
     self.assertEqual((document["schema_version"], document["level"], document["change_id"]), (1, 2, CHANGE))
     self.assertEqual((document["model"], document["route"], document["by"], document["at"]),
                      (MODEL, "fixture-relay", "main", JUDGED_AT))
     self.assertEqual(document["condition"], PREDICATE)
+    self.assertEqual(document["evidence"]["quote"], "replayed reply of the old paragraph")
     self.assertEqual((len(document["runs"]["old"]), len(document["runs"]["new"])), (10, 10))
-    first = document["runs"]["old"][0]
-    self.assertTrue(isinstance(first["id"], str) and first["id"])
-    self.assertTrue(all(b["type"] in ("text", "tool_use") for b in first["content"]))
-    judged = subprocess.run([sys.executable, "-I", str(JUDGE_SCRIPT), "--store", str(self.make_store()),
-                             "--input", str(self.judge_input_path())], text=True, capture_output=True)
-    self.assertEqual(judged.returncode, 0, judged.stdout + judged.stderr)
-    verdict = json.loads(judged.stdout)
-    # Old arm broke the rule 10 times, new arm 3 times: the judge, not the replay tool, says effective.
-    self.assertEqual((verdict["old"]["violated"], verdict["new"]["violated"]), (10, 3))
-    self.assertEqual(verdict["verdict"], "effective")
-    self.assertFalse(verdict["apply"])
+    ids = [run["id"] for side in ("old", "new") for run in document["runs"][side]]
+    self.assertEqual(len(set(ids)), 20)
+    for side in ("old", "new"):
+      for run in document["runs"][side]:
+        self.assertTrue(run["content"] and all(b["type"] in ("text", "tool_use") for b in run["content"]))
+    # The old group holds the replies to the old paragraph: every one of them is the violating command.
+    def commands(run):
+      return [b["input"]["command"] for b in run["content"] if b["type"] == "tool_use"]
+
+    self.assertTrue(all(commands(run) == [VIOLATING] for run in document["runs"]["old"]))
+    self.assertTrue(any(commands(run) == [COMPLIANT] for run in document["runs"]["new"]))
+    # The tool decides nothing and writes no store: its output and record carry no verdict, and the run
+    # directory holds the record and the judge input only.
+    self.assertNotIn("verdict", payload)
+    self.assertNotIn("verdict", self.record())
+    self.assertNotIn("verdict", document)
+    written = sorted(str(p.relative_to(self.out)) for p in self.out.rglob("*") if p.is_file())
+    self.assertEqual(written, ["run-1/judge-input.json", "run-1/run.json"])
 
 
 if __name__ == "__main__":
