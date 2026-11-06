@@ -15,7 +15,7 @@
 - 07 — 重犯判斷
 - 09 — 三份文件同步，加上第三、四層的操作流程
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:**
 - 正式累積庫（只追加）。
@@ -52,3 +52,4 @@
 - 與研究數字的差異：改用段落層級（搜尋 29→19 場、瀏覽器 9→7 場）；正式查詢排除 status 仍是 pending 的來源（不過濾時為 8、21 場，接近研究的 8、22 場）；剩 1 場差異沒重現。研究筆記說契約測試提醒針對「逾時」也要更正：使用者批准的原文（累積庫第 2327 行）是「未產生收據時當場提示補跑」，範圍包括測試失敗。
 - 規格衝突（待使用者決定）：pipestatus 記成「第 4 層＋幫倒忙」。規格同時寫「連帶擋掉不該擋的動作就是幫倒忙，且優先於有效」與「第四層只能判無效或證據不足」；worker 解讀為後者只限制有效性結論。retro-store `verdict` 不擋這個組合（05、07 已記 Minor）。
 - Minor：`--audit-state` 要給 session-audit 目錄，給 `state.sqlite` 檔時所有規則標未檢查、原因只寫 `query-failed`，看不出是路徑錯（main 派工時寫成檔案路徑，是派工說明的錯）。清單為每個 session 附最新一筆違反，搜尋規則段有三個子句，附的 10 筆只有 5 筆對準新子句（段落層級的設計限制）。session-audit 正在背景分析 pending session，場數之後可能變。`~/.claude/hooks/pipestatus-zsh-gate.py` 有其他 session 未提交的修改，補登錨點用第 25 行（原改動紀錄寫 24）。搜尋改動的 runaway.sh script 項目沒有補登也沒有判定。
+- 2026-11-06 ticket-yagni：worker 沒有自動登記，手動跑 runner（暫時 worktree 停在 ffc3fa2，base ffc3fa2^）回 `skip: empty-diff`；本票只交付報告與累積庫操作，不重跑。
