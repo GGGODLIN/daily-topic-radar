@@ -53,3 +53,4 @@
 - 規格衝突（待使用者決定）：pipestatus 記成「第 4 層＋幫倒忙」。規格同時寫「連帶擋掉不該擋的動作就是幫倒忙，且優先於有效」與「第四層只能判無效或證據不足」；worker 解讀為後者只限制有效性結論。retro-store `verdict` 不擋這個組合（05、07 已記 Minor）。
 - Minor：`--audit-state` 要給 session-audit 目錄，給 `state.sqlite` 檔時所有規則標未檢查、原因只寫 `query-failed`，看不出是路徑錯（main 派工時寫成檔案路徑，是派工說明的錯）。清單為每個 session 附最新一筆違反，搜尋規則段有三個子句，附的 10 筆只有 5 筆對準新子句（段落層級的設計限制）。session-audit 正在背景分析 pending session，場數之後可能變。`~/.claude/hooks/pipestatus-zsh-gate.py` 有其他 session 未提交的修改，補登錨點用第 25 行（原改動紀錄寫 24）。搜尋改動的 runaway.sh script 項目沒有補登也沒有判定。
 - 2026-11-06 ticket-yagni：worker 沒有自動登記，手動跑 runner（暫時 worktree 停在 ffc3fa2，base ffc3fa2^）回 `skip: empty-diff`；本票只交付報告與累積庫操作，不重跑。
+- 2026-11-06 收尾後續：review-implement S1 指出兩支 hook 的判定層級標錯（實際做的是第一層的觸發紀錄抽樣），追加更正判定於累積庫第 3223–3224 行（層級 4 → 1，判定值不變）。契約測試提醒：使用者直接判定撤回（累積庫第 3225 行，引用 transcript 第 5519 行），並在 ~/.claude e25513d9 拔掉該提醒。第 4 條驗收因此由使用者決定收尾：四項都已有使用者可見的處置（兩項 make_hook、pipestatus 在清單、契約提醒已撤）。

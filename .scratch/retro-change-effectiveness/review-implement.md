@@ -26,6 +26,7 @@
 - 2026-11-06 兩席回來：scope 5 條（1 CONFIRMED、4 PLAUSIBLE）、yagni 5 條。Main 逐條查證：S1 引用的使用者原話已在 transcript 第 668 行（「a」，接受「只有前一層做不到才往下退」）與第 2039 行（「a」，接受「舊改動等到第一次判定時補登」）核對屬實。
 - 2026-11-06 S1 repair：在正式累積庫追加兩筆更正判定（第 3223–3224 行），層級 4 → 1，判定值不變；前 3216 行與備份逐位元組相同。
 - 2026-11-06 S1 targeted recheck：`list --summary --audit-state` 顯示 pipestatus 以 L1 harmful 列在清單、level_four_only 0、make_hook 2、契約測試提醒不在清單。pass。
+- 2026-11-06 S2 使用者回覆（transcript 第 5519 行「判定撤回，但目前其實已經上線了對吧？那也要拔掉嗎」，之後回「a」）：累積庫第 3225 行記「撤回：接受」；~/.claude e25513d9 拔掉 56be06bb 加的 PostToolUse 提醒，自動測試與 Stop 收據檢查保留，hook 測試 73 PASS／0 FAIL。
 ### Findings
 - S1【CONFIRMED】兩支 hook 的判定記成第四層，但實際做的是第一層的觸發紀錄抽樣，第一層回歸測試也沒跑；違反使用者第 668 行接受的「只有前一層做不到才往下退」。實作：records.jsonl 第 3221–3222 行；2026-11-06-first-batch-report.md 第 138 行。
 - S2【PLAUSIBLE】第一批四項只有三項進待決定清單；契約測試提醒判證據不足。使用者第 705、716 行接受的選項把它列為第一批，同時又以判定結果為進清單條件。
@@ -48,7 +49,7 @@
 - 橡皮圖章訊號：本報告第一個 Run，查無前輪；本輪 YAGNI 5 條 0 條 accepted，理由如上，交使用者檢查。
 ### Dispositions
 - disposition: S1 | scope | main=CONFIRMED | user=n/a | 兩支 hook 判定層級標錯；已追加更正判定並通過定點複查
-- disposition: S2 | scope | main=PLAUSIBLE | user=deferred | 契約測試提醒沒進清單；待使用者決定
+- disposition: S2 | scope | main=PLAUSIBLE | user=accepted | 使用者直接判定撤回契約測試提醒（transcript 第 5519 行），並選擇立即拔除
 - disposition: S3 | scope | main=PLAUSIBLE | user=deferred | 第四層＋幫倒忙衝突已隨 S1 更正消失；待使用者確認
 - disposition: S4 | scope | main=PLAUSIBLE | user=deferred | 路徑推類型不在使用者決定的補登路徑內；待使用者決定
 - disposition: S5 | scope | main=PLAUSIBLE | user=deferred | 搜尋改動的 script 項目沒補登；待使用者決定
