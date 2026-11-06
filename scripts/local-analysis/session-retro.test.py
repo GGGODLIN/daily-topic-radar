@@ -731,11 +731,11 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     dump(run / "tracking-context.json", {"changes": [
       {"id": "chg-rule", "kind": "rule", "effective_time": "2026-10-20T00:30:00Z", "new_text": "搜尋大目錄時必須排除 node_modules"},
       {"id": "chg-hook", "kind": "hook", "effective_time": "2026-10-20T01:10:00Z"}]})
-    evidence = [{"session": "human", "source_line": 3, "quote": "ls", "event_time": "2000-01-01T00:00:00Z"}]
+    evidence = [{"session": "human", "source_line": 3, "quote": "ls", "role": "action", "event_time": "2000-01-01T00:00:00Z"}]
     observations = [{"issue_id": "iss-1", "change_id": change, "outcome": "recurrence", "evidence": evidence}
                     for change in ("chg-rule", "chg-hook", "chg-unknown")]
     stray = {"issue_id": "iss-2", "change_id": "chg-rule", "outcome": "recurrence",
-             "evidence": [{"session": "human", "source_line": 999, "quote": "ls", "event_time": "2000-01-01T00:00:00Z"}]}
+             "evidence": [{"session": "human", "source_line": 999, "quote": "ls", "role": "action", "event_time": "2000-01-01T00:00:00Z"}]}
     observations.append(stray)
     items = self.stage(path, "reading")["items"]
     dirs = [self.transcript(item, self.report(item, tracking_observations=observations)) for item in items]
@@ -912,7 +912,7 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     def gamma_vanishes(report):
       report["tracking_observations"] = [o for o in report["tracking_observations"] if o["evidence"][0]["session"] != "gamma"]
     def rejected_returns(report):
-      report["tracking_observations"][1]["evidence"].append({"session": "beta", "source_line": 4, "quote": "ls"})
+      report["tracking_observations"][1]["evidence"].append({"session": "beta", "source_line": 4, "quote": "ls", "role": "action"})
     for label, mutate, key, wording in (("kept but gone", gamma_vanishes, "toolu_C1", "absent"),
                                          ("rejected but cited", rejected_returns, "toolu_B3", "still cited")):
       with self.subTest(label):
@@ -930,7 +930,7 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     path, _ = self.prepare([user("source finding"), call("toolu_F5", RECENT), assistant("x" * 850000)])
     items = self.stage(path, "reading")["items"]
     self.assertEqual(len(items), 2)
-    evidence = [{"session": "human", "source_line": 2, "quote": "ls"}]
+    evidence = [{"session": "human", "source_line": 2, "quote": "ls", "role": "action"}]
     observation = {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence", "evidence": evidence}
     ids = [item["unit"] + ":f" for item in items]
     finding = lambda key: {"id": key, "evidence": [{"session": "human", "source_line": 1, "quote": "source finding"}],
@@ -966,9 +966,9 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
       {"id": "chg-1", "kind": "hook", "effective_time": "2026-10-20T00:30:00Z"}]})
     observations = [
       {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence",
-       "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]},
+       "evidence": [{"session": "human", "source_line": 2, "quote": "ls", "role": "action"}]},
       {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence",
-       "evidence": [{"session": "human", "source_line": 3, "quote": "output"}]}]
+       "evidence": [{"session": "human", "source_line": 3, "quote": "output", "role": "action"}]}]
     items = self.stage(path, "reading")["items"]
     self.validate(path, "reading", [self.transcript(item, self.report(item, tracking_observations=observations)) for item in items])
     validated = json.loads((path.parent / "validated" / (items[0]["unit"] + ".json")).read_text())
@@ -989,7 +989,7 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
 
   def test_tracking_observation_without_a_change_id_fails_and_names_which_one(self):
     good = {"issue_id": "iss-ok", "change_id": "chg-1", "outcome": "recurrence",
-            "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]}
+            "evidence": [{"session": "human", "source_line": 2, "quote": "ls", "role": "action"}]}
     self.tracking_errors([good], code=0)
     for label, mutate in (("null", lambda o: o.update(change_id=None)), ("missing", lambda o: o.pop("change_id")),
                           ("blank", lambda o: o.update(change_id=" "))):
@@ -1003,7 +1003,7 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.assertIn("change_id", self.tracking_errors([{"issue_id": "iss-u", "change_id": None, "outcome": "unreviewed"}]))
 
   def test_tracking_observation_needs_structured_evidence_unless_unreviewed(self):
-    pointer = {"session": "human", "source_line": 2, "quote": "ls"}
+    pointer = {"session": "human", "source_line": 2, "quote": "ls", "role": "action"}
     for outcome in ("recurrence", "opportunity_met", "not_applicable"):
       errors = self.tracking_errors([{"issue_id": "iss-" + outcome, "change_id": "chg-1", "outcome": outcome}])
       self.assertIn("iss-" + outcome, errors)
@@ -1063,7 +1063,7 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     dump(path.parent / "tracking-context.json", {"changes": [
       {"id": "chg-1", "kind": "hook", "effective_time": "2026-10-20T00:30:00Z"}]})
     bad = {"issue_id": "iss-null", "change_id": None, "outcome": "recurrence",
-           "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]}
+           "evidence": [{"session": "human", "source_line": 2, "quote": "ls", "role": "action"}]}
     items = self.stage(path, "reading")["items"]
     dirs = [self.transcript(item, self.report(item, tracking_observations=[bad])) for item in items]
     self.validate(path, "reading", dirs, code=2)
@@ -1074,6 +1074,168 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.validate(path, "reading", dirs)
     validated = json.loads((path.parent / "validated" / (items[0]["unit"] + ".json")).read_text())
     self.assertEqual(validated["tracking_observations"][0]["events"][0]["observation_key"], "toolu_N|chg-1")
+
+  # ---- evidence roles (ticket 10 finding F6): only an action is an event, a context supports one ----
+
+  def point(self, session, line, role, quote="ls", **extra):
+    return {"session": session, "source_line": line, "quote": quote, "role": role, **extra}
+
+  def test_every_tracking_evidence_needs_a_role_and_the_error_names_which_one(self):
+    good = {"issue_id": "iss-ok", "change_id": "chg-1", "outcome": "recurrence", "evidence": [self.point("human", 2, "action")]}
+    self.tracking_errors([good], code=0)
+    for label, role in (("missing", None), ("unknown", "bystander"), ("cased", "Action"), ("blank", "")):
+      bad = {**good, "issue_id": "iss-" + label, "evidence": [self.point("human", 2, "action"), self.point("human", 2, role)]}
+      if role is None:
+        del bad["evidence"][1]["role"]
+      errors = self.tracking_errors([good, bad])
+      self.assertIn("tracking_observations[1]", errors, label)
+      self.assertIn("iss-" + label, errors, label)
+      self.assertIn("evidence[1]", errors, label)
+      self.assertIn("role", errors, label)
+      self.assertNotIn("evidence[0]", errors, label)
+    # The same shape passes with either valid role on the second entry.
+    for role in ("action", "context"):
+      self.tracking_errors([{**good, "evidence": [self.point("human", 2, "action"), self.point("human", 2, role)]}], code=0)
+
+  def test_an_observation_that_is_not_unreviewed_needs_at_least_one_action(self):
+    for outcome in ("recurrence", "opportunity_met", "not_applicable"):
+      only_context = {"issue_id": "iss-" + outcome, "change_id": "chg-1", "outcome": outcome, "evidence": [self.point("human", 2, "context")]}
+      errors = self.tracking_errors([only_context])
+      self.assertIn("iss-" + outcome, errors)
+      self.assertIn("at least one evidence with role 'action'", errors)
+      # Positive control: adding one action to the same evidence makes it pass.
+      with_action = {**only_context, "evidence": [self.point("human", 2, "action"), self.point("human", 2, "context", quote="output")]}
+      self.tracking_errors([with_action], code=0)
+    # Unreviewed is exempt from the action requirement but not from the role value.
+    self.tracking_errors([{"issue_id": "iss-u", "change_id": "chg-1", "outcome": "unreviewed"}], code=0)
+    self.assertIn("role", self.tracking_errors([{"issue_id": "iss-u2", "change_id": "chg-1", "outcome": "unreviewed",
+                                                 "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]}]))
+
+  def too_large_session(self):
+    """Deidentified 11-04 shape: two blown-up searches, each followed by TaskStop, a narrower retry and a read of the saved output."""
+    stamps = {n: f"2026-10-20T01:0{n}:00Z" for n in range(2, 8)}
+    path, _ = self.prepare([user(), call("toolu_S1", stamps[2]), call("toolu_STOP1", stamps[3]), call("toolu_NARROW", stamps[4]),
+                            call("toolu_S2", stamps[5]), call("toolu_READ", stamps[6]), call("toolu_STOP2", stamps[7])])
+    dump(path.parent / "tracking-context.json", {"changes": [
+      {"id": "chg-search", "kind": "hook", "effective_time": "2026-10-20T00:30:00Z"},
+      {"id": "chg-other", "kind": "hook", "effective_time": "2026-10-20T00:30:00Z"}]})
+    return path, stamps
+
+  def test_events_come_only_from_action_evidence_and_context_joins_the_nearest_earlier_action(self):
+    path, stamps = self.too_large_session()
+    two_actions = {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence", "evidence": [
+      self.point("human", 2, "action"), self.point("human", 3, "context"),
+      self.point("human", 4, "context", event_key="toolu_FORGED", event_time="2000-01-01T00:00:00Z"),
+      self.point("human", 5, "action"), self.point("human", 6, "context"), self.point("human", 7, "context")]}
+    # Both contexts precede every action, so they fall back to that session's first action (line 5), not the last (6).
+    context_first = {"issue_id": "iss-2", "change_id": "chg-other", "outcome": "recurrence", "evidence": [
+      self.point("human", 3, "context"), self.point("human", 4, "context"), self.point("human", 5, "action"),
+      self.point("human", 6, "action")]}
+    items = self.stage(path, "reading")["items"]
+    self.validate(path, "reading", [self.transcript(item, self.report(item, tracking_observations=[two_actions, context_first]))
+                                    for item in items])
+    validated = json.loads((path.parent / "validated" / (items[0]["unit"] + ".json")).read_text())
+    first, second = validated["tracking_observations"]
+    # Six evidence entries, two actions: two events, not six.
+    self.assertEqual(len(first["evidence"]), 6)
+    self.assertEqual([e["observation_key"] for e in first["events"]], ["toolu_S1|chg-search", "toolu_S2|chg-search"])
+    self.assertEqual([e["event_time"] for e in first["events"]], [stamps[2], stamps[5]])
+    self.assertEqual([(e["source_line"], e["role"], e.get("event_key")) for e in first["evidence"]],
+                     [(2, "action", None), (3, "context", "toolu_S1"), (4, "context", "toolu_S1"),
+                      (5, "action", None), (6, "context", "toolu_S2"), (7, "context", "toolu_S2")])
+    # A model-written event_key or time on a context never survives; both come from the raw session.
+    self.assertEqual(first["evidence"][2]["event_time"], stamps[4])
+    self.assertEqual([e["event_key"] for e in first["evidence"] if e["role"] == "context" and e["source_line"] != 4],
+                     ["toolu_S1", "toolu_S2", "toolu_S2"])
+    self.assertEqual([e["observation_key"] for e in second["events"]], ["toolu_S2|chg-other", "toolu_READ|chg-other"])
+    self.assertEqual([e["event_key"] for e in second["evidence"] if e["role"] == "context"], ["toolu_S2", "toolu_S2"])
+
+  def test_a_context_on_the_result_line_of_an_action_joins_that_action_not_the_one_before(self):
+    # A tool result resolves to its call's line, so the result of S2 sits on S2's own line, not after it.
+    path, _ = self.prepare([user(), call("toolu_S1", RECENT), call("toolu_S2", RECENT), result_row("toolu_S2", RECENT)])
+    dump(path.parent / "tracking-context.json", {"changes": [
+      {"id": "chg-1", "kind": "hook", "effective_time": "2026-10-20T00:30:00Z"}]})
+    observation = {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence", "evidence": [
+      self.point("human", 2, "action"), self.point("human", 3, "action"), self.point("human", 4, "context", quote="output")]}
+    items = self.stage(path, "reading")["items"]
+    self.validate(path, "reading", [self.transcript(item, self.report(item, tracking_observations=[observation])) for item in items])
+    validated = json.loads((path.parent / "validated" / (items[0]["unit"] + ".json")).read_text())
+    self.assertEqual(validated["tracking_observations"][0]["evidence"][2]["event_key"], "toolu_S2")
+
+  def test_a_context_in_a_session_with_no_action_fails_and_names_which_one(self):
+    self.source("alpha", [user(), call("toolu_A1", RECENT)])
+    self.source("beta", [user(), call("toolu_B1", RECENT)])
+    path, _ = self.prepare()
+    items = {item["session"]: item for item in self.stage(path, "reading")["items"]}
+    orphan = {"issue_id": "iss-orphan", "change_id": "chg-1", "outcome": "recurrence",
+              "evidence": [self.point("alpha", 2, "action"), self.point("beta", 2, "context")]}
+
+    def validate_with(observation, code):
+      dirs = [self.transcript(items[name], self.report(items[name], tracking_observations=[observation] if name == "alpha" else []))
+              for name in ("alpha", "beta")]
+      result = self.validate(path, "reading", dirs, code=code)
+      return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+    errors = validate_with(orphan, 2)
+    self.assertIn("iss-orphan", errors)
+    self.assertIn("evidence[1]", errors)
+    self.assertIn("beta", errors)
+    self.assertIn("no action", errors)
+    # Positive control: an action in the context's own session gives it a home, and it joins that action's event.
+    homed = {**orphan, "evidence": [*orphan["evidence"], self.point("beta", 2, "action")]}
+    validate_with(homed, 0)
+    validated = json.loads((path.parent / "validated" / (items["alpha"]["unit"] + ".json")).read_text())
+    context = validated["tracking_observations"][0]["evidence"][1]
+    self.assertEqual((context["session"], context["event_key"]), ("beta", "toolu_B1"))
+
+  def test_all_three_stages_check_roles_and_cross_accounts_per_action_event(self):
+    path, _ = self.prepare([user("source finding"), call("toolu_R", RECENT), call("toolu_R2", RECENT), assistant("x" * 850000)])
+    items = self.stage(path, "reading")["items"]
+    quote = [{"session": "human", "source_line": 1, "quote": "source finding"}]
+    seen = {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence",
+            "evidence": [self.point("human", 2, "action"), self.point("human", 3, "context")]}
+    ids = [item["unit"] + ":f" for item in items]
+    dirs = [self.transcript(item, self.report(item, [{"id": key, "evidence": quote, "counterevidence": "bounded counterevidence"}],
+                                              tracking_observations=[seen] if n == 0 else []))
+            for n, (item, key) in enumerate(zip(items, ids))]
+    self.validate(path, "reading", dirs)
+    merge = self.stage(path, "session-merge")["items"][0]
+    pattern = {"id": merge["unit"] + "-P1", "source_finding_ids": ids, "evidence": quote, "counterevidence": "bounded counterevidence"}
+    merged = [{"source_finding_id": key, "disposition": "merged", "reason": "same cause"} for key in ids]
+    bad = {
+      "no role": {**seen, "evidence": [{"session": "human", "source_line": 2, "quote": "ls"}]},
+      "only context": {**seen, "evidence": [self.point("human", 3, "context")]},
+    }
+
+    def merge_with(observation, code):
+      report = self.report(merge, patterns=[pattern], tracking_observations=[observation], dispositions=merged)
+      result = self.validate(path, "session-merge", [self.transcript(merge, report, reads=[])], code=code)
+      return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+    for label, observation in bad.items():
+      self.assertTrue(merge_with(observation, 2), label)
+    merge_with(seen, 0)
+    cross = self.stage(path, "cross")["items"][0]
+    cross_pattern = {"id": "P1", "source_finding_ids": [pattern["id"]], "evidence": quote, "counterevidence": "bounded counterevidence"}
+    kept = [{"source_record_id": pattern["id"], "disposition": "kept", "reason": "relevant"}]
+
+    def cross_with(observation, destinations, code):
+      report = self.report(cross, patterns=[cross_pattern], tracking_observations=[observation], dispositions=kept,
+                           tracking_dispositions=destinations)
+      result = self.validate(path, "cross", [self.transcript(cross, report, reads=[])], code=code)
+      return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+    one = [{"observation_key": "toolu_R|chg-1", "disposition": "kept"}]
+    for label, observation in bad.items():
+      self.assertTrue(cross_with(observation, one, 2), label)
+    # One destination for the one action; the context's own call (toolu_R2) owes none and may not be given one.
+    cross_with(seen, one, 0)
+    validated = json.loads((path.parent / "validated" / "cross-session.json").read_text())
+    kept_observation = validated["tracking_observations"][0]
+    self.assertEqual([e["observation_key"] for e in kept_observation["events"]], ["toolu_R|chg-1"])
+    self.assertEqual([(e["role"], e.get("event_key")) for e in kept_observation["evidence"]], [("action", None), ("context", "toolu_R")])
+    extra = one + [{"observation_key": "toolu_R2|chg-1", "disposition": "kept"}]
+    self.assertIn("unknown input observation", cross_with(seen, extra, 2))
 
 
 def inst(text, timestamp, path="/fixture/RULES.md"):
@@ -1111,37 +1273,37 @@ CROSS_SESSIONS = {
 CROSS_READINGS = {
   "alpha": [
     {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
-     "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}, {"session": "alpha", "source_line": 3, "quote": "ls"}]},
+     "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls", "role": "action"}, {"session": "alpha", "source_line": 3, "quote": "ls", "role": "action"}]},
     {"issue_id": "iss-1", "change_id": "chg-hook", "outcome": "recurrence",
-     "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}]},
+     "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls", "role": "action"}]},
     {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "not_applicable",
-     "evidence": [{"session": "alpha", "source_line": 4, "quote": "ls"}]}],
+     "evidence": [{"session": "alpha", "source_line": 4, "quote": "ls", "role": "action"}]}],
   "beta": [
     {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
-     "evidence": [{"session": "beta", "source_line": 2, "quote": "ls"}]},
+     "evidence": [{"session": "beta", "source_line": 2, "quote": "ls", "role": "action"}]},
     {"issue_id": "iss-4", "change_id": "chg-search", "outcome": "recurrence",
-     "evidence": [{"session": "beta", "source_line": 2, "quote": "ls"}]},
+     "evidence": [{"session": "beta", "source_line": 2, "quote": "ls", "role": "action"}]},
     {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
-     "evidence": [{"session": "beta", "source_line": 3, "quote": "ls"}]},
+     "evidence": [{"session": "beta", "source_line": 3, "quote": "ls", "role": "action"}]},
     {"issue_id": "iss-3", "change_id": "chg-hook", "outcome": "recurrence",
-     "evidence": [{"session": "beta", "source_line": 4, "quote": "ls"}]}],
+     "evidence": [{"session": "beta", "source_line": 4, "quote": "ls", "role": "action"}]}],
   "gamma": [
     {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "opportunity_met",
-     "evidence": [{"session": "gamma", "source_line": 2, "quote": "ls"}]}],
+     "evidence": [{"session": "gamma", "source_line": 2, "quote": "ls", "role": "action"}]}],
 }
 
 CROSS_OUTPUT_OBSERVATIONS = [
   {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "recurrence",
-   "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}, {"session": "alpha", "source_line": 3, "quote": "ls"},
-                {"session": "beta", "source_line": 2, "quote": "ls"}]},
+   "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls", "role": "action"}, {"session": "alpha", "source_line": 3, "quote": "ls", "role": "action"},
+                {"session": "beta", "source_line": 2, "quote": "ls", "role": "action"}]},
   {"issue_id": "iss-1", "change_id": "chg-hook", "outcome": "recurrence",
-   "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}]},
+   "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls", "role": "action"}]},
   {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "not_applicable",
-   "evidence": [{"session": "alpha", "source_line": 4, "quote": "ls"}]},
+   "evidence": [{"session": "alpha", "source_line": 4, "quote": "ls", "role": "action"}]},
   {"issue_id": "iss-1", "change_id": "chg-search", "outcome": "unreviewed",
-   "evidence": [{"session": "beta", "source_line": 3, "quote": "ls"}]},
+   "evidence": [{"session": "beta", "source_line": 3, "quote": "ls", "role": "action"}]},
   {"issue_id": "iss-2", "change_id": "chg-search", "outcome": "opportunity_met",
-   "evidence": [{"session": "gamma", "source_line": 2, "quote": "ls"}]},
+   "evidence": [{"session": "gamma", "source_line": 2, "quote": "ls", "role": "action"}]},
 ]
 
 

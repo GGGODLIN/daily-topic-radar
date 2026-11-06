@@ -20,6 +20,8 @@ MAX_PAGE_LINES = 1800
 SHARD_CHARS = 6 * 140000
 STAGES = ("reading", "session-merge", "cross", "verify")
 DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
+# action 是犯錯（或照做）的那個動作，只有它產生事件；context 是佐證（停掉指令、縮小範圍重查、讀存檔），歸到某個事件底下。
+EVIDENCE_ROLES = ("action", "context")
 ACCOUNTING_ERROR_CAP = 25
 DEFAULT_MODEL = "gpt-6.1-sol[1m]"
 DEFAULT_ARGON_MODEL = "google/gemini-4-argon:high"
@@ -1381,6 +1383,12 @@ def check_tracking_shape(report):
                  and isinstance(point.get("source_line"), int) and not isinstance(point["source_line"], bool) and point["source_line"] >= 1
                  and isinstance(point.get("quote"), str) and point["quote"].strip() for point in points):
       errors.append(f"{name}: every evidence entry needs session, a positive integer source_line and a quote")
+    else:
+      # 沒有 role 就分不出哪些是事件、哪些是佐證；補救動作會被各算一個事件（11-04 搜尋輸出過大：人工 22、程式 29）。
+      unroled = [position for position, point in enumerate(points) if point.get("role") not in EVIDENCE_ROLES]
+      errors.extend(f"{name}: evidence[{position}] role must be 'action' or 'context'" for position in unroled)
+      if not unroled and obs.get("outcome") != "unreviewed" and not any(point["role"] == "action" for point in points):
+        errors.append(f"{name}: needs at least one evidence with role 'action' (the mistaken or followed action itself)")
   shown = errors[:ACCOUNTING_ERROR_CAP]
   require(not errors, "; ".join(shown + ([f"(+{len(errors) - len(shown)} more tracking observation errors)"] if len(errors) > len(shown) else [])))
 
@@ -1650,7 +1658,11 @@ def find_change(context, change_id):
 
 
 def add_event_evidence(report, item, plan, run):
-  """Tracking observations carry model-written evidence; time and load judgement come from the raw session."""
+  """Tracking observations carry model-written evidence; time and load judgement come from the raw session.
+
+  Only an action entry becomes an event. A context entry joins the nearest earlier action of its own
+  session (the first action when none is earlier) and carries that event_key, so ingest never recomputes it.
+  """
   observations = report.get("tracking_observations")
   if not isinstance(observations, list):
     return
@@ -1659,7 +1671,8 @@ def add_event_evidence(report, item, plan, run):
   if (run / "tracking-context.json").is_file():
     with suppress(ValueError, OSError):
       context = load(run / "tracking-context.json")
-  for observation in observations:
+  orphans = []
+  for index, observation in enumerate(observations):
     evidence = observation.get("evidence") if isinstance(observation, dict) else None
     entries = [evidence] if isinstance(evidence, dict) else evidence if isinstance(evidence, list) else []
     change_id = observation.get("change_id") if isinstance(observation, dict) else None
@@ -1669,10 +1682,13 @@ def add_event_evidence(report, item, plan, run):
     except Invalid:
       change = None
     events = []
-    for entry in entries:
+    actions = []
+    supports = []
+    for position, entry in enumerate(entries):
       if not isinstance(entry, dict):
         continue
       entry.pop("event_time", None)
+      entry.pop("event_key", None)
       session = entry.get("session", item.get("session"))
       try:
         event = event_evidence(sources.get(session, ""), change_id, change, source_line=entry.get("source_line"))
@@ -1680,9 +1696,27 @@ def add_event_evidence(report, item, plan, run):
         event = {"loaded": "unchecked", "basis": "unchecked", "reason": str(error), "event_time": None}
       if event["event_time"]:
         entry["event_time"] = event["event_time"]
-      events.append(event)
+      line = event.get("source_line") or entry.get("source_line")
+      if entry.get("role") == "context":
+        supports.append((position, entry, session, line))
+      else:
+        events.append(event)
+        actions.append((session, line, event))
+    for position, entry, session, line in supports:
+      mine = [action for action in actions if action[0] == session]
+      if not mine:
+        orphans.append(f"tracking_observations[{index}] (issue_id={observation.get('issue_id')}, change_id={change_id}): "
+                       f"context evidence[{position}] (session={session}, source_line={entry.get('source_line')}) "
+                       "has no action in the same session")
+        continue
+      earlier = [action for action in mine if action[1] <= line]
+      home = max(earlier, key=lambda action: action[1]) if earlier else min(mine, key=lambda action: action[1])
+      entry["event_key"] = home[2].get("event_key")
     if events:
       observation["events"] = events
+  shown = orphans[:ACCOUNTING_ERROR_CAP]
+  require(not orphans, "; ".join(shown + ([f"(+{len(orphans) - len(shown)} more context evidence without an action)"]
+                                          if len(orphans) > len(shown) else [])))
 
 
 def validate(args):

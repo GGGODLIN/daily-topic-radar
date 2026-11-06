@@ -35,6 +35,8 @@ LOAD_STATES = ("loaded", "not_loaded", "unchecked")
 STALE_LOAD_BASES = ("last_load_is_old_version", "load_time_outside_effective_window")
 DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
 COVERAGE = ("yes", "no", "unknown")
+# action 產生事件；context 是佐證，掛在同一觀察某個事件底下。沒有 role 的證據是舊格式。
+EVIDENCE_ROLES = ("action", "context")
 # 判定值對照規格：有效、無效、幫倒忙、證據不足。
 VERDICTS = ("effective", "ineffective", "harmful", "insufficient")
 # 證據不足與沒判定的改動都是空值：未知不寫成 false。
@@ -601,13 +603,20 @@ def proposal_events(item, label, destinations):
   evidence = item.get("evidence")
   events = item.get("events")
   require(isinstance(evidence, list) and evidence, label + ".evidence must be a non-empty list")
-  # events[] 由驗收器逐筆從 evidence 產生；缺少或對不上，代表它沒走過驗收，不當舊格式收。
+  roles = [point.get("role") if isinstance(point, dict) else None for point in evidence]
+  if all(role is None for role in roles):
+    return legacy_events(item, label, issue, change_id, outcome)
+  for position, role in enumerate(roles):
+    require(role in EVIDENCE_ROLES, label + ".evidence[" + str(position) + "].role must be action or context")
+  actions = [point for point, role in zip(evidence, roles) if role == "action"]
+  require(actions, label + ".evidence needs at least one action")
+  # events[] 由驗收器逐筆從 action 證據產生；缺少或對不上，代表它沒走過驗收，不當舊格式收。
   require(
-    isinstance(events, list) and len(events) == len(evidence),
-    label + ".events must match evidence one to one",
+    isinstance(events, list) and len(events) == len(actions),
+    label + ".events must match the action evidence one to one",
   )
   found = []
-  for position, (event, point) in enumerate(zip(events, evidence)):
+  for position, (event, point) in enumerate(zip(events, actions)):
     where = label + ".events[" + str(position) + "]"
     require(isinstance(event, dict), where + " must be an object")
     key = ident(event.get("observation_key"), where + ".observation_key")
@@ -629,7 +638,6 @@ def proposal_events(item, label, destinations):
     if event.get("load_time") is not None:
       moment(event["load_time"], where + ".load_time")
     require(at is not None or loaded != "loaded", where + " is loaded but has no event_time")
-    require(isinstance(point, dict), label + ".evidence[" + str(position) + "] must be an object")
     session = point.get("session")
     line = point.get("source_line")
     quote = point.get("quote")
@@ -650,6 +658,7 @@ def proposal_events(item, label, destinations):
         require(destination["to_outcome"] == outcome, where + " outcome is not the to_outcome")
     found.append(
       {
+        "kind": "action",
         "key": key,
         "label": where,
         "issue_id": issue,
@@ -661,7 +670,66 @@ def proposal_events(item, label, destinations):
         "destination": destination,
       }
     )
+  by_event = {entry["event"]["event_key"]: entry for entry in found}
+  for position, (point, role) in enumerate(zip(evidence, roles)):
+    if role != "context":
+      continue
+    where = label + ".evidence[" + str(position) + "]"
+    home = by_event.get(point.get("event_key"))
+    require(home is not None, where + " is a context and needs the event_key of one of this observation's events")
+    session, line, quote = point.get("session"), point.get("source_line"), point.get("quote")
+    require(isinstance(session, str) and session.strip(), where + " needs a session")
+    require(isinstance(line, int) and not isinstance(line, bool) and line >= 1, where + " source_line must be a positive integer")
+    require(isinstance(quote, str) and quote.strip(), where + " needs a quote")
+    found.append(
+      {
+        "kind": "context",
+        "key": home["key"],
+        "label": where,
+        "issue_id": issue,
+        "change_id": change_id,
+        "point": {"session": session, "source_line": line, "quote": quote, "role": "context"},
+      }
+    )
   return found
+
+
+def legacy_events(item, label, issue, change_id, outcome):
+  """Evidence without roles comes from a report written before roles existed.
+
+  Which entries were the mistaken action is unknown, so no event can be keyed and no time is trusted: the
+  observation is written without event_time (the store's legacy shape), listed apart and never counted.
+  """
+  evidence = item["evidence"]
+  points = []
+  for position, point in enumerate(evidence):
+    where = label + ".evidence[" + str(position) + "]"
+    require(isinstance(point, dict), where + " must be an object")
+    session, line, quote = point.get("session"), point.get("source_line"), point.get("quote")
+    require(isinstance(session, str) and session.strip(), where + " needs a session")
+    require(isinstance(line, int) and not isinstance(line, bool) and line >= 1, where + " source_line must be a positive integer")
+    require(isinstance(quote, str) and quote.strip(), where + " needs a quote")
+    points.append({"session": session, "source_line": line, "quote": quote})
+  # 舊 cross 的去向以事件鍵為單位；這些鍵在舊格式下不產生觀察，但去向不能因此被當成找不到歸宿。
+  carried = [
+    event["observation_key"]
+    for event in item.get("events") or []
+    if isinstance(event, dict) and isinstance(event.get("observation_key"), str)
+  ]
+  key = "legacy:" + issue + "|" + change_id + "|" + outcome + "|" + points[0]["session"] + ":" + str(points[0]["source_line"])
+  return [
+    {
+      "kind": "legacy",
+      "key": key,
+      "label": label + ".evidence[" + str(position) + "]",
+      "issue_id": issue,
+      "change_id": change_id,
+      "outcome": outcome,
+      "point": point,
+      "carries": carried,
+    }
+    for position, point in enumerate(points)
+  ]
 
 
 def packet_observations(packet):
@@ -672,7 +740,8 @@ def packet_observations(packet):
   found = []
   for index, item in enumerate(proposals):
     found.extend(proposal_events(item, "observation_proposals[" + str(index) + "]", destinations))
-  landed = {item["key"] for item in found}
+  landed = {item["key"] for item in found if item["kind"] != "legacy"}
+  landed.update(key for item in found for key in item.get("carries", ()))
   for key, destination in destinations.items():
     require(
       destination["disposition"] == "rejected" or key in landed,
@@ -717,6 +786,20 @@ def observation_bodies(rows, run_id, proposals):
       found is not None and found["issue_id"] == item["issue_id"],
       item["label"] + ": observation change is not on this issue",
     )
+    if item["kind"] == "context":
+      built.append({"key": item["key"], "body": {"run_id": run_id, "evidence": item["point"]}, "kind": "context"})
+      continue
+    if item["kind"] == "legacy":
+      body = {
+        "issue_id": item["issue_id"],
+        "observation_id": item["key"],
+        "change_id": item["change_id"],
+        "outcome": item["outcome"],
+        "evidence": item["point"],
+        "run_id": run_id,
+      }
+      built.append({"key": item["key"], "body": body, "destination": None, "kind": "legacy"})
+      continue
     event = item["event"]
     result, why = judge(event, item["outcome"], found["effective_at"])
     body = {
@@ -742,7 +825,7 @@ def observation_bodies(rows, run_id, proposals):
       body["cross_disposition"] = {
         name: value for name, value in destination.items() if name != "observation_key"
       }
-    built.append({"key": item["key"], "body": body, "destination": destination})
+    built.append({"key": item["key"], "body": body, "destination": destination, "kind": "action"})
   return built
 
 
@@ -792,16 +875,22 @@ def current_observations(rows):
 def plan_observations(rows, built):
   history, points, runs = observation_history(rows)
   fresh = []
-  tally = {"new": 0, "replayed": 0, "supplemented": 0, "corrected": 0}
+  tally = {
+    "new": 0,
+    "replayed": 0,
+    "supplemented": 0,
+    "corrected": 0,
+    "legacy": {"new": 0, "replayed": 0, "supplemented": 0},
+  }
 
-  def settle(key, body):
+  def settle(key, body, bucket):
     # 同一事件的證據點：這句引文記過就是重播，沒記過才是補證。引文是證據、不是事件身分，
     # 同一行換引文不構成衝突。
     point = body["evidence"]
     place = (point["session"], point["source_line"])
     known = points.get(key, {}).get(place, [])
     if point["quote"] in known:
-      tally["replayed"] += 1
+      bucket["replayed"] += 1
       return
     # 同一行的第二句起加序號：id 不能和第一句的補證撞在一起，又要重播時算得出同一個 id。
     suffix = ":" + str(len(known)) if known else ""
@@ -812,18 +901,27 @@ def plan_observations(rows, built):
     )
     fresh.append(row)
     remember(points, key, point)
-    tally["supplemented"] += 1
+    bucket["supplemented"] += 1
 
-  for item in built:
+  # 佐證掛在事件的觀察上，所以排在所有觀察之後處理，不論它在證據清單的哪個位置。
+  ordered = [item for item in built if item["kind"] != "context"] + [
+    item for item in built if item["kind"] == "context"
+  ]
+  for item in ordered:
     key, body = item["key"], item["body"]
     states = history.get(key, [])
+    bucket = tally["legacy"] if item["kind"] == "legacy" else tally
+    if item["kind"] == "context":
+      require(states, "context evidence has no observation to attach to: " + key)
+      settle(key, body, tally)
+      continue
     if not states:
       row = entry("observation", "observation:" + key, body)
       fresh.append(row)
       history[key] = [row]
       remember(points, key, body["evidence"])
       runs.setdefault(key, set()).add(body["run_id"])
-      tally["new"] += 1
+      bucket["new"] += 1
       continue
     same_run = next((state for state in states if state.get("run_id") == body["run_id"]), None)
     if same_run is not None:
@@ -831,12 +929,12 @@ def plan_observations(rows, built):
         observation_core(same_run) == observation_core(body),
         "conflicting observation in one run: " + key,
       )
-      settle(key, body)
+      settle(key, body, bucket)
     elif body["run_id"] in runs.get(key, set()):
       # 這一輪先前只補過證，結果之後可能已被更正；重播它不能把結果改回去。
-      settle(key, body)
+      settle(key, body, bucket)
     elif observation_core(states[-1]) == observation_core(body):
-      settle(key, body)
+      settle(key, body, bucket)
       runs.setdefault(key, set()).add(body["run_id"])
     else:
       destination = item["destination"] or {}
@@ -889,7 +987,7 @@ def ingest(store, packet_path, apply):
     fresh = fresh + extra
     if apply and fresh:
       append_rows(handle, fresh)
-  return summary(fresh, len(skipped) + tally["replayed"], tally)
+  return summary(fresh, len(skipped) + tally["replayed"] + tally["legacy"]["replayed"], tally)
 
 
 def read_regular(path):

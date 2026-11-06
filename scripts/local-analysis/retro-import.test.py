@@ -301,7 +301,7 @@ class ImportCLI(unittest.TestCase):
       item = event(key, at)
       return {
         "issue_id": "tracked-issue", "change_id": "change-1", "outcome": outcome,
-        "evidence": [{"session": "session-a", "source_line": 3, "quote": quote, "event_time": at}],
+        "evidence": [{"session": "session-a", "source_line": 3, "quote": quote, "role": "action", "event_time": at}],
         "events": [item],
       }
 
@@ -373,7 +373,8 @@ class ImportCLI(unittest.TestCase):
     self.assertIn("tracking_dispositions", error["error"])
     self.assertFalse(out.exists())
 
-  def test_imported_packet_ingests_into_observation_records(self):
+  def seeded_store(self):
+    """A store with one approved issue and one change effective at 2026-10-20T01:00:00Z, built through the CLI."""
     store = self.root / "store"
     base = self.root / "base-packet.json"
     anchor = self.root / "anchor.txt"
@@ -393,6 +394,13 @@ class ImportCLI(unittest.TestCase):
     self.store("--store", store, "change", "--issue", "tracked-issue", "--id", "change-1",
                "--effective-at", "2026-10-20T01:00:00Z", "--source", anchor, "--line", 1,
                "--quote", "base source line", "--condition", "kept next time", "--apply")
+    return store
+
+  def stored_rows(self, store):
+    return [json.loads(line) for line in (store / "records.jsonl").read_text(encoding="utf-8").split("\n") if line]
+
+  def test_imported_packet_ingests_into_observation_records(self):
+    store = self.seeded_store()
     run = self.run_dir("e2e", self.tracked_cross(), "plan.json", reviews=False)
     out = self.root / "e2e-packet.json"
     self.cli("--run", run, "--out", out)
@@ -401,12 +409,49 @@ class ImportCLI(unittest.TestCase):
     self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
                      {"new": 2, "replayed": 0, "supplemented": 0, "corrected": 0})
     self.assertEqual(counts["rejected"], [{"observation_key": "toolu_X|change-1", "reason": "hook did not run"}])
-    rows = [json.loads(line) for line in (store / "records.jsonl").read_text(encoding="utf-8").split("\n") if line]
-    stored = {row["observation_id"]: row["outcome"] for row in rows if row["type"] == "observation"}
+    stored = {row["observation_id"]: row["outcome"] for row in self.stored_rows(store) if row["type"] == "observation"}
     self.assertEqual(stored, {"toolu_K|change-1": "recurrence", "toolu_R|change-1": "unreviewed"})
     again = self.store("--store", store, "ingest", "--packet", out, "--apply")
     self.assertEqual(again["appended"], 0)
     self.assertEqual(again["observations"]["new"], 0)
+
+  def test_roles_pass_through_the_packet_and_context_lands_as_supplementary_evidence(self):
+    cross = self.tracked_cross()
+    stop = {"session": "session-a", "source_line": 5, "quote": "stop the search", "role": "context",
+            "event_key": "toolu_K", "event_time": "2026-10-20T03:00:00Z"}
+    cross["tracking_observations"][0]["evidence"].append(stop)
+    run = self.run_dir("roles", cross, "plan.json", reviews=False)
+    out = self.root / "roles-packet.json"
+    self.cli("--run", run, "--out", out)
+    packet = json.loads(out.read_text(encoding="utf-8"))
+    evidence = packet["observation_proposals"][0]["evidence"]
+    self.assertEqual([point["role"] for point in evidence], ["action", "context"])
+    self.assertEqual(evidence[1]["event_key"], "toolu_K")
+    store = self.seeded_store()
+    counts = self.store("--store", store, "ingest", "--packet", out, "--apply")["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "supplemented")}, {"new": 2, "supplemented": 1})
+    rows = self.stored_rows(store)
+    self.assertEqual({row["observation_id"] for row in rows if row["type"] == "observation"},
+                     {"toolu_K|change-1", "toolu_R|change-1"})
+    context = [row for row in rows if row["type"] == "observation_evidence"]
+    self.assertEqual([(row["observation_id"], row["evidence"]["quote"], row["evidence"]["role"]) for row in context],
+                     [("toolu_K|change-1", "stop the search", "context")])
+
+  def test_a_cross_report_without_roles_imports_as_legacy_observations(self):
+    cross = self.tracked_cross()
+    for point in cross["tracking_observations"][1]["evidence"]:
+      del point["role"]
+    run = self.run_dir("old-format", cross, "plan.json", reviews=False)
+    out = self.root / "old-format-packet.json"
+    self.cli("--run", run, "--out", out)
+    store = self.seeded_store()
+    counts = self.store("--store", store, "ingest", "--packet", out, "--apply")["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 1, "replayed": 0, "supplemented": 0, "corrected": 0})
+    self.assertEqual(counts["legacy"], {"new": 1, "replayed": 0, "supplemented": 0})
+    observations = [row for row in self.stored_rows(store) if row["type"] == "observation"]
+    self.assertEqual({row["observation_id"] for row in observations if "event_time" in row}, {"toolu_K|change-1"})
+    self.assertEqual([row["outcome"] for row in observations if "event_time" not in row], ["unreviewed"])
 
   def store(self, *args):
     result = subprocess.run(

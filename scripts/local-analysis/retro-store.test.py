@@ -1096,12 +1096,18 @@ class StoreCLI(unittest.TestCase):
       "basis": basis, "load_line": None, "load_time": load_time, "reason": reason,
     }
 
-  def tracked(self, change, outcome, *pairs, issue="issue-1", **extra):
+  def tracked(self, change, outcome, *pairs, issue="issue-1", contexts=(), **extra):
+    """Each pair is an action and its event; each context is (event it supports, its own line, quote)."""
     return {
       "issue_id": issue, "change_id": change, "outcome": outcome,
       "evidence": [
-        {"session": e["session"], "source_line": e["source_line"], "quote": quote, "event_time": e["event_time"]}
+        {"session": e["session"], "source_line": e["source_line"], "quote": quote, "role": "action",
+         "event_time": e["event_time"]}
         for e, quote in pairs
+      ] + [
+        {"session": e["session"], "source_line": line, "quote": quote, "role": "context",
+         "event_key": e["event_key"], "event_time": e["event_time"]}
+        for e, line, quote in contexts
       ],
       "events": [e for e, _ in pairs],
       **extra,
@@ -1427,6 +1433,135 @@ class StoreCLI(unittest.TestCase):
       "run-ok", observations[:2], [self.kept("toolu_A|fix-1"), self.kept("toolu_A|fix-2")]
     )
     self.assertEqual(self.cli("ingest", "--packet", path, "--apply")["observations"]["new"], 2)
+
+  # ---- evidence roles (ticket 10 finding F6) ------------------------------------------------
+
+  def too_large(self):
+    """Deidentified 11-04 shape: two blown-up searches, each followed by a stop, a narrower retry and a read."""
+    s1 = self.event("toolu_S1", "fix-1", "2026-10-20T03:00:00Z", line=2)
+    s2 = self.event("toolu_S2", "fix-1", "2026-10-20T03:10:00Z", line=5)
+    item = self.tracked(
+      "fix-1", "recurrence", (s1, "first blow-up"), (s2, "second blow-up"),
+      contexts=[(s1, 3, "TaskStop"), (s1, 4, "narrower search"), (s2, 6, "read the saved output"), (s2, 7, "TaskStop again")],
+    )
+    # Interleave the way the report writes it: action, its contexts, next action, its contexts.
+    ev = item["evidence"]
+    item["evidence"] = [ev[0], ev[2], ev[3], ev[1], ev[4], ev[5]]
+    return item, [self.kept("toolu_S1|fix-1"), self.kept("toolu_S2|fix-1")]
+
+  def test_only_action_evidence_makes_observations_and_every_context_becomes_a_supplement(self):
+    self.ready()
+    item, dispositions = self.too_large()
+    path, _ = self.observation_packet("run-big", [item], dispositions)
+    summary = self.cli("ingest", "--packet", path, "--apply")
+    # Six evidence entries, two actions: two observations; the four contexts are supplements of their own event.
+    self.assertEqual(set(self.observation_rows()), {"toolu_S1|fix-1", "toolu_S2|fix-1"})
+    supplements = sorted(
+      (row["observation_id"], row["evidence"]["source_line"], row["evidence"]["quote"], row["evidence"]["role"])
+      for row in self.rows() if row["type"] == "observation_evidence"
+    )
+    self.assertEqual(supplements, [
+      ("toolu_S1|fix-1", 3, "TaskStop", "context"), ("toolu_S1|fix-1", 4, "narrower search", "context"),
+      ("toolu_S2|fix-1", 6, "read the saved output", "context"), ("toolu_S2|fix-1", 7, "TaskStop again", "context"),
+    ])
+    counts = summary["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 2, "replayed": 0, "supplemented": 4, "corrected": 0})
+    stats = self.cli("list", "--issue", "issue-1")["issues"][0]["observations"]
+    self.assertEqual((stats["recurrence"], stats["total"], stats["legacy"]), (2, 2, 0))
+    # A context never replaces the action as the observation's own evidence.
+    self.assertEqual(self.observation_rows()["toolu_S1|fix-1"]["evidence"],
+                     {"session": "session-a", "source_line": 2, "quote": "first blow-up"})
+    before = (self.store / "records.jsonl").read_bytes()
+    again = self.cli("ingest", "--packet", path, "--apply")
+    self.assertEqual(again["appended"], 0)
+    self.assertEqual({k: again["observations"][k] for k in ("new", "replayed", "supplemented")},
+                     {"new": 0, "replayed": 6, "supplemented": 0})
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def test_malformed_roles_reject_the_whole_batch(self):
+    self.ready()
+    observations, _dispositions, _expected = self.cases()
+    good = observations[:1]
+    before = (self.store / "records.jsonl").read_bytes()
+
+    def drop_event_key(item):
+      del item["evidence"][1]["event_key"]
+
+    def foreign_event_key(item):
+      item["evidence"][1]["event_key"] = "toolu_Z"
+
+    def one_entry_without_role(item):
+      del item["evidence"][1]["role"]
+
+    def unknown_role(item):
+      item["evidence"][1]["role"] = "bystander"
+
+    def only_context(item):
+      item["evidence"] = [item["evidence"][1]]
+      item["events"] = []
+
+    def one_event_too_many(item):
+      item["events"].append(item["events"][0])
+
+    base, dispositions = self.too_large()
+    broken = {
+      "context without event_key": (drop_event_key, "evidence[1]"),
+      "context points at another observation's event": (foreign_event_key, "evidence[1]"),
+      "some entries have a role and some do not": (one_entry_without_role, "evidence[1].role"),
+      "role value": (unknown_role, "evidence[1].role"),
+      "recurrence with no action": (only_context, "at least one action"),
+      "events do not match the actions": (one_event_too_many, "action evidence one to one"),
+    }
+    for label, (mutate, reason) in broken.items():
+      second = json.loads(json.dumps(base))
+      mutate(second)
+      path, _ = self.observation_packet("run-bad", good + [second], [self.kept("toolu_A|fix-1")] + dispositions)
+      error = self.cli("ingest", "--packet", path, "--apply", code=2)
+      self.assertIn("observation_proposals[1]", error["error"], label)
+      self.assertIn(reason, error["error"], label)
+      self.assertEqual((self.store / "records.jsonl").read_bytes(), before, label)
+    # Positive control: the same two observations without the corruption go in, contexts included.
+    path, _ = self.observation_packet("run-ok", good + [base], [self.kept("toolu_A|fix-1")] + dispositions)
+    counts = self.cli("ingest", "--packet", path, "--apply")["observations"]
+    self.assertEqual((counts["new"], counts["supplemented"]), (3, 4))
+
+  def test_evidence_without_roles_is_written_as_legacy_and_never_counted(self):
+    self.ready()
+    at = "2026-10-20T03:00:00Z"
+    roled = self.tracked("fix-1", "recurrence", (self.event("toolu_N", "fix-1", at), "new format"))
+    old_events = self.tracked("fix-1", "recurrence", (self.event("toolu_O", "fix-1", at), "old with events"))
+    old_events["evidence"].append({"session": "session-a", "source_line": 8, "quote": "second old line"})
+    old_bare = {"issue_id": "issue-1", "change_id": "fix-1", "outcome": "opportunity_met", "covered": "yes",
+                "evidence": [{"session": "session-b", "source_line": 4, "quote": "pre-event report"}]}
+    for item in (old_events, old_bare):
+      for point in item["evidence"]:
+        point.pop("role", None)
+        point.pop("event_time", None)
+    old_events["events"] = old_events["events"] * 2  # an old validator wrote one event per evidence entry
+    # The cross destinations of the old report name event keys; none of them may reject the batch.
+    dispositions = [self.kept("toolu_N|fix-1"), self.kept("toolu_O|fix-1")]
+    path, _ = self.observation_packet("run-legacy", [roled, old_events, old_bare], dispositions)
+    summary = self.cli("ingest", "--packet", path, "--apply")
+    counts = summary["observations"]
+    self.assertEqual({k: counts[k] for k in ("new", "replayed", "supplemented", "corrected")},
+                     {"new": 1, "replayed": 0, "supplemented": 0, "corrected": 0})
+    self.assertEqual(counts["legacy"], {"new": 2, "replayed": 0, "supplemented": 1})
+    legacy = [row for row in self.rows() if row["type"] == "observation" and "event_time" not in row]
+    self.assertEqual(len(legacy), 2)
+    self.assertTrue(all(row["observation_id"].startswith("legacy:") for row in legacy))
+    self.assertEqual(sorted((row["outcome"], row["evidence"]["quote"]) for row in legacy),
+                     [("opportunity_met", "pre-event report"), ("recurrence", "old with events")])
+    # They are listed apart and neither counted nor judged; the roled twin is counted by the same projection.
+    stats = self.cli("list", "--issue", "issue-1")["issues"][0]["observations"]
+    self.assertEqual((stats["recurrence"], stats["correct"], stats["total"], stats["legacy"]), (1, 0, 1, 2))
+    self.assertEqual(self.cli("list", "--summary")["counts"]["legacy_observations"], 2)
+    self.assertEqual(self.observation_rows()["toolu_N|fix-1"]["event_time"], at)
+    before = (self.store / "records.jsonl").read_bytes()
+    again = self.cli("ingest", "--packet", path, "--apply")
+    self.assertEqual(again["appended"], 0)
+    self.assertEqual(again["observations"]["legacy"], {"new": 0, "replayed": 3, "supplemented": 0})
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
 
   def test_observation_for_an_unknown_change_or_wrong_issue_is_refused(self):
     self.ready(changes=("fix-1",))
