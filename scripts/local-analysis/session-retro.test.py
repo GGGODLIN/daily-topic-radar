@@ -799,6 +799,35 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.assertTrue(oracle_p1(inputs, validated["tracking_dispositions"]))
     self.assertTrue(oracle_p2(inputs, validated))
 
+  def test_events_written_by_the_model_on_an_observation_without_evidence_never_survive(self):
+    fake = {"observation_key": "toolu_B2|chg-search", "event_key": "toolu_B2", "change_id": "chg-search",
+            "event_time": "1900-01-01T00:00:00Z", "loaded": "loaded"}
+    path, cross, units = self.cross_case()
+
+    def forge(report):
+      forged = report["tracking_observations"][3]
+      self.assertEqual(forged["outcome"], "unreviewed")
+      del forged["evidence"]
+      forged["events"] = [fake]
+
+    # The forged event would be the only thing carrying toolu_B2 into the output; with events re-derived it is absent.
+    errors = self.cross_errors(path, cross, self.cross_report(cross, units, forge), code=2)
+    self.assertIn("toolu_B2", errors)
+    self.assertFalse((path.parent / "validated" / "cross-session.json").exists())
+    # Control: the same observation with its evidence in place passes, so the failure above is the forged events.
+    self.cross_errors(path, cross, self.cross_report(cross, units), code=0)
+
+  def test_validated_reading_has_no_model_written_events_on_an_unreviewed_observation(self):
+    path, _ = self.prepare([user(), call("toolu_F", RECENT)])
+    item = self.stage(path, "reading")["items"][0]
+    fake = {"observation_key": "toolu_F|chg-1", "event_key": "toolu_F", "change_id": "chg-1",
+            "event_time": "1900-01-01T00:00:00Z", "loaded": "loaded"}
+    observation = {"issue_id": "iss-1", "change_id": "chg-1", "outcome": "unreviewed", "events": [fake]}
+    self.validate(path, "reading", [self.transcript(item, self.report(item, tracking_observations=[observation]))])
+    saved = json.loads((path.parent / "validated" / f"{item['unit']}.json").read_text())
+    self.assertEqual(saved["tracking_observations"][0]["events"], [])
+    self.assertFalse("1900-01-01" in json.dumps(saved))
+
   def test_cross_rejects_an_input_observation_without_a_destination_and_names_it(self):
     path, cross, units = self.cross_case()
     inputs = fixture_inputs(units)
@@ -1479,6 +1508,19 @@ class EventEvidenceCLI(unittest.TestCase):
     old_body = {**body, "message": {"role": "user", "content": [{"type": "text", "text": OLD_RULE}]}}
     path = self.session("command-old", [marker, old_body, call("toolu_C2", LATER)])
     self.assertEqual(self.judge(path, command, line=3)["loaded"], "not_loaded")
+
+  def test_command_load_stops_at_the_next_command_instead_of_borrowing_its_expansion(self):
+    command = self.change("command")
+    text = lambda body: {"type": "user", "isMeta": True, "timestamp": AFTER, "message": {"role": "user", "content": [{"type": "text", "text": body}]}}
+    marker = lambda name: {"type": "user", "timestamp": AFTER, "message": {"role": "user", "content": f"<command-name>/{name}</command-name>"}}
+    # /demo only ever expanded to the old text; /other later expanded to the new text, which is not /demo's.
+    rows = [marker("demo"), text(OLD_RULE), call("toolu_X1", LATER), marker("other"), text(NEW_RULE), call("toolu_X2", "2026-11-02T05:00:00Z")]
+    path = self.session("command-borrowed", rows)
+    result = self.judge(path, command, line=6)
+    self.assertEqual((result["loaded"], result["basis"], result["load_line"]), ("not_loaded", "last_load_is_old_version", 1))
+    # Control: the same new text expanded by /demo itself after the other command does count.
+    again = self.session("command-reinvoked", rows[:5] + [marker("demo"), text(NEW_RULE), call("toolu_X3", "2026-11-02T05:00:00Z")])
+    self.assertEqual(self.judge(again, command, line=8)["loaded"], "loaded")
 
   def test_hook_and_script_load_follows_effective_time_to_the_second(self):
     for kind in ("hook", "script"):

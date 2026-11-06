@@ -1538,8 +1538,10 @@ def rule_loads(rows, before):
 
 def skill_loads(rows, before, kind, name):
   loads = []
-  usable = [(number, row) for number, row, _ in rows if row and number < before and row.get("type") != "assistant"]
-  for at, (number, row) in enumerate(usable):
+  ordered = [(number, row) for number, row, _ in rows if row and number < before]
+  for at, (number, row) in enumerate(ordered):
+    if row.get("type") == "assistant":
+      continue
     attachment = row.get("attachment")
     if isinstance(attachment, dict) and attachment.get("type") == "invoked_skills":
       for entry in attachment.get("skills") if isinstance(attachment.get("skills"), list) else []:
@@ -1551,9 +1553,14 @@ def skill_loads(rows, before, kind, name):
       if kind == "skill" and header and header.group(1).rstrip("/").rsplit("/", 1)[-1] == name:
         loads.append((number, row.get("timestamp"), [leaf]))
       elif kind == "command" and any(f"<command-name>{slash}{name}</command-name>" in leaf for slash in ("/", "")):
-        body = [text for follow_number, follow in usable[at:]
-                if follow_number == number or (follow.get("isMeta") and follow_number > number)
-                for text in flat_strings(follow.get("message", follow.get("content", "")))]
+        # Only the expansion right behind this invoke is its text. The next interaction (an assistant turn, a
+        # tool result, a user message) or the next command ends it, so a later command's expansion is never borrowed.
+        body = list(flat_strings(row.get("message", row.get("content", ""))))
+        for _follow_number, follow in ordered[at + 1:]:
+          texts = list(flat_strings(follow.get("message", follow.get("content", ""))))
+          if not follow.get("isMeta") or any("<command-name>" in text for text in texts):
+            break
+          body.extend(texts)
         loads.append((number, row.get("timestamp"), body))
   return loads
 
@@ -1712,7 +1719,8 @@ def add_event_evidence(report, item, plan, run):
       earlier = [action for action in mine if action[1] <= line]
       home = max(earlier, key=lambda action: action[1]) if earlier else min(mine, key=lambda action: action[1])
       entry["event_key"] = home[2].get("event_key")
-    if events:
+    # Always overwrite: an observation without action evidence must not keep events the model wrote itself.
+    if isinstance(observation, dict):
       observation["events"] = events
   shown = orphans[:ACCOUNTING_ERROR_CAP]
   require(not orphans, "; ".join(shown + ([f"(+{len(orphans) - len(shown)} more context evidence without an action)"]

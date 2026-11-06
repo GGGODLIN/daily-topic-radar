@@ -98,7 +98,7 @@ class RuleQueryTest(QueryBase):
     )
     for item in out["violations"]:
       self.assertRegex(item["source_ref"], rf"^session:{item['session_id']}#{item['line']}:[0-9a-f]{{16}}$")
-    self.assertEqual(out["coverage"], {"sessions": 4, "latest": "2026-10-14T02:00:00Z"})
+    self.assertEqual(out["coverage"], {"sessions": 4, "latest": "2026-10-14T01:00:00Z"})
     again = self.query("CLAUDE.md", ALPHA_QUOTE)
     self.assertEqual(again, out)
 
@@ -147,6 +147,42 @@ class RuleQueryTest(QueryBase):
     self.assertEqual(covered["violating_sessions"], 0)
     self.assertEqual(covered["violations"], [])
     self.assertEqual(covered["coverage"]["sessions"], 1)
+  def test_file_touched_after_since_but_analyzed_only_before_since_is_not_coverage(self):
+    fx, c0 = self.fx, self.c0
+    # 事件全在生效前、檔案 mtime 卻晚於生效日：規則分析覆蓋的是舊內容，不能當成生效後的覆蓋。
+    fx.add_session("old-events", ["2026-10-01T01:00:00Z", "2026-10-01T02:00:00Z"], c0, [], mtime=epoch("2026-10-12T03:00:00Z"))
+    out = self.query("CLAUDE.md", ALPHA_QUOTE)
+    self.assertEqual(out["status"], "not_analyzed")
+    self.assertIsNone(out["violating_sessions"])
+    self.assertEqual(out["coverage"], {"sessions": 0, "latest": None})
+
+  def test_appended_segment_without_rule_tags_does_not_make_old_coverage_count(self):
+    fx, c0 = self.fx, self.c0
+    # 10-01 的舊段落完成規則分析；追加的 10-15 段落回覆缺 rule_tags，所以沒有覆蓋列。
+    fx.add_session(
+      "appended", ["2026-10-01T01:00:00Z", "2026-10-01T02:00:00Z", "2026-10-15T01:00:00Z"], c0, [],
+      covered=2, mtime=epoch("2026-10-15T02:00:00Z"),
+    )
+    out = self.query("CLAUDE.md", ALPHA_QUOTE)
+    self.assertEqual(out["status"], "not_analyzed")
+    self.assertEqual(out["coverage"], {"sessions": 0, "latest": None})
+    # 對照：同一份資料以 10-01 為起點，舊段落的覆蓋就算數，最新覆蓋時間是舊段落最後一行。
+    earlier = self.query("CLAUDE.md", ALPHA_QUOTE, since="2026-10-01T00:00:00Z")
+    self.assertEqual(earlier["status"], "analyzed")
+    self.assertEqual(earlier["coverage"], {"sessions": 1, "latest": "2026-10-01T02:00:00Z"})
+
+  def test_coverage_counts_sessions_not_source_files(self):
+    fx, c0 = self.fx, self.c0
+    fx.add_session("main", stamps(11, 2), c0, [("ALPHA_RULE", 1, "ALPHA_MAIN")], mtime=epoch("2026-10-11T03:00:00Z"))
+    fx.add_session(
+      "main/subagents/agent-one", stamps(12, 2), c0, [("ALPHA_RULE", 2, "ALPHA_SUB")],
+      mtime=epoch("2026-10-12T03:00:00Z"), session_id="main",
+    )
+    out = self.query("CLAUDE.md", ALPHA_QUOTE)
+    self.assertEqual(out["violating_sessions"], 1)
+    self.assertEqual(out["coverage"]["sessions"], 1)
+    self.assertEqual(out["coverage"]["latest"], "2026-10-12T02:00:00Z")
+
   def test_sessions_that_loaded_a_version_without_the_paragraph_are_not_coverage(self):
     fx = self.fx
     old = fx.commit_rules({"CLAUDE.md": "# 全域設定\n\n## 程式碼風格\n\n- OLD_RULE 舊規則\n"}, "2026-09-02T00:00:00+00:00")
@@ -154,7 +190,7 @@ class RuleQueryTest(QueryBase):
     fx.add_session("old-version", stamps(11, 1), old, [], mtime=epoch("2026-10-11T03:00:00Z"))
     fx.add_session("new-version", stamps(12, 1), new, [], mtime=epoch("2026-10-12T03:00:00Z"))
     out = self.query("CLAUDE.md", ALPHA_QUOTE)
-    self.assertEqual(out["coverage"], {"sessions": 1, "latest": "2026-10-12T03:00:00Z"})
+    self.assertEqual(out["coverage"], {"sessions": 1, "latest": "2026-10-12T01:00:00Z"})
     self.assertEqual(out["violating_sessions"], 0)
 
   def test_paragraph_edited_since_reports_not_found_not_zero(self):

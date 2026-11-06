@@ -72,14 +72,20 @@ class RuleFixture:
         return number
     raise AssertionError(marker)
 
-  def add_session(self, name, stamps, commit, violations=(), covered=True, mtime=None, status="complete"):
-    """stamps[n-1] 是第 n 行 session 紀錄的時間；violations 是 (規則標記字串, 行號, 引文)。"""
+  def add_session(self, name, stamps, commit, violations=(), covered=True, mtime=None, status="complete", session_id=None):
+    """stamps[n-1] 是第 n 行 session 紀錄的時間；violations 是 (規則標記字串, 行號, 引文)。
+
+    covered=True 代表整份都完成規則分析；給整數 n 代表只有前 n 行完成（其後的段落回覆缺 rule_tags）。
+    name 可含子目錄；session_id 預設等於 name，給了就讓不同檔案共用同一個 session。
+    """
     self.serial += 1
+    session_id = session_id or name
     path = self.sessions / f"{name}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for index, stamp in enumerate(stamps, 1):
       rows.append(json.dumps({
-        "type": "user", "sessionId": name, "cwd": "/work/natural", "timestamp": stamp,
+        "type": "user", "sessionId": session_id, "cwd": "/work/natural", "timestamp": stamp,
         "message": {"role": "user", "content": f"{name} line {index}"},
       }))
     path.write_text("\n".join(rows) + "\n")
@@ -93,14 +99,27 @@ class RuleFixture:
         """INSERT INTO sources (inode, path, name, classification, included, status, latest_complete,
                                 generation, session_id, mtime)
            VALUES (?, ?, ?, 'natural', 1, ?, 1, 1, ?, ?)""",
-        (inode, str(path), path.name, status, name, last),
+        (inode, str(path), path.name, status, session_id, last),
       )
       db.execute(
         "INSERT INTO rule_sessions (inode, session_id, conversation_time, commit_sha, unavailable) VALUES (?, ?, ?, ?, '')",
-        (inode, name, earliest, commit),
+        (inode, session_id, earliest, commit),
       )
-      if covered:
+      # 每行一個 10 byte 的來源段；完成規則分析的視窗從 0 起算，到第 covered 行結束。
+      for number in range(1, len(stamps) + 1):
+        db.execute(
+          """INSERT INTO segments (inode, generation, doc_start, doc_end, line, block, byte_offset, role, record_type,
+                                   record_uuid, tool_name, tool_use_id, status)
+             VALUES (?, 1, ?, ?, ?, 0, 0, 'user', 'user', '', '', '', 'analyzed')""",
+          (inode, (number - 1) * 10, number * 10, number),
+        )
+      lines = len(stamps) if covered is True else int(covered)
+      if lines:
         db.execute("INSERT INTO rule_coverage (inode, generation, doc_start, week) VALUES (?, 1, 0, '2026-W44')", (inode,))
+        db.execute(
+          "INSERT INTO model_replies (inode, generation, doc_start, doc_end, content, status) VALUES (?, 1, 0, ?, '', 'parsed')",
+          (inode, lines * 10),
+        )
       for marker, line, quote in violations:
         rule = self.rule_at(commit, marker)
         db.execute(

@@ -3500,7 +3500,7 @@ def rule_query(connection, repo, path, quote, since):
   rule, reason = resolve_rule(repo, path, quote)
   if rule is None:
     return {**base, "found": False, "reason": reason}
-  needed = ("sources", "rule_sessions", "rule_coverage", "rule_tags")
+  needed = ("sources", "rule_sessions", "rule_coverage", "rule_tags", "segments", "model_replies")
   ready = all(table_exists(connection, name) for name in needed)
   contains = {}
 
@@ -3512,17 +3512,32 @@ def rule_query(connection, repo, path, quote, since):
 
   covered = []
   if ready:
+    # 覆蓋以「完成規則分析的視窗」為單位：rule_coverage 只在回覆帶有效 rule_tags 時寫入，
+    # 視窗末行的事件時間落在 since 之後才算；檔案 mtime 只作預篩，追加的新段落不會替舊段落的覆蓋背書。
     query = """
-      SELECT sources.inode, sources.mtime, rule_sessions.commit_sha
-      FROM sources JOIN rule_sessions ON rule_sessions.inode = sources.inode
+      SELECT sources.path, sources.session_id, sources.inode, rule_sessions.commit_sha,
+        (SELECT MAX(segments.line) FROM segments
+          WHERE segments.inode = rule_coverage.inode AND segments.generation = rule_coverage.generation
+            AND segments.doc_start >= rule_coverage.doc_start AND segments.doc_start < model_replies.doc_end) AS last_line
+      FROM sources
+      JOIN rule_sessions ON rule_sessions.inode = sources.inode
+      JOIN rule_coverage ON rule_coverage.inode = sources.inode AND rule_coverage.generation = sources.generation
+      JOIN model_replies ON model_replies.inode = rule_coverage.inode AND model_replies.generation = rule_coverage.generation
+        AND model_replies.doc_start = rule_coverage.doc_start
       WHERE sources.included = 1 AND sources.status IN ('complete', 'partial') AND sources.mtime >= ?
         AND rule_sessions.unavailable = '' AND rule_sessions.commit_sha != ''
-        AND EXISTS (SELECT 1 FROM rule_coverage WHERE rule_coverage.inode = sources.inode AND rule_coverage.generation = sources.generation)
     """
-    covered = [row for row in connection.execute(query, (since.timestamp(),)) if loaded_with_rule(row["commit_sha"])]
+    windows = [row for row in connection.execute(query, (since.timestamp(),)) if row["last_line"] is not None and loaded_with_rule(row["commit_sha"])]
+    ends = {}
+    for path_name in {row["path"] for row in windows}:
+      ends[path_name] = line_times(path_name, [row["last_line"] for row in windows if row["path"] == path_name])
+    for row in windows:
+      moment = ends[row["path"]].get(row["last_line"])
+      if moment is not None and moment >= since:
+        covered.append((row["session_id"] or row["inode"], moment))
   coverage = {
-    "sessions": len(covered),
-    "latest": iso_utc(datetime.fromtimestamp(max(row["mtime"] for row in covered), UTC)) if covered else None,
+    "sessions": len({session for session, _moment in covered}),
+    "latest": iso_utc(max(moment for _session, moment in covered)) if covered else None,
   }
   if not covered:
     # 沒分析過不等於沒違反：不回計數，讓呼叫端分得出「尚未分析」。
