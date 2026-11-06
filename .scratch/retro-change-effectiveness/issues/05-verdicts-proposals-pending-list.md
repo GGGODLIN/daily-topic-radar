@@ -49,3 +49,4 @@
 - 2026-11-06 ticket-yagni：kill 1／demote 0／keep 17。刪 `list --summary` 的 `proposal_decisions` 摘要鍵（commit 44eda1d）；待決定清單的提議過濾保留，`list --issue` 明細的 `proposal_decisions` 欄位保留。06 要讀拒絕時間時直接讀累積庫的 proposal_decision 紀錄。retro-store `Ran 50 tests ... OK`、retro-import 12 OK。
 - 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
   - [MEDIUM] retro-store.test.py:1883 backfill／proposal 預設 dry-run 沒有測試（Acceptance-miss）
+  - 修正：174d720（補 backfill／proposal 省略 --apply 不寫入的測試，並以 default=True 變異確認會紅）

@@ -60,3 +60,4 @@
   - [MEDIUM] retro-replay.py:645 前置判讀 ModelFailure 未捕捉、紀錄停在 running（Acceptance-miss）
   - [LOW→G4] retro-replay.py:539 跟隨跨來源重新導向外送 relay 金鑰（Acceptance-miss）
   - [LOW→G4] retro-replay.py:555 錯誤本文先截短再遮罩，金鑰片段落盤（安全，無標記）
+  - 修正：d6869ef（--resume 逐欄比對實驗身分、不用 hash；HTTP 200 error envelope 當暫時錯誤重試；副作用合併核對模型／route／規則版本；前置判讀 ModelFailure 記 incomplete、exit 13；拒絕重新導向；先遮罩再截短）。retro-replay `Ran 32 tests ... OK`。Minor：--resume 時 session 檔不見會以 cannot_replay 紀錄覆蓋 run.json、丟掉已收 attempts（既有行為，未修）；fatal 錯誤的 incomplete 原因仍寫「failed after 3 retries」

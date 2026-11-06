@@ -45,3 +45,4 @@
 - 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
   - [HIGH] session-retro.py:1554 command 載入收集 invoke 後所有 isMeta 文字，混入其他指令的新版內容 → 判已載入（Acceptance-miss）
   - [HIGH] session-retro.py:1715 沒有 action 的觀察保留模型手填 events，cross 逐筆核對假通過（Acceptance-miss）
+  - 修正：03c2635（command 載入只取該次 invoke 緊接的展開列，遇下一個指令或互動就停；validate 每筆觀察都以推導事件覆寫，沒有 action 時清空）。真實資料抽查：最近 200 個 session 裡有展開內容的自訂指令 7 次，展開列都緊接在 invoke 後（7/7）；session-retro `Ran 67 tests ... OK`

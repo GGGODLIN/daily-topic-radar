@@ -65,3 +65,4 @@
   - [HIGH] retro-store.py:936 同一 run 沒寫入列時不留紀錄，重播舊 packet 回滾較新的更正（Acceptance-miss）
   - [HIGH] retro-store.py:1748 tracking-context 的 new_text／source 不取 backfill 錨點，已載入判成沒載入（Acceptance-miss）
   - [MEDIUM] retro-store.test.py:1566 現存 change 屬另一個 issue 的錯配沒有測試（Failure-miss: F2）
+  - 修正：174d720（結果相同又沒新證據的 run 寫 `observation_run` 標記，重播已知 run 不寫更正；tracking-context 的 new_text／source 取最新 backfill 錨點；補「change 屬另一個 issue」錯配測試）。retro-store `Ran 67 tests ... OK`

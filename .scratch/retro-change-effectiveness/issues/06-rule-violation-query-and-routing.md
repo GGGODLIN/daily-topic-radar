@@ -54,3 +54,4 @@
   - [MEDIUM] retro-store.py:1526 make_hook 接受 --change 對象但摘要只查規則錨點（Acceptance-miss）；修法取收窄：make_hook 只收規則錨點
   - [MEDIUM] session-audit.py:3518 覆蓋量以檔案 mtime＋任一舊段落覆蓋判定，時間窗沒分析仍報 analyzed／零違反（Acceptance-miss）
   - [MEDIUM] session-audit.py:3524 覆蓋場數按來源檔計，主對話與子代理重複（Acceptance-miss）
+  - 修正：174d720（make_hook 只收規則錨點）、03c2635（覆蓋以「完成規則分析的視窗」事件時間判定、按 session_id 去重）。正式資料只讀重跑瀏覽器規則：違反 7 場不變，覆蓋 959 → 116，與研究筆記同期分析的 Argon 66＋Opus 49＝115 場相近；session-audit-rule-query `Ran 20 tests ... OK`、session-audit 71 OK

@@ -50,3 +50,4 @@
 - ticket-yagni：kill 0／demote 1／keep 7。刪掉 `workflows/tests/retro-workflow.test.mjs` 新增的逐階段 covered 檢查（契約斷言已涵蓋），該檔回到 25aef02b 的內容。
 - 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
   - [MEDIUM] workflows/retro-workflow.js:72 cross 補跑提示要求保留驗收失敗的 tracking_dispositions（Acceptance-miss）
+  - 修正：~/.claude 88ec3b3b（cross 補跑提示：錯誤摘要點名的去向不原樣保留，依契約修正）。retro-workflow.test 11/11、contract 18/18

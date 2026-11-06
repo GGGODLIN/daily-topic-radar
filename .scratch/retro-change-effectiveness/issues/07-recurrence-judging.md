@@ -46,3 +46,4 @@
   - [HIGH] retro-judge.py:397 第一層 cases=0 判有效（Failure-miss: F6）
   - [MEDIUM] retro-judge.py:405 第四層 events=[] 判無效（Failure-miss: F6）
   - [LOW→G4] retro-judge.py:223 urlopen 跟隨跨來源重新導向，帶 API key 外送（安全，無標記）
+  - 修正：d6869ef（所有相關片段任一違反即違反；第一層 cases=0、第四層 events=[] 判證據不足；拒絕重新導向）。retro-judge `Ran 24 tests ... OK`
