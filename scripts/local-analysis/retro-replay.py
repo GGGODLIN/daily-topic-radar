@@ -530,13 +530,19 @@ def next_arm(record):
 # ---- 模型呼叫 ---------------------------------------------------------------------------
 
 
+class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+  # 跟隨重新導向會把中轉站金鑰帶去別的來源，繞過 endpoint_for 的來源檢查；拒絕後以 HTTPError 浮出，當一般失敗處理。
+  def redirect_request(self, req, fp, code, msg, headers, newurl):
+    raise urllib.error.HTTPError(req.full_url, code, "redirect-refused", headers, fp)
+
+
 def post(endpoint, key, payload, timeout):
   request = urllib.request.Request(endpoint, data=payload, method="POST", headers={
     "content-type": "application/json", "anthropic-version": "2023-06-01", "authorization": "Bearer " + key})
   started = time.monotonic()
   status, raw, error = 0, b"", None
   try:
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
       status, raw = response.status, response.read()
   except urllib.error.HTTPError as caught:
     status, raw = caught.code, caught.read()
@@ -552,13 +558,21 @@ def post(endpoint, key, payload, timeout):
     except ValueError:
       parsed = None
     if status != 200:
-      error = raw[:300].decode("utf-8", "replace")
+      # 先完整解碼並遮罩再截短；先截短的話，跨在截斷點上的金鑰會留下前半段。
+      error = raw.decode("utf-8", "replace").replace(key, "[key]")[:300]
   return {"status": status, "secs": secs, "payload": parsed, "error": error.replace(key, "[key]") if error else None}
+
+
+def is_error_envelope(payload):
+  return isinstance(payload, dict) and (payload.get("type") == "error" or isinstance(payload.get("error"), dict))
 
 
 def classify(result):
   status, payload = result["status"], result["payload"]
   if status == 200:
+    # HTTP 200 也可能是錯誤信封；它帶的 content 不是模型回應，不能進樣本。
+    if is_error_envelope(payload):
+      return "transient"
     if isinstance(payload, dict) and isinstance(payload.get("content"), list):
       return "ok"
     return "transient"
@@ -580,7 +594,8 @@ def attempt_once(endpoint, key, body, args):
     if kind != "ok" and result["error"]:
       entry["error"] = result["error"][:300]
     elif kind != "ok":
-      entry["error"] = "the 200 reply has no content list"
+      entry["error"] = ("the 200 reply is an error envelope" if is_error_envelope(result["payload"])
+                        else "the 200 reply has no content list")
     tries.append(entry)
     if kind == "ok":
       return "ok", tries, result["payload"]
@@ -704,6 +719,11 @@ def execute(record, run_dir, ctx, spec, args, endpoint, judge, predicate):
   except KeyboardInterrupt:
     finish(record, "incomplete", "interrupted; resume to continue, no verdict was produced")
     return made
+  except judge.ModelFailure as error:
+    # 前置判讀模型失敗不是重建不忠實；已收的回應留在紀錄，恢復後從前置判讀接著跑。
+    finish(record, "incomplete", "the judge model failed while reading the first replies (" + error.failure
+           + "); resume to continue, no verdict was produced")
+    return made
 
 
 def compose_judge_input(record, side_records):
@@ -732,6 +752,52 @@ def load_record(path):
     raise Usage("not a run directory: " + str(path)) from error
 
 
+def resume_mismatches(record, spec, endpoint, predicate, size):
+  """Spec fields that differ from the experiment identity the run record already holds (compared field by field)."""
+  change, event, route = spec["change"], spec["event"], spec["route"]
+
+  def at(*path):
+    value = record
+    for step in path:
+      value = value.get(step) if isinstance(value, dict) else None
+    return value
+
+  def expanded(value):
+    return str(Path(value).expanduser()) if isinstance(value, str) else value
+
+  checks = [
+    ("purpose", at("purpose"), spec.get("purpose", "primary")),
+    ("change.id", at("change", "id"), change["id"]),
+    ("change.kind", at("change", "kind"), change["kind"]),
+    ("change.effective_time", at("change", "effective_time"), change["effective_time"]),
+    ("change.rule_path", at("change", "rule_path"), change["rule_path"]),
+    ("event.session_file", expanded(at("source", "session_file")), expanded(event["session_file"])),
+    ("event.response_line", at("source", "response_line"), event["response_line"]),
+  ]
+  # cannot_replay 的紀錄在重建前就收尾，只有上面這些欄位。
+  if record.get("status") != "cannot_replay":
+    checks += [
+      ("change.old_text", at("rule_versions", "old_text"), change["old_text"]),
+      ("change.new_text", at("rule_versions", "new_text"), change["new_text"]),
+      ("route.label", at("model_config", "route_label"), route["label"]),
+      ("route.relay", at("model_config", "relay"), route["relay"]),
+      ("route.key_env", at("model_config", "key_env"), route["key_env"]),
+      ("endpoint", at("model_config", "endpoint"), endpoint),
+      ("condition", at("judge", "condition"), spec["condition"]),
+      ("judge_rule", at("judge_rule"), {"method": "predicate" if predicate else "model",
+                                         "name": predicate[0] if predicate else None,
+                                         "version": predicate[1] if predicate else None}),
+      ("plan.arm_runs", at("plan", "arm_runs"), size),
+    ]
+  return [label for label, recorded, wanted in checks if recorded != wanted]
+
+
+def refuse_mismatch(labels):
+  if labels:
+    raise Usage("the spec does not match the run being resumed (" + ", ".join(labels)
+                + "); start a new run with another --run-id instead of resuming")
+
+
 def run_command(args):
   spec = load_spec(args.spec)
   purpose = spec.get("purpose", "primary")
@@ -743,6 +809,10 @@ def run_command(args):
   change = spec["change"]
   resume = Path(args.resume) if args.resume else None
   record = load_record(resume) if resume else None
+  size = (args.runs or SIDE_EFFECT_RUNS) if purpose == "side_effect" else ARM_RUNS
+  # 續跑沿用紀錄裡的實驗身分；spec 若已改，新增的呼叫會用新設定卻掛在舊身分下，所以先對欄位。
+  if record:
+    refuse_mismatch(resume_mismatches(record, spec, endpoint, predicate, size))
   if record and record["status"] in FINAL_STATUSES:
     return {"ok": record["status"] == "complete", "command": "run", "status": record["status"], "run_dir": str(resume),
             "reason": record["result"]["reason"], "next_layer": record["result"]["next_layer"], "called_model": False,
@@ -764,7 +834,11 @@ def run_command(args):
     return {"ok": False, "command": "run", "status": "cannot_replay", "run_dir": str(run_dir), "reason": str(error),
             "next_layer": 3, "called_model": False}
   ctx["method"] = "predicate" if predicate else "model"
-  size = (args.runs or SIDE_EFFECT_RUNS) if purpose == "side_effect" else ARM_RUNS
+  if record:
+    # 模型字串與規則版本來自 session 紀錄，要重建後才知道。
+    refuse_mismatch([label for label, recorded, wanted in (
+      ("model", record["model_config"]["model"], ctx["facts"]["model"]),
+      ("rule_versions.recorded", record["rule_versions"]["recorded"], ctx["recorded"])) if recorded != wanted])
   if record is None:
     record = {
       "schema_version": SCHEMA_VERSION, "run_id": run_dir.name, "purpose": purpose, "status": "running",
@@ -834,6 +908,16 @@ def judge_input_command(args):
     side = load_record(path)
     if side["purpose"] != "side_effect" or side["status"] != "complete" or side["change"]["id"] != record["change"]["id"]:
       raise Usage("side-effect run " + str(path) + " is not a complete side-effect run of the same change")
+    # 合併後整份署名主實驗的模型、路線與規則版本；副作用回應若來自別的設定，署名就是假的。
+    differs = [label for label, mine, theirs in (
+      ("model", record["model_config"]["model"], side["model_config"]["model"]),
+      ("route", record["model_config"]["route_label"], side["model_config"]["route_label"]),
+      ("rule version", [record["change"]["rule_path"], record["rule_versions"]["old_text"],
+                        record["rule_versions"]["new_text"]],
+       [side["change"]["rule_path"], side["rule_versions"]["old_text"], side["rule_versions"]["new_text"]]),
+    ) if mine != theirs]
+    if differs:
+      raise Usage("side-effect run " + str(path) + " differs from the primary run in " + ", ".join(differs))
     sides.append(side)
   target = Path(args.out) if args.out else Path(args.run) / "judge-input.json"
   save_json(target, compose_judge_input(record, sides))

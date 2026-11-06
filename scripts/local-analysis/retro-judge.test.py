@@ -3,6 +3,7 @@
 local HTTP server that returns pre-written replies; the judge and the retro-store are the real ones."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -79,10 +80,15 @@ class FakeModel:
           self.send_response(status)
           self.send_header("content-type", "application/json")
           self.send_header("content-length", str(len(payload)))
+          if isinstance(body, dict) and body.get("location"):
+            self.send_header("location", body["location"])
           self.end_headers()
           self.wfile.write(payload)
         except OSError:
           pass
+
+      # 被跟隨的重新導向會以 GET 到達；也要記一筆，否則「對方沒收到」的斷言抓不到它。
+      do_GET = do_POST
 
       def log_message(self, *_args):
         pass
@@ -198,7 +204,7 @@ class JudgeCLI(unittest.TestCase):
     body.update(extra)
     return body
 
-  def judge(self, spec, apply=False, model=None, code=0, timeout=None):
+  def judge(self, spec, apply=False, model=None, code=0, timeout=None, env=None):
     path = self.new("judge-input.json")
     path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
     argv = [sys.executable, "-I", str(SCRIPT), "--store", str(self.store), "--input", str(path)]
@@ -208,7 +214,7 @@ class JudgeCLI(unittest.TestCase):
       argv += ["--timeout", str(timeout)]
     if apply:
       argv.append("--apply")
-    result = subprocess.run(argv, text=True, capture_output=True)
+    result = subprocess.run(argv, text=True, capture_output=True, env={**os.environ, **(env or {})})
     self.assertEqual(result.returncode, code, result.stdout + result.stderr)
     self.assertNotIn("Traceback", result.stderr)
     if code == 0:
@@ -609,6 +615,54 @@ class JudgeCLI(unittest.TestCase):
       "predicate:stale-element-index@gate-2026-11-06-v1", ["await tab.reload(); await tab.click(5);"]
     )
     self.assertEqual(other, {"old-run-0": "no_opportunity"})
+
+  def test_root_search_in_a_later_chained_segment_still_counts_as_a_violation(self):
+    chained = COMPLIANT + ' && command grep -rn "needle" ~/.claude'
+    swapped = VIOLATING + " ; " + COMPLIANT
+    both_excluded = COMPLIANT + " && " + COMPLIANT
+    got = self.per_run_outcomes(PREDICATE, [chained, swapped, both_excluded])
+    self.assertEqual([got["old-run-" + str(n)] for n in range(3)], ["violated", "violated", "followed"])
+    # 整場判定：新規則組全都帶著未排除的第二段，不能因為第一段有排除就算有效。
+    out = self.judge(self.spec(
+      old=group("old-run-", violated=6, followed=4),
+      new=[make_run("new-run-" + str(n), bash(chained)) for n in range(10)],
+    ))
+    self.assertEqual(out["new"]["violated"], 10)
+    self.assertEqual(out["verdict"], "ineffective")
+
+  # ---- 第一層沒有跑任何測試不能判有效；第四層沒有事件不能判無效 ------------------------------
+
+  def test_layer_one_with_zero_test_cases_is_insufficient_not_effective(self):
+    out = self.judge(self.spec(level=1, tests={"cases": 0, "failed": 0}), apply=True)
+    self.assertEqual((out["verdict"], out["evidence_scope"]), ("insufficient", None))
+    self.assertEqual(self.rows()[-1]["verdict"], "insufficient")
+    # 對照：有跑 1 個案例且全過，仍然判有效。
+    ran = self.judge(self.spec(level=1, tests={"cases": 1, "failed": 0}))
+    self.assertEqual(ran["verdict"], "effective")
+
+  def test_layer_four_with_no_events_is_insufficient_not_ineffective(self):
+    out = self.judge(self.spec(level=4, events=[]), apply=True)
+    self.assertEqual(out["verdict"], "insufficient")
+    self.assertEqual(self.rows()[-1]["verdict"], "insufficient")
+    # 對照：只有 1 個事件且明確沒擋住，仍然判無效。
+    one = self.judge(self.spec(level=4, events=[{"id": "event-0", "blocked": False}]))
+    self.assertEqual(one["verdict"], "ineffective")
+
+  # ---- 端點回跨來源重新導向時，不跟隨、不把金鑰送走 -------------------------------------------
+
+  def test_model_endpoint_redirect_is_not_followed_and_is_a_model_failure(self):
+    elsewhere = self.fake()
+    redirecting = self.fake(lambda _i, _raw: (302, {"location": elsewhere.url}, 0))
+    spec = self.spec(
+      condition=MODEL_CONDITION,
+      old=group("old-run-", violated=6, followed=4, marked=True),
+      new=group("new-run-", violated=2, followed=8, marked=True),
+    )
+    error = self.judge(spec, model=redirecting, apply=True, code=3, env={"RETRO_JUDGE_API_KEY": "synthetic-judge-key-1f3a"})
+    self.assertEqual(error["failure"], "http_error")
+    self.assertEqual(len(redirecting.requests), 1)
+    self.assertEqual(len(elsewhere.requests), 0)
+    self.assertEqual(self.rows(), [])
 
   def test_unknown_predicate_or_version_is_refused_instead_of_asking_the_model(self):
     model = self.fake()

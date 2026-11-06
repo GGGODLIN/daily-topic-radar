@@ -161,10 +161,22 @@ class FakeRelay:
           self.send_response(status)
           self.send_header("content-type", "application/json")
           self.send_header("content-length", str(len(data)))
+          if isinstance(payload, dict) and payload.get("location"):
+            self.send_header("location", payload["location"])
           self.end_headers()
           self.wfile.write(data)
         except OSError:
           pass
+
+      # 被跟隨的重新導向會以 GET 到達；也要記一筆，否則「對方沒收到」的斷言抓不到它。
+      def do_GET(self):
+        owner.requests.append({"path": self.path, "authorization": self.headers.get("authorization"),
+                               "raw": b"", "body": {}})
+        data = b"{}"
+        self.send_response(200)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
       def log_message(self, *_args):
         pass
@@ -235,6 +247,14 @@ class ReplayCase(unittest.TestCase):
       "judge": {"by": "main", "at": JUDGED_AT, "evidence": self.evidence()},
     }
     body.update(changes)
+    self.serial += 1
+    path = self.root / f"spec-{self.serial}.json"
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+  def mutated(self, spec, change):
+    body = json.loads(Path(spec).read_text(encoding="utf-8"))
+    change(body)
     self.serial += 1
     path = self.root / f"spec-{self.serial}.json"
     path.write_text(json.dumps(body), encoding="utf-8")
@@ -367,6 +387,33 @@ class Route(ReplayCase):
     self.assertEqual(same.returncode, 0, same.stdout + same.stderr)
     self.assertEqual(len(other.requests), 0)
     self.assertGreater(len(relay.requests), 0)
+
+
+class RouteSafety(ReplayCase):
+  def test_relay_redirect_is_not_followed_so_the_key_goes_nowhere_else(self):
+    elsewhere = self.relay()
+    relay = self.relay(lambda i, b, o: (302, {"location": elsewhere.origin + "/v1/messages"}, 0))
+    result, payload = self.replay(self.spec(relay))
+    self.assertEqual(payload.get("status"), "incomplete", result.stdout + result.stderr)
+    self.assertEqual(result.returncode, 13)
+    self.assertEqual(len(relay.requests), 1)
+    self.assertEqual(len(elsewhere.requests), 0)
+    self.assertFalse(self.judge_input_path().exists())
+    self.assertEqual(self.record()["attempts"][0]["outcome"], "failed")
+
+  def test_error_text_is_masked_before_it_is_cut_so_a_key_on_the_cut_never_reaches_the_record(self):
+    # The relay echoes the key right across the 300-character cut of the stored error text: its first 20
+    # characters are inside the cut and the rest is outside.
+    echoed = "x" * 279 + KEY
+    relay = self.relay(lambda i, b, o: (500, echoed, 0))
+    result, payload = self.replay(self.spec(relay))
+    self.assertEqual(payload.get("status"), "incomplete", result.stdout + result.stderr)
+    # Positive control: the cut text would hold 20 characters of the key and no whole key to mask.
+    cut = json.dumps(echoed)[:300]
+    self.assertTrue(KEY[:20] in cut and KEY not in cut)
+    stored = self.record()["attempts"][0]["tries"][0]["error"]
+    self.assertTrue("[key]" in stored and len(stored) <= 300)
+    self.assertFalse(KEY[:20] in self.everything_written(), "a piece of the relay key reached the run record")
 
 
 class Approval(ReplayCase):
@@ -533,6 +580,33 @@ class Failures(ReplayCase):
     self.assertEqual(payload.get("status"), "complete", result.stdout + result.stderr)
     self.assertEqual(self.record()["attempts"][0]["tries"][0]["status"], 0)
 
+  def test_http_200_error_envelope_is_a_transient_error_not_a_sample(self):
+    marker = "MARK-ENVELOPE-CONTENT"
+    envelopes = [
+      {"type": "error", "error": {"type": "overloaded_error", "message": "busy"},
+       "content": [{"type": "text", "text": marker}]},
+      {"error": {"message": "busy"}, "content": [{"type": "text", "text": marker}]},
+    ]
+    for number, envelope in enumerate(envelopes):
+      with self.subTest(envelope=sorted(envelope)):
+        # Retries run out: the run stops incomplete and no envelope content is a sample.
+        stuck = self.relay(lambda i, b, o: (200, envelope, 0) if i < 4 else FakeRelay.by_version(i, b, o))
+        result, payload = self.replay(self.spec(stuck), run_id="stuck-" + str(number))
+        self.assertEqual(payload.get("status"), "incomplete", result.stdout + result.stderr)
+        self.assertEqual(len(stuck.requests), 4)
+        self.assertEqual(self.record("stuck-" + str(number))["attempts"][0]["outcome"], "failed")
+        self.assertFalse((self.out / ("stuck-" + str(number)) / "judge-input.json").exists())
+        # One envelope, then a real reply: the envelope was retried and its content is nowhere on record.
+        brief = self.relay(lambda i, b, o: (200, envelope, 0) if i == 0 else FakeRelay.by_version(i, b, o))
+        done, finished = self.replay(self.spec(brief), run_id="brief-" + str(number))
+        self.assertEqual(finished.get("status"), "complete", done.stdout + done.stderr)
+        first = self.record("brief-" + str(number))["attempts"][0]
+        self.assertEqual([t["status"] for t in first["tries"]], [200, 200])
+        self.assertEqual(len(brief.requests), 21)
+    # Positive control: the marker is real content of the envelope that was refused.
+    self.assertTrue(marker in json.dumps(envelopes))
+    self.assertFalse(marker in self.everything_written(), "error envelope content reached the run record")
+
   def test_unavailable_model_goes_to_layer_4_without_a_verdict(self):
     missing = {"type": "error", "error": {"type": "not_found_error", "message": "model: relay/fixture-model:high"}}
 
@@ -609,6 +683,100 @@ class Interrupted(ReplayCase):
     self.assertEqual(len([a for a in record["attempts"] if a["outcome"] == "ok"]), 2)
 
 
+class JudgeModelDown(ReplayCase):
+  TEXT_CONDITION = "回應用遞迴搜尋掃 home 根目錄，卻沒有排除目錄"
+
+  @staticmethod
+  def reading(_index, body, _owner):
+    text = json.dumps(body, ensure_ascii=False)
+    outcome = "followed" if "--exclude-dir" in text else "violated"
+    return 200, {"content": [{"type": "text", "text": json.dumps({"outcome": outcome, "progressed": True})}]}, 0
+
+  def test_precheck_judge_failure_leaves_the_run_incomplete_and_resumable(self):
+    state = {"down": True}
+    judge = self.relay(lambda i, b, o: error_reply(503) if state["down"] else self.reading(i, b, o))
+    relay = self.relay()
+    judge_args = ("--judge-endpoint", judge.origin + "/v1/messages", "--judge-model", "judge-x")
+    spec = self.spec(relay, condition=self.TEXT_CONDITION)
+    result, payload = self.replay(spec, *judge_args)
+    self.assertFalse("Traceback" in result.stderr, "the judge model failure escaped as a traceback")
+    self.assertEqual(result.returncode, 13, result.stdout + result.stderr)
+    self.assertEqual(payload.get("status"), "incomplete")
+    self.assertTrue("judge" in payload["reason"], payload["reason"])
+    self.assertEqual(self.record()["status"], "incomplete")
+    self.assertFalse(self.judge_input_path().exists())
+    sent = len(relay.requests)
+    self.assertEqual(sent, 5)
+    # Resume once the judge model is back: the run finishes from the five replies already on record.
+    state["down"] = False
+    final, finished = self.run_cli("run", "--spec", spec, "--out-dir", self.out, "--resume", self.out / "run-1",
+                                   "--gap", 0, "--retry-wait", 0, "--chars-per-token", 4, "--approve", *judge_args)
+    self.assertEqual(finished.get("status"), "complete", final.stdout + final.stderr)
+    self.assertEqual(len(relay.requests) - sent, 15)
+
+
+class ResumeIdentity(ReplayCase):
+  def broken_run(self):
+    state = {"on": True}
+
+    def reply(index, body, owner):
+      if state["on"] and index >= 7:
+        return error_reply(500)
+      return FakeRelay.by_version(index, body, owner)
+
+    relay = self.relay(reply)
+    spec = self.spec(relay)
+    result, payload = self.replay(spec)
+    self.assertEqual(payload.get("status"), "incomplete", result.stdout + result.stderr)
+    state["on"] = False
+    return relay, spec
+
+  def resume(self, spec):
+    return self.run_cli("run", "--spec", spec, "--out-dir", self.out, "--resume", self.out / "run-1",
+                        "--gap", 0, "--retry-wait", 0, "--chars-per-token", 4, "--approve")
+
+  def test_resume_refuses_a_spec_that_differs_from_the_recorded_experiment(self):
+    relay, spec = self.broken_run()
+    before = len(relay.requests)
+    on_disk = (self.out / "run-1" / "run.json").read_bytes()
+    other_session = self.root / "other-session.jsonl"
+    other_session.write_text((self.root / "session.jsonl").read_text(encoding="utf-8"), encoding="utf-8")
+    cases = {
+      "change.id": lambda b: b["change"].update(id="chg-another-change"),
+      "change.rule_path": lambda b: b["change"].update(rule_path="/home/tester/.claude/rules/common/other.md"),
+      "change.old_text": lambda b: b["change"].update(old_text=OLD_TEXT + " Changed."),
+      "change.new_text": lambda b: b["change"].update(new_text=NEW_TEXT + " Changed."),
+      "event.session_file": lambda b: b["event"].update(session_file=str(other_session)),
+      "event.response_line": lambda b: b["event"].update(response_line=EVENT_LINE + 1),
+      "route.label": lambda b: b["route"].update(label="another-relay"),
+      "condition": lambda b: b.update(condition="predicate:stale-element-index@gate-2026-11-06-v1"),
+      "purpose": lambda b: b.update(purpose="side_effect"),
+    }
+    for label, change in cases.items():
+      with self.subTest(label=label):
+        result, _ = self.resume(self.mutated(spec, change))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertTrue(label in result.stderr, result.stderr)
+        self.assertEqual(len(relay.requests), before)
+        self.assertEqual((self.out / "run-1" / "run.json").read_bytes(), on_disk)
+    # The model string comes from the session record, so rewrite that record in place.
+    rows = session_rows("new")
+    for row in rows:
+      if "requestedModel" in row:
+        row["requestedModel"] = "relay/another-model:high"
+    self.write_session(rows)
+    result, _ = self.resume(spec)
+    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+    self.assertTrue("model" in result.stderr, result.stderr)
+    self.assertEqual(len(relay.requests), before)
+    self.assertEqual((self.out / "run-1" / "run.json").read_bytes(), on_disk)
+    # Positive control: the original spec and session still resume to the end.
+    self.write_session(session_rows("new"))
+    final, finished = self.resume(spec)
+    self.assertEqual(finished.get("status"), "complete", final.stdout + final.stderr)
+    self.assertGreater(len(relay.requests), before)
+
+
 class Precheck(ReplayCase):
   def test_original_that_does_not_recur_is_an_unfaithful_rebuild_with_no_judge_input(self):
     relay = self.relay(lambda i, b, o: (200, answer(COMPLIANT), 0))
@@ -680,6 +848,40 @@ class SideEffects(ReplayCase):
                            "--out", self.root / "refused.json")
     self.assertNotEqual(done.returncode, 0)
     self.assertFalse((self.root / "refused.json").exists())
+
+
+class SideEffectMerge(ReplayCase):
+  def side_run(self, run_id, session=None, **changes):
+    relay = self.relay(lambda i, b, o: (200, answer(UNRELATED), 0))
+    session = session or self.write_session(session_rows("new", marker="-unrelated", event_text=UNRELATED),
+                                            name=run_id + ".jsonl")
+    result, payload = self.replay(self.spec(relay, session=session, purpose="side_effect", **changes),
+                                  "--runs", 3, run_id=run_id)
+    self.assertEqual(payload.get("status"), "complete", result.stdout + result.stderr)
+
+  def test_judge_input_refuses_side_effect_runs_of_another_model_route_or_rule_version(self):
+    self.complete_run()
+    other_model = session_rows("new", marker="-unrelated", event_text=UNRELATED)
+    for row in other_model:
+      if "requestedModel" in row:
+        row["requestedModel"] = "relay/another-model:high"
+    self.side_run("side-model", session=self.write_session(other_model, name="other-model.jsonl"))
+    relay = self.relay()
+    self.side_run("side-route", route={"relay": relay.origin, "path": "/v1/messages", "key_env": KEY_ENV,
+                                       "label": "another-relay"})
+    self.side_run("side-rule")
+    path = self.out / "side-rule" / "run.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["rule_versions"]["new_text"] = NEW_TEXT + " Changed."
+    path.write_text(json.dumps(record), encoding="utf-8")
+    for name, label in (("side-model", "model"), ("side-route", "route"), ("side-rule", "rule")):
+      with self.subTest(side=name):
+        target = self.root / (name + ".json")
+        done, _ = self.run_cli("judge-input", "--run", self.out / "run-1", "--side-effects", self.out / name,
+                               "--out", target)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertTrue(label in done.stderr, done.stderr)
+        self.assertFalse(target.exists())
 
 
 class JudgeHandoff(ReplayCase):

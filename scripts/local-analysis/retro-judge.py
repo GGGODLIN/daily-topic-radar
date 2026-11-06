@@ -65,6 +65,12 @@ SYSTEM_PROMPT = (
 )
 
 
+class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+  # 跟隨重新導向會把 Authorization 一起帶去別的來源；拒絕後它以 HTTPError 浮出，算模型呼叫失敗。
+  def redirect_request(self, req, fp, code, msg, headers, newurl):
+    raise urllib.error.HTTPError(req.full_url, code, "redirect-refused", headers, fp)
+
+
 class ModelFailure(RuntimeError):
   def __init__(self, failure, message):
     super().__init__(message)
@@ -111,6 +117,8 @@ def present(blocks):
 
 
 def root_search(command):
+  # 每一段都要看：只看第一個相關片段，後面沒排除的搜尋會被前面的排除蓋掉。
+  seen = []
   for segment in re.split(r"\|\||&&|;|\n", command):
     found = SEARCH.search(segment)
     if not found:
@@ -122,8 +130,10 @@ def root_search(command):
     except ValueError:
       tokens = [t.strip("'\"") for t in segment.split()]
     if any(HOME_ROOT.match(token) for token in tokens):
-      return "followed" if EXCLUDES.search(segment) else "violated", []
-  return None, []
+      seen.append("followed" if EXCLUDES.search(segment) else "violated")
+  if "violated" in seen:
+    return "violated", []
+  return ("followed" if seen else None), []
 
 
 def stale_index(code):
@@ -220,7 +230,7 @@ def call_model(config, condition, blocks):
     config["endpoint"], data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
   )
   try:
-    with urllib.request.urlopen(request, timeout=config["timeout"]) as response:
+    with urllib.request.build_opener(RefuseRedirect).open(request, timeout=config["timeout"]) as response:
       raw = response.read().decode("utf-8")
   except urllib.error.HTTPError as error:
     raise ModelFailure("http_error", "model endpoint answered HTTP " + str(error.code)) from error
@@ -394,16 +404,21 @@ def judge(spec, config):
   elif level == 1:
     tests = spec["tests"]
     old, new = {"violated": tests.get("old_failed", 0)}, {"violated": tests["failed"]}
-    verdict = "effective" if tests["failed"] == 0 else "ineffective"
-    reason = "all known inputs are blocked" if verdict == "effective" else "a known input is still not blocked"
+    # 沒跑任何案例時 failed == 0 什麼也證明不了。
+    if tests["cases"] == 0:
+      verdict, reason = "insufficient", "no test case was run"
+    else:
+      verdict = "effective" if tests["failed"] == 0 else "ineffective"
+      reason = "all known inputs are blocked" if verdict == "effective" else "a known input is still not blocked"
     # 第一層只證明當初出錯的那幾個輸入，不證明別的輸入。
     out["evidence_scope"] = "known_inputs_only" if verdict == "effective" else None
     counts = (tests["cases"], old["violated"], new["violated"])
   else:
     events = spec["events"]
     unblocked = [e for e in events if e.get("blocked") is False]
-    verdict = "ineffective" if len(unblocked) == len(events) else "insufficient"
-    reason = "no past event is blocked" if verdict == "ineffective" else "some past events are blocked or unknown"
+    # 沒有事件時 len(unblocked) == len(events) 恆成立，不能因此判無效。
+    verdict = "ineffective" if events and len(unblocked) == len(events) else "insufficient"
+    reason = "no past event is blocked" if verdict == "ineffective" else "no past events, or some are blocked or unknown"
     old, new = {"violated": len(events)}, {"violated": len(unblocked)}
     counts = (len(events), len(events), len(unblocked))
   out["old"], out["new"] = old, new
