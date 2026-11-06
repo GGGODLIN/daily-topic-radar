@@ -41,3 +41,8 @@
 - ticket-yagni：kill 1／demote 10／keep 23；審查員註明缺 01 凍結規則原文。照做 6 項：`Invalid`、`need`、`string`、`whole`、`run_list` 收斂成一個欄位層級檢查；`extra_actions` 門檻改成照規格字面出現 1 次就算。不採用 5 項，理由是 01 報告「凍結參數」第 5 點明寫：`reply_text`、`progressed`（沒推進＝沒有工具呼叫且文字少於 200 字元）、`root_search`、`stale_index`、`predicate_for`（判斷式寫進 condition、帶版本號）。v2 綠燈 retro-judge `Ran 20 tests ... OK`。
 - worker 自訂判斷：模型端點用 Anthropic Messages 格式（對真實端點未驗證）；每筆回應各一次模型呼叫，不送 id、組別、改動 id、thinking；第一層測試失敗判無效；第四層全部擋不住判無效、其餘證據不足；多出動作的鍵＝非 Bash 用工具名、Bash 用每段指令第一個詞；幫倒忙蓋過任何主判定。
 - Minor：retro-store `verdict` 指令本身仍不擋「第四層判有效／幫倒忙」，規則只在 retro-judge 強制。前置重現檢查（原樣 5 次至少 2 次）不在 retro-judge，由 08 負責。一次判定只對應一個事件，多事件合併規則沒做。hook 的副作用抽樣檢查沒做（本票驗收只要求「新規則多出動作」）。`stale-element-index` 判斷式沒用真實 LCU 輸出驗過。
+- 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
+  - [HIGH] retro-judge.py:125 root_search 只採第一個相關片段（Acceptance-miss）
+  - [HIGH] retro-judge.py:397 第一層 cases=0 判有效（Failure-miss: F6）
+  - [MEDIUM] retro-judge.py:405 第四層 events=[] 判無效（Failure-miss: F6）
+  - [LOW→G4] retro-judge.py:223 urlopen 跟隨跨來源重新導向，帶 API key 外送（安全，無標記）

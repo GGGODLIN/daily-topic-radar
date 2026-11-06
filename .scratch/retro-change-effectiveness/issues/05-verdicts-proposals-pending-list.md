@@ -47,3 +47,5 @@
 - worker 自訂判斷：最新判定以追加順序為準；`needs_rejudge`＝判定後又有事件時間晚於判定的再犯觀察；撤回與修改兩種都被拒才移出清單，任一被接受也移出，判定晚於決定就重新列入；副作用未檢查清單只列判有效的改動；規則錨點只驗形狀不驗磁碟原文，比對鍵為路徑＋原文、不含行號；`--model`／`--route`／次數一律必填。
 - Minor：第四層只能判無效或證據不足、第一層「只涵蓋已知輸入」、幫倒忙優先於有效，這些對應規則留給 07；目前 `verdict` 指令不擋「第四層判有效」。
 - 2026-11-06 ticket-yagni：kill 1／demote 0／keep 17。刪 `list --summary` 的 `proposal_decisions` 摘要鍵（commit 44eda1d）；待決定清單的提議過濾保留，`list --issue` 明細的 `proposal_decisions` 欄位保留。06 要讀拒絕時間時直接讀累積庫的 proposal_decision 紀錄。retro-store `Ran 50 tests ... OK`、retro-import 12 OK。
+- 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
+  - [MEDIUM] retro-store.test.py:1883 backfill／proposal 預設 dry-run 沒有測試（Acceptance-miss）

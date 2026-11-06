@@ -42,3 +42,6 @@
   - 既有 fixture：session-retro 23 處追蹤證據補 `role: "action"`；retro-store `tracked()` 的 action 證據補 role；retro-import fixture 補 role。原因是契約改了，斷言沒有放寬。
   - ticket-yagni（這次修正）：kill 1／demote 5，全部不採用。審查員以本票原驗收為準，沒有看到使用者 2026-11-06 對證據角色與舊格式的決定（spec「事件與觀察分開定義」最後一條）；被點名的 `legacy_events`、角色檢查、context 落庫與對應測試，正是在實作該決定。
   - Minor：cross 合併多份報告時 context 依合併後的 action 重算歸屬，可能掛到跟原單場報告不同的 action，沒有真實合併資料驗證。模型把補救動作誤標成 action 時驗收器抓不到，只能靠提示文字約束。11-03、11-04 既有 validated 報告沒有 role，重跑 reading 驗收會全被擋，只能走舊格式匯入。
+- 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
+  - [HIGH] session-retro.py:1554 command 載入收集 invoke 後所有 isMeta 文字，混入其他指令的新版內容 → 判已載入（Acceptance-miss）
+  - [HIGH] session-retro.py:1715 沒有 action 的觀察保留模型手填 events，cross 逐筆核對假通過（Acceptance-miss）

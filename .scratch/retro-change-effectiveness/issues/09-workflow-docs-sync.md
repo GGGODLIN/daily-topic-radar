@@ -48,3 +48,5 @@
 - 指令說明：步驟 0 改成 ingest 自動寫入、observe 只留人工補單筆，新增「看判定結果與待決定清單」；步驟 2 的 tracking-context 改由 `retro-store.py tracking-context` 產生；步驟 3 補 role 與 covered、逐筆去向；步驟 5 補 ingest 結果分類；新增步驟 6（判定流程、四層、判定規則、hook 提議的管道分工）。累積契約：補 `validated/cross-session.json` 唯一匯入來源、逐筆去向、更正紀錄、舊格式另列，新增「判定與待決定清單」。流程腳本：reading 要求再犯填 `covered`，後段照原值保留。
 - skill-creator：worker 已 invoke 並做靜態核對（文件引用的指令與旗標都在 `--help`），回報需要新鮮 agent 的行為驗證（NEEDS_DELEGATION）。main 派一個只讀 agent 照文件回答 4 個情境（累積後列估算等使用者選、cannot_replay／model_unavailable 換層、第三層出題限制與副作用未檢查、程式類回歸輸入），4 個都答對。它指出 3 個會讓人做錯的缺口，main 補進 `e97b26a2`：前置檢查回報 `unfaithful` 時換事件、沒有可用事件改走第三層；第一層回歸案例要先在改動前確認會失敗；加回歸測試屬於驗證，不算改正式程式。其餘它標為要猜的地方（第一、三、四層的成本怎麼估、第三層用哪個 harness、副作用對照每邊幾場）留作 Minor。
 - ticket-yagni：kill 0／demote 1／keep 7。刪掉 `workflows/tests/retro-workflow.test.mjs` 新增的逐階段 covered 檢查（契約斷言已涵蓋），該檔回到 25aef02b 的內容。
+- 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
+  - [MEDIUM] workflows/retro-workflow.js:72 cross 補跑提示要求保留驗收失敗的 tracking_dispositions（Acceptance-miss）

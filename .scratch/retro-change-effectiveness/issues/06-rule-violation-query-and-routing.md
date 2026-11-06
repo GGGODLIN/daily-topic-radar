@@ -50,3 +50,7 @@
 - worker 自訂判斷：規則對應用規則 repo 現行 HEAD，多條規則都含該原文回 `rule-ambiguous`；事件時間取該行時間戳，沒有就取前面最近一筆，讀不到的違反另列 `unresolved_time`；覆蓋量只算載入的規則版本含這一段的 session；讀不到累積庫時 promote 扣住規則條目並回 `rules_withheld`；`--retro-store` 預設指正式累積庫（只讀）。
 - Minor：規則段落之後被改寫（含打字修正、搬標題）會讓錨點解析不到，查詢與清單標「找不到」，之後的違反走摩擦檔，要補新的 backfill 錨點才接得回。
 - Minor：session-audit promote 每次都以 subprocess 讀一次累積庫（約 5MB）；promote 的執行頻率高時要留意成本，未量測。
+- 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
+  - [MEDIUM] retro-store.py:1526 make_hook 接受 --change 對象但摘要只查規則錨點（Acceptance-miss）；修法取收窄：make_hook 只收規則錨點
+  - [MEDIUM] session-audit.py:3518 覆蓋量以檔案 mtime＋任一舊段落覆蓋判定，時間窗沒分析仍報 analyzed／零違反（Acceptance-miss）
+  - [MEDIUM] session-audit.py:3524 覆蓋場數按來源檔計，主對話與子代理重複（Acceptance-miss）

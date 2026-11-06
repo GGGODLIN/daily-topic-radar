@@ -53,3 +53,10 @@
 - worker 自訂判斷：前置檢查用 retro-judge 的 `classify_group`（importlib 載入，不另寫）；兩次呼叫預設間隔 20 秒（01 用 60 秒，沒有依據）；副作用檢查預設每組 5 次（01 沒凍結）；「模型不可用」只認 400／403／404／410 且回應提到 model 與 not found／unavailable／deprecated；只支援 `kind: rule`，skill／command 回 cannot_replay。
 - Minor：暫時錯誤重試、模型不可用、SIGINT 中斷都只用假端點驗過。01 報告寫案例一 17 個工具，重建出 16 個，沒追原因。附件列的 `rendered` 欄位（記實際渲染文字與角色）可能是縮小 81–95% token 差距的線索，本票沒採用。
 - 2026-11-06 ticket-yagni：kill 1／demote 2／keep 60；審查員註明缺 01 凍結參數。照做：刪 `leaves` 與 `rule_text_outside_instructions` 欄位；`JudgeHandoff` 縮成只檢查 `judge-input.json` 欄位齊全、工具不產生判定也不寫累積庫（commit e7cd761）。不採用：`arm_need`（沒推進補跑），01 凍結規則第 5 點明寫同組補跑 1 次。retro-replay `Ran 26 tests ... OK`、retro-judge 20 OK。
+- 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
+  - [HIGH] retro-replay.py:745 --resume 不核對實驗身分（Acceptance-miss）
+  - [HIGH] retro-replay.py:562 HTTP 200 的 error envelope 算有效樣本（Acceptance-miss）
+  - [HIGH] retro-replay.py:835 副作用合併接受不同模型（Acceptance-miss）
+  - [MEDIUM] retro-replay.py:645 前置判讀 ModelFailure 未捕捉、紀錄停在 running（Acceptance-miss）
+  - [LOW→G4] retro-replay.py:539 跟隨跨來源重新導向外送 relay 金鑰（Acceptance-miss）
+  - [LOW→G4] retro-replay.py:555 錯誤本文先截短再遮罩，金鑰片段落盤（安全，無標記）

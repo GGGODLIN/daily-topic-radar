@@ -61,3 +61,7 @@
   - 既有測試 fixture 有改：session-retro 3 處沒有 evidence 的 `not_applicable` 觀察改成 `unreviewed`；retro-import fixture 搬到 `validated/`。原因是契約改了，不是放寬斷言。
   - Minor：46 個真實改動裡 30 個能依路徑推出 kind，16 個推不出（`CLAUDE.md`、`workflows/`、`agents/` 等），載入判斷仍是未查，要靠 backfill。retro-import 不檢查 `validation-cross.json` 是否通過，只讀 validated 那份。
   - ticket-yagni：這次自動審查的範圍錯了（verdict 記錄 worktree＝主 repo、base 6ca8030），60 項 kill 全是 06、07 的程式與其他 session 未提交的 `KNOWN_ISSUES.md`、`PROBES.md`，沒有一項是本次修正。判定無效，不送回 worker，也不重跑。
+- 2026-11-06 收尾審查（python-reviewer／typescript-reviewer／security-reviewer，pi-subtask 跨模型 gpt-6.1-sol(high)，8 段）：以下判定成立，main 抽查程式碼確認；套用 final-gate-materiality 後沒有一項可判「成立但不重要」（安全項屬 G4，其餘會寫出錯誤判定或資料且事後看不出，不適用 M2；測試缺口經審查員變異證明測試仍綠，不適用 M4）。處置：修。
+  - [HIGH] retro-store.py:936 同一 run 沒寫入列時不留紀錄，重播舊 packet 回滾較新的更正（Acceptance-miss）
+  - [HIGH] retro-store.py:1748 tracking-context 的 new_text／source 不取 backfill 錨點，已載入判成沒載入（Acceptance-miss）
+  - [MEDIUM] retro-store.test.py:1566 現存 change 屬另一個 issue 的錯配沒有測試（Failure-miss: F2）
