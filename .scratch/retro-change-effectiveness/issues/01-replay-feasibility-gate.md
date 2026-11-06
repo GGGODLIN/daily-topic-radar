@@ -50,3 +50,4 @@
 - Minor：案例三換新規則第 1 次的回應文字裡產生了讀 Gmail 的指令。回放不執行工具；之後若有人拿回放輸出去實際執行，要注意這個風險。
 - 2026-11-06 ticket-yagni：worker 沒有自動登記，手動跑 runner（--worktree social-info-wt/t01 --base cbcbc3f）回 `skip: empty-diff`；本票只交付報告，不重跑。
 - 2026-11-06 架構圖候選關（implement Step 8）：判定 candidate（新增跨元件連線：session-audit 與 retro-store 互相以子程序呼叫；retro-replay、retro-judge 經中轉站呼叫模型；retro-import 改只讀驗收版 cross）。使用者回「b」（這次不用），waived；理由：個人本機工具，連線已寫進 spec 與 choices.md。feature_base_sha：social-info cbcbc3f、~/.claude 5aa167d0；head_sha：social-info c90b636、~/.claude e25513d9。未啟動 Archify 或 Plannotator。
+- 2026-11-06 程式碼品質簡單版（收尾）：lizard 查本次碰到的 159 個函式，42 個複雜度 ≥ 10（最高 retro-replay.py `rebuild` 74、retro-store.py `list_issues` 42、session-retro.py `validate` 37；覆蓋率未知），本次不拆，理由：已過跨模型審查與修正、測試全綠，拆分改動大；`rebuild` 留待下次改回放工具時拆。jscpd 找到本次新增的逐字重複 2 組（retro-replay `read_rows`↔session-retro `raw_session_rows`，見 choices.md D27；retro-store context／legacy 證據欄位檢查 6 行），本次不合併。Semble 抽查 3 個新函式無結構重複。使用者對「要不要跑 /deep-check」回「b」（這次不用）。
