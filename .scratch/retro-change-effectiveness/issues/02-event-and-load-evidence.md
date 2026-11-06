@@ -38,3 +38,7 @@
 - Minor：同一行有多個 tool call 又沒給 `--tool-call-id` 時，事件鍵退回 `session:行號`。呼叫端能給 ID 就給，否則同一動作可能得到兩種鍵。
 - Minor：損壞行只在事件行本身或事件之前時判未查；hook／script 只看事件行。這是對「有損壞行回未查」的收窄，有測試鎖住。
 - 2026-11-06 ticket-yagni：kill 1／demote 0／keep 18。砍掉 `squash`（新版原文比對前的空白摺疊），改回逐字比對（commit ab98f0a）；`Ran 38 tests ... OK`。後果：新版原文只要有一個空白或換行不同，就判 `last_load_is_old_version`。
+- 2026-11-06 證據角色（F6，使用者「照建議」，spec「事件與觀察分開定義」）：social-info commit bd2e7fd、~/.claude commit 25aef02b。追蹤觀察的 evidence 每筆帶 `role: action|context`；只有 action 產生事件；context 歸到同一 session 中行號不晚於它的最近 action（沒有就歸第一個 action，該 session 沒有 action 則驗收不通過），存成補充證據；非 unreviewed 的觀察至少一筆 action；整筆沒有 role 的舊報告寫成舊格式觀察，不算再犯。紅燈：session-retro 新 6 個、retro-store 新 3 個、retro-workflow 新 2 個，原因功能缺失；retro-import 新 2 個先跑就綠（本來就原樣傳遞）。綠燈 session-retro `Ran 64 tests ... OK`、retro-store 62、retro-import 16、retro-judge 20、retro-replay 26、session-audit-rule-query 17、retro-workflow.test.mjs 11/11、retro-workflow-contract 6/6。仿「搜尋輸出過大」的合成 fixture：6 筆證據（2 action、4 context）只產生 2 個事件與 4 筆補證。
+  - 既有 fixture：session-retro 23 處追蹤證據補 `role: "action"`；retro-store `tracked()` 的 action 證據補 role；retro-import fixture 補 role。原因是契約改了，斷言沒有放寬。
+  - ticket-yagni（這次修正）：kill 1／demote 5，全部不採用。審查員以本票原驗收為準，沒有看到使用者 2026-11-06 對證據角色與舊格式的決定（spec「事件與觀察分開定義」最後一條）；被點名的 `legacy_events`、角色檢查、context 落庫與對應測試，正是在實作該決定。
+  - Minor：cross 合併多份報告時 context 依合併後的 action 重算歸屬，可能掛到跟原單場報告不同的 action，沒有真實合併資料驗證。模型把補救動作誤標成 action 時驗收器抓不到，只能靠提示文字約束。11-03、11-04 既有 validated 報告沒有 role，重跑 reading 驗收會全被擋，只能走舊格式匯入。
