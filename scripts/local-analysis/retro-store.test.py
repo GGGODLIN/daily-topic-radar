@@ -1834,29 +1834,23 @@ class StoreCLI(unittest.TestCase):
   def contexts(self, *args):
     return {item["id"]: item for item in self.cli("tracking-context", *args)["changes"]}
 
-  def test_tracking_context_names_kind_time_text_and_name_for_every_change(self):
+  def test_a_change_without_a_backfill_has_no_kind_so_its_load_check_stays_unchecked(self):
+    # 使用者 2026-11-06 選定：舊改動在第一次判定時補登類型，不依檔案位置猜；猜錯會把未確認的事件算成再犯。
     self.ready(changes=())
-    expected = {
-      "c-rule": ("rules/common/search.md", "rule", None),
-      "c-command": ("commands/self-closeout.md", "command", "self-closeout"),
-      "c-skill": ("skills/demo-skill/SKILL.md", "skill", "demo-skill"),
-      "c-hook": ("hooks/gate.py", "hook", None),
-      "c-script": ("scripts/run.sh", "script", None),
-      "c-nested": ("skills/demo-skill/scripts/helper.sh", "script", None),
-      "c-skill-note": ("skills/demo-skill/tests.md", None, None),
-      "c-docs": ("docs/notes.md", None, None),
-      "c-rule-json": ("rules/common/data.json", None, None),
-      "c-command-sh": ("commands/tests/check.sh", None, None),
+    paths = {
+      "c-rule": "rules/common/search.md",
+      "c-command": "commands/self-closeout.md",
+      "c-skill": "skills/demo-skill/SKILL.md",
+      "c-hook": "hooks/gate.py",
+      "c-script": "scripts/run.sh",
     }
-    for change_id, (relative, _kind, _name) in expected.items():
+    for change_id, relative in paths.items():
       self.change_at(change_id, relative, "new text of " + change_id)
     found = self.contexts()
-    self.assertEqual(set(found), set(expected))
-    for change_id, (_relative, kind, name) in expected.items():
+    self.assertEqual(set(found), set(paths))
+    for change_id in paths:
       item = found[change_id]
-      self.assertEqual(item.get("kind"), kind, change_id)
-      self.assertEqual(item.get("kind_source"), None if kind is None else "path", change_id)
-      self.assertEqual(item.get("name"), name, change_id)
+      self.assertEqual((item.get("kind"), item.get("kind_source"), item.get("name")), (None, None, None), change_id)
       self.assertEqual(item["effective_time"], WHEN, change_id)
       self.assertEqual(item["new_text"], "new text of " + change_id, change_id)
       self.assertEqual(item["issue_id"], "issue-1", change_id)
@@ -1876,8 +1870,8 @@ class StoreCLI(unittest.TestCase):
     # The store's always_on_rule is session-retro's rule; the latest filing wins over an earlier one and over the path.
     self.assertEqual((found["c-two"]["kind"], found["c-two"]["kind_source"]), ("rule", "backfill"))
     self.assertEqual((found["c-skillbf"]["kind"], found["c-skillbf"]["name"]), ("skill", "bf-skill"))
-    # Control: without a backfill the kind comes from the path.
-    self.assertEqual((found["c-plain"]["kind"], found["c-plain"]["kind_source"]), ("rule", "path"))
+    # Control: the same rules/ path without a backfill has no kind at all.
+    self.assertEqual((found["c-plain"].get("kind"), found["c-plain"]["kind_source"]), (None, None))
 
   def test_tracking_context_carries_issue_background_and_filters_by_issue(self):
     self.ready(changes=())
@@ -1903,6 +1897,7 @@ class StoreCLI(unittest.TestCase):
     self.ready(changes=())
     new_text = "搜尋大目錄時必須排除 node_modules"
     self.change_at("c-rule", "rules/common/search.md", new_text, effective="2026-10-20T00:30:00Z")
+    self.backfill("c-rule", "always_on_rule", self.put("rules/common/search.md", new_text))
     change = self.contexts()["c-rule"]
     session = self.root / "sess-ctx.jsonl"
     rows = [

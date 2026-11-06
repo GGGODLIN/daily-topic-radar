@@ -1775,10 +1775,7 @@ def tracking_change(row, filed):
       if path_kind == kind:
         name = path_name
         break
-  else:
-    kind, name = kind_from_path(row["source"]["path"])
-    if kind is not None:
-      out["kind_source"] = "path"
+  # 沒補登就不給類型，讓載入判斷回未查：使用者 2026-11-06 選定只認第一次判定時的補登，不依檔案位置猜。
   if kind is not None:
     out["kind"] = kind
   if name is not None:
