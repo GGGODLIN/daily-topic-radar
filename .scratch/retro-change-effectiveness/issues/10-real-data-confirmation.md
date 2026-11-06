@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — 匯入時自動寫入觀察
 
-**Status:** `ready-for-agent`
+**Status:** `done`
 
 **Needs:**
 - 兩輪的 run 目錄與原始 session 紀錄（本機）。
@@ -38,3 +38,5 @@
 - 驗收 4 通過：副本摘要 `legacy_observations: 212`；「搜尋輸出過大」`legacy: 7, recurrence: 0`。
 - 發現的程式問題（重現指令在報告）：F1 同一事件的事件時間取自被引用的那一行，呼叫行與結果行時間不同時 ingest 判衝突、整批拒收；F2 retro-import 讀模型原稿 `reports/cross-session.json`，`events[]` 只寫在 `validated/`（讀程式碼推得，未用新格式實跑）；F3 validate 找不到 transcript 時沿用舊的通過結果，新檢查沒跑（2026-10-20／10-28 既有行為）；F4 觀察沒有 evidence 或 change_id 為 null 時 ingest 整批拒收（11-03 有 16 筆、11-04 有 6 筆）；F5 同一行不同引文被判衝突、整批拒收；F6 補救動作被算成獨立事件；F7 分叉 session 共用工具呼叫 ID，同一事件出現在兩份單場報告且結論衝突；F8 `tracking-context.json` 缺 `kind`／`effective_time`／`new_text`／`name`，載入判斷全是未查；F9 change_id 為 null 時事件鍵變成 `…|None`。
 - 狀態：不關票。F1、F2、F4、F5、F8、F9 修正後重跑本票核對；F6 待使用者決定。
+- 2026-11-06 使用者「照建議」：新格式 cross 的完整一輪留到下一次真實 /retro 時驗，不另花模型費用重跑。驗收 1（新流程重跑 cross 與匯入）parked：延到下一輪真實執行；匯入段已用診斷資料在修正後確認（見 04 的 Verification Log：0cba21e 後 11-04「搜尋輸出過大」原樣匯入成功）。驗收 2（事件數與人工拆分一致）parked：依同一批決定，證據角色（action／context）要由單場報告標出，舊報告沒有角色標記算舊格式，只能等下一輪真實執行產生新格式報告後核對。
+- 2026-11-06 ticket-yagni：worker 沒有自動登記，手動跑 runner（暫時 worktree 停在 6ca8030，base 6ca8030^）回 `skip: empty-diff`；本票只交付報告，不重跑。
