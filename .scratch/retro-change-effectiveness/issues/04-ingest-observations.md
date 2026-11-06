@@ -66,3 +66,4 @@
   - [HIGH] retro-store.py:1748 tracking-context 的 new_text／source 不取 backfill 錨點，已載入判成沒載入（Acceptance-miss）
   - [MEDIUM] retro-store.test.py:1566 現存 change 屬另一個 issue 的錯配沒有測試（Failure-miss: F2）
   - 修正：174d720（結果相同又沒新證據的 run 寫 `observation_run` 標記，重播已知 run 不寫更正；tracking-context 的 new_text／source 取最新 backfill 錨點；補「change 屬另一個 issue」錯配測試）。retro-store `Ran 67 tests ... OK`
+- 2026-11-06 review-implement S4：使用者選拿掉「沒補登時依路徑猜類型」（ff0dd61）；tracking-context 只從補登取類型，沒補登的改動載入判斷回未查。
