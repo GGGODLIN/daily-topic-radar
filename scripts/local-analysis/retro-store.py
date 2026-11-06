@@ -855,10 +855,10 @@ def observation_history(rows):
   runs = {}
   for row in rows:
     kind = row["type"]
-    if kind not in ("observation", "observation_correction", "observation_evidence"):
+    if kind not in ("observation", "observation_correction", "observation_evidence", "observation_run"):
       continue
     key = row["observation_id"]
-    if kind != "observation_evidence":
+    if kind in ("observation", "observation_correction"):
       history.setdefault(key, []).append(row)
     if isinstance(row.get("evidence"), dict):
       remember(points, key, row["evidence"])
@@ -891,7 +891,7 @@ def plan_observations(rows, built):
     known = points.get(key, {}).get(place, [])
     if point["quote"] in known:
       bucket["replayed"] += 1
-      return
+      return False
     # 同一行的第二句起加序號：id 不能和第一句的補證撞在一起，又要重播時算得出同一個 id。
     suffix = ":" + str(len(known)) if known else ""
     row = entry(
@@ -902,6 +902,7 @@ def plan_observations(rows, built):
     fresh.append(row)
     remember(points, key, point)
     bucket["supplemented"] += 1
+    return True
 
   # 佐證掛在事件的觀察上，所以排在所有觀察之後處理，不論它在證據清單的哪個位置。
   ordered = [item for item in built if item["kind"] != "context"] + [
@@ -934,7 +935,16 @@ def plan_observations(rows, built):
       # 這一輪先前只補過證，結果之後可能已被更正；重播它不能把結果改回去。
       settle(key, body, bucket)
     elif observation_core(states[-1]) == observation_core(body):
-      settle(key, body, bucket)
+      # 結果相同又沒補到新證據的一輪不會寫任何列；沒有這筆紀錄，之後別輪更正了結果，
+      # 重播這一輪就認不出它已處理過，會把較新的更正改回去。
+      if not settle(key, body, bucket):
+        fresh.append(
+          entry(
+            "observation_run",
+            "observation-run:" + key + ":" + body["run_id"],
+            {"observation_id": key, "run_id": body["run_id"]},
+          )
+        )
       runs.setdefault(key, set()).add(body["run_id"])
     else:
       destination = item["destination"] or {}
@@ -1279,9 +1289,11 @@ def proposal(args):
     args.decision in PROPOSAL_DECISIONS, "decision must be one of " + ", ".join(PROPOSAL_DECISIONS)
   )
   target, key = proposal_target(args)
-  require(
-    args.kind == "make_hook" or "change_id" in target, args.kind + " needs a change as its target"
-  )
+  # make_hook 的待決定清單只查規則錨點的決定；掛在 change 上的 make_hook 決定寫了也不會生效。
+  if args.kind == "make_hook":
+    require("rule" in target, "make_hook needs a rule anchor (--rule-path --rule-line --rule-quote) as its target")
+  else:
+    require("change_id" in target, args.kind + " needs a change as its target")
   source = anchor({"path": args.source, "line": args.line, "quote": args.quote}, "source")
   # 真人原話沿用 decide 的驗證；決定時間取自那筆 session 紀錄。
   found = human_row(source["path"], source["line"], source["quote"])
@@ -1755,6 +1767,9 @@ def tracking_change(row, filed):
     # 補登的類型比路徑準；store 的 always_on_rule 在 session-retro 叫 rule。
     kind = "rule" if filed["kind"] == "always_on_rule" else filed["kind"]
     out["kind_source"] = "backfill"
+    # 載入檢查比的是補登指到的段落，不是當初記下的改動原文；原文不在規則檔裡就會誤判成沒載入。
+    out["new_text"] = filed["source"]["quote"]
+    out["source"] = filed["source"]
     for source in (filed["source"], row["source"]):
       path_kind, path_name = kind_from_path(source["path"])
       if path_kind == kind:

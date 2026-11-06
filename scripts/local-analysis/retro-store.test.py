@@ -1574,6 +1574,29 @@ class StoreCLI(unittest.TestCase):
     path, _ = self.observation_packet("run-y", [observations[0]], [self.kept("toolu_A|fix-1")])
     self.assertEqual(self.cli("ingest", "--packet", path, "--apply")["observations"]["new"], 1)
 
+  def test_observation_on_a_change_that_belongs_to_another_issue_is_refused(self):
+    self.ready(changes=("fix-1",))
+    # A second real issue with its own change; fix-1 stays on issue-1.
+    path, body = self.packet()
+    body["issues"] = [{**body["issues"][0], "id": "issue-2", "title": "Second issue"}]
+    body["discoveries"], body["events"] = [], []
+    body["run"] = {**body["run"], "id": "run-issue-2"}
+    dump(path, body)
+    self.cli("ingest", "--packet", path, "--apply")
+    observations, _dispositions, _expected = self.cases()
+    before = (self.store / "records.jsonl").read_bytes()
+    # A different event key, so the ownership check is the only thing that can refuse this batch.
+    wrong = self.tracked("fix-1", "recurrence", (self.event("toolu_W", "fix-1", "2026-10-20T03:05:00Z"), "grep elsewhere"),
+                         issue="issue-2", covered="no")
+    right = observations[0]
+    path, _ = self.observation_packet("run-mixed", [right, wrong], [self.kept("toolu_A|fix-1"), self.kept("toolu_W|fix-1")])
+    error = self.cli("ingest", "--packet", path, "--apply", code=2)
+    self.assertIn("not on this issue", error["error"])
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    # Positive control: the correctly attributed observation alone is written.
+    path, _ = self.observation_packet("run-right", [right], [self.kept("toolu_A|fix-1")])
+    self.assertEqual(self.cli("ingest", "--packet", path, "--apply")["observations"]["new"], 1)
+
   def test_every_cross_destination_must_land_somewhere(self):
     self.ready()
     observations, dispositions, _expected = self.cases()
@@ -1710,6 +1733,45 @@ class StoreCLI(unittest.TestCase):
       for row in self.cli("list", "--issue", "issue-1")["issues"][0]["records"]["observation_latest"]
     }
     self.assertEqual(latest["toolu_C|fix-1"]["outcome"], "unreviewed")
+
+  def test_replaying_a_run_that_restated_the_result_after_a_later_correction_keeps_the_correction(self):
+    self.ready()
+    a = self.event("toolu_A", "fix-1", "2026-10-20T03:00:00Z")
+    key = "toolu_A|fix-1"
+    first, _ = self.observation_packet(
+      "run-a", [self.tracked("fix-1", "recurrence", (a, "grep again"), covered="no")], [self.kept(key)]
+    )
+    self.cli("ingest", "--packet", first, "--apply")
+    # Run B states the same result on the same evidence, so it writes no observation row of its own.
+    restated = [{"observation_key": key, "disposition": "reclassified", "to_outcome": "recurrence",
+                 "reason": "re-read, still a recurrence"}]
+    second, _ = self.observation_packet(
+      "run-b", [self.tracked("fix-1", "recurrence", (a, "grep again"), covered="no")], restated
+    )
+    self.cli("ingest", "--packet", second, "--apply")
+    changed = [{"observation_key": key, "disposition": "reclassified", "to_outcome": "unreviewed",
+                "reason": "on a third read it was not a chance"}]
+    third, _ = self.observation_packet(
+      "run-c", [self.tracked("fix-1", "unreviewed", (a, "grep again"))], changed
+    )
+    self.assertEqual(self.cli("ingest", "--packet", third, "--apply")["observations"]["corrected"], 1)
+    before = (self.store / "records.jsonl").read_bytes()
+    again = self.cli("ingest", "--packet", second, "--apply")
+    self.assertEqual(again["observations"]["corrected"], 0)
+    self.assertEqual(again["appended"], 0)
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    latest = {
+      row["observation_id"]: row
+      for row in self.cli("list", "--issue", "issue-1")["issues"][0]["records"]["observation_latest"]
+    }
+    self.assertEqual((latest[key]["outcome"], latest[key]["run_id"]), ("unreviewed", "run-c"))
+    # Positive control: a run that was never ingested still changes the result when it carries a reason.
+    fourth, _ = self.observation_packet(
+      "run-d", [self.tracked("fix-1", "recurrence", (a, "grep again"), covered="no")],
+      [{"observation_key": key, "disposition": "reclassified", "to_outcome": "recurrence",
+        "reason": "after all it is a recurrence"}],
+    )
+    self.assertEqual(self.cli("ingest", "--packet", fourth, "--apply")["observations"]["corrected"], 1)
 
   def test_session_loaded_before_the_change_is_invalid_not_a_missed_load(self):
     self.ready()
@@ -1860,6 +1922,38 @@ class StoreCLI(unittest.TestCase):
     self.assertEqual((judged["event_key"], judged["loaded"], judged["basis"]), ("toolu_ctx", "loaded", "instructions_attachment"))
 
 
+  def test_a_backfilled_anchor_replaces_the_original_text_and_source_for_the_load_check(self):
+    self.ready(changes=())
+    self.change_at("c-fill", "docs/evidence.md", "Evidence that the change was implemented", effective="2026-10-20T00:30:00Z")
+    rule_text = "搜尋大目錄時必須排除 node_modules"
+    anchor = self.put("rules/common/search.md", rule_text)
+    self.backfill("c-fill", "always_on_rule", anchor)
+    change = self.contexts()["c-fill"]
+    self.assertEqual((change["new_text"], change["source"]), (rule_text, {**anchor}))
+    session = self.root / "sess-fill.jsonl"
+    rows = [
+      {"type": "attachment", "timestamp": "2026-10-20T00:50:00Z", "attachment": {
+        "type": "instructions", "files": [{"path": "/fixture/RULES.md", "type": "User", "content": rule_text}]}},
+      {"type": "assistant", "timestamp": "2026-10-20T01:05:00Z", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_fill", "name": "Bash", "input": {"command": "ls"}}]}},
+    ]
+    session.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+    result = subprocess.run(
+      [sys.executable, "-I", str(Path(__file__).with_name("session-retro.py")), "event-evidence",
+       "--session-file", str(session), "--source-line", "2", "--change", json.dumps(change, ensure_ascii=False)],
+      text=True, capture_output=True,
+    )
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    judged = json.loads(result.stdout)
+    self.assertEqual((judged["loaded"], judged["basis"]), ("loaded", "instructions_attachment"))
+    # The latest filing wins over an earlier one, and a change never filed keeps its own source.
+    newer = self.put("rules/common/newer.md", "a newer paragraph")
+    self.backfill("c-fill", "always_on_rule", newer)
+    self.change_at("c-plain", "rules/common/plain.md", "plain text")
+    found = self.contexts()
+    self.assertEqual((found["c-fill"]["new_text"], found["c-fill"]["source"]), ("a newer paragraph", {**newer}))
+    self.assertEqual(found["c-plain"]["new_text"], "plain text")
+
   # ---- ticket 05: verdicts, backfill, proposal decisions, pending list -------------------
 
   def judge(self, change, verdict="effective", level=2, at="2026-10-21T00:00:00Z", side="checked",
@@ -2006,6 +2100,21 @@ class StoreCLI(unittest.TestCase):
     self.backfill("fix-1", "script", {"path": script["path"], "line": 1, "quote": "not there"}, code=2)
     self.assertEqual((self.store / "records.jsonl").read_bytes(), size)
 
+  def test_backfill_and_proposal_without_apply_write_nothing(self):
+    self.ready()
+    before = (self.store / "records.jsonl").read_bytes()
+    dry = self.backfill("fix-1", "script", apply=False)
+    self.assertEqual((dry["apply"], dry["appended"]), (False, 1))
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    dry = self.propose("retract", "rejected", change="fix-1", apply=False)
+    self.assertEqual((dry["apply"], dry["appended"]), (False, 1))
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    # Positive control: the same calls with --apply write one row each.
+    self.assertEqual(self.backfill("fix-1", "script")["apply"], True)
+    self.assertEqual(self.propose("retract", "rejected", change="fix-1")["apply"], True)
+    kinds = [row["type"] for row in self.rows()]
+    self.assertEqual((kinds.count("backfill"), kinds.count("proposal_decision")), (1, 1))
+
   def test_proposal_decision_needs_a_real_human_quote_and_keeps_its_fields(self):
     self.ready()
     at = "2026-10-21T06:30:00Z"
@@ -2041,6 +2150,17 @@ class StoreCLI(unittest.TestCase):
     self.propose("retract", "rejected", code=2)
     self.propose("retract", "rejected", rule=rule, code=2)
     self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def test_make_hook_takes_a_rule_anchor_only_because_a_change_target_would_never_take_effect(self):
+    self.ready()
+    before = (self.store / "records.jsonl").read_bytes()
+    error = self.propose("make_hook", "rejected", change="fix-1", text="no hook for that", uuid="h-9", code=2)
+    self.assertIn("rule anchor", error["error"])
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    # Positive control: the same decision on a rule anchor is stored.
+    rule = self.pointer("search rule section")
+    done = self.propose("make_hook", "rejected", rule=rule, text="no hook for that", uuid="h-9")
+    self.assertEqual(done["appended"], 1)
 
   def test_rejecting_a_proposal_leaves_the_issue_approval_and_later_work_alone(self):
     self.ready()
