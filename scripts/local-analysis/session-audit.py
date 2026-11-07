@@ -161,8 +161,15 @@ CJK_SECRET_PAREN_RE = re.compile(
 )
 # 本機服務、webhook 或 OAuth callback URL 常以查詢參數傳遞長隨機 token／授權碼；限縮於憑證參數名且值符合 bare_key_secret（>=20 碼英數混合，排除 ?code=200 或 ?state=open 等短參數）。
 URL_KEY_PARAM_RE = re.compile(
-  r"(?i)([?&](?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|code|state)=)([^&#\s\"'<>`\\]+)"
+  r"(?i)([?&](?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)=)([^&#\s\"'<>`\\]+)"
 )
+AX_KEY_VALUE_FIELD_RE = re.compile(r"^\t*\d+\s+text\b[^\r\n]*\bKey,\s*Value:\s*([A-Za-z0-9_.-]+)\s*$")
+AX_KEY_BOUNDARY_RE = re.compile(r"^\t*\d+\s+text\s+Key\s*$")
+AX_VALUE_FIELD_RE = re.compile(r"^(\t*\d+\s+text\b[^\r\n]*\bValue,\s*Value:\s*)([^\r\n]+)$")
+AX_SECRET_LABEL_LINE_RE = re.compile(
+  r"(?i)^\t*\d+\s+text\s+(?:API\s+)?(?:Password|Passwd|Signature|Secret|Client\s+Secret|Access\s+Token|API\s+Key|Private\s+Key)\s*$"
+)
+AX_TEXT_TOKEN_LINE_RE = re.compile(r"^(\t*\d+\s+text\s+)([A-Za-z0-9!@#$%^&*_+=.-]{8,})\s*$")
 # Discord Webhook 把憑證放在路徑末段（/api/webhooks/<id>/<token>），非查詢參數。
 DISCORD_WEBHOOK_URL_RE = re.compile(
   r"(?i)(https?://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/)([A-Za-z0-9_-]{20,})"
@@ -506,11 +513,45 @@ def redact_text(value):
   text = MFA_CODE_RE.sub(r"\1[REDACTED]\2", text)
   text = CJK_SECRET_LABEL_RE.sub(r"\1\2[REDACTED]", text)
   text = CJK_SECRET_PAREN_RE.sub(r"\1\2[REDACTED]\3", text)
+  text = redact_ax_tree_secrets(text)
   text = TOKEN_RE.sub("[REDACTED]", text)
   text = JWT_RE.sub("[JWT_REDACTED]", text)
   text = EMAIL_RE.sub("[EMAIL]", text)
   text = PHONE_RE.sub("[PHONE]", text)
   return text
+
+
+def redact_ax_tree_secrets(text):
+  if "text " not in text:
+    return text
+  lines = text.split("\n")
+  pending_field_window = 0
+  pending_next_token = False
+  for index, line in enumerate(lines):
+    key_match = AX_KEY_VALUE_FIELD_RE.match(line)
+    if key_match:
+      pending_field_window = 6 if sensitive_key(key_match.group(1)) else 0
+      pending_next_token = False
+      continue
+    if AX_KEY_BOUNDARY_RE.match(line):
+      pending_field_window = 0
+      pending_next_token = False
+      continue
+    if pending_field_window > 0:
+      val_match = AX_VALUE_FIELD_RE.match(line)
+      if val_match and not PLACEHOLDER_RE.match(val_match.group(2).strip()):
+        lines[index] = f"{val_match.group(1)}[REDACTED]"
+        pending_field_window = 0
+      else:
+        pending_field_window -= 1
+    if pending_next_token:
+      tok_match = AX_TEXT_TOKEN_LINE_RE.match(line)
+      if tok_match and not PLACEHOLDER_RE.match(tok_match.group(2).strip()):
+        lines[index] = f"{tok_match.group(1)}[REDACTED]"
+      pending_next_token = False
+    if AX_SECRET_LABEL_LINE_RE.match(line):
+      pending_next_token = True
+  return "\n".join(lines)
 
 
 def redact_obj(value, key_name=None):

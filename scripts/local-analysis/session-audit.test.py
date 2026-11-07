@@ -2691,8 +2691,30 @@ class SessionAuditCliTest(unittest.TestCase):
     fake_mgmt_key = "mgmt_SynthManagementKey9876543210abcdef"
     fake_mfa_pos = "654321"
     fake_mfa_flag = "987654"
+    fake_zoom_pwd = "ZoomPwd9876543210abcdef123456"
+    fake_ax_render_val = "SynthRenderPaypalSecret998877"
+    fake_ax_nvp_pw = "SynthNvpSoapPass112233"
+    fake_ax_nvp_sig = "SynthNvpSoapSig445566778899"
+    ax_sample = (
+      "\t\t249 text Key\n"
+      "\t\t250 text field (settable) Key, Value: PAYPAL_SECRET\n"
+      "\t251 cell\n"
+      "\t\t252 text Value\n"
+      "\t\t253 container\n"
+      f"\t\t\t254 text entry area (settable) Value, Value: {fake_ax_render_val}\n"
+      "\t\t260 text field (settable) Key, Value: SAFE_PUBLIC_URL\n"
+      "\t\t\t264 text entry area (settable) Value, Value: https://safe.example.com\n"
+      "\t153 text NVP/SOAP Sandbox API credentials\n"
+      "\t154 text Username\n"
+      "\t155 text SAFE_SANDBOX_API_USER\n"
+      "\t157 text Password\n"
+      f"\t158 text {fake_ax_nvp_pw}\n"
+      "\t160 text Signature\n"
+      f"\t161 text {fake_ax_nvp_sig}\n"
+    )
     sample = (
       f"open http://127.0.0.1:8318/?k={fake_url_key} and "
+      f"https://zoom.us/j/99887766?pwd={fake_zoom_pwd} and "
       f"https://discord.com/api/webhooks/1566086967630762033/{fake_webhook_tok} and "
       f"http://localhost:1455/auth/callback?code={fake_oauth_code}&scope=openid&state={fake_oauth_state} and "
       f"COLLIE_VAPID_PRIVATE={fake_vapid_priv} and "
@@ -2700,11 +2722,23 @@ class SessionAuditCliTest(unittest.TestCase):
       f'{{"vapid_private":"{fake_vapid_priv}","vapid_public":"SAFE_VAPID_PUB","management_key":"{fake_mgmt_key}"}} and '
       f"'vapid_private':'{fake_vapid_priv}' and 'management_key':'{fake_mgmt_key}' and "
       f"~/.claude/scripts/aws-mfa-refresh.sh {fake_mfa_pos} and /demo/aws-mfa-session.sh {fake_mfa_pos} and --token-code {fake_mfa_flag} and "
-      f"send via {fake_resend} with 登入密碼（`{fake_paren_pw}`） "
-      "while keeping 密碼（含英文大小寫與數字） and is_private=false and ?k=short1 and ?code=200&state=open and ?client_id=abc123def456ghi789jkl012 untouched"
+      f"send via {fake_resend} with 登入密碼（`{fake_paren_pw}`）\n"
+      + ax_sample
+      + "while keeping 密碼（含英文大小寫與數字） and is_private=false and ?k=short1 and ?code=200&state=open and ?client_id=abc123def456ghi789jkl012 untouched"
     )
     redacted = mod.redact_text(sample)
     self.assertFalse(fake_url_key in redacted, "url query token was not redacted")
+    self.assertFalse(fake_zoom_pwd in redacted, "zoom pwd query param was not redacted")
+    self.assertFalse(fake_ax_render_val in redacted, "render ax tree secret value was not redacted")
+    self.assertFalse(fake_ax_nvp_pw in redacted, "nvp ax tree password was not redacted")
+    self.assertFalse(fake_ax_nvp_sig in redacted, "nvp ax tree signature was not redacted")
+    self.assertIn("https://zoom.us/j/99887766?pwd=[REDACTED]", redacted)
+    self.assertIn("250 text field (settable) Key, Value: PAYPAL_SECRET", redacted)
+    self.assertIn("254 text entry area (settable) Value, Value: [REDACTED]", redacted)
+    self.assertIn("264 text entry area (settable) Value, Value: https://safe.example.com", redacted)
+    self.assertIn("155 text SAFE_SANDBOX_API_USER", redacted)
+    self.assertIn("158 text [REDACTED]", redacted)
+    self.assertIn("161 text [REDACTED]", redacted)
     self.assertFalse(fake_webhook_tok in redacted, "discord webhook path token was not redacted")
     self.assertFalse(fake_oauth_code in redacted, "oauth callback code was not redacted")
     self.assertFalse(fake_oauth_state in redacted, "oauth callback state was not redacted")
