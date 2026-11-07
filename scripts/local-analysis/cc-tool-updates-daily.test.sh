@@ -295,6 +295,20 @@ assert len(packet['updates']) == 1 and packet['updates'][0]['name'] == 'skilleva
 print('✅ 測 5e hold 到期：隔天自動回到有更新')
 PY
 
+printf '[{"name":"skillevaluator","manager":"uv-git","source":"NVIDIA/SkillEvaluator","acknowledged_latest":"bbbbbbbb","hold_reason":"使用者已決策暫緩此版本"}]' > "$TMP/m-uv-ack.json"
+out_ack=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-uv-ack.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+printf '[{"name":"skillevaluator","manager":"uv-git","source":"NVIDIA/SkillEvaluator","acknowledged_latest":"aaaaaaaa","hold_reason":"舊版 checkpoint"}]' > "$TMP/m-uv-ack-old.json"
+out_ack_new=$(HOME="$UV_HOME" PATH="$UV_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-uv-ack-old.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+python3 - "$out_ack" "$out_ack_new" <<'PY' || fail "acknowledged_latest 斷言失敗"
+import json, sys
+ack, ack_new = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+assert ack['updates'] == [], ack['updates']
+assert len(ack['held']) == 1 and ack['held'][0]['acknowledged_latest'] == 'bbbbbbbb' and ack['held'][0]['hold_reason'] == '使用者已決策暫緩此版本', ack['held']
+assert ack_new['held'] == [], ack_new['held']
+assert len(ack_new['updates']) == 1 and ack_new['updates'][0]['latest'] == 'bbbbbbbb', ack_new['updates']
+print('✅ 測 5f acknowledged_latest checkpoint：已決策版本進 held 不重複跳出、上游出新版自動回到 updates')
+PY
+
 # graceful：fixture manifest 含不存在的 manager → 進 errors 不崩
 printf '[{"name":"nonexistent-xyz","manager":"cargo-git","source":"no/such-repo"}]' > "$TMP/m2.json"
 out2=$(CCTOOL_MANIFEST="$TMP/m2.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)

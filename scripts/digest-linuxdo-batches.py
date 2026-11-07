@@ -231,14 +231,30 @@ def _batch_payload(batch_id: str, fragments: list[dict]) -> dict:
     }
 
 
+_UNFETCHED_SITEMAP_STUB_RE = re.compile(
+    r"### [^\n]+\n\n`new_term_radar:sitemap:[^\n]+`\n\n"
+    r"> title is the URL slug; the page was not fetched\n\n---\n\n?"
+)
+
+
+def _strip_unfetched_sitemap_stubs(text: str) -> str:
+    matches = list(_UNFETCHED_SITEMAP_STUB_RE.finditer(text))
+    if not matches:
+        return text
+    first_start = matches[0].start()
+    cleaned = _UNFETCHED_SITEMAP_STUB_RE.sub("", text)
+    note = f"> (omitted {len(matches)} unfetched sitemap URL-slug stubs)\n\n"
+    return cleaned[:first_start] + note + cleaned[first_start:]
+
+
 def _non_linuxdo(text: str, span: tuple[int, int] | None) -> str:
     if span is None:
-        return text
+        return _strip_unfetched_sitemap_stubs(text)
     start, end = span
     # Drop the heading line too, not only the body span.
     heading_start = text.rfind("\n## ", 0, start)
     heading_start = 0 if heading_start < 0 else heading_start + 1
-    return text[:heading_start] + text[end:]
+    return _strip_unfetched_sitemap_stubs(text[:heading_start] + text[end:])
 
 
 def build(raw_text: str, source_path: str, max_chars: int, max_items: int) -> dict:

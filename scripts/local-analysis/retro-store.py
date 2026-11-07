@@ -1030,6 +1030,21 @@ def decide(args):
       any(item["type"] == "issue" and item["issue_id"] == issue for item in existing),
       "unknown issue reference: " + issue,
     )
+    bound_other = next(
+      (
+        item["issue_id"]
+        for item in existing
+        if item["type"] == "decision"
+        and item.get("event_uuid") == row["event_uuid"]
+        and item.get("issue_id") != issue
+      ),
+      None,
+    )
+    if bound_other is not None:
+      require(
+        issue in source["quote"],
+        f"event_uuid {row['event_uuid']} already bound to {bound_other}; quote must explicitly name {issue}",
+      )
     fresh, skipped = plan_append(existing, [row])
     if args.apply and fresh:
       append_rows(handle, fresh)
