@@ -2695,6 +2695,10 @@ class SessionAuditCliTest(unittest.TestCase):
     fake_ax_render_val = "SynthRenderPaypalSecret998877"
     fake_ax_nvp_pw = "SynthNvpSoapPass112233"
     fake_ax_nvp_sig = "SynthNvpSoapSig445566778899"
+    fake_bedrock_key = "ABSKQmVkcm9ja1N5bnRoZXRpY0tleTk5ODg3NzY2NTU0NDMzMjIxMQ=="
+    fake_bedrock_env = "SynthBedrockBearerToken9876543210abcdef"
+    fake_ax_cjk_key = "SynthAxCjkApiKey887766554433"
+    fake_encoded_state = "encState_Synth9876543210abcdef123456"
     ax_sample = (
       "\t\t249 text Key\n"
       "\t\t250 text field (settable) Key, Value: PAYPAL_SECRET\n"
@@ -2711,12 +2715,17 @@ class SessionAuditCliTest(unittest.TestCase):
       f"\t158 text {fake_ax_nvp_pw}\n"
       "\t160 text Signature\n"
       f"\t161 text {fake_ax_nvp_sig}\n"
+      "+ \t197 heading API 金鑰, Value: 2\n"
+      "+ \t198 container\n"
+      f"+ \t\t199 text {fake_ax_cjk_key}\n"
     )
     sample = (
       f"open http://127.0.0.1:8318/?k={fake_url_key} and "
       f"https://zoom.us/j/99887766?pwd={fake_zoom_pwd} and "
       f"https://discord.com/api/webhooks/1566086967630762033/{fake_webhook_tok} and "
       f"http://localhost:1455/auth/callback?code={fake_oauth_code}&scope=openid&state={fake_oauth_state} and "
+      f"https://github.com/login?return_to=%2Flogin%2Foauth%3Fclient_id%3D5cce%26state%3D{fake_encoded_state}%26skip%3Dtrue and "
+      f"AWS_BEARER_TOKEN_BEDROCK={fake_bedrock_env} and bare {fake_bedrock_key} and "
       f"COLLIE_VAPID_PRIVATE={fake_vapid_priv} and "
       f"CLIPROXY_MANAGEMENT_KEY={fake_mgmt_key} and "
       f'{{"vapid_private":"{fake_vapid_priv}","vapid_public":"SAFE_VAPID_PUB","management_key":"{fake_mgmt_key}"}} and '
@@ -2732,6 +2741,14 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertFalse(fake_ax_render_val in redacted, "render ax tree secret value was not redacted")
     self.assertFalse(fake_ax_nvp_pw in redacted, "nvp ax tree password was not redacted")
     self.assertFalse(fake_ax_nvp_sig in redacted, "nvp ax tree signature was not redacted")
+    self.assertFalse(fake_bedrock_key in redacted, "bedrock ABSK token was not redacted")
+    self.assertFalse(fake_bedrock_env in redacted, "AWS_BEARER_TOKEN_BEDROCK env was not redacted")
+    self.assertFalse(fake_ax_cjk_key in redacted, "ax diff cjk API key was not redacted")
+    self.assertFalse(fake_encoded_state in redacted, "percent-encoded oauth state was not redacted")
+    self.assertIn("%26state%3D[REDACTED]%26skip%3Dtrue", redacted)
+    self.assertIn("AWS_BEARER_TOKEN_BEDROCK=[REDACTED]", redacted)
+    self.assertIn("+ \t\t199 text [REDACTED]", redacted)
+    self.assertIn("AWS_BEARER_TOKEN_BEDROCK", mod.credential_names(f"AWS_BEARER_TOKEN_BEDROCK={fake_bedrock_env}"))
     self.assertIn("https://zoom.us/j/99887766?pwd=[REDACTED]", redacted)
     self.assertIn("250 text field (settable) Key, Value: PAYPAL_SECRET", redacted)
     self.assertIn("254 text entry area (settable) Value, Value: [REDACTED]", redacted)

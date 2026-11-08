@@ -119,13 +119,14 @@ BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 BASIC_RE = re.compile(r"\bBasic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE)
 EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])")
 TOKEN_RE = re.compile(
-  r"\b(?:sk_(?:live|test)_[A-Za-z0-9_-]{6,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{10,}"
+  r"(?:\b(?:sk_(?:live|test)_[A-Za-z0-9_-]{6,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{10,}"
   r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
   r"|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,}"
   r"|re_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}"
   r"|hf_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{20,}"
   r"|npm_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|dop_v1_[a-f0-9]{30,}"
   r"|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|glpat-[A-Za-z0-9_-]{20,})\b"
+  r"|\bABSK[A-Za-z0-9+/=_-]{20,}(?![A-Za-z0-9+/=_-]))"
 )
 JSON_SECRET_RE = re.compile(
   r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|management[_-]?key|token|secret"
@@ -161,15 +162,15 @@ CJK_SECRET_PAREN_RE = re.compile(
 )
 # 本機服務、webhook 或 OAuth callback URL 常以查詢參數傳遞長隨機 token／授權碼；限縮於憑證參數名且值符合 bare_key_secret（>=20 碼英數混合，排除 ?code=200 或 ?state=open 等短參數）。
 URL_KEY_PARAM_RE = re.compile(
-  r"(?i)([?&](?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)=)([^&#\s\"'<>`\\]+)"
+  r"(?i)((?:[?&]|%3[fF]|%26)(?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)(?:=|%3[dD]))([^&#%\s\"'<>`\\]+)"
 )
-AX_KEY_VALUE_FIELD_RE = re.compile(r"^\t*\d+\s+text\b[^\r\n]*\bKey,\s*Value:\s*([A-Za-z0-9_.-]+)\s*$")
-AX_KEY_BOUNDARY_RE = re.compile(r"^\t*\d+\s+text\s+Key\s*$")
-AX_VALUE_FIELD_RE = re.compile(r"^(\t*\d+\s+text\b[^\r\n]*\bValue,\s*Value:\s*)([^\r\n]+)$")
+AX_KEY_VALUE_FIELD_RE = re.compile(r"^[+-]?[ \t]*\d+\s+text\b[^\r\n]*\bKey,\s*Value:\s*([A-Za-z0-9_.-]+)\s*$")
+AX_KEY_BOUNDARY_RE = re.compile(r"^[+-]?[ \t]*\d+\s+text\s+Key\s*$")
+AX_VALUE_FIELD_RE = re.compile(r"^([+-]?[ \t]*\d+\s+text\b[^\r\n]*\bValue,\s*Value:\s*)([^\r\n]+)$")
 AX_SECRET_LABEL_LINE_RE = re.compile(
-  r"(?i)^\t*\d+\s+text\s+(?:API\s+)?(?:Password|Passwd|Signature|Secret|Client\s+Secret|Access\s+Token|API\s+Key|Private\s+Key)\s*$"
+  r"(?i)^[+-]?[ \t]*\d+\s+(?:text|heading)\s+(?:(?:API\s+)?(?:Password|Passwd|Signature|Secret|Client\s+Secret|Access\s+Token|API\s+Key|Private\s+Key)|(?:API\s*)?(?:金鑰|密鑰|私鑰|密碼|口令))(?:\s*,\s*Value:\s*\d+)?\s*$"
 )
-AX_TEXT_TOKEN_LINE_RE = re.compile(r"^(\t*\d+\s+text\s+)([A-Za-z0-9!@#$%^&*_+=.-]{8,})\s*$")
+AX_TEXT_TOKEN_LINE_RE = re.compile(r"^([+-]?[ \t]*\d+\s+text\s+)([A-Za-z0-9!@#$%^&*_+/=.-]{8,})\s*$")
 # Discord Webhook 把憑證放在路徑末段（/api/webhooks/<id>/<token>），非查詢參數。
 DISCORD_WEBHOOK_URL_RE = re.compile(
   r"(?i)(https?://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/)([A-Za-z0-9_-]{20,})"
@@ -188,6 +189,7 @@ SENSITIVE_SUFFIXES = (
   "ACTIVE_KEY",
   "ACCESS_KEY",
   "MANAGEMENT_KEY",
+  "BEARER_TOKEN_BEDROCK",
   "AUTH_TOKEN",
   "ACCESS_TOKEN",
   "REFRESH_TOKEN",
@@ -425,7 +427,7 @@ PLACEHOLDER_RE = re.compile(r"^(?:\$|<|\[REDACTED|\*{3}|x{3,}$|your[-_])", re.IG
 # 偵測比遮罩嚴：遮罩寧可多遮，偵測要少誤報。只認 env 檔寫法（大寫名、等號、帶前綴的憑證字尾），
 # 「token: 說明文字」「PASS: 測試名」這類冒號寫法在歷史資料裡幾乎都是誤報（2026-10-08 量到 1347 行、106 個 session）。
 ENV_SECRET_RE = re.compile(
-  r"(?m)(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:PASS|PWD|PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|VAPID_PRIVATE|MANAGEMENT_KEY))"
+  r"(?m)(?<![A-Za-z0-9_])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:PASS|PWD|PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|VAPID_PRIVATE|MANAGEMENT_KEY|BEARER_TOKEN_BEDROCK))"
   r"\s*=\s*[\"']?([^\s\"'`]+)"
 )
 
@@ -522,20 +524,20 @@ def redact_text(value):
 
 
 def redact_ax_tree_secrets(text):
-  if "text " not in text:
+  if "text " not in text and "heading " not in text:
     return text
   lines = text.split("\n")
   pending_field_window = 0
-  pending_next_token = False
+  pending_token_window = 0
   for index, line in enumerate(lines):
     key_match = AX_KEY_VALUE_FIELD_RE.match(line)
     if key_match:
       pending_field_window = 6 if sensitive_key(key_match.group(1)) else 0
-      pending_next_token = False
+      pending_token_window = 0
       continue
     if AX_KEY_BOUNDARY_RE.match(line):
       pending_field_window = 0
-      pending_next_token = False
+      pending_token_window = 0
       continue
     if pending_field_window > 0:
       val_match = AX_VALUE_FIELD_RE.match(line)
@@ -544,13 +546,15 @@ def redact_ax_tree_secrets(text):
         pending_field_window = 0
       else:
         pending_field_window -= 1
-    if pending_next_token:
+    if pending_token_window > 0:
       tok_match = AX_TEXT_TOKEN_LINE_RE.match(line)
       if tok_match and not PLACEHOLDER_RE.match(tok_match.group(2).strip()):
         lines[index] = f"{tok_match.group(1)}[REDACTED]"
-      pending_next_token = False
+        pending_token_window = 0
+      else:
+        pending_token_window -= 1
     if AX_SECRET_LABEL_LINE_RE.match(line):
-      pending_next_token = True
+      pending_token_window = 3
   return "\n".join(lines)
 
 
