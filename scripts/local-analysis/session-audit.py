@@ -117,7 +117,7 @@ PRIVATE_KEY_RE = re.compile(
 )
 BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 BASIC_RE = re.compile(r"\bBasic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE)
-EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])")
+EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])", re.IGNORECASE)
 TOKEN_RE = re.compile(
   r"(?:\b(?:sk_(?:live|test)_[A-Za-z0-9_-]{6,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{10,}"
   r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
@@ -125,8 +125,10 @@ TOKEN_RE = re.compile(
   r"|re_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}"
   r"|hf_[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{20,}"
   r"|npm_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|dop_v1_[a-f0-9]{30,}"
+  r"|tl-[0-9a-fA-F]{32,}"
   r"|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|glpat-[A-Za-z0-9_-]{20,})\b"
-  r"|\bABSK[A-Za-z0-9+/=_-]{20,}(?![A-Za-z0-9+/=_-]))"
+  r"|\bABSK[A-Za-z0-9+/=_-]{20,}(?![A-Za-z0-9+/=_-])"
+  r"|\bbW9kYWwgdG9rZW4gc2V0[A-Za-z0-9+/=]{16,}(?![A-Za-z0-9+/=_-]))"
 )
 JSON_SECRET_RE = re.compile(
   r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|management[_-]?key|token|secret"
@@ -139,7 +141,7 @@ AUTHORIZATION_RE = re.compile(r"(?im)\bAuthorization\s*:\s*[^\r\n]+")
 COOKIE_RE = re.compile(r"(?im)\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]+")
 URI_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@/\s]+)@")
 JWT_RE = re.compile(
-  r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])"
+  r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])"
 )
 PHONE_RE = re.compile(r"(?<!\w)(?:\+\d{8,15}|\(?\d{2,4}\)?[- .]\d{3,4}[- .]\d{3,4})(?!\w)")
 ASSIGNMENT_RE = re.compile(
@@ -162,7 +164,7 @@ CJK_SECRET_PAREN_RE = re.compile(
 )
 # 本機服務、webhook 或 OAuth callback URL 常以查詢參數傳遞長隨機 token／授權碼；限縮於憑證參數名且值符合 bare_key_secret（>=20 碼英數混合，排除 ?code=200 或 ?state=open 等短參數）。
 URL_KEY_PARAM_RE = re.compile(
-  r"(?i)((?:[?&]|%3[fF]|%26)(?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)(?:=|%3[dD]))([^&#%\s\"'<>`\\]+)"
+  r"(?i)((?:[?&]|&amp;|%3[fF]|%26)(?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)(?:=|%3[dD]))((?:(?!&amp;)[^&#%\s\"'<>`\\]|%(?!26|23)[0-9A-Fa-f]{2})+)"
 )
 AX_KEY_VALUE_FIELD_RE = re.compile(r"^[+-]?[ \t]*\d+\s+text\b[^\r\n]*\bKey,\s*Value:\s*([A-Za-z0-9_.-]+)\s*$")
 AX_KEY_BOUNDARY_RE = re.compile(r"^[+-]?[ \t]*\d+\s+text\s+Key\s*$")

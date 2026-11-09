@@ -429,6 +429,35 @@ class JudgeCLI(unittest.TestCase):
     # 原始輸入有一個還沒擋住，就不是有效。
     failing = self.judge(self.spec(level=1, tests={"cases": 3, "failed": 1}))
     self.assertEqual((failing["verdict"], failing["new"]["violated"]), ("ineffective", 1))
+    # 第一層沒有 old/new 回放組：塞合成的 old/new 佔位結構（如 Read(/tmp/a)）會被拒收。
+    synthetic_side = {
+      "old": [make_run("side-old-1", {"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/a"}})],
+      "new": [make_run("side-new-1", {"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/a"}})],
+    }
+    refused_l1 = self.judge(
+      self.spec(level=1, tests={"cases": 3, "failed": 0, "old_failed": 3}, side_effects=synthetic_side),
+      code=2,
+    )
+    self.assertIn("layer 1", refused_l1["error"])
+    # 第一層若提供真實存在的 audit_log 抽樣統計則可標 checked；若有誤攔則判 harmful。
+    audit_log = self.root / "hook-audit.jsonl"
+    audit_log.write_text('{"outcome":"allow"}\n', encoding="utf-8")
+    sampled_clean = self.judge(
+      self.spec(
+        level=1,
+        tests={"cases": 3, "failed": 0, "old_failed": 3},
+        side_effects={"audit_log": str(audit_log), "sampled": 5, "false_positives": 0},
+      )
+    )
+    self.assertEqual((sampled_clean["verdict"], sampled_clean["side_effects"]), ("effective", "checked"))
+    sampled_fp = self.judge(
+      self.spec(
+        level=1,
+        tests={"cases": 3, "failed": 0, "old_failed": 3},
+        side_effects={"audit_log": str(audit_log), "sampled": 5, "false_positives": 1},
+      )
+    )
+    self.assertEqual((sampled_fp["verdict"], sampled_fp["side_effects"]), ("harmful", "checked"))
 
   # ---- 第四層：只能判無效或證據不足 ------------------------------------------------------
 

@@ -366,7 +366,25 @@ def load_input(path):
       die("layer 4 has no replay, so it takes no side-effect check")
     if not isinstance(extra, dict):
       die("side_effects must hold old and new")
-    pairs += [("side_effects." + side, extra.get(side)) for side in ("old", "new")]
+    if level == 1:
+      audit_log = extra.get("audit_log")
+      sampled = extra.get("sampled")
+      fps = extra.get("false_positives")
+      if (
+        "old" in extra
+        or "new" in extra
+        or not isinstance(audit_log, str)
+        or not os.path.isfile(audit_log)
+        or os.path.islink(audit_log)
+        or type(sampled) is not int
+        or sampled < 1
+        or type(fps) is not int
+        or fps < 0
+        or fps > sampled
+      ):
+        die("layer 1 has no replay arms; omit side_effects (unchecked) or pass hook audit_log sample")
+    else:
+      pairs += [("side_effects." + side, extra.get(side)) for side in ("old", "new")]
   for label, runs in pairs:
     if not isinstance(runs, list) or not all(
       isinstance(run, dict) and isinstance(run.get("content"), list) for run in runs
@@ -423,14 +441,21 @@ def judge(spec, config):
     counts = (len(events), len(events), len(unblocked))
   out["old"], out["new"] = old, new
   side = spec.get("side_effects")
-  # 任一邊沒有回應就不是檢查過，不能標 checked。
-  checked = bool(side and side["old"] and side["new"])
-  out["side_effects"] = "checked" if checked else "unchecked"
-  if checked:
-    out["extra_actions"] = extra_actions(side["old"], side["new"])
-    # 幫倒忙優先於其他判定：它是另一條證據，不看主實驗成不成立。
-    if out["extra_actions"]:
-      verdict, reason = "harmful", "the new rule adds actions the old rule never took at unrelated moments"
+  if level == 1:
+    checked = bool(side and side.get("sampled", 0) >= 1)
+    out["side_effects"] = "checked" if checked else "unchecked"
+    if checked and side["false_positives"] > 0:
+      out["extra_actions"] = [{"action": "hook:false_positive", "old_runs": 0, "new_runs": side["false_positives"]}]
+      verdict, reason = "harmful", "hook trigger sample contains false-positive blocks"
+  else:
+    # 任一邊沒有回應就不是檢查過，不能標 checked。
+    checked = bool(side and side["old"] and side["new"])
+    out["side_effects"] = "checked" if checked else "unchecked"
+    if checked:
+      out["extra_actions"] = extra_actions(side["old"], side["new"])
+      # 幫倒忙優先於其他判定：它是另一條證據，不看主實驗成不成立。
+      if out["extra_actions"]:
+        verdict, reason = "harmful", "the new rule adds actions the old rule never took at unrelated moments"
   out.update({"verdict": verdict, "reason": reason, "model_calls": tally["calls"]})
   return out, counts
 

@@ -2699,6 +2699,12 @@ class SessionAuditCliTest(unittest.TestCase):
     fake_bedrock_env = "SynthBedrockBearerToken9876543210abcdef"
     fake_ax_cjk_key = "SynthAxCjkApiKey887766554433"
     fake_encoded_state = "encState_Synth9876543210abcdef123456"
+    fake_tl_key = "tl-9876543210abcdef1234567890abcdef12345678"
+    fake_b64_modal = "bW9kYWwgdG9rZW4gc2V0IC0tdG9rZW4taWQgYWstU3ludGhJZDk5IC0tdG9rZW4tc2VjcmV0IGFzLVN5bnRoU2VjcmV0OTk="
+    fake_html_state = "htmlAmpState_Synth9876543210abcdef"
+    fake_pct_json_state = "%7B%22token%22%3A%22pctJsonStateSynth9876543210%22%7D"
+    fake_pct_email = "synth.oauth.user%40gmail.com"
+    fake_two_seg_jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aC11c2VyLTAxIiwic2Vzc2lvbiI6IlN5bnRoVHdvU2VnSnd0OTkifQ"
     ax_sample = (
       "\t\t249 text Key\n"
       "\t\t250 text field (settable) Key, Value: PAYPAL_SECRET\n"
@@ -2725,6 +2731,9 @@ class SessionAuditCliTest(unittest.TestCase):
       f"https://discord.com/api/webhooks/1566086967630762033/{fake_webhook_tok} and "
       f"http://localhost:1455/auth/callback?code={fake_oauth_code}&scope=openid&state={fake_oauth_state} and "
       f"https://github.com/login?return_to=%2Flogin%2Foauth%3Fclient_id%3D5cce%26state%3D{fake_encoded_state}%26skip%3Dtrue and "
+      f"https://accounts.google.com/o/oauth2/auth?client_id=123&amp;state={fake_html_state}&amp;scope=email and "
+      f"https://accounts.google.com/o/oauth2/auth?login_hint={fake_pct_email}&state={fake_pct_json_state}&redirect_uri=http://localhost and "
+      f"262 text {fake_tl_key} and B64_MODAL:{fake_b64_modal} and session_jwt={fake_two_seg_jwt} and "
       f"AWS_BEARER_TOKEN_BEDROCK={fake_bedrock_env} and bare {fake_bedrock_key} and "
       f"COLLIE_VAPID_PRIVATE={fake_vapid_priv} and "
       f"CLIPROXY_MANAGEMENT_KEY={fake_mgmt_key} and "
@@ -2745,7 +2754,15 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertFalse(fake_bedrock_env in redacted, "AWS_BEARER_TOKEN_BEDROCK env was not redacted")
     self.assertFalse(fake_ax_cjk_key in redacted, "ax diff cjk API key was not redacted")
     self.assertFalse(fake_encoded_state in redacted, "percent-encoded oauth state was not redacted")
+    self.assertFalse(fake_tl_key in redacted, "tl- token lab key was not redacted")
+    self.assertFalse(fake_b64_modal in redacted, "base64 modal token command was not redacted")
+    self.assertFalse(fake_html_state in redacted, "html-escaped &amp;state= was not redacted")
+    self.assertFalse("pctJsonStateSynth9876543210" in redacted, "percent-encoded JSON state= was not redacted")
+    self.assertFalse("synth.oauth.user" in redacted, "percent-encoded %40 email was not redacted")
+    self.assertFalse("U2VnSnd0OTkifQ" in redacted, "two-segment JWT was not redacted")
     self.assertIn("%26state%3D[REDACTED]%26skip%3Dtrue", redacted)
+    self.assertIn("&amp;state=[REDACTED]&amp;scope=email", redacted)
+    self.assertIn("login_hint=[EMAIL]&state=[REDACTED]&redirect_uri=", redacted)
     self.assertIn("AWS_BEARER_TOKEN_BEDROCK=[REDACTED]", redacted)
     self.assertIn("+ \t\t199 text [REDACTED]", redacted)
     self.assertIn("AWS_BEARER_TOKEN_BEDROCK", mod.credential_names(f"AWS_BEARER_TOKEN_BEDROCK={fake_bedrock_env}"))
