@@ -32,9 +32,12 @@ class MemoryConflictPrepare(unittest.TestCase):
             'n4.md': note('n4-slug', '另一個主題'),
             'general/_INDEX.md': '- [g1](g1.md)\n',
             'general/g1.md': note('g1', '一般設定'),
+            'archive/old/a1.md': note('a1', '封存的舊筆記'),
+            '.health-reports/r1.md': note('r1', '健檢報告'),
         }
         for rel, text in files.items():
             p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding='utf-8')
             os.utime(p, (OLD, OLD))
 
@@ -72,6 +75,15 @@ class MemoryConflictPrepare(unittest.TestCase):
         self.touch('n1.md', NOW - 3600)
         m = self.manifest(self.prepare('--context-bytes', '50000')['batches'][0])
         self.assertEqual({Path(p).name for p in m['context']}, {'n3.md', 'n4.md'})
+
+    def test_archive_and_dot_folders_are_never_checked(self):
+        self.touch('archive/old/a1.md', NOW - 60)
+        self.touch('.health-reports/r1.md', NOW - 60)
+        self.assertEqual(self.prepare()['focus_count'], 0)
+        out = self.prepare('--scope', 'all', '--context-cap', '0')
+        focus = {Path(p).name for b in out['batches'] for p in self.manifest(b)['focus']}
+        self.assertNotIn('a1.md', focus)
+        self.assertNotIn('r1.md', focus)
 
     def test_index_files_are_never_focus(self):
         self.touch('_index_alpha.md', NOW - 60)

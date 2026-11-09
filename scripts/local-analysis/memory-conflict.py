@@ -29,10 +29,17 @@ def is_index(relpath):
     return bool(INDEX_NAME.search(relpath))
 
 
+def is_history(relpath):
+    # archive/ and dot folders such as .health-reports/ are kept as history on purpose;
+    # flagging them as stale only buries the live notes in noise.
+    parts = relpath.split('/')[:-1]
+    return any(part == 'archive' or part.startswith('.') for part in parts)
+
+
 def scan_tree(root):
     notes, indexes = [], []
     for p in sorted(root.rglob('*.md')):
-        if not p.is_file():
+        if not p.is_file() or is_history(rel(root, p)):
             continue
         (indexes if is_index(rel(root, p)) else notes).append(p)
     return notes, indexes
