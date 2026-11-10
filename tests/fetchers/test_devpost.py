@@ -98,3 +98,64 @@ async def test_fetch_devpost_allows_zero_cash_when_configured(httpx_mock):
         items = await fetch(_cfg(min_cash_prizes=0), client)
 
     assert [it.title for it in items] == ["Kiroween 2026", "Zero Cash Non-Cash Only Hack"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_devpost_allows_non_cash_other_prizes(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(r"https://devpost\.com/api/hackathons.*"),
+        json=SAMPLE_PAYLOAD,
+        is_reusable=True,
+    )
+
+    async with httpx.AsyncClient() as client:
+        items = await fetch(_cfg(min_cash_prizes=1, min_other_prizes=1), client)
+
+    assert [it.title for it in items] == ["Kiroween 2026", "Zero Cash Non-Cash Only Hack"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_mlh_prizes_mode_parses_challenges(httpx_mock):
+    sample_html = """
+    <html><body>
+    <script type="application/json">
+    {"props":{"challenges":[
+      {
+        "id": "01a15a90-5b3e-62db-908a-f44b209c9a5e",
+        "sponsorName": "xAI",
+        "name": "Build Your Hackathon A-Team with SpaceXSI",
+        "prizeDescription": "Mechanical Keyboard",
+        "description": "Use Cursor and Grok Bot this weekend.",
+        "sponsorCtaUrl": "https://mlh.link/spacexsi",
+        "hasDynamicPromoCodes": true,
+        "active": true
+      },
+      {
+        "id": "inactive-1",
+        "sponsorName": "OldSponsor",
+        "name": "Inactive Challenge",
+        "active": false
+      }
+    ]}}
+    </script>
+    </body></html>
+    """
+    httpx_mock.add_response(
+        url="https://www.mlh.com/events/prizes",
+        text=sample_html,
+        is_reusable=True,
+    )
+
+    async with httpx.AsyncClient() as client:
+        items = await fetch(_cfg(mode="mlh_prizes"), client)
+
+    assert len(items) == 1
+    it = items[0]
+    assert it.title == "[MLH] Build Your Hackathon A-Team with SpaceXSI (xAI)"
+    assert it.source == "devpost"
+    assert it.source_handle == "MLH"
+    assert it.canonical_url == "https://www.mlh.com/events/prizes?challenge=01a15a90-5b3e-62db-908a-f44b209c9a5e"
+    assert "promo_code: yes" in it.excerpt
+    assert "Resources: https://mlh.link/spacexsi" in it.excerpt
+    assert it.engagement == {"promo_code": 1}
+
