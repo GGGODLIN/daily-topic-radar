@@ -112,6 +112,18 @@ class MemoryConflictPrepare(unittest.TestCase):
         deferred_mtime = os.stat(self.root / 'general/g1.md').st_mtime
         self.assertLess(out['cursor_candidate'], deferred_mtime, 'the deferred note must still be newer than the next cursor')
 
+    def test_capped_runs_take_the_oldest_notes_first_so_the_cursor_moves(self):
+        # g1's cluster sorts after _index_alpha by name; capping in name order would defer it on every run.
+        self.touch('general/g1.md', NOW - 300)
+        self.touch('n1.md', NOW - 200)
+        args = ('--batch-files', '1', '--context-cap', '0', '--max-batches', '1')
+        first = self.prepare(*args)
+        self.assertEqual([Path(p).name for p in self.manifest(first['batches'][0])['focus']], ['g1.md'])
+        self.state.mkdir()
+        (self.state / 'cursor.json').write_text(json.dumps({'last_epoch': first['cursor_candidate']}), encoding='utf-8')
+        second = self.prepare(*args)
+        self.assertEqual([Path(p).name for p in self.manifest(second['batches'][0])['focus']], ['n1.md'])
+
     def test_scope_all_respects_exclude_list(self):
         ex = Path(self.tmp.name) / 'exclude.txt'
         ex.write_text('n1.md\nn2.md\n', encoding='utf-8')

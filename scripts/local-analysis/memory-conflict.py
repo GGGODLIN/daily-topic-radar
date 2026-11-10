@@ -177,6 +177,9 @@ def cmd_prepare(a):
     g = build_graph(root)
     focus = select_focus(g, a.scope, read_cursor(a.state), now, exclude)
     batches = make_batches(g, focus, a.context_cap, a.context_bytes, a.batch_bytes, a.batch_files)
+    # Cap by age, not by cluster name: name order defers the same clusters on every run, which pins the cursor
+    # and leaves those notes unchecked forever (2026-11-10 production run).
+    batches.sort(key=lambda b: min(g['mtime'][n] for n in b['focus']))
     kept, deferred = batches[:a.max_batches], batches[a.max_batches:]
     deferred_focus = [n for b in deferred for n in b['focus']]
     if a.scope == 'changed' and deferred_focus:
