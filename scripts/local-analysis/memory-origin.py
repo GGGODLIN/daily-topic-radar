@@ -467,8 +467,14 @@ def scan_one(rel, text, transcript, which, alias, label, run_dir, key, guard):
             break
         time.sleep(30 * (attempt + 1))
     out.parent.mkdir(parents=True, exist_ok=True)
+    if not record['verdict']:
+        # 失敗的不寫結果檔：續跑只跳過有結果的，限流或逾時的這條下一輪會自動重問。
+        with open(run_dir / 'failures.jsonl', 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps({'note': rel, 'label': label, 'error': record['error'],
+                                 'raw': record['raw'][:300]}, ensure_ascii=False) + '\n')
+        return 'fail'
     out.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding='utf-8')
-    return 'ok' if record['verdict'] else 'fail'
+    return 'ok'
 
 
 def cmd_scan(args):
@@ -545,6 +551,16 @@ def cmd_report(args):
             flagged.append((rel, recs))
         if any(not r.get('verdict') for r in recs.values()):
             failed.append((rel, [lab for lab, r in recs.items() if not r.get('verdict')]))
+    # 失敗的沒有結果檔，要從 failures.jsonl 補回來；之後重跑成功的就不算。
+    fail_log = run_dir / 'failures.jsonl'
+    if fail_log.exists():
+        still = {}
+        for line in fail_log.read_text(encoding='utf-8').splitlines():
+            row = json.loads(line)
+            if row['label'] not in notes.get(row['note'], {}):
+                still.setdefault(row['note'], set()).add(row['label'])
+        known = {rel for rel, _ in failed}
+        failed += [(rel, sorted(labs)) for rel, labs in sorted(still.items()) if rel not in known]
     lines = [f'# 記憶筆記回原對話核對（{args.date}）', '',
              f'- 掃描筆記 {len(notes)} 條；模型 {", ".join(labels)}；任一模型判「記錯」就列出（聯集）。',
              f'- 被標出 {len(flagged)} 條；沒有可用回覆 {len(failed)} 條（見文末）。',

@@ -129,6 +129,18 @@ class ReportTest(unittest.TestCase):
         ok = {'verdict': 'ok', 'issues': []}
         self.assertEqual(self._run({'a': ok, 'b': ok}, True).strip(), '__SILENT__')
 
+    def test_failure_without_result_file_is_reported(self):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / 'a').mkdir()
+        (tmp / 'failures.jsonl').write_text(json.dumps({'note': 'gone.md', 'label': 'a', 'error': '429', 'raw': ''}) + '\n',
+                                            encoding='utf-8')
+        out = tmp / 'r.md'
+        args = type('A', (), {'run_dir': str(tmp), 'date': 'd', 'out': str(out), 'silent_if_empty': True})
+        mo.cmd_report(args)
+        text = out.read_text(encoding='utf-8')
+        self.assertNotEqual(text.strip(), '__SILENT__')
+        self.assertIn('- gone.md：a', text)
+
     def test_flagged_by_one_model_is_listed(self):
         bad = {'verdict': 'mismatch', 'issues': [{'claim': 'x', 'evidence_line': 3, 'why': 'y'}]}
         text = self._run({'a': {'verdict': 'ok', 'issues': []}, 'b': bad}, True)
