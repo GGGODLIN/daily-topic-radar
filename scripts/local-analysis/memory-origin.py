@@ -19,8 +19,9 @@ INDEX_NAME = re.compile(r'(^|/)(_index_[^/]*|_INDEX|MEMORY|_orphan_registry)\.md
 CORRECTION = re.compile(r'更正|初版|寫錯|誤解|誤判|誤記|搞錯|是錯的|原本寫|原寫')
 
 
-def note_paths(root=MEMORY_ROOT):
+def note_paths(root=None):
     """archive/ 與點開頭資料夾刻意不收：那裡本來就是歷史，同 memory-conflict。"""
+    root = root if root is not None else MEMORY_ROOT
     for path in sorted(root.rglob('*.md')):
         rel = path.relative_to(root).as_posix()
         parts = rel.split('/')
@@ -36,8 +37,9 @@ def origin_of(text):
     return match.group(1) if match else None
 
 
-def transcript_index(root=PROJECTS_ROOT):
+def transcript_index(root=None):
     """session id → 主對話 jsonl；subagents/ 底下的不算來源對話。"""
+    root = root if root is not None else PROJECTS_ROOT
     index = {}
     for path in root.glob('*/*.jsonl'):
         index.setdefault(path.stem, path)
@@ -81,9 +83,10 @@ def _clip(text, cap):
     return text if len(text) <= cap else text[:cap] + f'…〔截斷，原長 {len(text)} 字〕'
 
 
-def parse_transcript(path, note_name):
-    """回傳事件串（含 1 起算的 jsonl 行號）與第一次寫這條筆記的行號。
+def parse_transcript(path, note_name, which='first'):
+    """回傳事件串（含 1 起算的 jsonl 行號）與寫這條筆記的行號。
 
+    which='first' 用於建立筆記的對話（第一次寫入）；'last' 用於修改它的對話（最後一次寫入）。
     事件只留判斷原意用得到的：使用者原話、助理文字、工具呼叫的輸入與結果。
     """
     events, write_line = [], None
@@ -122,7 +125,8 @@ def parse_transcript(path, note_name):
                         inp = block.get('input') or {}
                         name = block.get('name', '')
                         target = str(inp.get('file_path') or inp.get('notebook_path') or '')
-                        if write_line is None and name in WRITE_TOOLS and target.endswith('/' + note_name):
+                        if name in WRITE_TOOLS and target.endswith('/' + note_name) and (
+                                write_line is None or which == 'last'):
                             write_line = lineno
                         events.append({'line': lineno, 'role': 'tool_use',
                                        'text': f'{name} ' + json.dumps(inp, ensure_ascii=False)})
@@ -321,6 +325,256 @@ def cmd_extract(args):
                      ensure_ascii=False))
 
 
+REPORTS = Path.home() / 'code' / 'social-info' / 'reports' / 'local-analysis'
+STATE_DIR = REPORTS / 'memory-origin'
+GPT_QUOTA = re.compile(r'GPT 週額度.*?\n\s*週額度\s*(\d+)%.*?(\d\d)-(\d\d) (\d\d):(\d\d) 重設', re.S)
+
+
+def note_key(rel):
+    return rel.replace('/', '__').removesuffix('.md')
+
+
+def scan_targets(transcripts):
+    for path in note_paths():
+        text = path.read_text(encoding='utf-8', errors='replace')
+        origin = origin_of(text)
+        if origin and origin in transcripts:
+            yield path.relative_to(MEMORY_ROOT).as_posix(), text, transcripts[origin], 'first'
+
+
+def recent_writers(since_epoch, root=None):
+    """筆記檔名 → 之後最後一次寫它的對話；只翻 since 之後有變動的 jsonl。"""
+    root = root if root is not None else PROJECTS_ROOT
+    writers = {}
+    for path in root.glob('*/*.jsonl'):
+        try:
+            if path.stat().st_mtime < since_epoch:
+                continue
+        except OSError:
+            continue
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            for raw in fh:
+                if '/.claude/memory/' not in raw or '"tool_use"' not in raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                ts = row.get('timestamp') or ''
+                for block in ((row.get('message') or {}).get('content') or []):
+                    if not isinstance(block, dict) or block.get('type') != 'tool_use':
+                        continue
+                    if block.get('name') not in WRITE_TOOLS:
+                        continue
+                    target = str((block.get('input') or {}).get('file_path') or '')
+                    if '/.claude/memory/' in target:
+                        name = Path(target).name
+                        if ts >= writers.get(name, ('', None))[0]:
+                            writers[name] = (ts, path)
+    return {name: path for name, (_, path) in writers.items()}
+
+
+def changed_targets(since_epoch, transcripts, cap):
+    """since 之後改過的筆記，最舊的先查；對照最後修改它的對話，找不到才退回建立它的對話。
+
+    回傳 (targets, 下次的起點)：沒處理完的留給下一輪，起點停在最後處理的那條的修改時間。
+    """
+    changed = []
+    for path in note_paths():
+        mtime = path.stat().st_mtime
+        if mtime > since_epoch:
+            changed.append((mtime, path))
+    changed.sort()
+    writers = recent_writers(since_epoch)
+    targets, next_since = [], since_epoch
+    for mtime, path in changed:
+        if len(targets) >= cap:
+            break
+        text = path.read_text(encoding='utf-8', errors='replace')
+        rel = path.relative_to(MEMORY_ROOT).as_posix()
+        writer = writers.get(path.name)
+        origin = origin_of(text)
+        if writer:
+            targets.append((rel, text, writer, 'last'))
+        elif origin and origin in transcripts:
+            targets.append((rel, text, transcripts[origin], 'first'))
+        next_since = mtime
+    if len(targets) < cap:
+        next_since = max([since_epoch] + [m for m, _ in changed])
+    return targets, next_since
+
+
+def gpt_quota():
+    """讀 relay-status 的 GPT 週額度；讀不到回 (None, None)，呼叫端照常跑但不擋。"""
+    import datetime as dt
+    out = subprocess.run(['relay-status'], capture_output=True, text=True, check=False, timeout=120).stdout
+    match = GPT_QUOTA.search(out)
+    if not match:
+        return None, None
+    pct, mon, day, hh, mm = (int(x) for x in match.groups())
+    now = dt.datetime.now()
+    reset = dt.datetime(now.year, mon, day, hh, mm)
+    if reset < now - dt.timedelta(days=1):
+        reset = reset.replace(year=now.year + 1)
+    return pct, reset
+
+
+class GptGuard:
+    """GPT 週額度到門檻就暫停到重設後：用滿會讓 Codex 與 ccp-gpt 整條路線停擺到重設。"""
+
+    def __init__(self, threshold, every, log):
+        import threading
+        self.threshold, self.every, self.log = threshold, every, log
+        self.calls = 0
+        self.lock = threading.Lock()
+
+    def wait_if_needed(self):
+        import datetime as dt
+        import time
+        with self.lock:
+            self.calls += 1
+            if self.calls % self.every != 1:
+                return
+            pct, reset = gpt_quota()
+            if pct is None or pct < self.threshold:
+                return
+            resume = reset + dt.timedelta(minutes=10)
+            self.log(f'GPT 週額度 {pct}% ≥ {self.threshold}%，暫停到 {resume:%m-%d %H:%M}')
+            while dt.datetime.now() < resume:
+                time.sleep(300)
+            self.log('GPT 額度已重設，繼續')
+
+
+def scan_one(rel, text, transcript, which, alias, label, run_dir, key, guard):
+    out = run_dir / label / f'{note_key(rel)}.json'
+    if out.exists():
+        return 'skip'
+    import time
+    events, write_line = parse_transcript(transcript, Path(rel).name, which)
+    items = excerpt(events, write_line, 'all', note_text=text)
+    prompt = build_prompt(text, items)
+    record = None
+    for attempt in range(3):
+        if guard:
+            guard.wait_if_needed()
+        t0 = time.time()
+        content, usage, model, error = call_model(alias, prompt, key)
+        record = {'note': rel, 'transcript': str(transcript), 'alias': alias, 'attempt': attempt + 1,
+                  'seconds': round(time.time() - t0, 1), 'usage': usage, 'error': error,
+                  'verdict': parse_verdict(content), 'raw': content if not parse_verdict(content) else '',
+                  'write_line': write_line, 'prompt_chars': len(prompt)}
+        if not error and record['verdict']:
+            break
+        time.sleep(30 * (attempt + 1))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding='utf-8')
+    return 'ok' if record['verdict'] else 'fail'
+
+
+def cmd_scan(args):
+    import concurrent.futures as cf
+    import time
+    run_dir = Path(args.run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = run_dir / 'progress.log'
+
+    def log(msg):
+        with open(log_path, 'a', encoding='utf-8') as fh:
+            fh.write(time.strftime('%m-%d %H:%M:%S ') + msg + '\n')
+
+    meta_path = run_dir / 'meta.json'
+    meta = json.loads(meta_path.read_text(encoding='utf-8')) if meta_path.exists() else {}
+    transcripts = transcript_index()
+    if args.scope == 'all':
+        targets = list(scan_targets(transcripts))
+        # 起點用開始掃描的時刻：掃描期間被改的筆記交給下一次增量。
+        meta.setdefault('next_since', int(time.time()))
+    else:
+        since = json.loads(Path(args.cursor).read_text(encoding='utf-8'))['since_epoch']
+        targets, next_since = changed_targets(since, transcripts, args.cap)
+        meta.setdefault('next_since', next_since)
+    meta.update({'scope': args.scope, 'models': args.model, 'targets': len(targets)})
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+    if args.limit:
+        targets = targets[:args.limit]
+    key = relay_key()
+    log(f'start: {len(targets)} notes, models {args.model}')
+    pools, futures = [], []
+    for spec in args.model:
+        label, alias = spec.split('=', 1)
+        guard = GptGuard(args.gpt_guard, 20, log) if 'codex' in alias else None
+        pool = cf.ThreadPoolExecutor(max_workers=args.workers)
+        pools.append(pool)
+        futures += [(label, pool.submit(scan_one, rel, text, tr, which, alias, label, run_dir, key, guard))
+                    for rel, text, tr, which in targets]
+    counts = {}
+    for idx, (label, fut) in enumerate(futures, 1):
+        status = fut.result()
+        counts[(label, status)] = counts.get((label, status), 0) + 1
+        if idx % 50 == 0:
+            log(f'progress {idx}/{len(futures)} ' + json.dumps({f'{k[0]}:{k[1]}': v for k, v in counts.items()}))
+    for pool in pools:
+        pool.shutdown()
+    summary = {f'{k[0]}:{k[1]}': v for k, v in counts.items()}
+    log('done ' + json.dumps(summary))
+    print(json.dumps(summary))
+
+
+def cmd_commit_cursor(args):
+    """報告寫好才推進起點；中途失敗時下一輪重查同一批。"""
+    meta = json.loads((Path(args.run_dir) / 'meta.json').read_text(encoding='utf-8'))
+    # 第一輪全量用的舊版 meta 只記 started_epoch。
+    since = meta.get('next_since', meta.get('started_epoch'))
+    cursor = Path(args.cursor)
+    cursor.parent.mkdir(parents=True, exist_ok=True)
+    cursor.write_text(json.dumps({'since_epoch': since, 'from_run': str(args.run_dir)}), encoding='utf-8')
+    print(json.dumps({'since_epoch': since}))
+
+
+def cmd_report(args):
+    run_dir = Path(args.run_dir)
+    labels = sorted(p.name for p in run_dir.iterdir() if p.is_dir())
+    notes = {}
+    for label in labels:
+        for path in (run_dir / label).glob('*.json'):
+            rec = json.loads(path.read_text(encoding='utf-8'))
+            notes.setdefault(rec['note'], {})[label] = rec
+    flagged, failed = [], []
+    for rel, recs in sorted(notes.items()):
+        if any((r.get('verdict') or {}).get('verdict') == 'mismatch' for r in recs.values()):
+            flagged.append((rel, recs))
+        if any(not r.get('verdict') for r in recs.values()):
+            failed.append((rel, [lab for lab, r in recs.items() if not r.get('verdict')]))
+    lines = [f'# 記憶筆記回原對話核對（{args.date}）', '',
+             f'- 掃描筆記 {len(notes)} 條；模型 {", ".join(labels)}；任一模型判「記錯」就列出（聯集）。',
+             f'- 被標出 {len(flagged)} 條；沒有可用回覆 {len(failed)} 條（見文末）。',
+             '- 回測：兩個模型聯集在 32 題負例上抓到 12 條真的記錯、3 條只有誤報；誤報都出自 terra。',
+             '', '## 需要確認的筆記', '',
+             '修之前先讀筆記原檔與下列對話行號確認；不算錯就跳過並寫一句理由。只改寫錯的那句，不重寫整篇。', '']
+    for rel, recs in flagged:
+        lines.append(f'### [{rel}](file://{MEMORY_ROOT / rel})')
+        transcript = next(iter(recs.values()))['transcript']
+        lines.append(f'- 原對話：`{transcript}`')
+        for label, rec in sorted(recs.items()):
+            verdict = rec.get('verdict') or {}
+            if verdict.get('verdict') != 'mismatch':
+                lines.append(f'- {label}：{verdict.get("verdict", "無回覆")}')
+                continue
+            for issue in verdict.get('issues', []):
+                lines.append(f'- {label}：「{issue.get("claim", "")}」→ L{issue.get("evidence_line", "?")}：{issue.get("why", "")}')
+        lines.append('')
+    if failed:
+        lines += ['## 沒有可用回覆', '']
+        lines += [f'- {rel}：{", ".join(labs)}' for rel, labs in failed]
+    out = Path(args.out)
+    if args.silent_if_empty and not flagged and not failed:
+        # 每日 channel 只有全文剛好是 __SILENT__ 才算沒事，多一個字都會被當成要處理的報告。
+        out.write_text('__SILENT__\n', encoding='utf-8')
+    else:
+        out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    print(json.dumps({'notes': len(notes), 'flagged': len(flagged), 'failed': len(failed), 'out': str(out)}))
+
+
 def cmd_candidates(args):
     transcripts = transcript_index()
     count = 0
@@ -359,6 +613,26 @@ def main(argv=None):
     ext.add_argument('--near-cap', type=int, default=12000)
     ext.add_argument('--near-turns', type=int, default=3)
     ext.set_defaults(func=cmd_extract)
+    scan = sub.add_parser('scan', help='全量核對每條有來源對話的筆記（可中斷後重跑續接）')
+    scan.add_argument('--run-dir', required=True)
+    scan.add_argument('--model', action='append', required=True, help='label=alias，可重複')
+    scan.add_argument('--workers', type=int, default=2)
+    scan.add_argument('--gpt-guard', type=int, default=95, help='GPT 週額度到這個百分比就暫停到重設')
+    scan.add_argument('--limit', type=int, default=0)
+    scan.add_argument('--scope', choices=('all', 'changed'), default='all')
+    scan.add_argument('--cursor', default=str(STATE_DIR / 'cursor.json'))
+    scan.add_argument('--cap', type=int, default=30, help='增量每輪最多幾條；每日 channel 有 10 分鐘上限')
+    scan.set_defaults(func=cmd_scan)
+    cur = sub.add_parser('commit-cursor', help='報告落檔後把起點推進到這一輪的 next_since')
+    cur.add_argument('--run-dir', required=True)
+    cur.add_argument('--cursor', default=str(STATE_DIR / 'cursor.json'))
+    cur.set_defaults(func=cmd_commit_cursor)
+    rep = sub.add_parser('report', help='合併各模型結果，寫出要確認的筆記清單')
+    rep.add_argument('--run-dir', required=True)
+    rep.add_argument('--date', required=True)
+    rep.add_argument('--out', required=True)
+    rep.add_argument('--silent-if-empty', action='store_true')
+    rep.set_defaults(func=cmd_report)
     args = parser.parse_args(argv)
     args.func(args)
 
