@@ -487,8 +487,8 @@ def cmd_scan(args):
     transcripts = transcript_index()
     if args.scope == 'all':
         targets = list(scan_targets(transcripts))
-        # 起點用開始掃描的時刻：掃描期間被改的筆記交給下一次增量。
-        meta.setdefault('next_since', int(time.time()))
+        # 起點用第一次開始掃描的時刻：掃描期間被改的筆記交給下一次增量；中斷後續跑不能把起點往後推。
+        meta.setdefault('next_since', meta.get('started_epoch', int(time.time())))
     else:
         since = json.loads(Path(args.cursor).read_text(encoding='utf-8'))['since_epoch']
         targets, next_since = changed_targets(since, transcripts, args.cap)
@@ -502,7 +502,7 @@ def cmd_scan(args):
     pools, futures = [], []
     for spec in args.model:
         label, alias = spec.split('=', 1)
-        guard = GptGuard(args.gpt_guard, 20, log) if 'codex' in alias else None
+        guard = GptGuard(args.gpt_guard, 20, log) if 'codex' in alias and args.gpt_guard > 0 else None
         pool = cf.ThreadPoolExecutor(max_workers=args.workers)
         pools.append(pool)
         futures += [(label, pool.submit(scan_one, rel, text, tr, which, alias, label, run_dir, key, guard))
@@ -617,7 +617,8 @@ def main(argv=None):
     scan.add_argument('--run-dir', required=True)
     scan.add_argument('--model', action='append', required=True, help='label=alias，可重複')
     scan.add_argument('--workers', type=int, default=2)
-    scan.add_argument('--gpt-guard', type=int, default=95, help='GPT 週額度到這個百分比就暫停到重設')
+    scan.add_argument('--gpt-guard', type=int, default=95,
+                      help='GPT 週額度到這個百分比就暫停到重設；0＝不暫停（週額度用完改扣 credit）')
     scan.add_argument('--limit', type=int, default=0)
     scan.add_argument('--scope', choices=('all', 'changed'), default='all')
     scan.add_argument('--cursor', default=str(STATE_DIR / 'cursor.json'))
