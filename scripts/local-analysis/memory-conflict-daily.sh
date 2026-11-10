@@ -3,7 +3,7 @@
 #
 # 由 ~/.claude/workflows/local-analysis.js 透過子 workflow ~/.claude/workflows/memory-conflict-check.js 執行：
 # 1. memory-conflict.py prepare 依 cursor.json 的時間水位線挑出之後改過的筆記，連同相關筆記切批；
-# 2. Argon（argon-high）與 SWE-2（swe2max-pool）平行掃每一批，GPT-6.1 Sol 讀原檔合併判定；
+# 2. Gemini Pro（gemini-pro-high）與 SWE-2（swe2max-pool）平行掃每一批，GPT-6.1 Sol 讀原檔合併判定；
 # 3. 報告由 main 落檔至 /Users/linhancheng/code/social-info/reports/local-analysis/<date>-memory-conflict.md 後，
 #    才依 deferred_writeback 推進水位線。掃描或判定沒做完時 deferred_writeback 是空字串，下一輪會重查同一批筆記。
 # 全量掃描用同一支 workflow 帶 scope=all，不碰水位線。

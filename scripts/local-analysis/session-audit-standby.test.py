@@ -15,7 +15,7 @@ population = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(population)
 fixtures = population.fixtures
 
-PRIMARY = 'argon-low:2'
+PRIMARY = 'gemini-pro-low:2'
 STANDBY = 'audit-tail:10'
 HOUR = 3600
 
@@ -76,17 +76,17 @@ class StandbyTests(population.PopulationTests):
     self.sessions(12)
     url, seen, peak = self.tracking()
     self.run_legs(url)
-    self.assertEqual({model for model, _ in seen}, {'argon-low'}, 'The standby stays idle while the primary is healthy and nothing waits long')
-    self.assertLessEqual(peak['argon-low'], 2)
+    self.assertEqual({model for model, _ in seen}, {'gemini-pro-low'}, 'The standby stays idle while the primary is healthy and nothing waits long')
+    self.assertLessEqual(peak['gemini-pro-low'], 2)
     self.assertEqual(self.statuses(url), {'complete'})
-    self.assertEqual({row[0] for row in self.db('SELECT model FROM model_replies')}, {'served-argon-low'})
+    self.assertEqual({row[0] for row in self.db('SELECT model FROM model_replies')}, {'served-gemini-pro-low'})
 
   def test_rate_limited_fragment_moves_to_standby_and_primary_cools_down(self):
     self.sessions(6)
     failed = []
 
     def fail(model, count, text):
-      if model == 'argon-low' and not failed:
+      if model == 'gemini-pro-low' and not failed:
         failed.append(next(word for word in text.split() if word.startswith('STANDBY_WORK_')))
         return '{"error": "rate limited"}', 429
       return None
@@ -94,10 +94,10 @@ class StandbyTests(population.PopulationTests):
     url, seen, peak = self.tracking(fail)
     self.run_legs(url)
     resent = [model for model, text in seen if failed[0] in text]
-    self.assertEqual(resent, ['argon-low', 'audit-tail'], 'The rate-limited fragment goes to the standby, never back to the primary')
-    self.assertLessEqual([model for model, _ in seen].count('argon-low'), 2, 'One 429 cools the primary down at once')
+    self.assertEqual(resent, ['gemini-pro-low', 'audit-tail'], 'The rate-limited fragment goes to the standby, never back to the primary')
+    self.assertLessEqual([model for model, _ in seen].count('gemini-pro-low'), 2, 'One 429 cools the primary down at once')
     self.assertEqual(self.statuses(url), {'complete'})
-    self.assertEqual(self.db("SELECT alias FROM leg_pauses"), [('argon-low',)])
+    self.assertEqual(self.db("SELECT alias FROM leg_pauses"), [('gemini-pro-low',)])
     self.sessions(3, prefix='later')
     seen.clear()
     self.run_legs(url)
@@ -107,8 +107,8 @@ class StandbyTests(population.PopulationTests):
     self.sessions(12, age=20 * HOUR)
     url, seen, peak = self.tracking()
     self.run_legs(url)
-    self.assertEqual({model for model, _ in seen}, {'argon-low', 'audit-tail'})
-    self.assertLessEqual(peak['argon-low'], 2)
+    self.assertEqual({model for model, _ in seen}, {'gemini-pro-low', 'audit-tail'})
+    self.assertLessEqual(peak['gemini-pro-low'], 2)
     self.assertEqual(self.statuses(url), {'complete'})
 
   def test_backlog_switch_holds_between_the_lines_and_closes_below_the_off_line(self):
@@ -122,25 +122,25 @@ class StandbyTests(population.PopulationTests):
     self.sessions(6, prefix='fresh')
     seen.clear()
     self.run_legs(url)
-    self.assertEqual({model for model, _ in seen}, {'argon-low'}, 'Once nothing waits past the off line the run is back to the primary alone')
+    self.assertEqual({model for model, _ in seen}, {'gemini-pro-low'}, 'Once nothing waits past the off line the run is back to the primary alone')
     self.assertEqual(self.db("SELECT name FROM standby_switches"), [])
 
   def test_standby_failures_never_push_the_primary_past_its_slots(self):
     self.sessions(12, age=20 * HOUR)
     url, seen, peak = self.tracking(lambda model, count, text: ('{"error": "down"}', 500) if model == 'audit-tail' else None)
     self.run_legs(url)
-    self.assertLessEqual(peak['argon-low'], 2, 'Fragments bounced off the standby wait for a primary slot instead of overfilling it')
+    self.assertLessEqual(peak['gemini-pro-low'], 2, 'Fragments bounced off the standby wait for a primary slot instead of overfilling it')
     self.assertEqual(self.statuses(url), {'complete'})
 
   def test_probe_needs_a_readable_analysis_before_the_primary_resumes(self):
     _, url = self.provider()
     self.assertEqual(self.cli(['scan', *self.flags(url)]).returncode, 0)
-    self.db("INSERT INTO leg_pauses (alias, until) VALUES ('argon-low', ?)", (time.time() - 1,))
+    self.db("INSERT INTO leg_pauses (alias, until) VALUES ('gemini-pro-low', ?)", (time.time() - 1,))
     self.sessions(4)
-    url, seen, _ = self.tracking(lambda model, count, text: (served(model, 'not an analysis'), 200) if model == 'argon-low' else None)
+    url, seen, _ = self.tracking(lambda model, count, text: (served(model, 'not an analysis'), 200) if model == 'gemini-pro-low' else None)
     self.run_legs(url)
-    self.assertIn('argon-low', [model for model, _ in seen], 'A due probe is sent')
-    self.assertEqual(self.db("SELECT alias FROM leg_pauses"), [('argon-low',)], 'A reply that is not an analysis does not end the cooldown')
+    self.assertIn('gemini-pro-low', [model for model, _ in seen], 'A due probe is sent')
+    self.assertEqual(self.db("SELECT alias FROM leg_pauses"), [('gemini-pro-low',)], 'A reply that is not an analysis does not end the cooldown')
 
 
 if __name__ == '__main__':

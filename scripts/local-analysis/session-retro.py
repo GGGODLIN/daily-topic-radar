@@ -24,7 +24,7 @@ DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
 EVIDENCE_ROLES = ("action", "context")
 ACCOUNTING_ERROR_CAP = 25
 DEFAULT_MODEL = "gpt-6.1-sol[1m]"
-DEFAULT_ARGON_MODEL = "google/gemini-4-argon:high"
+DEFAULT_GEMINI_PRO_MODEL = "group/gemini-pro:high"
 DEFAULT_TERRA_MODEL = "gpt-6.1-terra"
 DEFAULT_SOL_MODEL = "gpt-6.1-sol"
 DEFAULT_EFFORTS = {"read": "high", "merge": "high", "verify": "xhigh"}
@@ -580,8 +580,8 @@ def prepare(args):
     sessions.append(session)
   table = read_model_table()
   efforts = {key: getattr(args, key + "_effort") or args.effort or DEFAULT_EFFORTS[key] for key in ("read", "merge", "verify")}
-  models = {"read": args.read_model if args.read_model is not None else DEFAULT_ARGON_MODEL,
-            "merge": args.merge_model if args.merge_model is not None else DEFAULT_ARGON_MODEL,
+  models = {"read": args.read_model if args.read_model is not None else DEFAULT_GEMINI_PRO_MODEL,
+            "merge": args.merge_model if args.merge_model is not None else DEFAULT_GEMINI_PRO_MODEL,
             "verify": args.verify_model if args.verify_model is not None else format_model(table["GPT_SOL"], efforts["verify"])}
   # Quote-only repairs find and copy one sentence; on the 16 historical cases the program could not settle,
   # free swe-2 passed all 16 after re-validation, reading ranges only (2026-11-05 replay).
