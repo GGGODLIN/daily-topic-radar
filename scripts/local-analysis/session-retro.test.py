@@ -1006,6 +1006,35 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.assertTrue(result["pass"])
     self.assertEqual(self.stage(path, "verify", critic_parts=manifest)["items"], [])
 
+  def test_verify_current_parts_accepts_read_edit_repair_with_own_source_reads(self):
+    path, manifest, _patterns, source_dir, _part_dirs = self.verify_parts_with_real_outputs(failed_pattern="P2")
+    self.validate(path, "verify", [source_dir], critic_parts=manifest, code=2)
+    part = json.loads(manifest.read_text())["parts"][1]
+    report_path = Path(part["report_path"])
+    before = report_path.read_text()
+    repaired = self.current_part_transcript(path, manifest, "P2")
+    rows = [json.loads(line) for line in (repaired / "agent-fixture.jsonl").read_text().splitlines()]
+    rows = [row for row in rows if not any(block.get("id") == "write" or block.get("tool_use_id") == "write"
+      for block in row.get("message", {}).get("content", []) if isinstance(block, dict))]
+    report = json.loads(before)
+    report["limitations"] = ["source evidence checked"]
+    after = json.dumps(report)
+    rows += [assistant([{"type": "tool_use", "id": "read-report", "name": "Read", "input": {"file_path": str(report_path)}}]),
+      user([{"type": "tool_result", "tool_use_id": "read-report", "content": "1\t" + before}]),
+      assistant([{"type": "tool_use", "id": "edit-report", "name": "Edit", "input": {
+        "file_path": str(report_path), "old_string": before, "new_string": after}}]),
+      user([{"type": "tool_result", "tool_use_id": "edit-report", "content": "updated"}])]
+    report_path.write_text(after)
+    (repaired / "agent-fixture.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
+    result = self.validate(path, "verify", [repaired], critic_parts=manifest)
+    self.assertTrue(result["pass"])
+    self.assertEqual(self.stage(path, "verify", critic_parts=manifest)["items"], [])
+    # A report read and edit alone cannot borrow the original writer's source reads.
+    rows = rows[-4:]
+    (repaired / "agent-fixture.jsonl").write_text("\n".join(json.dumps(row) for row in rows))
+    result = self.validate(path, "verify", [repaired], critic_parts=manifest, code=2)
+    self.assertFalse(result["pass"])
+
   def test_verify_current_parts_rejects_bad_slice_or_assignment_before_dispatch(self):
     path, manifest, _patterns = self.normal_verify_parts_fixture(part_count=1)
     original = json.loads(manifest.read_text())

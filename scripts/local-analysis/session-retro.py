@@ -1074,11 +1074,20 @@ def report_writer(agents, item):
       run_root = expected_path.parent.parent
       if not target.is_relative_to(run_root):
         continue
-      writes = [op for op in agent["operations"] if operation_path(op) == target and op["name"] in {"Write", "Edit"}]
+      writes = [op for op in agent["operations"] if operation_path(op) == target and op["name"] in {"Read", "Write", "Edit"}]
       state = bash_states.get(target)
       for op in writes:
         fields = op["input"]
-        if op["name"] == "Write":
+        if op["name"] == "Read":
+          if state is None and re.fullmatch(r"verify-current-p\d+", item["unit"]):
+            text = "\n".join(strip_read_prefix(line) if strip_read_prefix(line) is not None else line
+                             for line in op["text"].split("\n"))
+            try:
+              json.loads(text)
+              state = text
+            except ValueError:
+              pass
+        elif op["name"] == "Write":
           state = fields.get("content")
         elif isinstance(state, str) and isinstance(fields.get("old_string"), str) and isinstance(fields.get("new_string"), str):
           old = fields["old_string"]
@@ -2105,7 +2114,7 @@ def validate_verify_parts(args, plan, run, canonical, source_unit=None):
   for part in context["parts"]:
     prior = next((unit for unit in previous.get("units", []) if unit.get("unit") == part["unit"]), {})
     transcript_dirs = list(dict.fromkeys([str(path) for path in part["transcript_dirs"]]
-                                        + list(args.transcript_dir) + prior.get("transcript_dirs", [])))
+                                        + prior.get("transcript_dirs", []) + list(args.transcript_dir)))
     item = {"session": "cross-session", "unit": part["unit"], "report_path": str(part["report_path"]),
             "input_reports": [str(validated_path(run, "cross-session"))]}
     item.update({key: part[key] for key in ("slice_path", "index_path", "pattern_ids") if key in part})
