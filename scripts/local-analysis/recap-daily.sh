@@ -148,7 +148,7 @@ E 規範 trim MEMORY.md 後啟動的觀察：掃 session_prompt 線（使用者 
 - 對每個存活事件分類：
   - 對應得到既有規則（`~/.claude/CLAUDE.md`、`~/.claude/rules/*.md` 的具體條目）→ `rule_violation` + 規則名
   - 對應不到 → `new_rule_candidate`
-- **候選交接**：recap 只交候選，不寫 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`。報告內每候選列一行待核 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","rule_family":"<家族>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`，並附上述證據對照，main 核對後才追加。可唯讀查 ledger 是否已有**同 quote＋同 session**；兩欄都命中才跳過，不同 session 的相同短引用不能當成重複。
+- **候選交接**：recap 只交候選，不寫 `~/code/social-info/reports/local-analysis/rule-adherence-ledger.jsonl`。報告內每候選列一行待核 JSON：`{"date":"<今日>","kind":"rule_violation|new_rule_candidate","rule":"<規則名或空字串>","rule_family":"<家族>","quote":"<50 字內原文引用>","session":"<jsonl basename>"}`，並附上述證據對照，main 核對後才追加。**禁止用 Read 全檔讀取兩份 .jsonl 帳本**（`rule-adherence-ledger.jsonl` 已逾 400KB，整檔讀入會耗盡十餘萬 context token）；僅在有存活候選時，用 `python3 -I` 腳本針對本輪候選的 `quote`＋`session` 唯讀比對是否已存在（兩欄都命中才跳過，不同 session 的相同短引用不能當成重複）。
 - **`rule_family` 必填（2026-07-25 加）**：`rule` 欄是自由書寫、同一條規則跨天會分裂成十幾個變體字串，單靠它統計抓不到集中度。從下列固定 enum 挑一個最貼近的填 `rule_family`：`evidence-level`（證據 / 驗證 / 行為數據 / 不憑推測）、`plain-language`（白話 / 反晶晶體 / 措辭 / 繁中）、`self-research-first`（查得到的事實自己查 / 先搜再說缺）、`ask-vs-decide`（停下問 vs 自決 / 討論模式 / 一次收斂 / 訪談）、`scope-discipline`（只改當次範圍 / 修改前先讀）、`process-completeness`（skill 流程不省略 / trial 紀律 / 固化）、`output-delivery`（答案進最終訊息 / 連結格式 / 呈現）、`tooling-routing`（抓取路由 / fetch 退路 / 工具選擇）。都不貼近才填 `unclassified`
 - **Rule health**：唯讀跑 `python3 ~/code/social-info/scripts/local-analysis/rule-family-health.py`（家族聚合層，優先讀 `rule_family`、缺欄走關鍵字 fallback，舊 entry 無需 migration），標明「入帳前計數，不含本輪待核候選」；main 查證追加後再更新 digest 的計數。取其輸出：
   - 家族 30 天 ≥5 次 → 報告標「⚠ 規則家族 X 30 天內 N 次（占 P%）→ 該家族措辭或 enforce 方式可能該改」
@@ -171,7 +171,7 @@ Focus：僅 session_prompt 線的 **akocommerce session**（path filter `-Users-
   - 純技術詞（不是 domain-specific 概念）→ 不算
   - 模稜兩可 → 寧漏勿誤報
 - 每候選抽取：`phrase`（反覆長描述、50 字內）+ `suggested_term`（建議短 term、kebab-case、5-15 字元）+ `session`（jsonl basename）+ `count`（24h 內出現次數）+ `context_snippet`（代表性 quote、80 字內）
-- **候選交接**：不寫 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`，在報告列待核 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`，附原檔路徑、行號與各次出現位置，供 main 核對。唯讀查 ledger 有無同 phrase 或同 suggested_term，任一命中就跳過；phrase 跨日會漂，兩個鍵都要查。
+- **候選交接**：不寫 `~/code/social-info/reports/local-analysis/codebase-aliases-candidate-ledger.jsonl`，在報告列待核 JSON：`{"date":"<今日>","phrase":"<原文>","suggested_term":"<kebab-case>","count":<int>,"session":"<jsonl basename>","context_snippet":"<80 字內 quote>"}`，附原檔路徑、行號與各次出現位置，供 main 核對。同樣禁止用 Read 全檔讀取帳本，僅在有候選時以 `python3 -I` 唯讀查 ledger 有無同 `phrase` 或同 `suggested_term`，任一命中就跳過；phrase 跨日會漂，兩個鍵都要查。
 - **掃描交接（含 0 候選日）**：報告固定列待核 `{"date":"<今日>","kind":"scan_marker","scanned":<akocommerce session 數>,"candidates":<存活候選數>}`，附固定窗口與實際掃過的 session 清單。掃描未完成時明列缺口，不產生完成 marker。由 main 核對掃描範圍與候選後追加；同日已存在 scan_marker 就不重複追加。
 - **決策候選**：既有候選的 suggested_term 或對應條目已出現在 alias 表時，報告列 `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"accepted"}` 並附表內位置；真人明確拒絕該候選時，列 `{"date":"<今日>","kind":"decision","suggested_term":"<term>","verdict":"rejected","reason":"<一句原因、抓得到才寫>"}` 並附原訊息位置。main 核對後才追加；同 term 已有 decision 就跳過，已有 decision 的候選不再重複提報。
 - 報告呈現：有命中 → 報告末尾「📌 codebase-aliases 候選: N 個（待 main 查證，尚未入帳）」段，每候選一行（suggested_term + 短引用），附待核 JSON 與證據；沒命中仍保留掃描交接，讓 main 區分零候選與漏掃。
@@ -298,7 +298,7 @@ run_recap() {
   if [[ -f "$GPT_MODELS_FILE" ]]; then
     local key value
     while IFS='=' read -r key value; do
-      [[ "$key" == GPT_LUNA ]] && luna_model="${value%$'\r'}(max)"
+      [[ "$key" == GPT_LUNA ]] && luna_model="${value%$'\r'}(max)[1m]"
     done < "$GPT_MODELS_FILE"
   fi
   if [[ -z "$luna_model" ]]; then
