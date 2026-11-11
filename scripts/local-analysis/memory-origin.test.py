@@ -175,6 +175,14 @@ class FixTest(unittest.TestCase):
         self.assertTrue(blocks[2].endswith('L9'))
         self.assertEqual(blocks[3], '第二段。\n')
 
+    def test_frontmatter_fields_other_than_description_are_not_editable(self):
+        note = '---\nname: n\ndescription: 掃了 27 個\nmetadata:\n  originSessionId: aaa\n---\nbody\n'
+        edits = mo.check_edits(note, [
+            {'action': 'fix', 'old': 'originSessionId: aaa', 'new': 'originSessionId: bbb'},
+            {'action': 'fix', 'old': '27 個', 'new': '28 個'},
+            {'action': 'fix', 'old': 'body', 'new': 'BODY'}])
+        self.assertEqual([e['valid'] for e in edits], [False, True, True])
+
     def test_second_edit_on_replaced_text_is_skipped(self):
         edits = mo.check_edits('x 302 y', [
             {'action': 'fix', 'old': '302', 'new': '303', 'why': 'w'},

@@ -323,6 +323,7 @@ FIX_PROMPT = """你是記憶筆記的修正員。兩位核對員拿下面這條 
 1. 先在對話摘錄裡找證據（核對員給的行號只是線索，可能指錯）。證據確實和筆記矛盾才算記錯；摘錄裡找不到證據、只是說法不同但意思沒錯、或是寫入之後情況才改變，一律不改。
 2. 如果下面附了「寫入當下的版本」，而被標的句子不在那個版本裡，代表是之後其他對話加的，這段對話對照不了，不改。
 3. 要改時只做最小改動：換掉錯的字詞、數字或範圍，保留原本的語氣、格式與其餘內容；不順手潤飾別處，不補充對話裡沒有的資訊。改後的內容必須能在對話摘錄裡找到依據。
+4. 開頭 frontmatter 只有 description 可以改；originSessionId、name、metadata 等欄位記的是筆記本身，不是對話裡的事實，一律不改。
 
 只回傳一個 JSON 物件，不要其他文字：
 {"edits": [{"issue": 編號, "action": "fix" 或 "keep", "old": "筆記裡要換掉的原文（逐字照抄，長度要讓它在筆記裡只出現一次）", "new": "換上的文字", "evidence_line": 行號, "why": "一句話：對話裡實際是什麼，或為什麼不改"}]}
@@ -381,6 +382,19 @@ def build_fix_prompt(note_text, first_text, issues, items):
             .replace('{issues}', listed).replace('{excerpt}', render_excerpt(items)))
 
 
+def _in_metadata(note_text, pos):
+    """pos 落在 frontmatter、而且不是 description 那一行。
+
+    originSessionId、name、metadata 這些欄位記的是筆記本身，不是對話裡的事實；
+    試修時兩個模型都把 originSessionId 改回較早的 session，改了反而讓核對找錯對話。
+    """
+    front = FRONTMATTER.match(note_text)
+    if not front or pos >= front.end():
+        return False
+    line_start = note_text.rfind('\n', 0, pos) + 1
+    return not note_text[line_start:pos + 1].lstrip().startswith('description:')
+
+
 def check_edits(note_text, edits):
     """old 要在現行筆記裡剛好出現一次才能機械套用；不合格的保留下來交人看，不丟掉。"""
     checked = []
@@ -393,6 +407,9 @@ def check_edits(note_text, edits):
             if not edit['valid']:
                 edit['invalid_reason'] = ('old 不在筆記裡' if count == 0 else
                                           f'old 出現 {count} 次' if count > 1 else 'new 缺少或與 old 相同')
+            elif _in_metadata(note_text, note_text.index(old)):
+                edit['valid'] = False
+                edit['invalid_reason'] = 'frontmatter 只改 description，其他欄位不改'
         checked.append(edit)
     return checked
 
@@ -796,7 +813,7 @@ def apply_edits(text, edits, date, transcript):
             continue
         pos = text.index(old)
         text = text[:pos] + new + text[pos + len(old):]
-        line = CORRECTION_LINE.format(date=date, old=_short(old), new=_short(new), why=_short(edit.get('why', ''), 120),
+        line = CORRECTION_LINE.format(date=date, old=_short(old), new=_short(new), why=_short(str(edit.get('why', '')).rstrip('。. '), 120),
                                       transcript=source, line=edit.get('evidence_line', '?'))
         front = FRONTMATTER.match(text)
         if front and pos < front.end():
@@ -823,7 +840,9 @@ def cmd_apply(args):
             # 提案之後筆記被改過（含已經套用過）：不套，留給下一輪增量重查。
             stats['changed_since_proposal'] = stats.get('changed_since_proposal', 0) + 1
             continue
-        new_text, applied, skipped = apply_edits(current, rec['edits'], args.date, rec['transcript'])
+        # 套用前用現行規則重驗：規則收緊後，先前產生的提案也要過新的檢查。
+        new_text, applied, skipped = apply_edits(current, check_edits(current, rec['edits']), args.date,
+                                                 rec['transcript'])
         if not applied:
             stats['nothing_to_apply'] = stats.get('nothing_to_apply', 0) + 1
             continue
