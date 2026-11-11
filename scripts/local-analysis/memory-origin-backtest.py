@@ -8,6 +8,7 @@ import concurrent.futures as cf
 import importlib.util
 import json
 import random
+import re
 import subprocess
 import sys
 import time
@@ -289,9 +290,96 @@ def cmd_score(args):
         print(json.dumps(row, ensure_ascii=False))
 
 
+DETECTORS = ('swe2max', 'terra-max')  # 正式上線的偵測組合；修正員只看得到它們標出的問題。
+SYNTH = re.compile(r'數字 (\S+) 被改成 (\S+)')
+
+
+def fix_inputs():
+    """考卷裡被偵測組合（聯集）標出的題目，連同要交給修正員的問題清單。"""
+    runs = {label: load_run(label) for label in DETECTORS}
+    for item in exam_items():
+        recs = {label: runs[label][item['id']] for label in DETECTORS if item['id'] in runs[label]}
+        issues = mo.flagged_issues(recs)
+        if issues:
+            write_line = next((r.get('write_line') for r in recs.values() if r.get('write_line')), None)
+            yield item, issues, write_line
+
+
+def cmd_fix_run(args):
+    key = mo.relay_key()
+    out_dir = WORK / 'fix-runs' / args.label
+    jobs = list(fix_inputs())
+    counts = {}
+    with cf.ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = [pool.submit(mo.fix_one, item['note'], (WORK / 'notes' / f"{item['id']}.md").read_text(encoding='utf-8'),
+                               None, issues, item['transcript'], write_line, args.alias,
+                               out_dir / f"{item['id']}.json", out_dir.parent / f'{args.label}-failures.jsonl', key)
+                   for item, issues, write_line in jobs]
+        for fut in cf.as_completed(futures):
+            status = fut.result()
+            counts[status] = counts.get(status, 0) + 1
+    print(json.dumps({'label': args.label, 'alias': args.alias, 'items': len(jobs), **counts}))
+
+
+def adjudicated_calls():
+    """(題號, 偵測模型, 原句) → real／false_alarm；來自第二位 routed-judge 對照原對話的複核。"""
+    calls = {}
+    for line in (WORK / 'adjudication.jsonl').read_text(encoding='utf-8').splitlines():
+        row = json.loads(line)
+        for label, judged in row['models'].items():
+            for issue in judged.get('issues') or []:
+                calls[(row['id'], label, issue['claim'])] = issue['call']
+    return calls
+
+
+def cmd_fix_score(args):
+    items = {item['id']: item for item in exam_items()}
+    calls = adjudicated_calls()
+    for label in args.labels:
+        tally, synth, invalid, review = {}, [0, 0], 0, []
+        secs = []
+        for path in sorted((WORK / 'fix-runs' / label).glob('*.json')):
+            rec = json.loads(path.read_text(encoding='utf-8'))
+            qid, item = path.stem, items[path.stem]
+            secs.append(rec['seconds'])
+            by_issue = {e.get('issue'): e for e in rec['edits']}
+            invalid += sum(1 for e in rec['edits'] if e.get('action') == 'fix' and not e.get('valid'))
+            for idx, issue in enumerate(rec['issues'], 1):
+                call = calls.get((qid, issue['label'], issue['claim']))
+                edit = by_issue.get(idx) or {}
+                action = edit.get('action', 'missing')
+                if call:
+                    tally[f'{call}->{action}'] = tally.get(f'{call}->{action}', 0) + 1
+                    if call == 'real' and action == 'fix':
+                        review.append((qid, issue['claim'], edit.get('old'), edit.get('new'), edit.get('valid')))
+            match = SYNTH.search(item.get('expected_error') or '')
+            if item['kind'] == 'pos_synth' and match:
+                orig, mutated = match.groups()
+                if any(mutated in i['claim'] for i in rec['issues']):
+                    synth[1] += 1
+                    synth[0] += any(e.get('valid') and mutated in e['old'] and orig in e['new'] and mutated not in e['new']
+                                    for e in rec['edits'] if e.get('action') == 'fix')
+        secs.sort()
+        print(json.dumps({'label': label, 'items': len(secs), **dict(sorted(tally.items())),
+                          'synth_restored': f'{synth[0]}/{synth[1]}', 'invalid_fix_edits': invalid,
+                          'seconds_median': secs[len(secs) // 2] if secs else None}, ensure_ascii=False))
+        if args.show:
+            for qid, claim, old, new, valid in review:
+                print(f'  {qid} valid={valid}\n    claim: {claim[:120]}\n    old:   {(old or "")[:160]}\n    new:   {(new or "")[:160]}')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='cmd', required=True)
+    p = sub.add_parser('fix-run', help='對偵測組合標出的考題跑修正員')
+    p.add_argument('--alias', required=True)
+    p.add_argument('--label', required=True)
+    p.add_argument('--workers', type=int, default=5)
+    p.set_defaults(func=cmd_fix_run)
+    p = sub.add_parser('fix-score', help='修正員對照複核結果與人造錯誤的成績')
+    p.add_argument('labels', nargs='+')
+    p.add_argument('--show', action='store_true', help='列出「真錯→有改」的改法供人工檢查')
+    p.set_defaults(func=cmd_fix_score)
     p = sub.add_parser('build-exam')
     p.add_argument('--drift', type=int, default=10)
     p.add_argument('--presumed', type=int, default=15)

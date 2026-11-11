@@ -148,5 +148,73 @@ class ReportTest(unittest.TestCase):
         self.assertIn('b：「x」→ L3：y', text)
 
 
+class FixTest(unittest.TestCase):
+    NOTE = '---\nname: n\ndescription: 掃了 27 個 session\n---\n第一段 302 次。\n下一行。\n\n第二段。\n'
+
+    def test_check_edits_marks_missing_and_duplicate_old(self):
+        edits = mo.check_edits('a 1 b 1', [
+            {'action': 'fix', 'old': 'a', 'new': 'A'},
+            {'action': 'fix', 'old': '1', 'new': '2'},
+            {'action': 'fix', 'old': 'zz', 'new': 'y'},
+            {'action': 'keep', 'old': '', 'new': ''}])
+        self.assertEqual([e.get('valid') for e in edits], [True, False, False, None])
+
+    def test_correction_line_goes_after_block_and_outside_frontmatter(self):
+        edits = mo.check_edits(self.NOTE, [
+            {'action': 'fix', 'old': '302 次', 'new': '1511 次', 'evidence_line': 9, 'why': 'w'},
+            {'action': 'fix', 'old': '27 個 session', 'new': '28 個 session', 'evidence_line': 3, 'why': 'w'}])
+        text, applied, skipped = mo.apply_edits(self.NOTE, edits, '2026-11-11', '/t.jsonl')
+        self.assertEqual((len(applied), skipped), (2, []))
+        front = mo.FRONTMATTER.match(text)
+        self.assertIn('description: 掃了 28 個 session', front.group(0))
+        self.assertNotIn('更正行', front.group(0))
+        blocks = text[front.end():].split('\n\n')
+        self.assertTrue(blocks[0].startswith('> 更正行 2026-11-11：「27 個 session」'))
+        self.assertEqual(blocks[1], '第一段 1511 次。\n下一行。')
+        self.assertTrue(blocks[2].startswith('> 更正行 2026-11-11：「302 次」改成「1511 次」'))
+        self.assertTrue(blocks[2].endswith('L9'))
+        self.assertEqual(blocks[3], '第二段。\n')
+
+    def test_second_edit_on_replaced_text_is_skipped(self):
+        edits = mo.check_edits('x 302 y', [
+            {'action': 'fix', 'old': '302', 'new': '303', 'why': 'w'},
+            {'action': 'fix', 'old': '302 y', 'new': '304 y', 'why': 'w'}])
+        text, applied, skipped = mo.apply_edits('x 302 y', edits, 'd', '/t')
+        self.assertTrue(text.startswith('x 303 y\n\n> 更正行'))
+        self.assertEqual((len(applied), len(skipped)), (1, 1))
+
+    def test_bucket_and_parse_edits(self):
+        bad = {'verdict': {'verdict': 'mismatch'}}
+        ok = {'verdict': {'verdict': 'ok'}}
+        self.assertEqual(mo.bucket_of({'a': bad, 'b': bad}), 'both')
+        self.assertEqual(mo.bucket_of({'a': ok, 'b': bad}), 'b-only')
+        self.assertIsNone(mo.bucket_of({'a': ok, 'b': ok}))
+        self.assertEqual(mo.parse_edits('```json\n{"edits": []}\n```'), {'edits': []})
+
+    def test_fix_excerpt_adds_cited_line_outside_excerpt(self):
+        events = [{'line': n, 'role': 'tool_result', 'text': f'out {n}'} for n in range(1, 40)]
+        events.insert(0, {'line': 0, 'role': 'user', 'text': 'go'})
+        items = mo.fix_excerpt(events, 39, 'no numbers', [{'evidence_line': 2}])
+        self.assertIn(2, {ln for ln, _, _ in items})
+
+    def test_apply_skips_note_changed_after_proposal(self):
+        tmp = Path(tempfile.mkdtemp())
+        memory = tmp / 'memory'
+        memory.mkdir()
+        (memory / 'n.md').write_text('changed', encoding='utf-8')
+        fix_dir = tmp / 'fix' / 'opus'
+        fix_dir.mkdir(parents=True)
+        (fix_dir / 'n.json').write_text(json.dumps({
+            'note': 'n.md', 'transcript': '/t', 'note_text': 'x 302',
+            'edits': [{'action': 'fix', 'old': '302', 'new': '303', 'valid': True}]}), encoding='utf-8')
+        saved, mo.MEMORY_ROOT = mo.MEMORY_ROOT, memory
+        try:
+            args = type('A', (), {'fix_dir': str(fix_dir), 'date': 'd', 'notes': None, 'dry_run': False})
+            mo.cmd_apply(args)
+        finally:
+            mo.MEMORY_ROOT = saved
+        self.assertEqual((memory / 'n.md').read_text(encoding='utf-8'), 'changed')
+
+
 if __name__ == '__main__':
     unittest.main()

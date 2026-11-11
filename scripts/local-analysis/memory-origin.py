@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""記憶筆記「回原對話核對」的機械步驟：找來源對話、抽原文摘錄、挑考卷候選。
+"""記憶筆記「回原對話核對」：找來源對話、抽原文摘錄、送模型核對（scan）與產生修正提案（fix）、套用修正（apply）。
 
-判斷交給模型；這裡只做確定性的定位與抽取，不呼叫任何模型。
+判斷與改寫交給模型；定位、抽取、套用都是確定性的程式。
 """
 import argparse
 import json
@@ -290,8 +290,8 @@ def call_model(alias, prompt, key, timeout=600, max_tokens=16000):
     return content, data.get('usage'), data.get('model'), None
 
 
-def parse_verdict(content):
-    """模型偶爾會包 code fence 或前後加字；取第一個完整 JSON 物件。"""
+def first_json(content, accept):
+    """模型偶爾會包 code fence 或前後加字；取第一個 accept() 成立的完整 JSON 物件。"""
     text = content.strip()
     start = text.find('{')
     while start != -1:
@@ -306,11 +306,95 @@ def parse_verdict(content):
                         obj = json.loads(text[start:idx + 1])
                     except json.JSONDecodeError:
                         break
-                    if isinstance(obj, dict) and obj.get('verdict') in ('mismatch', 'ok', 'unknown'):
+                    if isinstance(obj, dict) and accept(obj):
                         return obj
                     break
         start = text.find('{', start + 1)
     return None
+
+
+def parse_verdict(content):
+    return first_json(content, lambda obj: obj.get('verdict') in ('mismatch', 'ok', 'unknown'))
+
+
+FIX_PROMPT = """你是記憶筆記的修正員。兩位核對員拿下面這條 AI 助理寫的記憶筆記，對照它當初寫成的那段對話，標出幾處可能「寫入當下就記錯」的地方。核對員會誤報。
+
+請逐條判斷，只修真的記錯的：
+1. 先在對話摘錄裡找證據（核對員給的行號只是線索，可能指錯）。證據確實和筆記矛盾才算記錯；摘錄裡找不到證據、只是說法不同但意思沒錯、或是寫入之後情況才改變，一律不改。
+2. 如果下面附了「寫入當下的版本」，而被標的句子不在那個版本裡，代表是之後其他對話加的，這段對話對照不了，不改。
+3. 要改時只做最小改動：換掉錯的字詞、數字或範圍，保留原本的語氣、格式與其餘內容；不順手潤飾別處，不補充對話裡沒有的資訊。改後的內容必須能在對話摘錄裡找到依據。
+
+只回傳一個 JSON 物件，不要其他文字：
+{"edits": [{"issue": 編號, "action": "fix" 或 "keep", "old": "筆記裡要換掉的原文（逐字照抄，長度要讓它在筆記裡只出現一次）", "new": "換上的文字", "evidence_line": 行號, "why": "一句話：對話裡實際是什麼，或為什麼不改"}]}
+每個被標的問題都要回一筆；action 為 keep 時 old 與 new 給空字串。兩個問題指同一處錯誤時，一筆 fix、另一筆 keep 並說明同上。
+
+=== 筆記（現行版本） ===
+{note}
+{first}
+=== 核對員標出的問題 ===
+{issues}
+
+=== 對話摘錄 ===
+{excerpt}
+"""
+
+
+def parse_edits(content):
+    return first_json(content, lambda obj: isinstance(obj.get('edits'), list))
+
+
+def flagged_issues(recs):
+    """合併各模型標出的問題。不告訴修正員是誰標的、幾個人標到，免得它看人數下判斷。"""
+    issues = []
+    for label in sorted(recs):
+        verdict = recs[label].get('verdict') or {}
+        if verdict.get('verdict') != 'mismatch':
+            continue
+        for issue in verdict.get('issues') or []:
+            issues.append({'label': label, 'claim': str(issue.get('claim', '')),
+                           'evidence_line': issue.get('evidence_line'), 'why': str(issue.get('why', ''))})
+    return issues
+
+
+def fix_excerpt(events, write_line, note_text, issues, cap=3000):
+    """核對員看過的摘錄，再補上它們引用、但摘錄沒抽到的行。"""
+    items = excerpt(events, write_line, 'all', note_text=note_text)
+    have = {ln for ln, _, _ in items}
+    wanted = set()
+    for issue in issues:
+        try:
+            wanted.add(int(issue['evidence_line']))
+        except (TypeError, ValueError):
+            continue
+    extra = [(e['line'], e['role'], _clip(e['text'], cap)) for e in events if e['line'] in wanted - have]
+    return sorted(set(items) | set(extra), key=lambda t: t[0])
+
+
+def build_fix_prompt(note_text, first_text, issues, items):
+    first = ''
+    if first_text:
+        first = f'\n=== 寫入當下的版本（與現行版本不同；只用來判斷哪些句子是後來才加的） ===\n{first_text.strip()}\n'
+    listed = '\n'.join(f'[{idx}] 「{it["claim"]}」→ L{it["evidence_line"]}：{it["why"]}'
+                       for idx, it in enumerate(issues, 1))
+    # excerpt 最後換：對話原文裡可能剛好出現 {note} 之類的字樣。
+    return (FIX_PROMPT.replace('{note}', note_text.strip()).replace('{first}', first)
+            .replace('{issues}', listed).replace('{excerpt}', render_excerpt(items)))
+
+
+def check_edits(note_text, edits):
+    """old 要在現行筆記裡剛好出現一次才能機械套用；不合格的保留下來交人看，不丟掉。"""
+    checked = []
+    for edit in edits:
+        edit = dict(edit)
+        if edit.get('action') == 'fix':
+            old, new = edit.get('old') or '', edit.get('new')
+            count = note_text.count(old) if old else 0
+            edit['valid'] = count == 1 and isinstance(new, str) and new != old
+            if not edit['valid']:
+                edit['invalid_reason'] = ('old 不在筆記裡' if count == 0 else
+                                          f'old 出現 {count} 次' if count > 1 else 'new 缺少或與 old 相同')
+        checked.append(edit)
+    return checked
 
 
 def cmd_extract(args):
@@ -537,14 +621,20 @@ def cmd_commit_cursor(args):
     print(json.dumps({'since_epoch': since}))
 
 
-def cmd_report(args):
-    run_dir = Path(args.run_dir)
+def load_scan(run_dir):
+    """掃描結果：note → {label: record}；label 是 run_dir 底下的子資料夾名。"""
     labels = sorted(p.name for p in run_dir.iterdir() if p.is_dir())
     notes = {}
     for label in labels:
         for path in (run_dir / label).glob('*.json'):
             rec = json.loads(path.read_text(encoding='utf-8'))
             notes.setdefault(rec['note'], {})[label] = rec
+    return labels, notes
+
+
+def cmd_report(args):
+    run_dir = Path(args.run_dir)
+    labels, notes = load_scan(run_dir)
     flagged, failed = [], []
     for rel, recs in sorted(notes.items()):
         if any((r.get('verdict') or {}).get('verdict') == 'mismatch' for r in recs.values()):
@@ -589,6 +679,167 @@ def cmd_report(args):
     else:
         out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print(json.dumps({'notes': len(notes), 'flagged': len(flagged), 'failed': len(failed), 'out': str(out)}))
+
+
+def bucket_of(recs):
+    """哪些模型標了它：全部模型都標＝both，否則 <label>-only。"""
+    flagged = sorted(label for label, rec in recs.items()
+                     if (rec.get('verdict') or {}).get('verdict') == 'mismatch')
+    if not flagged:
+        return None
+    return 'both' if len(recs) > 1 and len(flagged) == len(recs) else '+'.join(flagged) + '-only'
+
+
+def write_time_text(rel):
+    """筆記第一次進 git 的內容；搬過家而找不到時回 None，修正員就只看現行版本。"""
+    commit, _ = first_version(f'memory/{rel}')
+    if not commit:
+        return None
+    out = subprocess.run(['git', '-C', str(CLAUDE_REPO), 'show', f'{commit}:memory/{rel}'],
+                         capture_output=True, text=True, check=False)
+    return out.stdout if out.returncode == 0 else None
+
+
+def body_of(text):
+    return FRONTMATTER.sub('', text).strip()
+
+
+def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, out_path, fail_log, key):
+    if out_path.exists():
+        return 'skip'
+    import time
+    events, found = parse_transcript(transcript, Path(note).name)
+    items = fix_excerpt(events, write_line or found, note_text, issues)
+    prompt = build_fix_prompt(note_text, first_text, issues, items)
+    parsed = None
+    for attempt in range(3):
+        t0 = time.time()
+        content, usage, model, error = call_model(alias, prompt, key)
+        parsed = None if error else parse_edits(content)
+        if parsed:
+            break
+        time.sleep(30 * (attempt + 1))
+    if not parsed:
+        with open(fail_log, 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps({'note': note, 'alias': alias, 'error': error, 'raw': content[:300]},
+                                ensure_ascii=False) + '\n')
+        return 'fail'
+    # 存下當時的筆記全文：套用前比對，筆記被別的 session 改過就不套，避免蓋掉別人的修改。
+    record = {'note': note, 'transcript': str(transcript), 'alias': alias, 'model': model,
+              'seconds': round(time.time() - t0, 1), 'usage': usage, 'prompt_chars': len(prompt),
+              'had_first_version': bool(first_text), 'issues': issues, 'note_text': note_text,
+              'edits': check_edits(note_text, parsed['edits'])}
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding='utf-8')
+    return 'ok'
+
+
+def cmd_fix(args):
+    import concurrent.futures as cf
+    _, notes = load_scan(Path(args.run_dir))
+    picked = [(rel, recs) for rel, recs in sorted(notes.items()) if bucket_of(recs) in args.bucket]
+    if args.notes:
+        wanted = set(Path(args.notes).read_text(encoding='utf-8').split())
+        picked = [(rel, recs) for rel, recs in picked if rel in wanted]
+    if args.limit:
+        picked = picked[:args.limit]
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    jobs, gone = [], []
+    for rel, recs in picked:
+        path = MEMORY_ROOT / rel
+        if not path.exists():
+            gone.append(rel)
+            continue
+        text = path.read_text(encoding='utf-8')
+        first = write_time_text(rel)
+        first = first if first and body_of(first) != body_of(text) else None
+        rec = next(iter(recs.values()))
+        jobs.append((rel, text, first, flagged_issues(recs), rec['transcript'], rec.get('write_line')))
+    key = relay_key()
+    counts = {}
+    with cf.ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = []
+        for spec in args.model:
+            label, alias = spec.split('=', 1)
+            futures += [pool.submit(fix_one, rel, text, first, issues, tr, wl, alias,
+                                    out_dir / label / f'{note_key(rel)}.json', out_dir / 'failures.jsonl', key)
+                        for rel, text, first, issues, tr, wl in jobs]
+        for fut in cf.as_completed(futures):
+            status = fut.result()
+            counts[status] = counts.get(status, 0) + 1
+    print(json.dumps({'notes': len(jobs), 'gone': gone, **counts}, ensure_ascii=False))
+
+
+CORRECTION_LINE = '> 更正行 {date}：「{old}」改成「{new}」，寫入當下就記錯（{why}）；現況來源：原對話 `{transcript}` L{line}'
+
+
+def _short(text, cap=80):
+    text = ' '.join(str(text).split())
+    return text if len(text) <= cap else text[:cap] + '…'
+
+
+def apply_edits(text, edits, date, transcript):
+    """依序套用合格的修正，每處後面接一行更正行（格式見 feedback_memory_cluster_maintenance）。
+
+    更正行要獨立成段，所以放在該段落結束（下一個空行）之後；改到 frontmatter 時放內文開頭，
+    塞進 frontmatter 會弄壞它。回傳 (新內容, 套用的, 跳過的)。
+    """
+    applied, skipped = [], []
+    source = str(transcript).replace(str(Path.home()), '~')
+    for edit in edits:
+        if edit.get('action') != 'fix' or not edit.get('valid'):
+            continue
+        old, new = edit['old'], edit['new']
+        if text.count(old) != 1:
+            skipped.append({**edit, 'skip_reason': '套用前面幾處後，old 已不存在或不唯一'})
+            continue
+        pos = text.index(old)
+        text = text[:pos] + new + text[pos + len(old):]
+        line = CORRECTION_LINE.format(date=date, old=_short(old), new=_short(new), why=_short(edit.get('why', ''), 120),
+                                      transcript=source, line=edit.get('evidence_line', '?'))
+        front = FRONTMATTER.match(text)
+        if front and pos < front.end():
+            text = text[:front.end()] + line + '\n\n' + text[front.end():].lstrip('\n')
+        else:
+            end = text.find('\n\n', pos + len(new))
+            text = text.rstrip('\n') + '\n\n' + line + '\n' if end == -1 else text[:end] + '\n\n' + line + text[end:]
+        applied.append(edit)
+    return text, applied, skipped
+
+
+def cmd_apply(args):
+    fix_dir = Path(args.fix_dir)
+    wanted = set(Path(args.notes).read_text(encoding='utf-8').split()) if args.notes else None
+    log_path = fix_dir.parent / ('apply-preview.jsonl' if args.dry_run else 'applied.jsonl')
+    stats = {}
+    for path in sorted(fix_dir.glob('*.json')):
+        rec = json.loads(path.read_text(encoding='utf-8'))
+        if wanted is not None and rec['note'] not in wanted:
+            continue
+        target = MEMORY_ROOT / rec['note']
+        current = target.read_text(encoding='utf-8') if target.exists() else None
+        if current != rec['note_text']:
+            # 提案之後筆記被改過（含已經套用過）：不套，留給下一輪增量重查。
+            stats['changed_since_proposal'] = stats.get('changed_since_proposal', 0) + 1
+            continue
+        new_text, applied, skipped = apply_edits(current, rec['edits'], args.date, rec['transcript'])
+        if not applied:
+            stats['nothing_to_apply'] = stats.get('nothing_to_apply', 0) + 1
+            continue
+        if args.dry_run:
+            preview = fix_dir.parent / 'preview' / path.name.replace('.json', '.md')
+            preview.parent.mkdir(parents=True, exist_ok=True)
+            preview.write_text(new_text, encoding='utf-8')
+        else:
+            target.write_text(new_text, encoding='utf-8')
+        stats['notes'] = stats.get('notes', 0) + 1
+        stats['edits'] = stats.get('edits', 0) + len(applied)
+        stats['skipped_edits'] = stats.get('skipped_edits', 0) + len(skipped)
+        with open(log_path, 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps({'note': rec['note'], 'fix_file': str(path), 'applied': applied,
+                                 'skipped': skipped}, ensure_ascii=False) + '\n')
+    print(json.dumps(stats, ensure_ascii=False))
 
 
 def cmd_candidates(args):
@@ -650,6 +901,21 @@ def main(argv=None):
     rep.add_argument('--out', required=True)
     rep.add_argument('--silent-if-empty', action='store_true')
     rep.set_defaults(func=cmd_report)
+    fix = sub.add_parser('fix', help='對被標出的筆記產生修正提案（只寫提案檔，不動筆記）')
+    fix.add_argument('--run-dir', required=True, help='scan 的結果資料夾')
+    fix.add_argument('--out-dir', required=True)
+    fix.add_argument('--model', action='append', required=True, help='label=alias，可重複')
+    fix.add_argument('--bucket', action='append', required=True, help='both／<label>-only，可重複')
+    fix.add_argument('--notes', help='只處理這個檔案列出的筆記（空白分隔的相對路徑）')
+    fix.add_argument('--limit', type=int, default=0)
+    fix.add_argument('--workers', type=int, default=5)
+    fix.set_defaults(func=cmd_fix)
+    app = sub.add_parser('apply', help='把修正提案套用到筆記，每處加一行更正行')
+    app.add_argument('--fix-dir', required=True, help='fix 輸出的單一模型資料夾')
+    app.add_argument('--date', required=True)
+    app.add_argument('--notes')
+    app.add_argument('--dry-run', action='store_true', help='改寫結果寫到 preview/，不動筆記')
+    app.set_defaults(func=cmd_apply)
     args = parser.parse_args(argv)
     args.func(args)
 
