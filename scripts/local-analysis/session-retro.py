@@ -636,12 +636,46 @@ def validated_path(run, unit):
   return run / "validated" / (unit + ".json")
 
 
+def prior_verify_parts(plan, run):
+  path = run / "validation-verify-current-parts.json"
+  result = load(path)
+  require(result.get("schema_version") == 1 and result.get("run_id") == plan["run_id"]
+          and result.get("stage") == "verify-current-parts" and result.get("pass") is True,
+          "verify-current parts validation is missing or failed")
+  prior_composition(plan, run)
+  context = verify_parts_context(result.get("composition_manifest"), run)
+  require(context["manifest"] == result.get("manifest"), "critic parts manifest changed since validation")
+  canonical = load(run / "canonical.json")
+  units = {unit["unit"]: unit for unit in result.get("units", [])}
+  require(set(units) == {part["unit"] for part in context["parts"]}, "verify-current parts units changed")
+  for part in context["parts"]:
+    unit = units[part["unit"]]
+    require(unit.get("pass") is True, "verify-current part failed: " + part["unit"])
+    require(load(unit["validated_path"]) == unit["report"], "validated critic part changed: " + part["unit"])
+    require(load(unit["actual_report_path"]) == unit["original_report"], "original critic part changed: " + part["unit"])
+    agents = transcript_agents(part["transcript_dirs"])
+    item = {"session": "cross-session", "unit": part["unit"], "report_path": str(part["report_path"]),
+            "input_reports": [str(validated_path(run, "cross-session"))]}
+    item.update({key: part[key] for key in ("slice_path", "index_path", "pattern_ids") if key in part})
+    agent, target, report = report_writer(agents, item)
+    require(target == part["report_path"] and report == unit["original_report"], "critic part writer changed: " + part["unit"])
+    require(not critic_read_errors(agent, item, report, canonical, plan), "critic part reads changed: " + part["unit"])
+    require({row.get("pattern_id") for row in report.get("verdicts", report.get("findings", []))} == set(part["pattern_ids"]),
+            "critic part assignment changed: " + part["unit"])
+  require(load(result["validated_path"]) == result["report"], "composed verify-current report changed")
+  return result
+
+
 def prior_validation(plan, run, stage, must_pass=True):
   path = run / f"validation-{stage}.json"
   require(path.exists(), "missing preceding validation: " + stage)
   result = load(path)
   require(result.get("run_id") == plan["run_id"] and result.get("stage") == stage, "validation identity mismatch")
   require(result.get("binding") == binding(plan, run), "source, plan, or models changed since validation")
+  if stage == "verify" and (run / "validation-verify-current-parts.json").exists():
+    prior_verify_parts(plan, run)
+  if stage == "verify" and (run / "composition-validation.json").exists():
+    prior_composition(plan, run)
   if must_pass:
     require(result.get("pass") is True, "preceding validation failed: " + stage)
   for unit in result.get("units", []):
@@ -660,9 +694,13 @@ def selected_report(plan, run, session):
 
 
 def stage_items(plan, run, stage, enforce=True):
+  composition_enabled = (run / "composition-validation.json").exists()
   if enforce:
     for previous in STAGES[:STAGES.index(stage)]:
-      prior_validation(plan, run, previous)
+      if previous == "cross" and stage == "verify" and composition_enabled:
+        prior_composition(plan, run)
+      else:
+        prior_validation(plan, run, previous)
   documents = [s["document"] for s in plan["sessions"]]
   contexts = {"context_documents": [s["context_document"] for s in plan["sessions"] if s.get("context_document")]}
   contexts = contexts if contexts["context_documents"] else {}
@@ -948,7 +986,8 @@ def report_writer(agents, item):
         report = load(target)
       except (ValueError, OSError):
         continue
-      if not isinstance(report, dict) or report.get("unit") != item["unit"] or report.get("session") != item.get("session", "cross-session"):
+      expected_session = item.get("session")
+      if not isinstance(report, dict) or report.get("unit") != item["unit"] or (expected_session is not None and report.get("session") != expected_session):
         continue
       # A receipt typo can point at a real report in this run, never at another run's output.
       run_root = expected_path.parent.parent
@@ -992,6 +1031,432 @@ def report_writer(agents, item):
   require(bool(candidates), "no successful report Write/Edit/Bash evidence with matching identity and artifact")
   # Later transcript arguments are repair attempts; never union another writer's Read evidence.
   return candidates[-1]
+
+
+def composition_path(run, value, label):
+  require(isinstance(value, str) and value, label + " requires a path")
+  path = Path(value).expanduser().resolve()
+  require(path.is_relative_to(run), label + " outside run")
+  require(path.is_file(), label + " missing: " + str(path))
+  return path
+
+
+def composition_transcript_dirs(values, label):
+  require(isinstance(values, list) and values, label + " requires transcript directories")
+  paths = []
+  for value in values:
+    require(isinstance(value, str) and value, label + " has an invalid transcript directory")
+    path = Path(value).expanduser().resolve()
+    require(path.is_dir(), label + " transcript directory missing: " + str(path))
+    paths.append(path)
+  return paths
+
+
+def composition_context(manifest_path):
+  manifest_path = Path(manifest_path).expanduser().resolve()
+  data = load(manifest_path)
+  require(isinstance(data, dict) and data.get("schema_version") == 1 and data.get("kind") == "cross-composition",
+          "unsupported composition manifest")
+  run = Path(data.get("run_path", "")).expanduser().resolve()
+  require(run.is_dir() and manifest_path.parent == run, "composition manifest must live at run root")
+  plan_path = composition_path(run, data.get("plan_path"), "plan_path")
+  plan, plan_run = plan_context(plan_path)
+  require(plan_run == run and data.get("run_id") == plan["run_id"], "composition run identity mismatch")
+  require(data.get("plan_path") == str(plan_path), "composition plan path must be canonical")
+  return data, run, plan, manifest_path
+
+
+def composition_require_reads(agents, paths, label):
+  for path in paths:
+    path = Path(path).resolve()
+    require(path.is_file(), label + " input missing: " + str(path))
+    required = {number for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1) if line.strip()}
+    covered = set()
+    for agent in agents:
+      covered.update(read_lines(agent, path))
+    require(required <= covered, label + " did not fully read " + str(path))
+
+
+def composition_writer(artifact, run, cache, label, expected_session=None):
+  unit = artifact.get("unit")
+  report_path = composition_path(run, artifact.get("report_path"), label + " report")
+  dirs = composition_transcript_dirs(artifact.get("transcript_dirs"), label)
+  key = tuple(str(path) for path in dirs)
+  if key not in cache:
+    cache[key] = transcript_agents(dirs)
+  agents = cache[key]
+  require(agents, label + " has no agent transcript")
+  item = {"unit": unit, "report_path": str(report_path)}
+  if expected_session is not None:
+    item["session"] = expected_session
+  agent, target, report = report_writer(agents, item)
+  require(target == report_path, label + " report was not written at the manifest path")
+  return {"agent": agent, "target": target, "report": report, "agents": agents, "writer_agent": agent, "dirs": dirs}
+
+
+def composition_batch_report(artifact, source_reports, run, plan, canonical, cache, label):
+  input_packets = [composition_path(run, path, label + " input packet") for path in artifact.get("input_packets", [])]
+  source_reports = [Path(path).resolve() for path in source_reports]
+  dirs = composition_transcript_dirs(artifact.get("transcript_dirs"), label)
+  key = tuple(str(path) for path in dirs)
+  if key not in cache:
+    cache[key] = transcript_agents(dirs)
+  result = composition_writer(artifact, run, cache, label, expected_session="cross-session")
+  base = result["report"]
+  composition_require_reads([result["writer_agent"]], input_packets + source_reports, label)
+  require(base.get("unit") == artifact.get("unit"), label + " report identity mismatch")
+  supplement = artifact.get("supplement")
+  supplement_result = None
+  combined = copy.deepcopy(base)
+  if supplement is not None:
+    supplement_paths = [composition_path(run, path, label + " supplement input") for path in supplement.get("input_packets", [])]
+    supplement_report = composition_path(run, supplement.get("source_report"), label + " supplement source") if supplement.get("source_report") else None
+    supplement_dirs = composition_transcript_dirs(supplement.get("transcript_dirs"), label + " supplement")
+    supplement_key = tuple(str(path) for path in supplement_dirs)
+    if supplement_key not in cache:
+      cache[supplement_key] = transcript_agents(supplement_dirs)
+    supplement_result = composition_writer(supplement, run, cache, label + " supplement", expected_session="cross-session")
+    composition_require_reads([supplement_result["writer_agent"]], supplement_paths + ([supplement_report] if supplement_report else []), label + " supplement")
+    extra = supplement_result["report"]
+    require(extra.get("status") == "complete", label + " supplement is not complete")
+    for key in ("patterns", "secondary_patterns", "dispositions"):
+      combined.setdefault(key, [])
+      combined[key].extend(copy.deepcopy(extra.get(key, [])))
+    combined["supplement_limitations"] = extra.get("limitations", [])
+  combined["tracking_observations"] = []
+  for path in source_reports:
+    combined["tracking_observations"].extend(copy.deepcopy(load(path).get("tracking_observations", [])))
+  inputs, problems = accounting_inputs({"input_reports": [str(path) for path in source_reports]})
+  require(not problems, "; ".join(problems))
+  destinations = []
+  for key, entry in inputs.items():
+    require(len(entry["outcomes"]) == 1, "conflicting source outcomes need explicit judgment: " + key)
+    row = {"observation_key": key, "disposition": "kept"}
+    if len(entry["sources"]) > 1:
+      row.update({"disposition": "merged", "merged_into": key,
+                  "merged_from": [{"unit": unit, "issue_id": issue} for unit, issue in sorted(entry["sources"])]})
+    destinations.append(row)
+  combined["tracking_dispositions"] = destinations
+  combined["status"] = "complete"
+  item = {"session": "cross-session", "unit": artifact["unit"], "input_reports": [str(path) for path in source_reports]}
+  normalized = check_report(combined, item, "cross", canonical)
+  add_event_evidence(normalized, item, plan, run)
+  check_tracking_accounting(normalized, item)
+  return {"base": base, "supplement": supplement_result, "normalized": normalized,
+          "writer": result, "source_reports": source_reports}
+
+
+def composition_manifest_chain(manifest_path):
+  manifest, run, plan, manifest_path = composition_context(manifest_path)
+  prior_validation(plan, run, "reading")
+  prior_validation(plan, run, "session-merge")
+  canonical = load(run / "canonical.json")
+  partition_path = composition_path(run, manifest.get("source_partition"), "source_partition")
+  tracking_context_path = composition_path(run, manifest.get("tracking_context"), "tracking_context")
+  partial_path = composition_path(run, manifest.get("partial_report"), "partial_report")
+  output_value = manifest.get("output_report")
+  require(isinstance(output_value, str) and output_value, "output_report requires a path")
+  output_path = (run / output_value).resolve()
+  require(output_path.is_relative_to(run) and output_path != partial_path, "output_report must be a new path beside the partial report")
+  partition = load(partition_path)
+  require(isinstance(partition, dict) and isinstance(partition.get("items"), list) and partition["items"], "invalid cross partition")
+  partition_by_unit = {item.get("unit"): item for item in partition["items"]}
+  require(len(partition_by_unit) == len(partition["items"]), "duplicate cross partition unit")
+  analyst = manifest.get("analyst_artifacts")
+  require(isinstance(analyst, list) and [item.get("unit") for item in analyst] == [item.get("unit") for item in partition["items"]],
+          "analyst artifacts do not match source partition")
+  cache = {}
+  batches = []
+  writer_artifacts = []
+  source_reports = []
+  for artifact in analyst:
+    partition_item = partition_by_unit[artifact["unit"]]
+    expected_inputs = [str(Path(path).resolve()) for path in partition_item.get("input_reports", [])]
+    actual_inputs = [str(Path(path).expanduser().resolve()) for path in artifact.get("input_reports", [])]
+    require(actual_inputs == expected_inputs, artifact["unit"] + " input reports differ from partition")
+    packet_paths = [composition_path(run, path, artifact["unit"] + " input packet") for path in artifact.get("input_packets", [])]
+    require(str(partition_path) in {str(path) for path in packet_paths}, artifact["unit"] + " does not bind source partition")
+    require(str(tracking_context_path) in {str(path) for path in packet_paths}, artifact["unit"] + " does not bind tracking context")
+    for path in expected_inputs:
+      source_reports.append(Path(path).resolve())
+    batch = composition_batch_report(artifact, expected_inputs, run, plan, canonical, cache, artifact["unit"])
+    batches.append(batch)
+    writer_artifacts.append({"unit": artifact["unit"], "report_path": str(batch["writer"]["target"]),
+                             "writer": batch["writer"]["agent"]["path"]})
+    if batch["supplement"]:
+      writer_artifacts.append({"unit": artifact["supplement"]["unit"], "report_path": str(batch["supplement"]["target"]),
+                               "writer": batch["supplement"]["agent"]["path"]})
+  source_reports = list(dict.fromkeys(source_reports))
+  source_records = []
+  for path in source_reports:
+    source = load(path)
+    require(isinstance(source, dict) and source.get("status") == "complete", "input report missing or incomplete: " + str(path))
+    source_records.extend(report_records(source))
+  source_ids = [record.get("id") for record in source_records]
+  require(all(isinstance(key, str) for key in source_ids) and len(source_ids) == len(set(source_ids)), "invalid source record ids")
+  synthesis_path = composition_path(run, manifest["semantic_artifacts"]["synthesis_packet"], "synthesis_packet")
+  synthesis_agents = composition_transcript_dirs(manifest["final_artifact"].get("transcript_dirs"), "final artifact")
+  if tuple(str(path) for path in synthesis_agents) not in cache:
+    cache[tuple(str(path) for path in synthesis_agents)] = transcript_agents(synthesis_agents)
+  final_agents = cache[tuple(str(path) for path in synthesis_agents)]
+  synthesis = load(synthesis_path)
+  require(synthesis.get("session") == "cross-session" and "no final approval" in synthesis.get("purpose", ""),
+          "synthesis packet is not an intermediate packet")
+  expected_batches = []
+  for artifact, batch in zip(analyst, batches):
+    normalized = batch["normalized"]
+    expected_batches.append({"unit": artifact["unit"],
+                             "patterns": normalized.get("patterns", []) + normalized.get("secondary_patterns", []),
+                             "dispositions": normalized["dispositions"],
+                             "limitations": batch["base"].get("limitations", [])})
+  require(synthesis.get("batches") == expected_batches, "synthesis packet differs from report-writer outputs")
+  old_result = composition_writer(manifest["final_artifact"], run, cache, "final artifact", expected_session="cross-session")
+  composition_require_reads([old_result["writer_agent"]], [synthesis_path, tracking_context_path], "final artifact")
+  partial = old_result["report"]
+  require(partial.get("status") == "partial", "final artifact must preserve the partial report boundary")
+  writer_artifacts.append({"unit": "cross-session", "report_path": str(old_result["target"]),
+                           "writer": old_result["agent"]["path"]})
+  require(partial_path == old_result["target"], "partial_report does not match final artifact")
+  semantic = manifest["semantic_artifacts"]
+  remaining_path = composition_path(run, semantic["remaining"], "remaining")
+  remaining = load(remaining_path)
+  old_ids = {entry.get("id") for entry in partial.get("dispositions", [])}
+  packet_patterns = [pattern for batch in expected_batches for pattern in batch["patterns"]]
+  packet_dispositions = [entry for batch in expected_batches for entry in batch["dispositions"]]
+  pending = []
+  for pattern in packet_patterns:
+    pending_ids = [key for key in pattern.get("source_finding_ids", []) if key not in old_ids]
+    if pending_ids:
+      pending.append({**copy.deepcopy(pattern), "pending_source_ids": pending_ids})
+  pending_rejections = [entry for entry in packet_dispositions if entry.get("id") not in old_ids and entry.get("verdict") == "rejected"]
+  expected_remaining = {"existing_patterns": partial.get("patterns", []),
+                        "existing_secondary_patterns": partial.get("secondary_patterns", []),
+                        "pending_candidates": pending, "pending_prior_rejections": pending_rejections,
+                        "all_source_ids": [entry.get("id") for entry in packet_dispositions]}
+  require(remaining == expected_remaining, "remaining candidate packet does not match the source chain")
+  decision_artifacts = semantic.get("decision_artifacts")
+  require(isinstance(decision_artifacts, list) and [x.get("unit") for x in decision_artifacts] == [f"cross-decide-{i:02d}" for i in range(1, 7)],
+          "decision artifacts must contain cross-decide-01..06")
+  decisions = []
+  for index, artifact in enumerate(decision_artifacts):
+    input_path = composition_path(run, artifact.get("input_path"), artifact["unit"] + " input")
+    output = composition_writer(artifact, run, cache, artifact["unit"])
+    composition_require_reads([output["writer_agent"]], [input_path], artifact["unit"])
+    decision_input = load(input_path)
+    start = index * 70
+    stop = min(len(pending), start + 70)
+    expected_input = {"unit": artifact["unit"], "existing_patterns": partial.get("patterns", []),
+                      "existing_secondary_patterns": partial.get("secondary_patterns", []),
+                      "candidates": pending[start:stop]}
+    require(decision_input == expected_input, artifact["unit"] + " input differs from remaining packet")
+    report = output["report"]
+    require(report.get("status") == "complete" and {row.get("id") for row in report.get("decisions", [])} ==
+            {row.get("id") for row in decision_input["candidates"]}, artifact["unit"] + " decisions are incomplete")
+    require(all(isinstance(row.get("reason"), str) and row["reason"].strip() for row in report["decisions"]),
+            artifact["unit"] + " decision reason missing")
+    decisions.append({"artifact": artifact, "input": decision_input, "report": report, "writer": output})
+    writer_artifacts.append({"unit": artifact["unit"], "report_path": str(output["target"]), "writer": output["agent"]["path"]})
+  taxonomy_input_path = composition_path(run, semantic["taxonomy_input"], "taxonomy input")
+  taxonomy_artifact = semantic["taxonomy_artifact"]
+  taxonomy_output = composition_writer(taxonomy_artifact, run, cache, "taxonomy")
+  composition_require_reads([taxonomy_output["writer_agent"]], [taxonomy_input_path], "taxonomy")
+  groups = []
+  for decision in decisions:
+    for row in decision["report"].get("new_groups", []):
+      groups.append({"key": f"G{len(groups) + 1:03d}", "unit": decision["artifact"]["unit"], **copy.deepcopy(row)})
+  taxonomy_input = load(taxonomy_input_path)
+  expected_taxonomy_input = {"existing_patterns": partial.get("patterns", []),
+                             "existing_secondary_patterns": partial.get("secondary_patterns", []), "groups": groups}
+  require(taxonomy_input == expected_taxonomy_input, "taxonomy input differs from decision outputs")
+  taxonomy = taxonomy_output["report"]
+  require(taxonomy.get("status") == "complete" and isinstance(taxonomy.get("mapping"), list) and isinstance(taxonomy.get("definitions"), list),
+          "taxonomy report is incomplete")
+  mapping = taxonomy_mapping_by_key(taxonomy_input["groups"], taxonomy["mapping"])
+  targets = {row.get("target") for row in mapping.values()}
+  require(all(isinstance(target, str) and target for target in targets), "taxonomy mapping has an invalid target")
+  require({row.get("target") for row in taxonomy["definitions"]} == targets, "taxonomy definitions do not cover mapping targets")
+  writer_artifacts.append({"unit": "cross-taxonomy", "report_path": str(taxonomy_output["target"]), "writer": taxonomy_output["agent"]["path"]})
+  transfer_path = composition_path(run, semantic["tracking_transfer"], "tracking transfer")
+  transfer = load(transfer_path)
+  expected_tracking = []
+  for path in source_reports:
+    for observation in load(path).get("tracking_observations") or []:
+      row = copy.deepcopy(observation)
+      row.pop("events", None)
+      expected_tracking.append(row)
+  inputs, problems = accounting_inputs({"input_reports": [str(path) for path in source_reports]})
+  require(not problems, "; ".join(problems))
+  expected_destinations = []
+  for key, entry in inputs.items():
+    row = {"observation_key": key, "disposition": "kept"}
+    if len(entry["sources"]) > 1:
+      row.update({"disposition": "merged", "merged_into": key,
+                  "merged_from": [{"unit": unit, "issue_id": issue} for unit, issue in sorted(entry["sources"])]})
+    expected_destinations.append(row)
+  require(transfer == {"tracking_observations": expected_tracking, "tracking_dispositions": expected_destinations},
+          "tracking transfer differs from source evidence")
+  return {"manifest": manifest, "manifest_path": manifest_path, "run": run, "plan": plan, "canonical": canonical,
+          "partial": partial, "partial_path": partial_path, "output_path": output_path, "source_reports": source_reports,
+          "source_records": source_records, "source_ids": source_ids, "packet": synthesis, "batches": batches,
+          "remaining": remaining, "decisions": decisions, "taxonomy_input": taxonomy_input, "taxonomy": taxonomy,
+          "transfer": transfer, "writer_artifacts": writer_artifacts, "cache": cache}
+
+
+def taxonomy_mapping_by_key(groups, mapping):
+  require(isinstance(groups, list) and isinstance(mapping, list), "taxonomy mapping must be arrays")
+  group_keys = [group.get("key") for group in groups]
+  map_keys = [row.get("key") for row in mapping]
+  require(all(isinstance(key, str) and key for key in group_keys + map_keys), "taxonomy mapping keys must be nonempty strings")
+  require(len(group_keys) == len(set(group_keys)), "taxonomy input has duplicate group key")
+  require(len(map_keys) == len(set(map_keys)), "taxonomy mapping has duplicate key")
+  require(set(map_keys) == set(group_keys), "taxonomy mapping has missing or unknown key")
+  return {row["key"]: row for row in mapping}
+
+
+def composition_output(chain):
+  manifest = chain["manifest"]
+  partial = chain["partial"]
+  source_records = {record["id"]: record for record in chain["source_records"]}
+  source_ids = list(source_records)
+  old_patterns = partial.get("patterns", [])
+  old_secondary = partial.get("secondary_patterns", [])
+  groups = {entry["id"]: copy.deepcopy(entry) for entry in old_patterns + old_secondary}
+  refs = {}
+  for group in old_patterns + old_secondary:
+    refs.setdefault(group["id"], set()).update(group["source_finding_ids"])
+  mapping_by_key = taxonomy_mapping_by_key(chain["taxonomy_input"]["groups"], chain["taxonomy"]["mapping"])
+  labels = {(group["unit"], group["target"]): mapping_by_key[group["key"]]["target"]
+            for group in chain["taxonomy_input"]["groups"]}
+  for definition in chain["taxonomy"]["definitions"]:
+    groups[definition["target"]] = copy.deepcopy(definition)
+  decisions = {entry["id"]: copy.deepcopy(entry) for entry in partial.get("dispositions", [])}
+  for decision in chain["decisions"]:
+    by_id = {candidate["id"]: candidate for candidate in decision["input"]["candidates"]}
+    for row in decision["report"]["decisions"]:
+      candidate = by_id[row["id"]]
+      ids = candidate["pending_source_ids"]
+      if row["verdict"] == "rejected":
+        for record_id in ids:
+          decisions[record_id] = {"id": record_id, "verdict": "rejected", "reason": row["reason"]}
+      else:
+        target = row["target"] if row["verdict"] == "merge_existing" else labels.get((decision["artifact"]["unit"], row["target"]))
+        require(target in groups, "decision target is not in taxonomy output")
+        refs.setdefault(target, set()).update(ids)
+        for record_id in ids:
+          decisions[record_id] = {"id": record_id, "verdict": "merged", "reason": row["reason"]}
+  for row in chain["remaining"]["pending_prior_rejections"]:
+    decisions[row["id"]] = copy.deepcopy(row)
+  require(set(decisions) == set(source_ids), "final composition does not account for every source id")
+  retained = set().union(*refs.values()) if refs else set()
+  for record_id in retained:
+    if decisions[record_id]["verdict"] == "rejected":
+      decisions[record_id] = {"id": record_id, "verdict": "merged",
+                              "reason": "同一來源仍有已保留候選；部分候選拒絕不刪除其餘獨立問題。"}
+  issues = {issue["id"]: issue for issue in load(chain["run"] / "tracking-context.json").get("issues", [])}
+  patterns, secondary = [], []
+  for target, ids in refs.items():
+    base = copy.deepcopy(groups[target])
+    source = [source_records[record_id] for record_id in sorted(ids)]
+    evidence = []
+    for record in source:
+      for entry in record.get("evidence", []):
+        if entry not in evidence:
+          evidence.append(copy.deepcopy(entry))
+    sessions = sorted({entry["session"] for entry in evidence})
+    matched = issues.get(base.get("matched_issue_id"))
+    matched = matched if matched and not matched.get("decision") else None
+    historical = matched.get("source_sessions", []) if matched else []
+    eligible = target.startswith("P") or len(set(sessions) | set(historical)) >= 4
+    base.update({"source_finding_ids": sorted(ids), "source_sessions": sessions, "evidence": evidence,
+                 "counterevidence": [{"source_record_id": record["id"], "value": record["counterevidence"]}
+                                      for record in source if record.get("counterevidence")],
+                 "impact": base.get("impact", "範圍與實際影響仍待查核；原始來源反證與限制逐筆保留。"),
+                 "needs_current_check": True})
+    if matched:
+      base["matched_issue_title"] = matched["title"]
+    else:
+      base["matched_issue_id"] = None
+      base["matched_issue_title"] = None
+    base.pop("target", None)
+    if eligible:
+      base["id"] = f"P{len(patterns) + 1}"
+      patterns.append(base)
+    else:
+      base["id"] = f"S{len(secondary) + 1}"
+      secondary.append(base)
+  return {"session": "cross-session", "unit": "cross-session", "status": "complete",
+          "coverage": copy.deepcopy(partial.get("coverage", {"source_records": len(source_ids)})),
+          "patterns": patterns, "secondary_patterns": secondary,
+          "dispositions": [decisions[record_id] for record_id in source_ids],
+          "tracking_observations": copy.deepcopy(chain["transfer"]["tracking_observations"]),
+          "tracking_dispositions": copy.deepcopy(chain["transfer"]["tracking_dispositions"]),
+          "limitations": ["本檔由固定 composition manifest 以真實 agent Write/Edit 軌跡與封閉組裝規則重建；原 partial report 保留未覆寫。",
+                          f"本次機械驗收覆蓋 {len(source_ids)} 筆 source records 與 {len(chain['transfer']['tracking_observations'])} 筆 tracking observations；只證來源鏈與結構完整，不宣稱語意正確。",
+                          "semantic decision、taxonomy 與 current-state 判斷仍須由 verify-source / verify-current 驗收。"],
+          "assembly_provenance": {"kind": "deterministic-cross-composition", "manifest_path": str(chain["manifest_path"]),
+                                  "partial_report": str(chain["partial_path"]),
+                                  "source_record_count": len(source_ids),
+                                  "tracking_observation_count": len(chain["transfer"]["tracking_observations"]),
+                                  "writer_artifacts": chain["writer_artifacts"],
+                                  "tracking_policy": "source observations copied without model-written events; event identity is re-derived by add_event_evidence"}}
+
+
+def composition_check(manifest_path, write=False, expected_output=None):
+  chain = composition_manifest_chain(manifest_path)
+  raw = composition_output(chain)
+  final_item = {"session": "cross-session", "unit": "cross-session",
+                "input_reports": [str(path) for path in chain["source_reports"]]}
+  normalized = check_report(raw, final_item, "cross", chain["canonical"])
+  add_event_evidence(normalized, final_item, chain["plan"], chain["run"])
+  check_tracking_accounting(normalized, final_item)
+  output_path = chain["output_path"]
+  validated_path = chain["run"] / "validated" / "cross-session.json"
+  if expected_output is not None:
+    require(output_path == Path(expected_output).resolve(), "composition output path changed")
+    require(output_path.is_file() and load(output_path) == normalized, "composition output changed since validation")
+    require(validated_path.is_file() and load(validated_path) == normalized, "validated composition changed since validation")
+  if write:
+    require(not output_path.exists() and not validated_path.exists() and not (chain["run"] / "composition-validation.json").exists(),
+            "composition output already exists; refusing overwrite")
+    save(output_path, normalized)
+    save(validated_path, normalized)
+    validation = {"schema_version": 1, "run_id": chain["plan"]["run_id"], "stage": "cross", "pass": True,
+                  "composition_manifest": str(chain["manifest_path"]), "manifest": chain["manifest"],
+                  "output_report": str(output_path), "validated_path": str(validated_path),
+                  "counts": {"source_records": len(chain["source_ids"]), "patterns": len(normalized["patterns"]),
+                             "secondary_patterns": len(normalized["secondary_patterns"]),
+                             "dispositions": len(normalized["dispositions"]),
+                             "tracking_observations": len(normalized["tracking_observations"]),
+                             "tracking_dispositions": len(normalized["tracking_dispositions"])}}
+    save(chain["run"] / "composition-validation.json", validation)
+  return {"pass": True, "manifest_path": str(chain["manifest_path"]), "output_report": str(output_path),
+          "validated_path": str(validated_path), "counts": {"source_records": len(chain["source_ids"]),
+          "patterns": len(normalized["patterns"]), "secondary_patterns": len(normalized["secondary_patterns"]),
+          "dispositions": len(normalized["dispositions"]), "tracking_observations": len(normalized["tracking_observations"]),
+          "tracking_dispositions": len(normalized["tracking_dispositions"])}, "check_only": not write}
+
+
+def prior_composition(plan, run):
+  path = run / "composition-validation.json"
+  result = load(path)
+  require(result.get("schema_version") == 1 and result.get("run_id") == plan["run_id"] and result.get("stage") == "cross"
+          and result.get("pass") is True, "composition validation is missing or failed")
+  manifest_path = Path(result.get("composition_manifest", "")).resolve()
+  manifest, manifest_run, manifest_plan, _ = composition_context(manifest_path)
+  require(manifest_run == run and manifest_plan == plan and result.get("manifest") == manifest,
+          "composition manifest changed since validation")
+  composition_check(manifest_path, expected_output=result["output_report"])
+  return result
+
+
+def composition_validation_summary(plan, run):
+  result = prior_composition(plan, run)
+  return {"pass": True, "validation_path": str(run / "composition-validation.json"),
+          "output_report": result["output_report"], "validated_path": result["validated_path"], "counts": result["counts"]}
+
+
+def compose_cross(args):
+  return composition_check(args.manifest, write=not args.check_only)
 
 
 def canonical_strings(text, depth=0):
@@ -1333,6 +1798,8 @@ def check_tracking_accounting(report, item):
 def verify_verdicts(report, item, canonical):
   cross = load(item["input_reports"][0])
   ids = {r["id"] for r in cross.get("patterns", [])}
+  allowed_ids = set(item.get("pattern_ids", ids))
+  require(allowed_ids <= ids, "critic part references unknown pattern")
   verdicts = report.get("verdicts", report.get("findings"))
   require(isinstance(verdicts, list), "verdicts required")
   found = []
@@ -1352,7 +1819,7 @@ def verify_verdicts(report, item, canonical):
         normalized.append(entry)
     verdict["evidence"] = normalized
     found.append(verdict["pattern_id"])
-  require(len(found) == len(ids) and set(found) == ids, "missing or duplicate critic verdicts")
+  require(len(found) == len(allowed_ids) and set(found) == allowed_ids, "missing or duplicate critic part verdicts")
 
 
 def check_tracking_shape(report):
@@ -1419,9 +1886,24 @@ def check_report(report, item, stage, canonical):
   return normalized
 
 
+def critic_input_paths(item):
+  if not item.get("slice_path"):
+    return item["input_reports"]
+  cross = load(item["input_reports"][0])
+  assigned = set(item["pattern_ids"])
+  selected = [row for row in cross["patterns"] if row["id"] in assigned]
+  index = [{"id": row["id"], "observation": row.get("observation"),
+            "sessions": len(row.get("source_sessions", [])),
+            "matched_issue_id": row.get("matched_issue_id"),
+            "current_check_paths": row.get("current_check_paths", [])} for row in cross["patterns"]]
+  require(load(item["slice_path"])["patterns"] == selected, "critic slice differs from assigned full patterns")
+  require(load(item["index_path"]) == index, "critic index differs from full primary index")
+  return [item["slice_path"], item["index_path"]]
+
+
 def critic_read_errors(agent, item, report, canonical, plan):
   errors = []
-  for path in item["input_reports"]:
+  for path in critic_input_paths(item):
     required = {n for n, line in enumerate(Path(path).read_text().split("\n"), 1) if line.strip()}
     if required - read_lines(agent, path):
       errors.append("critic did not read the cross-session report")
@@ -1439,15 +1921,113 @@ def critic_read_errors(agent, item, report, canonical, plan):
         quotes = {quote, esc1, esc2}
         if not any(op["name"] == "Read" and operation_path(op) == path and any(q in op["text"] for q in quotes) for op in agent["operations"]):
           errors.append(f"critic source quote lacks its own successful Read evidence (pattern={verdict.get('pattern_id')}, session={evidence.get('session')}, source_line={evidence.get('source_line')}, quote={quote!r})")
-    if item["unit"] == "verify-current" and verdict["verdict"] != "UNCERTAIN":
+    if (item["unit"] == "verify-current" or re.fullmatch(r"verify-current-p\d+", item["unit"])) and verdict["verdict"] != "UNCERTAIN":
       current = verdict.get("current_evidence", [])
       if not current:
         errors.append(f"current-state verdict lacks current evidence (pattern={verdict.get('pattern_id')})")
       for evidence in current:
         path = Path(evidence.get("path", "")).expanduser().resolve()
-        if not any(op["name"] == "Read" and operation_path(op) == path and op["text"].strip() for op in agent["operations"]):
-          errors.append(f"current-state evidence lacks successful Read (pattern={verdict.get('pattern_id')}, path={path})")
+        line = evidence.get("line")
+        if not path.is_file() or not isinstance(line, int) or line not in read_lines(agent, path):
+          errors.append(f"current-state evidence lacks matching successful Read (pattern={verdict.get('pattern_id')}, path={path})")
   return errors
+
+
+def verify_parts_context(manifest_path, run):
+  path = Path(manifest_path).expanduser().resolve()
+  require(path.is_file() and path.is_relative_to(run), "critic parts manifest must be inside run")
+  data = load(path)
+  require(isinstance(data, dict) and data.get("schema_version") == 1 and data.get("kind") == "verify-current-parts",
+          "unsupported critic parts manifest")
+  require(data.get("run_id") == run.name and data.get("unit") == "verify-current", "critic parts identity mismatch")
+  parts = data.get("parts")
+  require(isinstance(parts, list) and len(parts) >= 2, "critic parts manifest requires at least two parts")
+  all_ids = []
+  normalized = []
+  seen_units = set()
+  for part in parts:
+    require(isinstance(part, dict) and isinstance(part.get("unit"), str) and re.fullmatch(r"verify-current-p\d+", part["unit"]),
+            "invalid critic part unit")
+    require(part["unit"] not in seen_units, "duplicate critic part unit")
+    seen_units.add(part["unit"])
+    report_path = Path(part.get("report_path", "")).expanduser().resolve()
+    require(report_path.is_file() and report_path.is_relative_to(run), "critic part report outside run or missing")
+    transcript_dirs = composition_transcript_dirs(part.get("transcript_dirs"), part["unit"])
+    pattern_ids = part.get("pattern_ids")
+    require(isinstance(pattern_ids, list) and all(isinstance(key, str) for key in pattern_ids),
+            "critic part pattern_ids must be strings")
+    require(not set(pattern_ids) & set(all_ids), "critic part pattern ids overlap")
+    all_ids.extend(pattern_ids)
+    slice_fields = {}
+    if part.get("slice_path"):
+      for field in ("slice_path", "index_path"):
+        value = Path(part.get(field, "")).expanduser().resolve()
+        require(value.is_file() and value.is_relative_to(run), "critic " + field + " outside run or missing")
+        slice_fields[field] = str(value)
+    normalized.append({"unit": part["unit"], "report_path": report_path,
+                       "transcript_dirs": transcript_dirs, "pattern_ids": pattern_ids, **slice_fields})
+  cross_path = validated_path(run, "cross-session")
+  require(cross_path.is_file(), "validated composed cross report missing")
+  cross = load(cross_path)
+  expected = {row.get("id") for row in cross.get("patterns", [])}
+  require(set(all_ids) == expected and len(all_ids) == len(expected), "critic parts must cover every pattern exactly once")
+  return {"manifest": data, "parts": normalized, "cross": cross, "path": path}
+
+
+def validate_verify_parts(args, plan, run, canonical):
+  source_validation = prior_validation(plan, run, "verify", must_pass=False)
+  require(any(unit.get("unit") == "verify-source" and unit.get("pass") is True for unit in source_validation.get("units", [])),
+          "verify-source must pass before verify-current parts")
+  context = verify_parts_context(args.critic_parts, run)
+  units = []
+  union = []
+  for part in context["parts"]:
+    agents = transcript_agents(part["transcript_dirs"])
+    item = {"session": "cross-session", "unit": part["unit"], "report_path": str(part["report_path"]),
+            "input_reports": [str(validated_path(run, "cross-session"))]}
+    result = {"unit": part["unit"], "pass": False, "errors": []}
+    try:
+      agent, target, original = report_writer(agents, item)
+      require(target == part["report_path"], "critic part report path differs from manifest")
+      item.update({key: part[key] for key in ("slice_path", "index_path", "pattern_ids") if key in part})
+      report = check_report(original, item, "verify", canonical)
+      verdicts = report.get("verdicts", report.get("findings", []))
+      require({row.get("pattern_id") for row in verdicts} == set(part["pattern_ids"]), "critic part verdicts differ from assigned patterns")
+      result["errors"].extend(critic_read_errors(agent, item, report, canonical, plan))
+      require(not result["errors"], "; ".join(result["errors"]))
+      destination = validated_path(run, part["unit"])
+      save(destination, report)
+      result.update({"pass": True, "agent": agent["path"], "actual_report_path": str(target),
+                     "validated_path": str(destination), "original_report": original, "report": report})
+      union.extend(verdicts)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+      result["errors"].append(str(error))
+    units.append(result)
+  require(all(row["pass"] for row in units), "critic part validation failed")
+  combined = {"session": "cross-session", "unit": "verify-current", "status": "complete", "verdicts": union}
+  check_report(combined, {"session": "cross-session", "unit": "verify-current", "input_reports": [str(validated_path(run, "cross-session"))]}, "verify", canonical)
+  destination = validated_path(run, "verify-current")
+  save(destination, combined)
+  validation = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify-current-parts", "pass": True,
+                "binding": binding(plan, run), "composition_manifest": str(context["path"]),
+                "cross_validation": str(run / "composition-validation.json"), "units": units,
+                "counts": {"expected": len(units), "passed": len(units), "failed": 0},
+                "reusable_units": [row["unit"] for row in units], "validated_path": str(destination), "report": combined}
+  validation["manifest"] = context["manifest"]
+  save(run / "validation-verify-current-parts.json", validation)
+  source_unit = next(unit for unit in source_validation["units"] if unit["unit"] == "verify-source" and unit["pass"])
+  current_unit = {"unit": "verify-current", "pass": True, "errors": [],
+                  "actual_report_path": str(destination), "validated_path": str(destination),
+                  "original_report": combined, "report": combined,
+                  "composition_validation": str(run / "validation-verify-current-parts.json")}
+  formal = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify", "pass": True,
+            "binding": binding(plan, run), "units": [source_unit, current_unit],
+            "counts": {"expected": 2, "passed": 2, "failed": 0, "auto_corrected": 0},
+            "reusable_units": ["verify-source", "verify-current"]}
+  save(run / "validation-verify.json", formal)
+  return {"pass": True, "validation_path": str(run / "validation-verify-current-parts.json"),
+          "validated_path": str(destination), "counts": validation["counts"],
+          "units": [{"unit": row["unit"], "pass": row["pass"], "errors": row["errors"]} for row in units]}
 
 
 CHANGE_KINDS = ("rule", "skill", "command", "hook", "script")
@@ -1729,9 +2309,13 @@ def add_event_evidence(report, item, plan, run):
 
 def validate(args):
   plan, run = plan_context(args.plan)
-  items = stage_items(plan, run, args.stage)
-  contract = binding(plan, run)
   canonical = load(run / "canonical.json")
+  contract = binding(plan, run)
+  if args.stage == "verify" and args.critic_parts:
+    prior_composition(plan, run)
+    prior_validation(plan, run, "verify", must_pass=False)
+    return validate_verify_parts(args, plan, run, canonical)
+  items = stage_items(plan, run, args.stage)
   agents = transcript_agents(args.transcript_dir)
   previous = None
   if (run / f"validation-{args.stage}.json").exists():
@@ -1838,8 +2422,13 @@ def finish(args):
   plan, run = plan_context(args.plan)
   unresolved_unknown = [u for u in plan.get("unknown", []) if not is_local_command_only_entry(u)]
   require(not any(s.get("limitations") for s in plan["sessions"]) and not unresolved_unknown, "source parsing or classification gaps prevent complete coverage")
-  for stage in STAGES:
-    prior_validation(plan, run, stage)
+  composition = composition_validation_summary(plan, run) if (run / "composition-validation.json").exists() else None
+  if composition is None:
+    for stage in STAGES:
+      prior_validation(plan, run, stage)
+  else:
+    for stage in ("reading", "session-merge"):
+      prior_validation(plan, run, stage)
   critics = prior_validation(plan, run, "verify")
   require({u["unit"] for u in critics["units"] if u["pass"]} == {"verify-source", "verify-current"}, "both critics must pass")
   report = run / "final.md"
@@ -1890,6 +2479,10 @@ def parser():
       sub.add_argument("--stage", required=True, choices=STAGES)
     if name == "validate":
       sub.add_argument("--transcript-dir", action="append", default=[])
+      sub.add_argument("--critic-parts")
+  compose = commands.add_parser("compose-cross")
+  compose.add_argument("--manifest", required=True)
+  compose.add_argument("--check-only", action="store_true")
   event = commands.add_parser("event-evidence")
   event.add_argument("--session-file", required=True)
   event.add_argument("--source-line", type=int)
@@ -1915,7 +2508,7 @@ def main():
     args = parser().parse_args()
     handlers = {"inventory": inventory, "prepare": prepare, "stage-args": stage_args,
                 "validate": validate, "usage": usage, "finish": finish,
-                "event-evidence": event_evidence_command}
+                "event-evidence": event_evidence_command, "compose-cross": compose_cross}
     result = handlers[args.command](args)
     print(json.dumps(result, ensure_ascii=False))
     return 2 if result.get("pass") is False else 0

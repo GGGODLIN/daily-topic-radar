@@ -2,6 +2,7 @@
 """Acceptance tests at the local retrospective CLI seam; fixtures never call agents."""
 
 import copy
+import importlib.util
 import json
 import subprocess
 import sys
@@ -87,6 +88,109 @@ class RetroCLI(unittest.TestCase):
     for path in transcripts:
       args += ["--transcript-dir", path]
     return self.cli(*args, code=code)
+
+  def retro(self):
+    spec = importlib.util.spec_from_file_location("session_retro_fixture", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+  def composition_agent(self, name, reads, report_path, report, write=True):
+    folder = self.root / name
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for index, path in enumerate(reads):
+      tool_id = f"read-{name}-{index}"
+      content = path.read_text(encoding="utf-8")
+      rows.append(assistant([{"type": "tool_use", "id": tool_id, "name": "Read",
+                             "input": {"file_path": str(path)}}]))
+      rows.append(user([{"type": "tool_result", "tool_use_id": tool_id,
+                         "content": "\n".join(f"{line}\t{text}" for line, text in enumerate(content.split("\n"), 1))}]))
+    dump(report_path, report)
+    if write:
+      rows.append(assistant([{"type": "tool_use", "id": f"write-{name}", "name": "Write",
+                             "input": {"file_path": str(report_path), "content": json.dumps(report)}}]))
+      rows.append(user([{"type": "tool_result", "tool_use_id": f"write-{name}", "content": "created"}]))
+    (folder / "agent-fixture.jsonl").write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
+    return folder
+
+  def composition_fixture(self, analyst_reads=True, with_pattern=False):
+    retro = self.retro()
+    run = self.root / "composition-run"
+    (run / "reports").mkdir(parents=True)
+    (run / "validated").mkdir()
+    plan = {"schema_version": 1, "run_id": run.name, "scope": "all", "sessions": [],
+            "models": {}, "concurrency": 1, "focus": "test", "depth": "full",
+            "window_start": RECENT, "cutoff": NOW, "references": [], "effort": "high"}
+    dump(run / "plan.json", plan)
+    dump(run / "canonical.json", {"human": [{"source_line": 1, "event_time": RECENT, "scope": "window", "text": "evidence"}]})
+    binding = {"plan": plan}
+    for stage in ("reading", "session-merge"):
+      dump(run / f"validation-{stage}.json", {"schema_version": 1, "run_id": run.name,
+        "stage": stage, "pass": True, "binding": binding, "units": [],
+        "counts": {"expected": 0, "passed": 0, "failed": 0}, "reusable_units": []})
+    source_path = run / "reports" / "source.json"
+    source = {"unit": "source", "session": "cross-session", "status": "complete",
+              "findings": [], "patterns": [], "secondary_patterns": [], "dispositions": []}
+    if with_pattern:
+      source["patterns"] = [{"id": "P1", "source_finding_ids": [], "evidence": [], "counterevidence": "bounded"}]
+    dump(source_path, source)
+    partition_path = run / "cross-partition.json"
+    dump(partition_path, {"plan": str(run / "plan.json"), "source_count": 1,
+                          "items": [{"unit": "cross-b01", "input_reports": [str(source_path)], "records": 0}]})
+    tracking_path = run / "tracking-context.json"
+    dump(tracking_path, {})
+    analyst_path = run / "reports" / "cross-b01.json"
+    analyst_report = {"unit": "cross-b01", "session": "cross-session", "status": "complete",
+                      "patterns": [], "secondary_patterns": [], "dispositions": []}
+    if with_pattern:
+      analyst_report["patterns"] = [{"id": "cross-b01-P1", "source_finding_ids": [], "evidence": [], "counterevidence": "bounded"}]
+    analyst_dir = self.composition_agent("analyst-writer", [partition_path, tracking_path, source_path] if analyst_reads else [], analyst_path, analyst_report)
+    if not analyst_reads:
+      reader_dir = self.composition_agent("analyst-reader", [partition_path, tracking_path, source_path], analyst_path, analyst_report, write=False)
+    else:
+      reader_dir = None
+    synthesis_path = run / "cross-synthesis-packet.json"
+    dump(synthesis_path, {"session": "cross-session", "purpose": "no final approval", "batches": [{
+      "unit": "cross-b01", "patterns": analyst_report["patterns"], "dispositions": [], "limitations": []}]})
+    partial_path = run / "reports" / "cross-session.json"
+    partial = {"unit": "cross-session", "session": "cross-session", "status": "partial",
+               "patterns": [], "secondary_patterns": [], "dispositions": [],
+               "tracking_observations": [], "tracking_dispositions": []}
+    final_dir = self.composition_agent("final-writer", [synthesis_path, tracking_path], partial_path, partial)
+    remaining_path = run / "cross-final-remaining.json"
+    dump(remaining_path, {"existing_patterns": [], "existing_secondary_patterns": [],
+      "pending_candidates": [], "pending_prior_rejections": [], "all_source_ids": []})
+    decision_artifacts = []
+    for index in range(1, 7):
+      unit = f"cross-decide-{index:02d}"
+      input_path = run / f"{unit}-input.json"
+      report_path = run / "reports" / f"{unit}.json"
+      dump(input_path, {"unit": unit, "existing_patterns": [], "existing_secondary_patterns": [], "candidates": []})
+      decision_report = {"unit": unit, "status": "complete", "decisions": [], "new_groups": [], "limitations": []}
+      directory = self.composition_agent(f"{unit}-writer", [input_path], report_path, decision_report)
+      decision_artifacts.append({"unit": unit, "input_path": str(input_path), "report_path": str(report_path),
+                                 "transcript_dirs": [str(directory)]})
+    taxonomy_input_path = run / "cross-taxonomy-input.json"
+    dump(taxonomy_input_path, {"existing_patterns": [], "existing_secondary_patterns": [], "groups": []})
+    taxonomy_path = run / "reports" / "cross-taxonomy.json"
+    taxonomy_report = {"unit": "cross-taxonomy", "status": "complete", "mapping": [], "definitions": [], "limitations": []}
+    taxonomy_dir = self.composition_agent("taxonomy-writer", [taxonomy_input_path], taxonomy_path, taxonomy_report)
+    transfer_path = run / "cross-tracking-transfer.json"
+    dump(transfer_path, {"tracking_observations": [], "tracking_dispositions": []})
+    manifest = {"schema_version": 1, "kind": "cross-composition", "run_id": run.name, "run_path": str(run),
+      "plan_path": str(run / "plan.json"), "source_partition": str(partition_path), "tracking_context": str(tracking_path),
+      "partial_report": str(partial_path), "output_report": "reports/cross-composed.json",
+      "analyst_artifacts": [{"unit": "cross-b01", "input_reports": [str(source_path)],
+        "input_packets": [str(partition_path), str(tracking_path)], "report_path": str(analyst_path),
+        "transcript_dirs": [str(analyst_dir)] + ([str(reader_dir)] if reader_dir else [])}],
+      "semantic_artifacts": {"synthesis_packet": str(synthesis_path), "remaining": str(remaining_path),
+        "taxonomy_input": str(taxonomy_input_path), "taxonomy_artifact": {"unit": "cross-taxonomy", "report_path": str(taxonomy_path), "transcript_dirs": [str(taxonomy_dir)]},
+        "decision_artifacts": decision_artifacts, "tracking_transfer": str(transfer_path)},
+      "final_artifact": {"unit": "cross-session", "report_path": str(partial_path), "transcript_dirs": [str(final_dir)]}}
+    manifest_path = run / "composition-manifest.json"
+    dump(manifest_path, manifest)
+    return retro, run, manifest_path, plan
 
   def report(self, item, findings=None, **extra):
     return {"session": item.get("session", "cross-session"), "unit": item["unit"], "status": "complete",
@@ -1580,6 +1684,168 @@ class EventEvidenceCLI(unittest.TestCase):
                                ({"id": "c", "kind": "hook", "effective_time": "tomorrow"}, 1, "timestamp"),
                                (self.change("hook"), None, "source-line")):
       self.assertIn(word, self.judge(path, change, line=line, code=2)["error"])
+
+  def test_cross_composition_manifest_check_requires_a_real_source_chain(self):
+    manifest = self.root / "composition.json"
+    dump(manifest, {"schema_version": 1, "kind": "cross-composition", "run_id": "run",
+                    "source_partition": "partition.json", "analyst_artifacts": [],
+                    "semantic_artifacts": [], "transcript_dirs": []})
+    result = subprocess.run([sys.executable, "-I", str(SCRIPT), "compose-cross", "--manifest", manifest, "--check-only"],
+                            text=True, capture_output=True)
+    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+    payload = json.loads(result.stdout)
+    self.assertIn("composition", payload["error"])
+    self.assertNotIn("invalid choice", payload["error"])
+
+  def test_cross_composition_rejects_a_report_without_a_matching_write_receipt(self):
+    manifest = self.root / "composition.json"
+    dump(manifest, {"schema_version": 1, "kind": "cross-composition", "run_id": "run",
+                    "source_partition": "partition.json", "analyst_artifacts": [],
+                    "semantic_artifacts": [], "transcript_dirs": []})
+    report = self.root / "forged.json"
+    dump(report, {"unit": "cross-b01", "session": "cross-session", "status": "complete"})
+    result = subprocess.run([sys.executable, "-I", str(SCRIPT), "compose-cross", "--manifest", manifest, "--check-only"],
+                            text=True, capture_output=True)
+    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+    self.assertIn("composition", json.loads(result.stdout)["error"])
+
+  def test_composition_reads_must_come_from_the_report_writer(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, _run, manifest, _plan = fixture.composition_fixture(analyst_reads=False)
+    with self.assertRaises(retro.Invalid) as error:
+      retro.composition_manifest_chain(manifest)
+    self.assertIn("did not fully read", str(error.exception))
+
+  def test_composition_verify_requires_two_critic_seats_and_uses_composed_cross(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, run, manifest, _plan = fixture.composition_fixture()
+    retro.composition_check(manifest, write=True)
+    plan_path = run / "plan.json"
+    verify = fixture.cli("stage-args", "--plan", plan_path, "--stage", "verify")
+    items = verify["items"]
+    self.assertEqual([item["input_reports"] for item in items], [[str(run / "validated" / "cross-session.json")]] * 2)
+    source_report = {"session": "cross-session", "unit": "verify-source", "status": "complete", "findings": []}
+    source_dir = fixture.composition_agent("verify-source", [run / "validated" / "cross-session.json"], run / "reports" / "verify-source.json", source_report)
+    fixture.validate(plan_path, "verify", [source_dir], code=2)
+    parts = []
+    for index, item in enumerate(items, 1):
+      unit = f"verify-current-p{index}"
+      report_path = run / "reports" / f"{unit}.json"
+      report = {"session": "cross-session", "unit": unit, "status": "complete", "findings": []}
+      directory = fixture.composition_agent(unit, [run / "validated" / "cross-session.json"], report_path, report)
+      parts.append({"unit": unit, "report_path": str(report_path), "transcript_dirs": [str(directory)], "pattern_ids": []})
+    parts_path = run / "verify-current-parts.json"
+    dump(parts_path, {"schema_version": 1, "kind": "verify-current-parts", "run_id": run.name,
+                      "unit": "verify-current", "parts": parts})
+    result = fixture.cli("validate", "--plan", plan_path, "--stage", "verify", "--critic-parts", parts_path)
+    self.assertTrue(result["pass"])
+    self.assertTrue((run / "validated" / "verify-current.json").is_file())
+    formal = json.loads((run / "validation-verify.json").read_text())
+    self.assertTrue(formal["pass"])
+    self.assertEqual({row["unit"] for row in formal["units"]}, {"verify-source", "verify-current"})
+    (run / "final.md").write_text("Fixture final report", encoding="utf-8")
+    self.assertEqual(fixture.cli("finish", "--plan", plan_path)["status"], "complete")
+    missing = json.loads(parts_path.read_text())
+    missing["parts"][0]["pattern_ids"] = ["missing-pattern"]
+    dump(parts_path, missing)
+    self.assertEqual(fixture.cli("validate", "--plan", plan_path, "--stage", "verify", "--critic-parts", parts_path, code=2)["pass"], False)
+    duplicate = json.loads(parts_path.read_text())
+    duplicate["parts"][0]["pattern_ids"] = ["duplicate-pattern"]
+    duplicate["parts"][1]["pattern_ids"] = ["duplicate-pattern"]
+    dump(parts_path, duplicate)
+    self.assertEqual(fixture.cli("validate", "--plan", plan_path, "--stage", "verify", "--critic-parts", parts_path, code=2)["pass"], False)
+    no_read = fixture.composition_agent("no-current-read", [], run / "reports" / "no-current-read.json",
+                                        {"session": "cross-session", "unit": "verify-current-p1", "status": "complete", "findings": []})
+    item = {"session": "cross-session", "unit": "verify-current-p1", "report_path": str(run / "reports" / "no-current-read.json"),
+            "input_reports": [str(run / "validated" / "cross-session.json")]}
+    self.assertIn("did not read", "; ".join(retro.critic_read_errors(retro.transcript_agents([no_read])[0], item, {"findings": []}, {}, {"sessions": []})))
+
+  def test_composition_critic_slice_and_index_match_full_report_and_require_own_reads(self):
+    retro = RetroCLI().retro()
+    run = self.root
+    cross = run / "cross.json"
+    slice_path = run / "slice.json"
+    index_path = run / "index.json"
+    patterns = [{"id": "P1", "observation": "first", "evidence": ["complete"]}, {"id": "P2", "observation": "second"}]
+    dump(cross, {"patterns": patterns})
+    dump(slice_path, {"patterns": patterns[:1]})
+    index = [{"id": x["id"], "observation": x["observation"], "sessions": 0, "matched_issue_id": None, "current_check_paths": []} for x in patterns]
+    dump(index_path, index)
+    item = {"unit": "verify-current-p1", "input_reports": [str(cross)], "pattern_ids": ["P1"], "slice_path": str(slice_path), "index_path": str(index_path)}
+    self.assertEqual(retro.critic_input_paths(item), [str(slice_path), str(index_path)])
+    writer = {"operations": [{"name": "Read", "input": {"file_path": str(path)}, "text": "\n".join(f"{n}\t{line}" for n, line in enumerate(path.read_text().split("\n"), 1))} for path in (slice_path, index_path)]}
+    self.assertEqual(retro.critic_read_errors(writer, item, {"findings": []}, {}, {"sessions": []}), [])
+    self.assertTrue(retro.critic_read_errors({"operations": []}, item, {"findings": []}, {}, {"sessions": []}))
+    dump(slice_path, {"patterns": [{"id": "P1", "observation": "first"}]})
+    with self.assertRaisesRegex(retro.Invalid, "slice differs"):
+      retro.critic_input_paths(item)
+    dump(slice_path, {"patterns": patterns[:1]})
+    dump(index_path, index[:1])
+    with self.assertRaisesRegex(retro.Invalid, "index differs"):
+      retro.critic_input_paths(item)
+
+  def test_composition_critic_parts_preserve_primary_and_current_read_boundaries(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, run, _manifest, _plan = fixture.composition_fixture()
+    cross_path = run / "validated" / "cross-session.json"
+    dump(cross_path, {"patterns": [{"id": "P1"}], "secondary_patterns": [{"id": "S1"}]})
+    current = run / "current.txt"
+    current.write_text("current guard\n", encoding="utf-8")
+    report = {"findings": [{"pattern_id": "P1", "verdict": "CONFIRMED",
+      "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}],
+      "current_evidence": [{"path": str(current), "line": 1, "observation": "guard"}]}]}
+    retro.verify_verdicts(report, {"input_reports": [str(cross_path)]}, {"human": [{"source_line": 1, "text": "evidence", "scope": "window", "event_time": RECENT}]})
+    document = run / "source.txt"
+    document.write_text("evidence\n", encoding="utf-8")
+    item = {"unit": "verify-current-p1", "input_reports": [str(cross_path)]}
+    plan = {"sessions": [{"session": "human", "document": str(document)}]}
+    def writer(paths):
+      return {"operations": [{"name": "Read", "input": {"file_path": str(path)}, "text": "\n".join(f"{i}\t{line}" for i, line in enumerate(path.read_text().split("\n"), 1))} for path in paths]}
+    own = writer([cross_path, document, current])
+    self.assertEqual(retro.critic_read_errors(own, item, report, {}, plan), [])
+    self.assertTrue(retro.critic_read_errors(writer([cross_path, document]), item, report, {}, plan))
+    current.write_text("changed guard\n", encoding="utf-8")
+    self.assertTrue(retro.critic_read_errors(own, item, report, {}, plan))
+    report["findings"][0]["current_evidence"] = []
+    self.assertTrue(retro.critic_read_errors(own, item, report, {}, plan))
+    part_path = run / "reports" / "part.json"
+    dump(part_path, {})
+    manifest = run / "parts.json"
+    part = {"unit": "verify-current-p1", "report_path": str(part_path), "transcript_dirs": [str(fixture.root / "analyst-writer")], "pattern_ids": ["P1"]}
+    dump(manifest, {"schema_version": 1, "kind": "verify-current-parts", "run_id": run.name, "unit": "verify-current", "parts": [part, {**part, "pattern_ids": []}]})
+    with self.assertRaisesRegex(retro.Invalid, "duplicate critic part unit"):
+      retro.verify_parts_context(manifest, run)
+
+  def test_composition_taxonomy_mapping_joins_by_key_and_rejects_duplicate_or_missing_keys(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, _run, manifest, _plan = fixture.composition_fixture()
+    chain = retro.composition_manifest_chain(manifest)
+    chain["source_records"] = [{"id": "source-1", "evidence": []}]
+    chain["partial"] = {"patterns": [], "secondary_patterns": [], "dispositions": []}
+    chain["remaining"] = {"pending_prior_rejections": []}
+    chain["taxonomy_input"] = {"groups": [
+      {"key": "G001", "unit": "cross-decide-01", "target": "group-one"},
+      {"key": "G002", "unit": "cross-decide-01", "target": "group-two"}]}
+    chain["taxonomy"] = {"mapping": [{"key": "G002", "target": "N2"}, {"key": "G001", "target": "N1"}],
+                           "definitions": [{"target": "N1", "observation": "one"}, {"target": "N2", "observation": "two"}]}
+    chain["decisions"] = [{"artifact": {"unit": "cross-decide-01"},
+      "input": {"candidates": [{"id": "candidate-1", "pending_source_ids": ["source-1"]}]},
+      "report": {"decisions": [{"id": "candidate-1", "verdict": "retain_new", "target": "group-one", "reason": "keep"}]}}]
+    chain["transfer"] = {"tracking_observations": [], "tracking_dispositions": []}
+    output = retro.composition_output(chain)
+    self.assertEqual(output["secondary_patterns"][0]["observation"], "one")
+    with self.assertRaises(retro.Invalid):
+      retro.taxonomy_mapping_by_key(chain["taxonomy_input"]["groups"], [{"key": "G001", "target": "N1"}, {"key": "G001", "target": "N2"}])
+    with self.assertRaises(retro.Invalid):
+      retro.taxonomy_mapping_by_key(chain["taxonomy_input"]["groups"], [{"key": "G001", "target": "N1"}])
 
 
 if __name__ == "__main__":
