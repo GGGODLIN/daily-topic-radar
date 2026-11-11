@@ -636,44 +636,84 @@ def validated_path(run, unit):
   return run / "validated" / (unit + ".json")
 
 
-def prior_verify_parts(plan, run):
+def verify_part_reuse(plan, run, context, unit):
+  require(unit.get("pass") is True, "verify-current part failed: " + unit.get("unit", "unknown"))
+  part = next((part for part in context["parts"] if part["unit"] == unit.get("unit")), None)
+  require(part is not None, "verify-current parts unit changed")
+  require(load(unit["validated_path"]) == unit["report"], "validated critic part changed: " + part["unit"])
+  require(load(unit["actual_report_path"]) == unit["original_report"], "original critic part changed: " + part["unit"])
+  transcript_dirs = list(dict.fromkeys([str(path) for path in part["transcript_dirs"]] + unit.get("transcript_dirs", [])))
+  if not transcript_dirs and unit.get("agent"):
+    transcript_dirs = [str(Path(unit["agent"]).resolve().parent)]
+  require(transcript_dirs, "successful critic part has no transcript directories")
+  agents = transcript_agents(transcript_dirs)
+  item = {"session": "cross-session", "unit": part["unit"], "report_path": str(part["report_path"]),
+          "input_reports": [str(validated_path(run, "cross-session"))]}
+
+  item.update({key: part[key] for key in ("slice_path", "index_path", "pattern_ids") if key in part})
+  agent, target, report = report_writer(agents, item)
+  require(target == part["report_path"] and report == unit["original_report"], "critic part writer changed: " + part["unit"])
+  canonical = load(run / "canonical.json")
+  check_report(report, item, "verify", canonical)
+  require(not critic_read_errors(agent, item, report, canonical, plan), "critic part reads changed: " + part["unit"])
+  require({row.get("pattern_id") for row in report.get("verdicts", report.get("findings", []))} == set(part["pattern_ids"]),
+          "critic part assignment changed: " + part["unit"])
+
+
+def verify_parts_reuse_candidates(plan, run, context, result):
+  units = {unit["unit"]: unit for unit in result.get("units", [])}
+  require(set(units) == {part["unit"] for part in context["parts"]}, "verify-current parts units changed")
+  reused = []
+  failures = []
+  for unit in units.values():
+    if not unit.get("pass"):
+      failures.append({"unit": unit["unit"], "errors": unit.get("errors", [])})
+      continue
+    try:
+      verify_part_reuse(plan, run, context, unit)
+      reused.append(unit["unit"])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+      failures.append({"unit": unit["unit"], "errors": [str(error)]})
+  return reused, failures
+
+
+def prior_verify_parts(plan, run, must_pass=True):
   path = run / "validation-verify-current-parts.json"
   result = load(path)
   require(result.get("schema_version") == 1 and result.get("run_id") == plan["run_id"]
-          and result.get("stage") == "verify-current-parts" and result.get("pass") is True,
-          "verify-current parts validation is missing or failed")
-  prior_composition(plan, run)
-  context = verify_parts_context(result.get("composition_manifest"), run)
+          and result.get("stage") == "verify-current-parts",
+          "verify-current parts validation is missing or invalid")
+  if must_pass:
+    require(result.get("pass") is True, "verify-current parts validation is missing or failed")
+  if (run / "composition-validation.json").exists():
+    prior_composition(plan, run)
+  else:
+    prior_validation(plan, run, "cross")
+  manifest_value = result.get("critic_parts_manifest", result.get("composition_manifest"))
+  context = verify_parts_context(manifest_value, run, require_outputs=False,
+                                 require_slices=not (run / "composition-validation.json").exists())
   require(context["manifest"] == result.get("manifest"), "critic parts manifest changed since validation")
-  canonical = load(run / "canonical.json")
   units = {unit["unit"]: unit for unit in result.get("units", [])}
   require(set(units) == {part["unit"] for part in context["parts"]}, "verify-current parts units changed")
   for part in context["parts"]:
     unit = units[part["unit"]]
-    require(unit.get("pass") is True, "verify-current part failed: " + part["unit"])
-    require(load(unit["validated_path"]) == unit["report"], "validated critic part changed: " + part["unit"])
-    require(load(unit["actual_report_path"]) == unit["original_report"], "original critic part changed: " + part["unit"])
-    agents = transcript_agents(part["transcript_dirs"])
-    item = {"session": "cross-session", "unit": part["unit"], "report_path": str(part["report_path"]),
-            "input_reports": [str(validated_path(run, "cross-session"))]}
-    item.update({key: part[key] for key in ("slice_path", "index_path", "pattern_ids") if key in part})
-    agent, target, report = report_writer(agents, item)
-    require(target == part["report_path"] and report == unit["original_report"], "critic part writer changed: " + part["unit"])
-    require(not critic_read_errors(agent, item, report, canonical, plan), "critic part reads changed: " + part["unit"])
-    require({row.get("pattern_id") for row in report.get("verdicts", report.get("findings", []))} == set(part["pattern_ids"]),
-            "critic part assignment changed: " + part["unit"])
-  require(load(result["validated_path"]) == result["report"], "composed verify-current report changed")
+    if not unit.get("pass"):
+      require(not must_pass, "verify-current part failed: " + part["unit"])
+      continue
+    verify_part_reuse(plan, run, context, unit)
+  if must_pass:
+    require(load(result["validated_path"]) == result["report"], "composed verify-current report changed")
   return result
 
 
-def prior_validation(plan, run, stage, must_pass=True):
+def prior_validation(plan, run, stage, must_pass=True, check_parts=True):
   path = run / f"validation-{stage}.json"
   require(path.exists(), "missing preceding validation: " + stage)
   result = load(path)
   require(result.get("run_id") == plan["run_id"] and result.get("stage") == stage, "validation identity mismatch")
   require(result.get("binding") == binding(plan, run), "source, plan, or models changed since validation")
-  if stage == "verify" and (run / "validation-verify-current-parts.json").exists():
-    prior_verify_parts(plan, run)
+  if stage == "verify" and check_parts and (run / "validation-verify-current-parts.json").exists():
+    prior_verify_parts(plan, run, must_pass=must_pass)
   if stage == "verify" and (run / "composition-validation.json").exists():
     prior_composition(plan, run)
   if must_pass:
@@ -691,6 +731,21 @@ def selected_report(plan, run, session):
   result = prior_validation(plan, run, stage)
   require(any(row["unit"] == unit and row["pass"] for row in result["units"]), "selected report not validated")
   return str(validated_path(run, unit))
+
+
+def verify_parts_items(plan, run, context):
+  documents = [s["document"] for s in plan["sessions"]]
+  contexts = [s["context_document"] for s in plan["sessions"] if s.get("context_document")]
+  items = []
+  for part in context["parts"]:
+    item = {"session": "cross-session", "unit": part["unit"], "report_path": str(part["report_path"]),
+            "input_reports": [str(validated_path(run, "cross-session"))],
+            "source_documents": documents, "pattern_ids": part["pattern_ids"],
+            **({"context_documents": contexts} if contexts else {})}
+    if "slice_path" in part:
+      item.update({"slice_path": part["slice_path"], "index_path": part["index_path"]})
+    items.append(item)
+  return items
 
 
 def stage_items(plan, run, stage, enforce=True):
@@ -729,21 +784,47 @@ def stage_items(plan, run, stage, enforce=True):
 
 def stage_args(args):
   plan, run = plan_context(args.plan)
-  items = stage_items(plan, run, args.stage)
+  require(not args.critic_parts or args.stage == "verify", "critic parts require verify stage")
+  critic_context = None
+  parts_reused = []
+  parts_failed = []
+  if args.stage == "verify" and args.critic_parts:
+    stage_items(plan, run, args.stage)
+    critic_context = verify_parts_context(args.critic_parts, run, require_outputs=False)
+    parts_validation = run / "validation-verify-current-parts.json"
+    if parts_validation.exists():
+      try:
+        prior_parts = load(parts_validation)
+        manifest_value = prior_parts.get("critic_parts_manifest", prior_parts.get("composition_manifest"))
+        if Path(manifest_value).expanduser().resolve() == critic_context["path"]:
+          require(prior_parts.get("run_id") == plan["run_id"] and prior_parts.get("binding") == binding(plan, run),
+                  "critic parts validation identity changed")
+          parts_reused, parts_failed = verify_parts_reuse_candidates(plan, run, critic_context, prior_parts)
+      except (ValueError, OSError, KeyError, TypeError):
+        parts_reused = []
+    items = verify_parts_items(plan, run, critic_context)
+    source_item = next(item for item in stage_items(plan, run, args.stage) if item["unit"] == "verify-source")
+    items.insert(0, source_item)
+  else:
+    items = stage_items(plan, run, args.stage)
   failures = []
   reused = []
   validation_file = run / f"validation-{args.stage}.json"
   if validation_file.exists():
     try:
-      previous = prior_validation(plan, run, args.stage, must_pass=False)
+      previous = prior_validation(plan, run, args.stage, must_pass=False, check_parts=False if critic_context else True)
     except (ValueError, OSError, KeyError, TypeError):
       previous = None
       failures.append({"unit": "validation", "errors": ["previous validation stale or invalid; no units reused"]})
     if previous:
       reused = [unit["unit"] for unit in previous["units"] if unit["pass"]]
+      if critic_context:
+        reused = [unit for unit in parts_reused if unit in {item["unit"] for item in items}]
+        reused.extend(unit["unit"] for unit in previous["units"] if unit["unit"] == "verify-source" and unit["pass"])
       failures.extend({"unit": unit["unit"], "errors": unit["errors"],
                        **({"quote_failures": unit["quote_failures"]} if unit.get("quote_failures") else {})}
                       for unit in previous["units"] if not unit["pass"])
+      failures.extend(parts_failed)
       items = [item for item in items if item["unit"] not in reused]
   payload = {"stage": args.stage, "plan_path": str(Path(args.plan).resolve()), "models": plan["models"],
              "effort": plan.get("efforts", {}).get("read" if args.stage == "reading" else "verify" if args.stage == "verify" else "merge", plan["effort"]), "concurrency": plan["concurrency"], "items": items, "confirmed": False,
@@ -1906,7 +1987,7 @@ def critic_read_errors(agent, item, report, canonical, plan):
   for path in critic_input_paths(item):
     required = {n for n, line in enumerate(Path(path).read_text().split("\n"), 1) if line.strip()}
     if required - read_lines(agent, path):
-      errors.append("critic did not read the cross-session report")
+      errors.append("critic did not read assigned verify input fully")
   documents = {s["session"]: Path(s["document"]).resolve() for s in plan["sessions"]}
   verdicts = report.get("verdicts", report.get("findings", []))
   for verdict in verdicts:
@@ -1933,7 +2014,7 @@ def critic_read_errors(agent, item, report, canonical, plan):
   return errors
 
 
-def verify_parts_context(manifest_path, run):
+def verify_parts_context(manifest_path, run, require_outputs=True, require_slices=False):
   path = Path(manifest_path).expanduser().resolve()
   require(path.is_file() and path.is_relative_to(run), "critic parts manifest must be inside run")
   data = load(path)
@@ -1941,7 +2022,7 @@ def verify_parts_context(manifest_path, run):
           "unsupported critic parts manifest")
   require(data.get("run_id") == run.name and data.get("unit") == "verify-current", "critic parts identity mismatch")
   parts = data.get("parts")
-  require(isinstance(parts, list) and len(parts) >= 2, "critic parts manifest requires at least two parts")
+  require(isinstance(parts, list) and parts, "critic parts manifest requires at least one part")
   all_ids = []
   normalized = []
   seen_units = set()
@@ -1950,46 +2031,89 @@ def verify_parts_context(manifest_path, run):
             "invalid critic part unit")
     require(part["unit"] not in seen_units, "duplicate critic part unit")
     seen_units.add(part["unit"])
-    report_path = Path(part.get("report_path", "")).expanduser().resolve()
-    require(report_path.is_file() and report_path.is_relative_to(run), "critic part report outside run or missing")
-    transcript_dirs = composition_transcript_dirs(part.get("transcript_dirs"), part["unit"])
+    report_value = part.get("report_path")
+    report_path = Path(report_value).expanduser().resolve() if isinstance(report_value, str) and report_value else None
+    require(report_path is not None and report_path.is_relative_to(run), "critic part report outside run")
+    transcript_values = part.get("transcript_dirs", [])
+    require(isinstance(transcript_values, list) and all(isinstance(value, str) and value for value in transcript_values),
+            "critic part transcript directories must be paths")
+    transcript_dirs = [Path(value).expanduser().resolve() for value in transcript_values]
+    if require_outputs:
+      require(report_path.is_file(), "critic part report missing: " + str(report_path))
+      transcript_dirs = composition_transcript_dirs(transcript_values, part["unit"])
     pattern_ids = part.get("pattern_ids")
-    require(isinstance(pattern_ids, list) and all(isinstance(key, str) for key in pattern_ids),
-            "critic part pattern_ids must be strings")
+    require(isinstance(pattern_ids, list) and all(isinstance(key, str) and key for key in pattern_ids),
+            "critic part pattern_ids must be nonempty strings")
+    require(len(pattern_ids) == len(set(pattern_ids)), "duplicate critic part pattern id")
     require(not set(pattern_ids) & set(all_ids), "critic part pattern ids overlap")
     all_ids.extend(pattern_ids)
     slice_fields = {}
-    if part.get("slice_path"):
+    has_slice = part.get("slice_path") is not None or part.get("index_path") is not None
+    if has_slice:
+      require(part.get("slice_path") is not None and part.get("index_path") is not None,
+              "critic parts require both slice_path and index_path")
       for field in ("slice_path", "index_path"):
         value = Path(part.get(field, "")).expanduser().resolve()
         require(value.is_file() and value.is_relative_to(run), "critic " + field + " outside run or missing")
         slice_fields[field] = str(value)
+    elif require_slices:
+      require(False, "critic parts require slice_path and index_path")
     normalized.append({"unit": part["unit"], "report_path": report_path,
                        "transcript_dirs": transcript_dirs, "pattern_ids": pattern_ids, **slice_fields})
   cross_path = validated_path(run, "cross-session")
-  require(cross_path.is_file(), "validated composed cross report missing")
+  require(cross_path.is_file(), "validated cross report missing")
   cross = load(cross_path)
   expected = {row.get("id") for row in cross.get("patterns", [])}
+  require(all(isinstance(key, str) and key for key in expected), "cross report contains invalid pattern id")
   require(set(all_ids) == expected and len(all_ids) == len(expected), "critic parts must cover every pattern exactly once")
+  for part in normalized:
+    critic_input_paths({**part, "input_reports": [str(cross_path)]})
   return {"manifest": data, "parts": normalized, "cross": cross, "path": path}
 
 
-def validate_verify_parts(args, plan, run, canonical):
-  source_validation = prior_validation(plan, run, "verify", must_pass=False)
-  require(any(unit.get("unit") == "verify-source" and unit.get("pass") is True for unit in source_validation.get("units", [])),
-          "verify-source must pass before verify-current parts")
-  context = verify_parts_context(args.critic_parts, run)
+def validate_verify_source(args, plan, run, canonical):
+  item = next(item for item in stage_items(plan, run, "verify", enforce=False) if item["unit"] == "verify-source")
+  agents = transcript_agents(args.transcript_dir)
+  result = {"unit": item["unit"], "pass": False, "errors": []}
+  try:
+    agent, target, original = report_writer(agents, item)
+    require(target == Path(item["report_path"]).resolve(), "verify-source report path differs from stage item")
+
+    report = check_report(original, item, "verify", canonical)
+    errors = critic_read_errors(agent, item, report, canonical, plan)
+    require(not errors, "; ".join(errors))
+    destination = validated_path(run, item["unit"])
+    save(destination, report)
+    result.update({"pass": True, "agent": agent["path"], "actual_report_path": str(target),
+                   "validated_path": str(destination), "original_report": original, "report": report,
+                   "transcript_dirs": list(args.transcript_dir)})
+  except (OSError, ValueError, KeyError, TypeError) as error:
+    result["errors"].append(str(error))
+  return result
+
+
+def validate_verify_parts(args, plan, run, canonical, source_unit=None):
+  if source_unit is None:
+    source_validation = prior_validation(plan, run, "verify", must_pass=False, check_parts=False)
+    source_unit = next(unit for unit in source_validation["units"] if unit["unit"] == "verify-source" and unit["pass"])
+  context = verify_parts_context(args.critic_parts, run, require_outputs=False,
+                                 require_slices=not (run / "composition-validation.json").exists())
   units = []
   union = []
+  previous_path = run / "validation-verify-current-parts.json"
+  previous = load(previous_path) if previous_path.exists() else {}
   for part in context["parts"]:
-    agents = transcript_agents(part["transcript_dirs"])
+    prior = next((unit for unit in previous.get("units", []) if unit.get("unit") == part["unit"]), {})
+    transcript_dirs = list(dict.fromkeys([str(path) for path in part["transcript_dirs"]]
+                                        + list(args.transcript_dir) + prior.get("transcript_dirs", [])))
     item = {"session": "cross-session", "unit": part["unit"], "report_path": str(part["report_path"]),
             "input_reports": [str(validated_path(run, "cross-session"))]}
-    result = {"unit": part["unit"], "pass": False, "errors": []}
+    item.update({key: part[key] for key in ("slice_path", "index_path", "pattern_ids") if key in part})
+    result = {"unit": part["unit"], "pass": False, "errors": [], "transcript_dirs": transcript_dirs}
     try:
+      agents = transcript_agents(transcript_dirs)
       agent, target, original = report_writer(agents, item)
       require(target == part["report_path"], "critic part report path differs from manifest")
-      item.update({key: part[key] for key in ("slice_path", "index_path", "pattern_ids") if key in part})
       report = check_report(original, item, "verify", canonical)
       verdicts = report.get("verdicts", report.get("findings", []))
       require({row.get("pattern_id") for row in verdicts} == set(part["pattern_ids"]), "critic part verdicts differ from assigned patterns")
@@ -2003,31 +2127,36 @@ def validate_verify_parts(args, plan, run, canonical):
     except (OSError, ValueError, KeyError, TypeError) as error:
       result["errors"].append(str(error))
     units.append(result)
-  require(all(row["pass"] for row in units), "critic part validation failed")
+  counts = {"expected": len(units), "passed": sum(unit["pass"] for unit in units), "failed": sum(not unit["pass"] for unit in units)}
+  validation = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify-current-parts", "pass": counts["failed"] == 0,
+                "binding": binding(plan, run), "critic_parts_manifest": str(context["path"]), "manifest": context["manifest"],
+                "units": units, "counts": counts, "reusable_units": [unit["unit"] for unit in units if unit["pass"]]}
+  if counts["failed"]:
+    validation["errors"] = [error for unit in units for error in unit["errors"]]
+    save(run / "validation-verify-current-parts.json", validation)
+    formal = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify", "pass": False,
+              "binding": binding(plan, run), "units": [source_unit, {"unit": "verify-current", "pass": False,
+              "errors": ["critic part validation failed"]}],
+              "counts": {"expected": 2, "passed": int(source_unit.get("pass") is True), "failed": 1, "auto_corrected": 0},
+              "reusable_units": ["verify-source"] if source_unit.get("pass") else []}
+    save(run / "validation-verify.json", formal)
+    return {"pass": False, "validation_path": str(run / "validation-verify-current-parts.json"),
+            "counts": counts, "units": [{"unit": unit["unit"], "pass": unit["pass"], "errors": unit["errors"]} for unit in units]}
   combined = {"session": "cross-session", "unit": "verify-current", "status": "complete", "verdicts": union}
   check_report(combined, {"session": "cross-session", "unit": "verify-current", "input_reports": [str(validated_path(run, "cross-session"))]}, "verify", canonical)
   destination = validated_path(run, "verify-current")
   save(destination, combined)
-  validation = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify-current-parts", "pass": True,
-                "binding": binding(plan, run), "composition_manifest": str(context["path"]),
-                "cross_validation": str(run / "composition-validation.json"), "units": units,
-                "counts": {"expected": len(units), "passed": len(units), "failed": 0},
-                "reusable_units": [row["unit"] for row in units], "validated_path": str(destination), "report": combined}
-  validation["manifest"] = context["manifest"]
+  validation.update({"validated_path": str(destination), "report": combined})
   save(run / "validation-verify-current-parts.json", validation)
-  source_unit = next(unit for unit in source_validation["units"] if unit["unit"] == "verify-source" and unit["pass"])
-  current_unit = {"unit": "verify-current", "pass": True, "errors": [],
-                  "actual_report_path": str(destination), "validated_path": str(destination),
-                  "original_report": combined, "report": combined,
-                  "composition_validation": str(run / "validation-verify-current-parts.json")}
-  formal = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify", "pass": True,
-            "binding": binding(plan, run), "units": [source_unit, current_unit],
-            "counts": {"expected": 2, "passed": 2, "failed": 0, "auto_corrected": 0},
+  current_unit = {"unit": "verify-current", "pass": True, "errors": [], "actual_report_path": str(destination),
+                  "validated_path": str(destination), "original_report": combined, "report": combined,
+                  "critic_parts_validation": str(run / "validation-verify-current-parts.json")}
+  formal = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify", "pass": True, "binding": binding(plan, run),
+            "units": [source_unit, current_unit], "counts": {"expected": 2, "passed": 2, "failed": 0, "auto_corrected": 0},
             "reusable_units": ["verify-source", "verify-current"]}
   save(run / "validation-verify.json", formal)
-  return {"pass": True, "validation_path": str(run / "validation-verify-current-parts.json"),
-          "validated_path": str(destination), "counts": validation["counts"],
-          "units": [{"unit": row["unit"], "pass": row["pass"], "errors": row["errors"]} for row in units]}
+  return {"pass": True, "validation_path": str(run / "validation-verify-current-parts.json"), "validated_path": str(destination),
+          "counts": counts, "units": [{"unit": unit["unit"], "pass": unit["pass"], "errors": unit["errors"]} for unit in units]}
 
 
 CHANGE_KINDS = ("rule", "skill", "command", "hook", "script")
@@ -2312,9 +2441,19 @@ def validate(args):
   canonical = load(run / "canonical.json")
   contract = binding(plan, run)
   if args.stage == "verify" and args.critic_parts:
-    prior_composition(plan, run)
-    prior_validation(plan, run, "verify", must_pass=False)
-    return validate_verify_parts(args, plan, run, canonical)
+    if (run / "composition-validation.json").exists():
+      prior_composition(plan, run)
+    else:
+      prior_validation(plan, run, "cross")
+    previous = prior_validation(plan, run, "verify", must_pass=False, check_parts=False) if (run / "validation-verify.json").exists() else {"units": []}
+    source_unit = next((unit for unit in previous["units"] if unit["unit"] == "verify-source" and unit["pass"]), None)
+    if source_unit is None:
+      source_unit = validate_verify_source(args, plan, run, canonical)
+    require(source_unit.get("pass") is True, "verify-source must pass before verify-current parts")
+    save(run / "validation-verify.json", {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify",
+      "pass": False, "binding": binding(plan, run), "units": [source_unit],
+      "counts": {"expected": 1, "passed": 1, "failed": 0, "auto_corrected": 0}, "reusable_units": ["verify-source"]})
+    return validate_verify_parts(args, plan, run, canonical, source_unit)
   items = stage_items(plan, run, args.stage)
   agents = transcript_agents(args.transcript_dir)
   previous = None
@@ -2479,6 +2618,8 @@ def parser():
       sub.add_argument("--stage", required=True, choices=STAGES)
     if name == "validate":
       sub.add_argument("--transcript-dir", action="append", default=[])
+      sub.add_argument("--critic-parts")
+    if name == "stage-args":
       sub.add_argument("--critic-parts")
   compose = commands.add_parser("compose-cross")
   compose.add_argument("--manifest", required=True)

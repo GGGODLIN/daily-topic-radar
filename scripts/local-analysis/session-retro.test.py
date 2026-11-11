@@ -80,13 +80,18 @@ class RetroCLI(unittest.TestCase):
     self.assertEqual(plan["schema_version"], 1)
     return out / "plan.json", plan
 
-  def stage(self, plan, name, code=0):
-    return self.cli("stage-args", "--plan", plan, "--stage", name, code=code)
+  def stage(self, plan, name, code=0, critic_parts=None):
+    args = ["stage-args", "--plan", plan, "--stage", name]
+    if critic_parts is not None:
+      args += ["--critic-parts", critic_parts]
+    return self.cli(*args, code=code)
 
-  def validate(self, plan, stage, transcripts, code=0):
+  def validate(self, plan, stage, transcripts, code=0, critic_parts=None):
     args = ["validate", "--plan", plan, "--stage", stage]
     for path in transcripts:
       args += ["--transcript-dir", path]
+    if critic_parts is not None:
+      args += ["--critic-parts", critic_parts]
     return self.cli(*args, code=code)
 
   def retro(self):
@@ -864,14 +869,20 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.assertEqual(unresolved["events"][0]["loaded"], "unchecked")
 
 
-  def cross_case(self):
+  def cross_case(self, with_findings=False):
     """Reading validated for three small sessions; returns what a cross writer would see."""
     for name, records in CROSS_SESSIONS.items():
       self.source(name, records())
     path, _ = self.prepare()
     items = {item["session"]: item for item in self.stage(path, "reading")["items"]}
-    dirs = [self.transcript(items[name], self.report(items[name], tracking_observations=observations))
-            for name, observations in CROSS_READINGS.items()]
+    dirs = []
+    for name, observations in CROSS_READINGS.items():
+      findings = []
+      if with_findings:
+        findings = [{"id": items[name]["unit"] + "-F1", "evidence": [{"session": name, "source_line": 2, "quote": "ls"}],
+                     "counterevidence": "bounded"}]
+      dirs.append(self.transcript(items[name], self.report(items[name], findings,
+        tracking_observations=observations)))
     self.validate(path, "reading", dirs)
     self.validate(path, "session-merge", [])
     return path, self.stage(path, "cross")["items"][0], {name: item["unit"] for name, item in items.items()}
@@ -887,6 +898,156 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
   def cross_errors(self, path, cross, report, code=2):
     result = self.validate(path, "cross", [self.transcript(cross, report, reads=[])], code=code)
     return " | ".join(error for unit in result["units"] for error in unit["errors"])
+
+  def normal_verify_parts_fixture(self, part_count=2):
+    path, cross, units = self.cross_case(with_findings=True)
+    source_records = []
+    for input_report in cross["input_reports"]:
+      source_records.extend(json.loads(Path(input_report).read_text())["findings"])
+    patterns = [{"id": f"P{index}", "source_record_ids": [record["id"] for record in source_records],
+                 "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}],
+                 "counterevidence": "bounded"}
+                for index in range(1, part_count + 1)]
+    report = self.cross_report(cross, units)
+    report["patterns"] = patterns
+    report["dispositions"] = [{"source_record_id": record["id"], "disposition": "kept", "reason": "relevant"}
+                               for record in source_records]
+    self.validate(path, "cross", [self.transcript(cross, report, reads=[])])
+    run = path.parent
+    full_cross = json.loads((run / "validated" / "cross-session.json").read_text())
+    patterns = full_cross["patterns"]
+    index = [{"id": pattern["id"], "observation": pattern.get("observation"), "sessions": len(pattern.get("source_sessions", [])),
+              "matched_issue_id": pattern.get("matched_issue_id"), "current_check_paths": pattern.get("current_check_paths", [])}
+             for pattern in full_cross["patterns"]]
+    parts = []
+    for index_number, pattern in enumerate(patterns, 1):
+      slice_path = run / f"verify-current-slice-{index_number}.json"
+      index_path = run / f"verify-current-index-{index_number}.json"
+      dump(slice_path, {"patterns": [pattern]})
+      dump(index_path, index)
+      parts.append({"unit": f"verify-current-p{index_number}", "report_path": str(run / "reports" / f"verify-current-p{index_number}.json"),
+                    "pattern_ids": [pattern["id"]], "slice_path": str(slice_path), "index_path": str(index_path)})
+    manifest_path = run / "verify-current-parts.json"
+    dump(manifest_path, {"schema_version": 1, "kind": "verify-current-parts", "run_id": run.name,
+                         "unit": "verify-current", "parts": parts})
+    return path, manifest_path, patterns
+
+  def verify_source(self, path):
+    items = self.stage(path, "verify")["items"]
+    item = next(item for item in items if item["unit"] == "verify-source")
+    cross = json.loads((path.parent / "validated" / "cross-session.json").read_text())
+    findings = [{"id": f"verify-source-{pattern['id']}", "pattern_id": pattern["id"], "verdict": "UNCERTAIN",
+                 "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}]}
+                for pattern in cross["patterns"]]
+    report = self.report(item, findings=findings)
+    return item, report, self.transcript(item, report, reads=item["input_reports"] + item["source_documents"])
+
+  def current_part_transcript(self, path, manifest, pattern_id, reads_source=True):
+    data = json.loads(Path(manifest).read_text())
+    part = next(part for part in data["parts"] if pattern_id in part["pattern_ids"])
+    item = {"session": "cross-session", "unit": part["unit"], "report_path": part["report_path"],
+            "input_reports": [str(path.parent / "validated" / "cross-session.json")],
+            "slice_path": part["slice_path"], "index_path": part["index_path"]}
+    report = self.report(item, findings=[{"id": item["unit"] + "-F1", "pattern_id": pattern_id,
+      "verdict": "UNCERTAIN", "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}]}])
+    plan = json.loads(path.read_text())
+    reads = [Path(part["slice_path"]), Path(part["index_path"])]
+    if reads_source:
+      reads += [Path(session["document"]) for session in plan["sessions"]]
+    return self.transcript(item, report, reads=reads)
+
+  def verify_parts_with_real_outputs(self, part_count=2, failed_pattern=None):
+    path, manifest, patterns = self.normal_verify_parts_fixture(part_count=part_count)
+    source_item, source_report, source_dir = self.verify_source(path)
+    part_dirs = []
+    for pattern in patterns:
+      part_dirs.append(self.current_part_transcript(path, manifest, pattern["id"],
+        reads_source=pattern["id"] != failed_pattern))
+    data = json.loads(manifest.read_text())
+    for part, directory in zip(data["parts"], part_dirs):
+      part["transcript_dirs"] = [str(directory)]
+    dump(manifest, data)
+    return path, manifest, patterns, source_dir, part_dirs
+
+  def test_verify_current_parts_stage_args_reads_manifest_before_outputs_exist(self):
+    path, manifest, patterns = self.normal_verify_parts_fixture(part_count=1)
+    source_item, source_report, source_dir = self.verify_source(path)
+    staged = self.stage(path, "verify", critic_parts=manifest)
+    current = [item for item in staged["items"] if item["unit"] == "verify-current-p1"]
+    self.assertEqual(len(current), 1)
+    self.assertEqual(current[0]["pattern_ids"], [patterns[0]["id"]])
+    self.assertEqual(current[0]["slice_path"], str(path.parent / "verify-current-slice-1.json"))
+    self.assertEqual(current[0]["index_path"], str(path.parent / "verify-current-index-1.json"))
+    self.assertEqual(current[0]["input_reports"], [str(path.parent / "validated" / "cross-session.json")])
+    self.assertEqual(current[0]["source_documents"], [session["document"] for session in json.loads(path.read_text())["sessions"]])
+    self.assertFalse(Path(current[0]["report_path"]).exists())
+
+  def test_verify_current_parts_validates_normal_cross_and_finish(self):
+    path, manifest, patterns, source_dir, part_dirs = self.verify_parts_with_real_outputs(part_count=1)
+    self.validate(path, "verify", [source_dir], critic_parts=manifest)
+    result = self.validate(path, "verify", [], critic_parts=manifest)
+    self.assertTrue(result["pass"])
+    self.assertEqual(json.loads((path.parent / "validation-verify.json").read_text())["units"][0]["unit"], "verify-source")
+    (path.parent / "final.md").write_text("normal cross final", encoding="utf-8")
+    self.assertEqual(self.cli("finish", "--plan", path)["status"], "complete")
+
+  def test_verify_current_parts_reuses_only_successful_parts_and_keeps_failed_part(self):
+    path, manifest, patterns, source_dir, part_dirs = self.verify_parts_with_real_outputs(part_count=2, failed_pattern="P2")
+    first = self.validate(path, "verify", [source_dir], critic_parts=manifest, code=2)
+    self.assertFalse(first["pass"])
+    staged = self.stage(path, "verify", critic_parts=manifest)
+    self.assertIn("verify-current-p1", staged["reused_units"])
+    self.assertIn("verify-current-p2", {failure["unit"] for failure in staged["failures"]})
+    self.assertIn("verify-current-p2", {item["unit"] for item in staged["items"]})
+    self.assertNotIn("verify-source", {item["unit"] for item in staged["items"]})
+    self.assertIn("verify-source", staged["reused_units"])
+    repaired = self.current_part_transcript(path, manifest, "P2")
+    result = self.validate(path, "verify", [repaired], critic_parts=manifest)
+    self.assertTrue(result["pass"])
+    self.assertEqual(self.stage(path, "verify", critic_parts=manifest)["items"], [])
+
+  def test_verify_current_parts_rejects_bad_slice_or_assignment_before_dispatch(self):
+    path, manifest, _patterns = self.normal_verify_parts_fixture(part_count=1)
+    original = json.loads(manifest.read_text())
+    for field, value in (("pattern_ids", ["P1", "P1"]), ("pattern_ids", []),
+                         ("report_path", str(self.root / "outside.json")),
+                         ("index_path", None)):
+      changed = copy.deepcopy(original)
+      changed["parts"][0][field] = value
+      dump(manifest, changed)
+      self.stage(path, "verify", critic_parts=manifest, code=2)
+    dump(manifest, original)
+    slice_path = Path(original["parts"][0]["slice_path"])
+    changed = json.loads(slice_path.read_text())
+    changed["patterns"][0]["counterevidence"] = "lost evidence"
+    dump(slice_path, changed)
+    result = self.stage(path, "verify", critic_parts=manifest, code=2)
+    self.assertIn("slice differs", result["error"])
+
+  def test_verify_current_parts_changed_report_is_not_reused(self):
+    path, manifest, _patterns, source_dir, _part_dirs = self.verify_parts_with_real_outputs(part_count=2)
+    self.validate(path, "verify", [source_dir], critic_parts=manifest)
+    parts = json.loads(manifest.read_text())["parts"]
+    report_path = Path(parts[0]["report_path"])
+    changed = json.loads(report_path.read_text())
+    changed["limitations"] = ["changed after validation"]
+    dump(report_path, changed)
+    staged = self.stage(path, "verify", critic_parts=manifest)
+    self.assertNotIn("verify-current-p1", staged["reused_units"])
+    self.assertIn("verify-current-p2", staged["reused_units"])
+    self.assertIn("verify-source", staged["reused_units"])
+    self.assertEqual([item["unit"] for item in staged["items"]], ["verify-current-p1"])
+
+  def test_verify_current_parts_allows_one_part_and_rejects_manifest_drift(self):
+    path, manifest, patterns = self.normal_verify_parts_fixture(part_count=1)
+    source_item, source_report, source_dir = self.verify_source(path)
+    context = self.retro().verify_parts_context(manifest, path.parent, require_outputs=False)
+    self.assertEqual(len(context["parts"]), 1)
+    changed = json.loads(manifest.read_text())
+    changed["parts"][0]["pattern_ids"] = ["unknown"]
+    dump(manifest, changed)
+    self.cli("stage-args", "--plan", path, "--stage", "verify", "--critic-parts", manifest, code=2)
+
 
   def test_cross_gives_every_input_observation_exactly_one_destination(self):
     path, cross, units = self.cross_case()
