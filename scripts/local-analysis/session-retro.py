@@ -144,6 +144,13 @@ def local_command_only_rows(rows):
   )
 
 
+def sdk_origin_row(row):
+  # Newer non-interactive `claude -p` runs record turnOrigin/entrypoint instead of promptSource="sdk".
+  return (row.get("promptSource") == "sdk"
+          or row.get("turnOrigin") == "sdk"
+          or row.get("entrypoint") in {"sdk-cli", "sdk-ts", "sdk-py"})
+
+
 def classify(rows, source, limits=None):
   human = any(human_input(row) for row in rows)
   reasons = set()
@@ -163,7 +170,7 @@ def classify(rows, source, limits=None):
     return "excluded", sorted(reasons)
   if human:
     return "human", []
-  if any(row.get("promptSource") == "sdk" for row in rows):
+  if any(sdk_origin_row(row) for row in rows):
     return "excluded", ["sdk-without-human"]
   if not any(active(row) for row in rows) and not limits:
     return "excluded", ["no-active-messages"]
@@ -642,7 +649,7 @@ def verify_part_reuse(plan, run, context, unit):
   require(part is not None, "verify-current parts unit changed")
   require(load(unit["validated_path"]) == unit["report"], "validated critic part changed: " + part["unit"])
   require(load(unit["actual_report_path"]) == unit["original_report"], "original critic part changed: " + part["unit"])
-  transcript_dirs = list(dict.fromkeys([str(path) for path in part["transcript_dirs"]] + unit.get("transcript_dirs", [])))
+  transcript_dirs = list(dict.fromkeys([str(path) for path in part["transcript_dirs"]] + (unit.get("transcript_dirs") or [])))
   if not transcript_dirs and unit.get("agent"):
     transcript_dirs = [str(Path(unit["agent"]).resolve().parent)]
   require(transcript_dirs, "successful critic part has no transcript directories")
@@ -655,7 +662,7 @@ def verify_part_reuse(plan, run, context, unit):
   require(target == part["report_path"] and report == unit["original_report"], "critic part writer changed: " + part["unit"])
   canonical = load(run / "canonical.json")
   check_report(report, item, "verify", canonical)
-  require(not critic_read_errors(agent, item, report, canonical, plan), "critic part reads changed: " + part["unit"])
+  require(not critic_read_errors(agent, item, report, canonical, plan, reuse=True), "critic part reads changed: " + part["unit"])
   require({row.get("pattern_id") for row in report.get("verdicts", report.get("findings", []))} == set(part["pattern_ids"]),
           "critic part assignment changed: " + part["unit"])
 
@@ -914,6 +921,27 @@ def read_lines(agent, path):
       else:
         number, text = cursor, line
       if 1 <= number <= len(expected) and text == expected[number - 1] and expected[number - 1].strip():
+        covered.add(number)
+      cursor = number + 1
+  return covered
+
+
+def transcript_read_lines(agent, path):
+  # Reuse/finish checks run after users may edit or archive external workspace files cited in current_evidence;
+  # verify that the recorded Read output itself returned a nonblank line at that line number.
+  path = Path(path).expanduser().resolve()
+  covered = set()
+  for op in agent["operations"]:
+    if op["name"] != "Read" or operation_path(op) != path:
+      continue
+    cursor = max(1, op["input"].get("offset", 1))
+    for line in op["text"].split("\n"):
+      match = re.match(r"^\s*(\d+)(?:\t|[→│|])(.*)$", line)
+      if match:
+        number, text = int(match.group(1)), match.group(2)
+      else:
+        number, text = cursor, line
+      if number >= 1 and text.strip():
         covered.add(number)
       cursor = number + 1
   return covered
@@ -1991,7 +2019,7 @@ def critic_input_paths(item):
   return [item["slice_path"], item["index_path"]]
 
 
-def critic_read_errors(agent, item, report, canonical, plan):
+def critic_read_errors(agent, item, report, canonical, plan, reuse=False):
   errors = []
   for path in critic_input_paths(item):
     required = {n for n, line in enumerate(Path(path).read_text().split("\n"), 1) if line.strip()}
@@ -2018,7 +2046,11 @@ def critic_read_errors(agent, item, report, canonical, plan):
       for evidence in current:
         path = Path(evidence.get("path", "")).expanduser().resolve()
         line = evidence.get("line")
-        if not path.is_file() or not isinstance(line, int) or line not in read_lines(agent, path):
+        if reuse:
+          ok = isinstance(line, int) and line in transcript_read_lines(agent, path)
+        else:
+          ok = path.is_file() and isinstance(line, int) and line in read_lines(agent, path)
+        if not ok:
           errors.append(f"current-state evidence lacks matching successful Read (pattern={verdict.get('pattern_id')}, path={path})")
   return errors
 
@@ -2552,6 +2584,20 @@ def usage(args):
           "limitations": ["visible transcript usage only; unknown fields are not measured zero"]}
 
 
+def is_resolved_non_human_unknown(entry):
+  if not isinstance(entry, dict) or entry.get("reasons") != ["human-origin-unconfirmed"] or entry.get("limitations"):
+    return False
+  source = Path(entry.get("source", ""))
+  if not source.is_file():
+    return False
+  rows = []
+  for _, row, err in records(source):
+    if err:
+      return False
+    rows.append(row)
+  return local_command_only_rows(rows) or (not any(human_input(row) for row in rows) and any(sdk_origin_row(row) for row in rows))
+
+
 def is_local_command_only_entry(entry):
   if not isinstance(entry, dict) or entry.get("reasons") != ["human-origin-unconfirmed"] or entry.get("limitations"):
     return False
@@ -2568,7 +2614,7 @@ def is_local_command_only_entry(entry):
 
 def finish(args):
   plan, run = plan_context(args.plan)
-  unresolved_unknown = [u for u in plan.get("unknown", []) if not is_local_command_only_entry(u)]
+  unresolved_unknown = [u for u in plan.get("unknown", []) if not is_resolved_non_human_unknown(u)]
   require(not any(s.get("limitations") for s in plan["sessions"]) and not unresolved_unknown, "source parsing or classification gaps prevent complete coverage")
   composition = composition_validation_summary(plan, run) if (run / "composition-validation.json").exists() else None
   if composition is None:

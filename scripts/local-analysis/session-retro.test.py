@@ -1560,6 +1560,83 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     extra = one + [{"observation_key": "toolu_R2|chg-1", "disposition": "kept"}]
     self.assertIn("unknown input observation", cross_with(seen, extra, 2))
 
+  def test_sdk_cli_session_without_human_is_excluded_and_resolved_in_finish(self):
+    self.source("human", [user("real human turn")])
+    sdk_cli = self.source("sleeptest", [
+      user("<command-message>sleeptest</command-message>\n<command-name>/sleeptest</command-name>",
+           promptSource=None, origin=None, entrypoint="sdk-cli", turnOrigin="sdk"),
+      assistant("done"),
+    ])
+    _, inv = self.inventory()
+    self.assertNotIn("sleeptest", {r["session"] for r in inv["unknown"]})
+    excluded = next(r for r in inv["excluded"] if r["session"] == "sleeptest")
+    self.assertEqual(excluded["reasons"], ["sdk-without-human"])
+
+    # A plan prepared before the classifier recognized sdk-cli still has the entry in plan.unknown;
+    # finish re-checks the source rows without rewriting plan.json, while genuine unknown still blocks.
+    path, plan = self.prepare([user("real human turn")])
+    plan["unknown"] = [{"session": "sleeptest", "source": str(sdk_cli), "project": str(sdk_cli.parent),
+                        "classification": "unknown", "reasons": ["human-origin-unconfirmed"],
+                        "slash_only": False, "limitations": [], "estimated_chars": 100}]
+    dump(path, plan)
+    self.read_pass(path)
+    self.validate(path, "session-merge", [])
+    cross = self.stage(path, "cross")["items"][0]
+    self.validate(path, "cross", [self.transcript(cross, self.report(cross, patterns=[], dispositions=[]), reads=[])])
+    critics = self.stage(path, "verify")["items"]
+    self.validate(path, "verify", [self.transcript(c, self.report(c, findings=[]), reads=c["input_reports"]) for c in critics])
+    (path.parent / "final.md").write_text("complete report", encoding="utf-8")
+    self.assertEqual(self.cli("finish", "--plan", path)["status"], "complete")
+
+    genuine_unknown = self.source("mystery", [user("unmarked", promptSource=None, origin={}), assistant("reply")])
+    plan["unknown"] = [{"session": "mystery", "source": str(genuine_unknown), "project": str(genuine_unknown.parent),
+                        "classification": "unknown", "reasons": ["human-origin-unconfirmed"],
+                        "slash_only": False, "limitations": [], "estimated_chars": 100}]
+    dump(path, plan)
+    (path.parent / "completion.json").unlink()
+    self.cli("finish", "--plan", path, code=2)
+
+  def test_verify_current_parts_finish_survives_external_file_edits_after_validation(self):
+    path, manifest, _patterns = self.normal_verify_parts_fixture(part_count=1)
+    live_file = self.root / "live_target.py"
+    moved_file = self.root / "scratch_spec.md"
+    live_file.write_text("header\nbuggy_window = len(events)\n", encoding="utf-8")
+    moved_file.write_text("# Spec\nactive line\n", encoding="utf-8")
+
+    _, _, source_dir = self.verify_source(path)
+    data = json.loads(Path(manifest).read_text())
+    part = data["parts"][0]
+    item = {"session": "cross-session", "unit": part["unit"], "report_path": part["report_path"],
+            "input_reports": [str(path.parent / "validated" / "cross-session.json")],
+            "slice_path": part["slice_path"], "index_path": part["index_path"]}
+    report = self.report(item, findings=[{
+      "id": item["unit"] + "-F1",
+      "pattern_id": "P1",
+      "verdict": "CONFIRMED",
+      "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}],
+      "current_evidence": [
+        {"path": str(live_file), "line": 2, "observation": "unfiltered window"},
+        {"path": str(moved_file), "line": 2, "observation": "spec exists"},
+      ],
+    }])
+    plan = json.loads(path.read_text())
+    reads = ([Path(part["slice_path"]), Path(part["index_path"])]
+             + [Path(s["document"]) for s in plan["sessions"]]
+             + [live_file, moved_file])
+    part_dir = self.transcript(item, report, reads=reads)
+    data["parts"][0]["transcript_dirs"] = [str(part_dir)]
+    dump(manifest, data)
+
+    validated = self.validate(path, "verify", [source_dir], critic_parts=manifest)
+    self.assertTrue(validated["pass"])
+
+    # After retro validation passes, fixing external files or archiving external scratch docs must not break reuse/finish.
+    live_file.write_text("header\nfixed_window = [e for e in events if e >= cut]\n", encoding="utf-8")
+    moved_file.unlink()
+    self.assertEqual(self.stage(path, "verify", critic_parts=manifest)["items"], [])
+    (path.parent / "final.md").write_text("post-fix finish", encoding="utf-8")
+    self.assertEqual(self.cli("finish", "--plan", path)["status"], "complete")
+
 
 def inst(text, timestamp, path="/fixture/RULES.md"):
   return {"type": "attachment", "timestamp": timestamp, "attachment": {
