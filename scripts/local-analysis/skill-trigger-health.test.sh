@@ -132,5 +132,36 @@ check "久未執行提醒段落出現且含 hillclimb 與 deep-check（wf-skill 
 "
 check "設有 remind_after_days 的零呼叫工具排除於死庫存候選並註記排除數" grep -q '排除 remind_after_days 1 個' "$T/report3.md"
 
+# P2 & P6 regression: mtime-selected session file with >90d event must not inflate 90d window, and decided_by="agent" stays distinguishable
+mkdir -p "$T/skills/mixed-window-skill" "$T/skills/agent-decided-skill"
+printf -- '---\nname: mixed-window-skill\ndescription: Use when testing 90d window cutoff.\n---\n' > "$T/skills/mixed-window-skill/SKILL.md"
+printf -- '---\nname: agent-decided-skill\ndescription: Use when testing agent-decided mode preservation.\n---\n' > "$T/skills/agent-decided-skill/SKILL.md"
+
+ANCIENT_TS=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=120)).isoformat())')
+cat >> "$T/projects/proj-a/s1.jsonl" <<EOF
+{"uuid":"u6","timestamp":"$ANCIENT_TS","message":{"role":"assistant","content":[{"type":"tool_use","id":"t_old_120d","name":"Skill","input":{"skill":"mixed-window-skill"}}]}}
+{"uuid":"u7","timestamp":"$TS","message":{"role":"assistant","content":[{"type":"tool_use","id":"t_now_0d","name":"Skill","input":{"skill":"mixed-window-skill"}}]}}
+{"uuid":"u8","timestamp":"$TS","message":{"role":"assistant","content":[{"type":"tool_use","id":"t_agent_dec","name":"Skill","input":{"skill":"agent-decided-skill"}}]}}
+EOF
+
+python3 -c "
+import json
+r = json.load(open('$REG'))
+r['agent-decided-skill'] = {'mode': 'dual', 'decided': True, 'decided_by': 'agent'}
+json.dump(r, open('$REG', 'w'))
+"
+
+python3 /Users/linhancheng/code/social-info/scripts/local-analysis/skill-trigger-health.py \
+  --date 2026-11-11 --out "$T/report4.md" \
+  --projects-dir "$T/projects" --skills-dir "$T/skills" --commands-dir "$T/commands" \
+  --registry "$REG" --claude-git-dir "" \
+  --deep-check-state-dir "$T/state" --repo-roots "$T/symlinks" > "$T/stdout4.txt"
+
+check "P2: 120 天前事件不計入 90d 合計（1 筆近期 + 1 筆 120 天前 → 90d 合計為 1）" grep -q '| `mixed-window-skill` | auto-only (未拍板) | 1 | 0 | 1 |' "$T/report4.md"
+check "P6: decided_by=agent 保留 mode 不被覆寫且報告標註 (agent自決)" bash -c "
+  python3 -c \"import json, sys; e = json.load(open('$REG'))['agent-decided-skill']; sys.exit(0 if e.get('mode') == 'dual' and e.get('decided') is True and e.get('decided_by') == 'agent' else 1)\" &&
+  grep -q '| \`agent-decided-skill\` | dual (agent自決) | 1 | 0 | 1 |' '$T/report4.md'
+"
+
 echo "$pass/$((pass+fail)) passed"
 [ "$fail" -eq 0 ]

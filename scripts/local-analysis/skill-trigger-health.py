@@ -7,8 +7,8 @@
   3. 死庫存候選：安裝 > min-age 天且 90 天窗內零 invoke（每輪限量列出、其餘計數）
 
 分類 registry：reports/local-analysis/.skill-trigger-registry.json
-  {name: {"mode": "auto-only|manual-by-design|dual", "decided": bool}}
-  decided=true 為使用者拍板、腳本永不覆寫；decided=false 每輪按 frontmatter 重新自動猜。
+  {name: {"mode": "auto-only|manual-by-design|dual", "decided": bool, "decided_by": "user|agent"}}
+  decided=true 鎖定分類不覆寫（預設為使用者逐項拍板；授權下自決須標 decided_by="agent" 保持來源可辨）；decided=false 每輪按 frontmatter 重新自動猜。
 
 範圍宣告（no silent caps）：只掃自有 ~/.claude/skills + ~/.claude/commands；
 plugin 前綴（含冒號）的 Skill invoke 不對映；死庫存軸是 90 天窗、非真 lifetime。
@@ -88,7 +88,7 @@ def load_registry(path, inventory):
     entry = registry.get(name)
     if entry and entry.get("decided"):
       continue
-    preserved = {k: v for k, v in (entry or {}).items() if k not in ("mode", "decided")}
+    preserved = {k: v for k, v in (entry or {}).items() if k not in ("mode", "decided", "decided_by")}
     registry[name] = {**preserved, "mode": meta["guess"], "decided": False}
   return registry, new_names
 
@@ -183,7 +183,7 @@ def scan(projects_dir, names, alert_days, dead_days, now):
     for name, events in store.items():
       out[name] = {
         "recent": sum(1 for t in events.values() if t >= alert_cut),
-        "window": len(events),
+        "window": sum(1 for t in events.values() if t >= dead_cut),
         "last_ts": max(events.values()) if events else 0.0,
       }
     return out
@@ -375,7 +375,8 @@ def main():
         f"- ⚠️ `{name}`（auto-only）{args.alert_window_days} 天內被手動 slash **{m['recent']} 次**（同窗 auto {a['recent']} 次）——該自動觸發卻要人手打"
       )
     if a["recent"] or m["recent"]:
-      rows.append(f"| `{name}` | {mode}{'' if decided else ' (未拍板)'} | {a['recent']} | {m['recent']} | {a['window'] + m['window']} |")
+      status_tag = " (未拍板)" if not decided else (" (agent自決)" if reg_entry.get("decided_by") == "agent" else "")
+      rows.append(f"| `{name}` | {mode}{status_tag} | {a['recent']} | {m['recent']} | {a['window'] + m['window']} |")
     if a["window"] + m["window"] == 0:
       if has_remind:
         dead_remind_excluded += 1
@@ -419,7 +420,7 @@ def main():
     lines.append(f"本輪新增 {len(new_undecided)} 項：")
     lines += [f"- {u}" for u in new_undecided]
     lines.append("")
-    lines.append(f"拍板方式：改 {args.registry} 對應 entry 的 mode 並設 decided=true（main session 代改、使用者只拍板）。")
+    lines.append(f"拍板方式：改 {args.registry} 對應 entry 的 mode 並設 decided=true（使用者逐項拍板省略 decided_by；授權下由 agent 自決則補 decided_by=\"agent\" 保持來源可辨）。")
   else:
     lines.append("本輪無新增；既有未拍板項留在 registry、遇事件才逐項拍。")
 
