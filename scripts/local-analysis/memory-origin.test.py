@@ -147,6 +147,45 @@ class ReportTest(unittest.TestCase):
         self.assertIn('### [n.md]', text)
         self.assertIn('b：「x」→ L3：y', text)
 
+    def test_report_tells_reader_to_fix_with_three_agreeing_fixers(self):
+        bad = {'verdict': 'mismatch', 'issues': [{'claim': 'x', 'evidence_line': 3, 'why': 'y'}]}
+        text = self._run({'a': {'verdict': 'ok', 'issues': []}, 'b': bad}, True)
+        steps = text[text.index('## 怎麼修'):text.index('## 需要確認的筆記')]
+        self.assertIn('--bucket any', steps)
+        for label in ('sol-high', 'swe2max', 'opus'):
+            self.assertIn(f'--model {label}=', steps)
+        self.assertIn('--agree-with', steps)
+        self.assertIn('--date d --dry-run', steps)
+        self.assertIn('不要手改', steps)
+
+
+class FixSelectionTest(unittest.TestCase):
+    def test_any_bucket_picks_every_flagged_note(self):
+        tmp = Path(tempfile.mkdtemp())
+        memory, run = tmp / 'memory', tmp / 'run'
+        memory.mkdir()
+        bad = {'verdict': 'mismatch', 'issues': [{'claim': 'c', 'evidence_line': 1, 'why': 'w'}]}
+        ok = {'verdict': 'ok', 'issues': []}
+        for note, (a, b) in {'both.md': (bad, bad), 'one.md': (ok, bad), 'none.md': (ok, ok)}.items():
+            (memory / note).write_text('text', encoding='utf-8')
+            for label, verdict in (('a', a), ('b', b)):
+                (run / label).mkdir(parents=True, exist_ok=True)
+                (run / label / f'{note}.json').write_text(json.dumps(
+                    {'note': note, 'transcript': '/t', 'verdict': verdict}), encoding='utf-8')
+        seen = []
+        saved = (mo.MEMORY_ROOT, mo.relay_key, mo.fix_one, mo.write_time_text)
+        mo.MEMORY_ROOT, mo.relay_key, mo.write_time_text = memory, (lambda: 'k'), (lambda rel: None)
+        mo.fix_one = lambda note, *rest: seen.append(note) or 'ok'
+        try:
+            for bucket, expected in ((['any'], ['both.md', 'one.md']), (['both'], ['both.md'])):
+                seen.clear()
+                args = type('A', (), {'run_dir': str(run), 'out_dir': str(tmp / 'fix'), 'model': ['x=y'],
+                                      'bucket': bucket, 'notes': None, 'limit': 0, 'workers': 1})
+                mo.cmd_fix(args)
+                self.assertEqual(sorted(seen), expected)
+        finally:
+            mo.MEMORY_ROOT, mo.relay_key, mo.fix_one, mo.write_time_text = saved
+
 
 class FixTest(unittest.TestCase):
     NOTE = '---\nname: n\ndescription: 掃了 27 個 session\n---\n第一段 302 次。\n下一行。\n\n第二段。\n'

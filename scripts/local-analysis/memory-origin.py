@@ -649,6 +649,33 @@ def load_scan(run_dir):
     return labels, notes
 
 
+FIXERS = ('sol-high=group/legacy-codex-gpt-6-1-sol-high', 'swe2max=group/swe2max-pool', 'opus=group/claude-opus-5-5')
+
+
+def fix_steps(run_dir, date):
+    """報告裡的修法：三個修正員都同意才改，讀報告的 session 照指令跑、不手改。
+
+    2026-11-11 全量經驗：單一模型照核對員的問題清單改，抽 20 處改錯 3 處；
+    Sol、SWE-2、Opus 都同意才改的樣本沒有改錯（見記憶 project_memory_origin_check_2026_11_10）。
+    """
+    script = Path(__file__).resolve()
+    # 讀報告的 session 不一定在 repo 目錄下執行，路徑一律給絕對的。
+    run_dir = Path(run_dir).resolve()
+    fix_dir = STATE_DIR / 'fixes' / run_dir.name
+    models = ' '.join(f'--model {spec}' for spec in FIXERS)
+    apply = (f'python3 -I {script} apply --fix-dir {fix_dir}/sol-high --agree-with {fix_dir}/swe2max '
+             f'--agree-with {fix_dir}/opus --date {date}')
+    return ['## 怎麼修', '',
+            '不要直接手改筆記：照下面三步，Sol high、SWE-2 Max、Opus 5.5 三個修正員都說要改的地方才改。',
+            '',
+            f'1. 產生提案（只寫提案檔，不動筆記）：`python3 -I {script} fix --run-dir {run_dir} --out-dir {fix_dir} {models} --bucket any`',
+            f'2. 預覽：`{apply} --dry-run`，逐處對照 `{fix_dir}/apply-preview.jsonl` 的改法與證據行；'
+            '改錯的那處，把 sol-high 提案檔裡同一個 issue 改成 `"action": "keep"`。',
+            f'3. 套用：`{apply}`，再到 `~/.claude` commit `{fix_dir}/applied.jsonl` 列出的筆記。',
+            '',
+            '三個修正員沒有都同意、但你認為真的記錯的筆記，列進 digest 交使用者決定，不要手改。', '']
+
+
 def cmd_report(args):
     run_dir = Path(args.run_dir)
     labels, notes = load_scan(run_dir)
@@ -672,8 +699,10 @@ def cmd_report(args):
              f'- 掃描筆記 {len(notes)} 條；模型 {", ".join(labels)}；任一模型判「記錯」就列出（聯集）。',
              f'- 被標出 {len(flagged)} 條；沒有可用回覆 {len(failed)} 條（見文末）。',
              '- 回測：兩個模型聯集在 32 題負例上抓到 12 條真的記錯、3 條只有誤報；誤報都出自 terra。',
-             '', '## 需要確認的筆記', '',
-             '修之前先讀筆記原檔與下列對話行號確認；不算錯就跳過並寫一句理由。只改寫錯的那句，不重寫整篇。', '']
+             '']
+    if flagged:
+        lines += fix_steps(run_dir, args.date)
+    lines += ['## 需要確認的筆記', '']
     for rel, recs in flagged:
         lines.append(f'### [{rel}](file://{MEMORY_ROOT / rel})')
         transcript = next(iter(recs.values()))['transcript']
@@ -754,7 +783,8 @@ def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, 
 def cmd_fix(args):
     import concurrent.futures as cf
     _, notes = load_scan(Path(args.run_dir))
-    picked = [(rel, recs) for rel, recs in sorted(notes.items()) if bucket_of(recs) in args.bucket]
+    picked = [(rel, recs) for rel, recs in sorted(notes.items())
+              if bucket_of(recs) and ('any' in args.bucket or bucket_of(recs) in args.bucket)]
     if args.notes:
         wanted = set(Path(args.notes).read_text(encoding='utf-8').split())
         picked = [(rel, recs) for rel, recs in picked if rel in wanted]
@@ -944,7 +974,7 @@ def main(argv=None):
     fix.add_argument('--run-dir', required=True, help='scan 的結果資料夾')
     fix.add_argument('--out-dir', required=True)
     fix.add_argument('--model', action='append', required=True, help='label=alias，可重複')
-    fix.add_argument('--bucket', action='append', required=True, help='both／<label>-only，可重複')
+    fix.add_argument('--bucket', action='append', required=True, help='both／<label>-only／any（任一模型標出），可重複')
     fix.add_argument('--notes', help='只處理這個檔案列出的筆記（空白分隔的相對路徑）')
     fix.add_argument('--limit', type=int, default=0)
     fix.add_argument('--workers', type=int, default=5)
