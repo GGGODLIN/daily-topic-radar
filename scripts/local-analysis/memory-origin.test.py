@@ -205,6 +205,41 @@ class FixTest(unittest.TestCase):
         items = mo.fix_excerpt(events, 39, 'no numbers', [{'evidence_line': 2}])
         self.assertIn(2, {ln for ln, _, _ in items})
 
+    def test_agreed_fixes_keeps_only_issues_every_other_fixer_fixes(self):
+        mine = [{'issue': 1, 'action': 'fix'}, {'issue': 2, 'action': 'fix'},
+                {'issue': 3, 'action': 'fix'}, {'issue': 4, 'action': 'keep'}]
+        swe = [{'issue': 1, 'action': 'fix'}, {'issue': 2, 'action': 'fix'}, {'issue': 3, 'action': 'keep'}]
+        opus = [{'issue': 1, 'action': 'fix'}, {'issue': 2, 'action': 'keep'}]
+        kept = mo.agreed_fixes(mine, [swe, opus])
+        self.assertEqual([(e['issue'], e['action']) for e in kept], [(1, 'fix'), (4, 'keep')])
+        self.assertEqual(mo.agreed_fixes(mine, []), mine)
+
+    def test_apply_needs_every_agreeing_fixer_to_have_seen_the_note(self):
+        tmp = Path(tempfile.mkdtemp())
+        memory = tmp / 'memory'
+        memory.mkdir()
+        (memory / 'n.md').write_text('x 302 y 7', encoding='utf-8')
+        sol, swe = tmp / 'fix' / 'sol', tmp / 'fix' / 'swe'
+        for d in (sol, swe):
+            d.mkdir(parents=True)
+        edits = [{'issue': 1, 'action': 'fix', 'old': '302', 'new': '303', 'why': 'w'},
+                 {'issue': 2, 'action': 'fix', 'old': 'y 7', 'new': 'y 8', 'why': 'w'}]
+        (sol / 'n.json').write_text(json.dumps({'note': 'n.md', 'transcript': '/t', 'note_text': 'x 302 y 7',
+                                                'edits': edits}), encoding='utf-8')
+        (swe / 'n.json').write_text(json.dumps({'edits': [{'issue': 1, 'action': 'fix'}, {'issue': 2, 'action': 'keep'}]}),
+                                    encoding='utf-8')
+        saved, mo.MEMORY_ROOT = mo.MEMORY_ROOT, memory
+        try:
+            for agree in ([str(swe), str(tmp / 'missing')], [str(swe)]):
+                args = type('A', (), {'fix_dir': str(sol), 'date': 'd', 'notes': None, 'dry_run': False,
+                                      'agree_with': agree})
+                mo.cmd_apply(args)
+        finally:
+            mo.MEMORY_ROOT = saved
+        text = (memory / 'n.md').read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('x 303 y 7'))
+        self.assertEqual(text.count('> 更正行'), 1)
+
     def test_apply_skips_note_changed_after_proposal(self):
         tmp = Path(tempfile.mkdtemp())
         memory = tmp / 'memory'
@@ -217,7 +252,8 @@ class FixTest(unittest.TestCase):
             'edits': [{'action': 'fix', 'old': '302', 'new': '303', 'valid': True}]}), encoding='utf-8')
         saved, mo.MEMORY_ROOT = mo.MEMORY_ROOT, memory
         try:
-            args = type('A', (), {'fix_dir': str(fix_dir), 'date': 'd', 'notes': None, 'dry_run': False})
+            args = type('A', (), {'fix_dir': str(fix_dir), 'date': 'd', 'notes': None, 'dry_run': False,
+                                  'agree_with': []})
             mo.cmd_apply(args)
         finally:
             mo.MEMORY_ROOT = saved

@@ -825,6 +825,18 @@ def apply_edits(text, edits, date, transcript):
     return text, applied, skipped
 
 
+def agreed_fixes(edits, others):
+    """只留其他修正員也對同一個問題說要改的 fix；改法用主修正員的。
+
+    Terra 單獨標出的筆記只靠 Sol 修，抽 20 處改錯 3 處（兩個 GPT 家族一起讀錯）；
+    加上別家模型都同意才改，同一份樣本沒有改錯。
+    """
+    def fixes(other):
+        return {e.get('issue') for e in other if e.get('action') == 'fix'}
+    agreed = set.intersection(*(fixes(o) for o in others)) if others else None
+    return [e for e in edits if e.get('action') != 'fix' or agreed is None or e.get('issue') in agreed]
+
+
 def cmd_apply(args):
     fix_dir = Path(args.fix_dir)
     wanted = set(Path(args.notes).read_text(encoding='utf-8').split()) if args.notes else None
@@ -834,6 +846,14 @@ def cmd_apply(args):
         rec = json.loads(path.read_text(encoding='utf-8'))
         if wanted is not None and rec['note'] not in wanted:
             continue
+        if args.agree_with:
+            # 其他修正員沒有這條的結果（失敗或沒被送去看）就當不同意，整條不改。
+            other_paths = [Path(d) / path.name for d in args.agree_with]
+            if not all(p.exists() for p in other_paths):
+                stats['no_agreement'] = stats.get('no_agreement', 0) + 1
+                continue
+            rec['edits'] = agreed_fixes(rec['edits'], [json.loads(p.read_text(encoding='utf-8'))['edits']
+                                                       for p in other_paths])
         target = MEMORY_ROOT / rec['note']
         current = target.read_text(encoding='utf-8') if target.exists() else None
         if current != rec['note_text']:
@@ -934,6 +954,8 @@ def main(argv=None):
     app.add_argument('--date', required=True)
     app.add_argument('--notes')
     app.add_argument('--dry-run', action='store_true', help='改寫結果寫到 preview/，不動筆記')
+    app.add_argument('--agree-with', action='append', default=[],
+                     help='其他修正員的結果資料夾，可重複；只套用它們也說要改的問題')
     app.set_defaults(func=cmd_apply)
     args = parser.parse_args(argv)
     args.func(args)
