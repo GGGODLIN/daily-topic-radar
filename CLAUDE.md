@@ -72,9 +72,9 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 **注意**：未來 `brew upgrade python` 換版本後，新 Python binary（`/opt/homebrew/opt/python@<version>/bin/python<version>`）也要加進 FDA，不然 launchd job 會死在 `python: realpath: .venv/bin/: Operation not permitted`。.venv 重建後 `.venv/bin/python` symlink 會指到新版本，舊 FDA 不夠。
 
-## GitHub Actions
+## GitHub Actions（已退役）
 
-`.github/workflows/daily.yml` 只剩 `workflow_dispatch:`（手動 trigger backup），原本的 cron `schedule:` 已拿掉——cloud IP 跑 Reddit 被擋。Reddit 抓法細節見「已知 fetcher gap」段（該段是 SSOT）。
+`.github/workflows/` 已於 `1fcfcc3`（2026-08-31）整包移除——雲端 runner IP 跑 Reddit 持續 403，且本機 Apify relay 與觀察池皆住在本機。Reddit 抓法細節見「已知 fetcher gap」段（該段是 SSOT）。
 
 **操作注意**：06:00 launchd 觸發前 VPN 應該關著（消費級 VPN exit IP 連 old.reddit HTML 都可能整個被 ban；**雲端 ASN 出口更死**——2026-08-05 實測 WireGuard 走 AWS Tokyo AS16509 時 5 個 sub 全 403，關掉後同樣 5 個全 200），或設 split-tunnel 把 reddit.com 排除走真實出口。忘了關不會靜默失敗：「自動排程」段的 VPN pre-check 會在 06:00 當下就發桌面通知 + 寫 `ALERT-vpn-precheck.md`。
 
@@ -85,7 +85,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 1. **今日話題分析 = Stage-2 daily digest**：`reports/digest-{date}.html`，手動 trigger 產出 ecosystem 個人化整理。詳「Stage-2 digest」。
 2. **今日本機分析 = 本機分析 multi-channel workflow**：`reports/local-analysis/{date}-{channel}.md`，2026-05-26 起走 on-demand workflow（[`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js)），原 launchd 排程已停用。詳「本機分析 routine」。
 
-- 使用者說「今日話題分析」/「daily 分析」/「跑日報」/「產 digest」→ **跑 stage-2 digest workflow**（2026-05-26 起）：pre-flight（KNOWN_ISSUES.md + WATCH.md + PROBES.md stage-2 fetch）→ 主軸抽取 →（視版本）URL fact-check → 吐 JSON 給 main session 接寫 HTML。**不掃 `reports/local-analysis/`、digest「系統當天動態」段只寫 digest pipeline 自身（不寫本機 channel 跑了沒 / 失敗沒 / drift proposal）**。
+- 使用者說「今日話題分析」/「跑日報」/「產 digest」→ **跑 stage-2 digest workflow**（2026-05-26 起）：pre-flight（KNOWN_ISSUES.md + WATCH.md + PROBES.md stage-2 fetch）→ 主軸抽取 →（視版本）URL fact-check → `WriteDigest` subagent 產出 HTML 並交 main session 跑 verify gate。**不掃 `reports/local-analysis/`、digest「系統當天動態」段只寫 digest pipeline 自身（不寫本機 channel 跑了沒 / 失敗沒 / drift proposal）**。
 - **版本分派的唯一來源是 [`~/.claude/hooks/daily-topic-analysis-trigger.sh`](file:///Users/linhancheng/.claude/hooks/daily-topic-analysis-trigger.sh) 的 `if / elif` case 表**，本檔刻意不列版本清單、不寫檔名、不寫 lens 數——列舉式維護必然落後（2026-08-19 之前本檔寫「兩個版本」，磁碟上已經有三支，且整份 0 次提到 vendor 版）。分派由 hook 自動判斷、main 不用選；每個版本的 lens 組成、覆蓋缺口、audit 續輪規則都由 hook 的 `lens_desc` / `audit_policy` 注入。要查現有哪幾支就 `ls ~/.claude/workflows/daily-topic-analysis*.js`。
 - **為什麼有多版**：lens 砍到只剩 F+E 時實測漏抓（同一天補派兩輪才補齊），所以預設版保留 A、D；極簡版存在的理由是額度緊時仍要跑得完。成本與 agent 數現查 workflow 檔頭。設計與量測依據見 [docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md](/docs/superpowers/specs/2026-08-19-minimal-digest-workflow-design.md)。
 - 使用者說「今日本機分析」/「跑本機分析」/「跑一下本機分析」/「每日本機分析」→ 走 hook 觸發 [`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js) workflow，按 weekday 篩 channel 後 fan-out 偵測並回傳結構化 channel 清單 + `reconcile_cmd`（不產合成 digest，由 `ledger-reconcile.py` 與 main session 接手排檔與根因判斷）。
@@ -166,7 +166,7 @@ digest 階段展開原文（解讀 / 摘要 / 引用）時**按來源分流**。
   - **RSS 的取捨**：拿得到 title / permalink / author / timestamp / **selftext**（比舊列表頁更好，舊的沒有內文），但**拿不到 `score` 與 `num_comments`** —— `engagement={}`，熱度只剩 feed 順序（`top?t=day` 決定）。想要絕對數字只有官方 API 一條路。arctic-shift 補不了：它是快照存檔，當天貼文的 score 全是 1，約 2 天後才成熟。
   - **節流是這條路的主要風險**：Reddit 對 RSS 擋很兇，pipeline 又是 `asyncio.gather` 全並行。`reddit.py` 因此用 module-level lock 把請求序列化（`MIN_REQUEST_GAP_SECONDS=45`）＋ 429 退避重試一次（`THROTTLED_RETRY_DELAY_SECONDS=90`），並用 `TOTAL_BUDGET_SECONDS=300` 封頂。`run-daily.sh` 看門狗是 3300s（linux.do 50 頁慢速抓取的 source budget 3000s 之上）。**調這三個常數前先讀 `reddit.py` 檔頭**。2026-08-11 實測：3 個 sub 全數成功、總耗時 183 秒。
   - **靜默失效偵測（同日補上）**：`__main__.py` 計算 `empty = [r for r in results if r.ok and r.items_count() == 0]` 傳進 `render_file`，raw md header 會多出 `sources_empty: N` 與 `> empty (HTTP ok but 0 items parsed…)` 區塊。另 `classify_error` 把 **429 從 `persistent_error` 改判 `transient`**（節流可重試，原分類等於「重試也沒用」）。
-- Threads `D15iJFBNZ9wgeWAhw` Apify actor 持續 400（payload schema 不合）
+- Threads `threads_keyword` Apify actor 計費不受 `maxItemsPerKeyword` 限制（估約 US$94/月），目前停用（見 `sources.yml`）
 - HN 抓 front_page link + 每則 story 的 top 5 comments（Firebase API，2026-05-11 之後）；不抓巢狀回覆
 - X 只抓 KOL handle、不抓 reply / quote tweet / search query
 - **⚠️ pipeline hang bug（2026-06-05 事故、未根治）**：06:00 launchd run `python -m social_info` **卡死 6 小時零進展**（CPU 累積僅 1.24s）、raw md 沒產出、`state.db` 停在前一天。手動 kill + 08:59 重跑：10 秒產出 107KB raw md，但**重跑也卡在「寫完 raw md 後退出」階段**（同源 hang）、再 kill 一次。兩次卡點不同（fetch 階段 vs exit 階段）但同病根。**timeout 不是缺失**（`pipeline.py` 有 `HTTP_TIMEOUT=httpx.Timeout(30.0, connect=10.0)` 全局 + 各 fetcher override），推測根因是**某 fetcher 內有 sync blocking call（HTML/lxml parse 等）block 整個 asyncio event loop → httpx timeout timer 不觸發**，或 exit 階段 httpx client / 背景 task 沒乾淨收尾。**止血**：`scripts/run-daily.sh` 已加 hard-timeout 看門狗（3300s、每 30s 輪詢、超時 `pkill -f social_info` 砍 process tree + log，不阻 commit 已產出資料）。**根治待辦**：reproduce + 對每個 fetcher 加 logging 找出卡哪個 source，或把 sync parse 丟 `asyncio.to_thread` / 給 `asyncio.gather` 包 `asyncio.wait_for` 整體上限 + 確保 client 收尾。

@@ -1,7 +1,6 @@
 """Product Hunt GraphQL fetcher.
 
-Requires a Bearer token (PRODUCT_HUNT_TOKEN env var) which the orchestrator
-attaches to the httpx.AsyncClient headers before calling this fetcher.
+Reads PRODUCT_HUNT_TOKEN from the environment and sends it as a Bearer header.
 """
 import os
 from datetime import datetime
