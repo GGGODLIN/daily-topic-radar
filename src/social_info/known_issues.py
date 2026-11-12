@@ -14,9 +14,9 @@ from typing import Any
 TAIPEI = timezone(timedelta(hours=8))
 
 _REDDIT_HINT = (
-    "Reddit 擋未認證 .json API（HTTP 403，非 VPN/IP — 住宅 IP 打 HTML 仍 200）。"
-    "fetcher 已改抓 old.reddit.com 列表 HTML；若這裡仍出現代表 old.reddit 也被擋，"
-    "需改接 Reddit OAuth API（註冊 app + client credentials）。"
+    "fetcher 抓 www.reddit.com/r/X/top.rss（官方自助 API 已關閉、old.reddit 列表頁亦已封鎖）。"
+    "若回 403 多半是雲端 / VPN 出口 IP 被擋，關掉 VPN 後跑 `uv run python -m social_info --retry-failures` 補抓；"
+    "若回 429 為 RSS 節流，下次排程會依退避序列重試。"
 )
 
 _TWITTER_HINT = (
@@ -32,9 +32,12 @@ ACTION_HINTS: dict[str, str] = {
     "reddit_openai": _REDDIT_HINT,
     "reddit_singularity": _REDDIT_HINT,
     "reddit_machinelearning": _REDDIT_HINT,
-    "threads_keyword": "Apify actor D15iJFBNZ9wgeWAhw schema 不合，已知持續壞。換 actor 或 sources.yml 設 enabled:false。",
+    "threads_keyword": "Apify actor 計費不受 maxItemsPerKeyword 限制（估約 $94/月），預設停用；啟用前先確認配額。",
     "twitter_tier1": _TWITTER_HINT,
+    "twitter_tier2": _TWITTER_HINT,
+    "twitter_radar": _TWITTER_HINT,
     "twitter_anthropic": _TWITTER_HINT,
+    "twitter_matt": _TWITTER_HINT,
 }
 
 DEFAULT_HINTS: dict[str, str] = {

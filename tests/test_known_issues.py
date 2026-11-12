@@ -69,3 +69,19 @@ def test_multiline_error_collapsed_onto_bullet_line() -> None:
         if "developer.mozilla.org" in line:
             assert line.startswith("- **venturebeat_ai**")
 
+
+def test_reddit_and_twitter_hints_match_active_fetchers() -> None:
+    out = render(
+        [
+            _issue("reddit_claudeai", "user_action_required"),
+            _issue("twitter_radar", "persistent_error"),
+            _issue("twitter_matt", "persistent_error"),
+        ],
+        NOW,
+    )
+    assert "top.rss" in out
+    assert "old.reddit.com" not in out
+    assert "OAuth API" not in out
+    assert out.count("ScrapeBadger") == 2
+
+

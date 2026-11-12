@@ -88,6 +88,7 @@ ALERTEOF
   AGG_RC=0
   wait "$AGG_PID" || AGG_RC=$?
   kill "$AGG_WD_PID" 2>/dev/null || true
+  wait "$AGG_WD_PID" 2>/dev/null || true
   if [ "$AGG_RC" -ne 0 ]; then
     echo "=== ⚠️ aggregator exit code ${AGG_RC}（被 timeout 砍或自身錯誤）；仍嘗試 commit 已產出 raw md ==="
   fi
