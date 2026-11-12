@@ -21,6 +21,7 @@ from social_info.pipeline import (
     run_pipeline,
     write_report,
 )
+from social_info.redact import redact_text
 from social_info.topic_radar import (
     RadarHistory,
     analyze,
@@ -101,7 +102,8 @@ def _free_radar_markdown(config, date: str) -> str:
             continue
         report_path = Path(source.params.get("report_dir", "reports/new-term-radar")) / f"{date}.json"
         if report_path.exists():
-            sections.append(render_free_radar_report(json.loads(report_path.read_text(encoding="utf-8"))))
+            rendered = render_free_radar_report(json.loads(report_path.read_text(encoding="utf-8")))
+            sections.append(redact_text(rendered))
     return "\n\n".join(sections)
 
 

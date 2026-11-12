@@ -4,12 +4,15 @@ Synthetic tokens are assembled at runtime on purpose: a literal that looks like 
 real provider key would itself trip GitHub push protection on this repo.
 """
 
+import json
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from social_info.__main__ import _free_radar_markdown
+from social_info.config import Config, SourceConfig
 from social_info.db import Database
 from social_info.fetchers.base import FetchResult, Item
 from social_info.redact import redact_item, redact_result, redact_row, redact_text
@@ -57,8 +60,8 @@ def _item(**overrides) -> Item:
         source="linuxdo",
         source_handle="",
         source_tier=2,
-        posted_at=datetime(2026, 10, 17, tzinfo=timezone.utc),
-        fetched_at=datetime(2026, 10, 17, tzinfo=timezone.utc),
+        posted_at=datetime(2026, 10, 17, tzinfo=UTC),
+        fetched_at=datetime(2026, 10, 17, tzinfo=UTC),
     )
     base.update(overrides)
     return Item(**base)
@@ -80,11 +83,83 @@ def test_redact_item_covers_every_text_field():
     assert item.excerpt.endswith(ARK), "input item is not mutated"
 
 
-def test_redact_result_rewrites_items_only():
-    result = FetchResult(source_id="linuxdo", started_at=datetime(2026, 10, 17, tzinfo=timezone.utc), ok=True, items=[_item(excerpt=ARK)])
+def test_redact_result_rewrites_items_and_errors():
+    result = FetchResult(
+        source_id="linuxdo",
+        started_at=datetime(2026, 10, 17, tzinfo=UTC),
+        ok=False,
+        error=f"upstream echoed {SK}",
+        items=[_item(excerpt=ARK)],
+    )
     out = redact_result(result)
     assert out.items[0].excerpt == "[REDACTED-KEY:ark]"
-    assert out.source_id == "linuxdo" and out.ok is True
+    err_leaked = SK in out.error
+    assert not err_leaked, "error token leaked"
+    assert "[REDACTED-KEY:sk]" in out.error
+
+
+def test_redact_item_masks_author_url_and_also_appeared_in():
+    item = _item(
+        author=f"user ({GH})",
+        url=f"https://x.test/{ARK}",
+        also_appeared_in=[{"source": "x", "source_handle": "@a", "url": f"https://x.test/{SK}"}],
+    )
+    out = redact_item(item)
+    author_leaked = GH in out.author
+    url_leaked = ARK in out.url
+    also_leaked = SK in out.also_appeared_in[0]["url"]
+    assert not author_leaked, "author token leaked"
+    assert not url_leaked, "url token leaked"
+    assert not also_leaked, "also_appeared_in token leaked"
+
+
+def test_db_update_also_appeared_in_masks_tokens():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(Path(tmp) / "t.db")
+        db.init_schema()
+        db.insert_item(_item().to_db_row(item_id="id1", title_hash="h1"))
+        db.update_also_appeared_in("id1", json.dumps([{"source": "x", "url": f"https://x.test/{SK}"}]))
+        stored = db.conn.execute("SELECT also_appeared_in FROM items WHERE id='id1'").fetchone()[0]
+        db.close()
+    db_leaked = SK in stored
+    assert not db_leaked, "db update_also_appeared_in token leaked"
+    assert "[REDACTED-KEY:sk]" in stored
+
+
+def test_free_radar_markdown_masks_report_json_before_splicing(tmp_path):
+    report_dir = tmp_path / "new-term-radar"
+    report_dir.mkdir()
+    payload = {
+        "date": "2026-11-12",
+        "health": {"github": {"ok": True, "items": 1}},
+        "leads": [{"kind": "github", "term": "acme/leak-demo", "note": f"note {SK}"}],
+        "raw_items": [
+            {
+                "status": "breakout",
+                "title": "acme/leak-demo",
+                "url": "https://github.com/acme/leak-demo",
+                "description": f"accidental key {GH} in repo description",
+            }
+        ],
+    }
+    (report_dir / "2026-11-12.json").write_text(json.dumps(payload), encoding="utf-8")
+    cfg = Config(
+        defaults={},
+        sources=[
+            SourceConfig(
+                id="free_radar",
+                type="new_term_radar",
+                enabled=True,
+                tier=2,
+                params={"report_dir": str(report_dir)},
+            )
+        ],
+    )
+    md = _free_radar_markdown(cfg, "2026-11-12")
+    md_leaked = (GH in md) or (SK in md)
+    assert not md_leaked, "free_radar markdown leaked token"
+    assert "[REDACTED-KEY:github]" in md
+    assert "[REDACTED-KEY:sk]" in md
 
 
 def test_redact_row_masks_string_values():

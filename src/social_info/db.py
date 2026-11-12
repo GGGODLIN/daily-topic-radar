@@ -1,11 +1,11 @@
 """SQLite layer for items + fetch_runs."""
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from social_info._time import utcnow
-from social_info.redact import redact_row
+from social_info.redact import redact_row, redact_text
 
 TAIPEI = timezone(timedelta(hours=8))
 
@@ -109,7 +109,7 @@ class Database:
     def update_also_appeared_in(self, item_id: str, also_appeared_in_json: str) -> None:
         self.conn.execute(
             "UPDATE items SET also_appeared_in = ? WHERE id = ?",
-            (also_appeared_in_json, item_id),
+            (redact_text(also_appeared_in_json), item_id),
         )
         self.conn.commit()
 
@@ -172,10 +172,10 @@ class Database:
         08:00 CST queries UTC = today and gets nothing.
         """
         day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=TAIPEI)
-        start_utc = day_start.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+        start_utc = day_start.astimezone(UTC).replace(tzinfo=None).isoformat()
         end_utc = (
             (day_start + timedelta(days=1))
-            .astimezone(timezone.utc)
+            .astimezone(UTC)
             .replace(tzinfo=None)
             .isoformat()
         )

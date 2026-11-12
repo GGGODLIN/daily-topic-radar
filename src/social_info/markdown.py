@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from social_info.fetchers.base import FetchResult, Item
+from social_info.redact import redact_text
 
 COMMENT_TRUNCATE_CHARS = 300
 _SKILLS_SH_BOARD_ORDER = {"trending": 0, "hot": 1}
@@ -239,7 +240,7 @@ def render_file(
             lines.append(render_item(it, is_resurface=id(it) in resurface_object_ids))
 
     if radar_markdown:
-        lines.extend(["", RADAR_START, radar_markdown.rstrip("\n"), RADAR_END, ""])
+        lines.extend(["", RADAR_START, redact_text(radar_markdown.rstrip("\n")), RADAR_END, ""])
 
     return "\n".join(lines)
 

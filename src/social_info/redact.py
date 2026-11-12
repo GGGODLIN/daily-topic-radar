@@ -58,17 +58,23 @@ def redact_item(item: Item) -> Item:
     return replace(
         item,
         title=redact_text(item.title),
+        url=redact_text(item.url),
+        canonical_url=redact_text(item.canonical_url),
+        author=redact_text(item.author),
         excerpt=redact_text(item.excerpt),
         content=redact_text(item.content),
+        also_appeared_in=[_redact_mapping_values(entry) for entry in item.also_appeared_in],
         comments=[_redact_mapping_values(comment) for comment in item.comments],
         metadata=_redact_mapping_values(item.metadata),
     )
 
 
 def redact_result(result: FetchResult) -> FetchResult:
-    if not result.items:
+    items = [redact_item(item) for item in result.items] if result.items else result.items
+    error = redact_text(result.error) if result.error else result.error
+    if items is result.items and error == result.error:
         return result
-    return replace(result, items=[redact_item(item) for item in result.items])
+    return replace(result, items=items, error=error)
 
 
 def redact_row(row: dict[str, Any]) -> dict[str, Any]:
