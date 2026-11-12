@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -66,3 +67,19 @@ async def test_entry_without_slug_is_skipped(httpx_mock):
         items = await fetch(_cfg(limit=10), client)
 
     assert [it.title for it in items] == ["ok"]
+
+
+@pytest.mark.asyncio
+async def test_repeating_cursor_terminates_without_infinite_loop(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(r"https://clawhub\.ai/api/v1/skills.*"),
+        json={"items": [{"displayName": "no slug"}], "nextCursor": "stuck"},
+        is_reusable=True,
+    )
+
+    async with httpx.AsyncClient() as client:
+        items = await asyncio.wait_for(fetch(_cfg(limit=10), client), timeout=1.0)
+
+    assert items == []
+    assert len(httpx_mock.get_requests()) <= 2
+

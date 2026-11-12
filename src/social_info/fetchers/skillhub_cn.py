@@ -11,6 +11,7 @@ from social_info.url_utils import canonical_url
 BASE_URL = "https://api.skillhub.cn"
 SITE_URL = "https://skillhub.cn"
 PAGE_SIZE = 100
+MAX_PAGES = 20
 USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 
 
@@ -76,7 +77,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     now = utcnow()
     page = 1
 
-    while len(items) < limit:
+    while len(items) < limit and page <= MAX_PAGES:
         params: dict[str, object] = {
             "page": page,
             "pageSize": PAGE_SIZE,

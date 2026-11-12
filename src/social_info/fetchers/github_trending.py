@@ -42,12 +42,15 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
 
     items: list[Item] = []
     now = utcnow()
+    succeeded = 0
+    last_exc: Exception | None = None
     for lang in languages:
         for since in since_values:
             try:
                 url = f"https://github.com/trending/{lang}".rstrip("/") + f"?since={since}"
                 resp = await http.get(url, timeout=30.0)
                 resp.raise_for_status()
+                succeeded += 1
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for repo in soup.select("article.Box-row"):
                     link_el = repo.select_one("h2 a")
@@ -78,7 +81,10 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
                         metadata={"content_kind": "description"},
                     ))
             except Exception as e:
+                last_exc = e
                 print(f"github_trending {lang} {since} failed: {e}", file=sys.stderr)
                 continue
             await asyncio.sleep(0.1)
+    if succeeded == 0 and last_exc is not None:
+        raise last_exc
     return items

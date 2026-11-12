@@ -135,3 +135,23 @@ async def test_fetch_iterates_since_list(httpx_mock):
 
     # 2 個 since values × N repos per fixture (dedup 沒在 fetcher 端做)
     assert len(items) > 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_all_requests_fail(httpx_mock):
+    httpx_mock.add_exception(
+        httpx.ConnectError("dns down"),
+        url=re.compile(r"https://github\.com/trending/.*"),
+        is_reusable=True,
+    )
+    cfg = SourceConfig(
+        id="github_trending",
+        type="github_trending",
+        enabled=True,
+        tier=1,
+        params={"languages": ["python", "rust"], "since": ["daily"]},
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(httpx.ConnectError, match="dns down"):
+            await fetch(cfg, client)
+

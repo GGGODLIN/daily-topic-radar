@@ -79,3 +79,23 @@ def test_substitute_query_template_date():
         "stars:>1000 claude in:description pushed:>{7d}", now=now
     )
     assert result == "stars:>1000 claude in:description pushed:>2026-07-02"
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_when_all_queries_fail():
+    cfg = SourceConfig(
+        id="github_search",
+        type="github_search",
+        enabled=True,
+        tier=1,
+        params={"queries": ["q1", "q2"]},
+    )
+    with (
+        patch(
+            "social_info.fetchers.github_search._gh_search",
+            side_effect=RuntimeError("gh auth expired"),
+        ),
+        pytest.raises(RuntimeError, match="gh auth expired"),
+    ):
+        await fetch(cfg)
+

@@ -10,6 +10,7 @@ from social_info.url_utils import canonical_url
 
 BASE_URL = "https://clawhub.ai"
 PAGE_SIZE = 100
+MAX_PAGES = 20
 USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 
 
@@ -58,9 +59,12 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     limit = source.params.get("limit", 100)
     items: list[Item] = []
     cursor: str | None = None
+    seen_cursors: set[str] = set()
     now = utcnow()
+    pages = 0
 
-    while len(items) < limit:
+    while len(items) < limit and pages < MAX_PAGES:
+        pages += 1
         params: dict[str, object] = {
             "sort": "downloads",
             "limit": min(PAGE_SIZE, limit - len(items)),
@@ -84,8 +88,10 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
                 items.append(item)
             if len(items) >= limit:
                 break
-        cursor = payload.get("nextCursor")
-        if not cursor:
+        next_cursor = payload.get("nextCursor")
+        if not next_cursor or next_cursor in seen_cursors:
             break
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
 
     return items

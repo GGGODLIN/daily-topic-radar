@@ -57,11 +57,14 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
     now = utcnow()
     items: list[Item] = []
     seen_urls: set[str] = set()
+    succeeded = 0
+    last_exc: Exception | None = None
 
     for query_template in queries:
         query = _substitute_template(query_template, now=now)
         try:
             data = await asyncio.to_thread(_gh_search, query, per_query_limit)
+            succeeded += 1
 
             for repo in data.get("items", []):
                 full_name = repo["full_name"]
@@ -94,7 +97,10 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
                     metadata={**metadata, "content_kind": "description"},
                 ))
         except Exception as e:
+            last_exc = e
             print(f"github_search query '{query}' failed: {e}", file=sys.stderr)
             continue
 
+    if succeeded == 0 and last_exc is not None:
+        raise last_exc
     return items
