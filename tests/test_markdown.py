@@ -299,3 +299,80 @@ def test_skills_sh_items_render_in_own_group_with_rank_and_installs():
     assert "100 installs" in out
     assert out.index("trending-skill") < out.index("trending-rank-2")
     assert out.index("trending-rank-2") < out.index("hot-skill")
+
+
+def test_render_item_collapses_multiline_title_into_valid_heading_link():
+    item = _item(
+        title="Starting to roll out today: Claude Data.\n\nThink a plan through on a board…",
+        url="https://x.com/claudeai/status/1",
+    )
+    out = render_item(item)
+    first_line = out.splitlines()[0]
+    assert first_line == (
+        "### [Starting to roll out today: Claude Data. "
+        "Think a plan through on a board…](https://x.com/claudeai/status/1)"
+    )
+
+
+def test_render_file_collapses_multiline_failure_error_inside_blockquote():
+    err = (
+        "HTTPStatusError: Client error '429 Too Many Requests'\n"
+        "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429"
+    )
+    out = render_file(
+        date="2026-11-12",
+        generated_at=datetime(2026, 11, 12, 6, 0, 0),
+        items=[],
+        failures=[FetchResult(source_id="venturebeat_ai", ok=False, error=err)],
+    )
+    for line in out.splitlines():
+        if "developer.mozilla.org" in line:
+            assert line.startswith(">   - venturebeat_ai:")
+
+
+def test_render_item_displays_stars_and_downloads_for_github_and_hf():
+    gh = _item(
+        title="anthropics/claude-code",
+        url="https://github.com/anthropics/claude-code",
+        source="github_trending",
+        source_handle="trending:typescript:daily",
+        engagement={"stars": 42500},
+    )
+    hf = _item(
+        title="Qwen/Qwen3.8-27B",
+        url="https://huggingface.co/Qwen/Qwen3.8-27B",
+        source="huggingface",
+        source_handle="trending:models",
+        engagement={"likes": 820, "downloads": 154000},
+    )
+    assert "★ 42,500" in render_item(gh)
+    assert "154,000 downloads" in render_item(hf)
+
+
+def test_render_file_does_not_treat_higher_rank_number_as_higher_engagement():
+    rank_1 = _item(
+        title="first-place-skill",
+        url="https://clawhub.ai/skills/first",
+        canonical_url="https://clawhub.ai/skills/first",
+        source="clawhub",
+        source_handle="rank-1",
+        source_tier=2,
+        engagement={"rank": 1, "downloads": 10, "versions": 1},
+    )
+    rank_50 = _item(
+        title="fiftieth-place-skill",
+        url="https://clawhub.ai/skills/fiftieth",
+        canonical_url="https://clawhub.ai/skills/fiftieth",
+        source="clawhub",
+        source_handle="rank-50",
+        source_tier=2,
+        engagement={"rank": 50, "downloads": 10, "versions": 9},
+    )
+    out = render_file(
+        date="2026-11-12",
+        generated_at=datetime(2026, 11, 12, 6, 0, 0),
+        items=[rank_50, rank_1],
+        failures=[],
+    )
+    assert out.index("first-place-skill") < out.index("fiftieth-place-skill")
+

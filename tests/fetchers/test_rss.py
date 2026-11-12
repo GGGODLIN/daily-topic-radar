@@ -63,3 +63,33 @@ async def test_fetch_rss_sends_configured_user_agent(httpx_mock):
     assert req is not None
     assert req.headers["user-agent"] == custom_ua
 
+
+@pytest.mark.asyncio
+async def test_fetch_rss_unescapes_double_encoded_wordpress_entities(httpx_mock):
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel><title>BlockTempo</title>'
+        '<item>'
+        '<title>Gemini &amp;#8212; 新進展</title>'
+        '<link>https://www.blocktempo.com/a</link>'
+        '<description>&lt;p&gt;摘要文字 [&amp;#8230;]&lt;/p&gt;</description>'
+        '</item></channel></rss>'
+    )
+    httpx_mock.add_response(url="https://www.blocktempo.com/feed/", text=xml)
+    cfg = SourceConfig(
+        id="blocktempo_ai",
+        type="rss",
+        enabled=True,
+        tier=2,
+        language="zh-TW",
+        params={"url": "https://www.blocktempo.com/feed/"},
+    )
+    async with httpx.AsyncClient() as client:
+        items = await fetch(cfg, client)
+
+    assert len(items) == 1
+    assert "&#8230;" not in items[0].excerpt
+    assert "[…]" in items[0].excerpt
+    assert items[0].title == "Gemini — 新進展"
+
+

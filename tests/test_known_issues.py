@@ -59,3 +59,13 @@ def test_multi_classes() -> None:
     assert "🚨 User action required (1)" in out
     assert "🪦 Stable failures" in out
     assert "⏳ Transient" in out
+
+
+def test_multiline_error_collapsed_onto_bullet_line() -> None:
+    item = _issue("venturebeat_ai", "transient", fails=8)
+    item["last_error"] = "HTTPStatusError: 429\nFor more information check: https://developer.mozilla.org"
+    out = render([item], NOW)
+    for line in out.splitlines():
+        if "developer.mozilla.org" in line:
+            assert line.startswith("- **venturebeat_ai**")
+

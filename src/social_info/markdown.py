@@ -1,4 +1,5 @@
 """Markdown rendering for daily digest files."""
+import html
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -8,6 +9,7 @@ from social_info.fetchers.base import FetchResult, Item
 COMMENT_TRUNCATE_CHARS = 300
 _SKILLS_SH_BOARD_ORDER = {"trending": 0, "hot": 1}
 _SKILL_REGISTRY_SOURCES = frozenset({"skills_sh", "skillhub_cn", "clawhub"})
+_NON_SCORE_ENGAGEMENT_KEYS = frozenset({"rank", "versions"})
 
 PLATFORM_GROUP_ORDER = [
     ("x", "X / Twitter"),
@@ -64,10 +66,22 @@ def _skills_sh_sort_key(item: Item) -> tuple[int, int]:
     )
 
 
+def _engagement_score(item: Item) -> int | float:
+    return sum(
+        v
+        for k, v in item.engagement.items()
+        if k not in _NON_SCORE_ENGAGEMENT_KEYS and isinstance(v, (int, float))
+    )
+
+
+def _one_line(text: str) -> str:
+    return " ".join(html.unescape(text or "").split())
+
+
 def render_item(item: Item, is_resurface: bool = False) -> str:
     lines = []
     prefix = "🔁 " if is_resurface else ""
-    lines.append(f"### {prefix}[{item.title}]({item.url})")
+    lines.append(f"### {prefix}[{_one_line(item.title)}]({item.url})")
     lines.append("")
 
     meta_parts = [
@@ -84,15 +98,16 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
         meta_parts.append(f"💬 {item.engagement['comments']}")
     if item.engagement.get("score") and item.source != "x":
         meta_parts.append(f"▲ {item.engagement['score']}")
-    if item.source in _SKILL_REGISTRY_SOURCES:
-        if "rank" in item.engagement:
-            meta_parts.append(f"rank #{item.engagement['rank']}")
-        if item.engagement.get("downloads"):
-            meta_parts.append(f"{item.engagement['downloads']:,} downloads")
-        if item.engagement.get("installs"):
-            meta_parts.append(f"{item.engagement['installs']:,} installs")
-        if item.engagement.get("stars"):
-            meta_parts.append(f"★ {item.engagement['stars']:,}")
+    if "rank" in item.engagement and (
+        item.source in _SKILL_REGISTRY_SOURCES or item.source == "trendshift"
+    ):
+        meta_parts.append(f"rank #{item.engagement['rank']}")
+    if item.engagement.get("downloads"):
+        meta_parts.append(f"{item.engagement['downloads']:,} downloads")
+    if item.engagement.get("installs"):
+        meta_parts.append(f"{item.engagement['installs']:,} installs")
+    if item.engagement.get("stars"):
+        meta_parts.append(f"★ {item.engagement['stars']:,}")
     lines.append(" · ".join(meta_parts))
     lines.append("")
 
@@ -103,7 +118,7 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
             for excerpt_line in item.excerpt.strip("\n").split("\n"):
                 lines.append(f"> {excerpt_line}".rstrip())
         else:
-            lines.append(f"> {item.excerpt.replace('\n', ' ').strip()}")
+            lines.append(f"> {_one_line(item.excerpt)}")
         lines.append("")
 
     lines.extend(_content_lines(item))
@@ -173,7 +188,13 @@ def render_file(
         if k == "skills_sh":
             grouped[k].sort(key=_skills_sh_sort_key)
         else:
-            grouped[k].sort(key=lambda x: (x.source_tier, -sum(x.engagement.values())))
+            grouped[k].sort(
+                key=lambda x: (
+                    x.source_tier,
+                    -_engagement_score(x),
+                    x.engagement.get("rank", 2**31),
+                )
+            )
 
     sources_active = len({(i.source, i.source_handle) for i in all_items})
 
@@ -194,7 +215,8 @@ def render_file(
     if failures:
         lines.append("> failures:")
         for f in failures:
-            lines.append(f">   - {f.source_id}: {f.error}")
+            err_line = " ".join((f.error or "").splitlines()).strip()
+            lines.append(f">   - {f.source_id}: {err_line}")
     if empty:
         lines.append("> empty (HTTP ok but 0 items parsed — source may be silently broken):")
         for e in empty:

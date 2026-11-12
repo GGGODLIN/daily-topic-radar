@@ -1,4 +1,5 @@
 """RSSHub fetcher: combine instance URL + path, parse as RSS."""
+import html
 import os
 import re
 from datetime import datetime
@@ -34,16 +35,18 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     items: list[Item] = []
     now = utcnow()
     for entry in parsed.entries[:limit]:
-        title = entry.get("title", "").strip()
+        title = html.unescape(entry.get("title", "")).strip()
         link = entry.get("link", "").strip()
         if not title or not link:
             continue
         if entry.get("published_parsed"):
             posted_at = datetime.fromtimestamp(mktime(entry.published_parsed))
+        elif entry.get("updated_parsed"):
+            posted_at = datetime.fromtimestamp(mktime(entry.updated_parsed))
         else:
             posted_at = now
         raw_excerpt = entry.get("summary") or entry.get("description") or ""
-        excerpt = _WS_RE.sub(" ", _TAG_RE.sub("", raw_excerpt)).strip()[:200]
+        excerpt = _WS_RE.sub(" ", html.unescape(_TAG_RE.sub("", raw_excerpt))).strip()[:200]
         items.append(Item(
             title=title,
             url=link,

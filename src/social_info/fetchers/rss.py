@@ -1,4 +1,5 @@
 """Generic RSS / Atom fetcher (lab blogs, tech media, Taiwan media)."""
+import html as html_lib
 from datetime import datetime
 from time import mktime
 
@@ -14,7 +15,7 @@ from social_info.url_utils import canonical_url
 
 def _excerpt(html: str) -> str:
     # Existing summary path stays a collapsed 200-char excerpt.
-    text = BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True)
+    text = html_lib.unescape(BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True))
     return " ".join(text.split())[:200]
 
 
@@ -24,7 +25,7 @@ def _feed_content(entry) -> tuple[str, str]:
     if not content:
         return "", ""
     raw = content[0].get("value", "") or ""
-    return BeautifulSoup(raw, "html.parser").get_text("\n", strip=True), "feed_content"
+    return html_lib.unescape(BeautifulSoup(raw, "html.parser").get_text("\n", strip=True)), "feed_content"
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
@@ -39,7 +40,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     items: list[Item] = []
     now = utcnow()
     for entry in parsed.entries[:limit]:
-        title = entry.get("title", "").strip()
+        title = html_lib.unescape(entry.get("title", "")).strip()
         link = entry.get("link", "").strip()
         if not title or not link:
             continue

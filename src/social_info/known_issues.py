@@ -7,7 +7,7 @@ Two tiers:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,7 @@ def _format_iso(ts: str | None) -> str:
     try:
         dt = datetime.fromisoformat(ts)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.astimezone(TAIPEI).strftime("%Y-%m-%d %H:%M CST")
     except (ValueError, TypeError):
         return ts
@@ -69,7 +69,7 @@ def _hint_for(source: str, error_class: str) -> str:
 
 def _issue_line(issue: dict[str, Any]) -> str:
     source = issue["source"]
-    err = issue["last_error"] or "(no error message)"
+    err = " ".join((issue["last_error"] or "(no error message)").splitlines()).strip()
     last_ok = _format_iso(issue.get("last_ok_at"))
     consecutive = issue.get("consecutive_fail_runs", 1)
     attempts = issue.get("last_attempts", 1)
