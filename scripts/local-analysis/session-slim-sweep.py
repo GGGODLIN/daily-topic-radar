@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run session-slim on Claude Code sessions that have ended, and compress ended pi sessions.
+"""Run session-slim on ended Claude Code sessions, and compress cold plain-text CC and ended pi sessions.
 
 Threat model: 這是給誠實系統用的自動整理，不是安全閘門；判斷不出 session 是否結束時一律不動，留給下一輪。
 不保證：只認得程序名稱是 claude 的 Claude Code（用 node 跑的不算）；註冊檔不在 ~/.claude/sessions 的
@@ -8,12 +8,12 @@ claude 程序（例如另一個 CLAUDE_CONFIG_DIR）會讓整輪不動；pi 沒�
 停用：建立 <state>/disabled。
 """
 import argparse
-import contextlib
 import importlib.util
 import json
 import mmap
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -32,6 +32,7 @@ IDLE_SECONDS = 30 * 60
 QUEUE_SETTLE_SECONDS = 60
 QUEUE_WAIT_SECONDS = 120
 SWEEP_DAYS = 14
+COLD_DAYS = 30
 MIN_BYTES = 256 * 1024
 
 
@@ -204,6 +205,23 @@ def cc_candidates(seen, live, now, queued):
   return unique
 
 
+def cc_cold_candidates(seen, live, now, exclude=()):
+  picked = []
+  for path in CC_ROOT.glob("**/*.jsonl"):
+    if path in exclude:
+      continue
+    try:
+      info = path.stat()
+    except OSError:
+      continue
+    if now - info.st_mtime < COLD_DAYS * 86400 or info.st_size < MIN_BYTES or info.st_flags & stat.UF_COMPRESSED:
+      continue
+    if session_key(path) in live or unchanged_since(seen, path) or has_duplicates(path):
+      continue
+    picked.append(path)
+  return picked
+
+
 def pi_candidates(seen, live, now):
   horizon = now - SWEEP_DAYS * 86400
   picked = []
@@ -227,6 +245,16 @@ def mark(seen, path):
   seen[str(path)] = [info.st_size, info.st_mtime_ns]
 
 
+def compress_one(path, afsctool):
+  info = path.stat()
+  proc = subprocess.run([afsctool, "-c", "-T", "LZFSE", str(path)], capture_output=True, text=True)
+  os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+  if proc.returncode != 0:
+    detail = (proc.stderr or proc.stdout).strip() or f"afsctool exit {proc.returncode}"
+    return {"path": str(path), "error": detail}
+  return {"path": str(path), "compressed": bool(path.stat().st_flags & stat.UF_COMPRESSED)}
+
+
 def run(state=STATE, audit_state=AUDIT_STATE, wait_queue=True):
   if (state / "disabled").exists():
     return {"skip": "disabled"}
@@ -238,15 +266,22 @@ def run(state=STATE, audit_state=AUDIT_STATE, wait_queue=True):
   # 判斷得出誰還開著才取佇列：先取再放棄，SessionEnd 登記的項目會被刪掉卻沒處理
   queued = take_queue(state)
   deadline = time.time() + (QUEUE_WAIT_SECONDS if wait_queue and queued else 0)
+  live_stale = False
   # SessionEnd 觸發時 CC 還沒完全退出：等它的程序結束、檔案靜下來，最多等兩分鐘，其餘交給每小時補漏
   while queued and time.time() < deadline and any(session_key(p) in live for p in queued):
     time.sleep(5)
-    with contextlib.suppress(LiveUnknown):
+    try:
       live = live_sessions()
+      live_stale = False
+    except LiveUnknown:
+      live_stale = True
   seen = load_seen(state)
   now = time.time()
+  afsctool = shutil.which("afsctool")
   cc = cc_candidates(seen, live, now, queued)
-  pi = pi_candidates(seen, live, now)
+  # 等待佇列期間若新起 claude 的註冊檔尚未就緒，重開的 >30 天舊對話 mtime 還沒變，本輪先不壓冷檔
+  cold_cc = cc_cold_candidates(seen, live, now, set(cc)) if afsctool and not live_stale else []
+  pi = pi_candidates(seen, live, now) if afsctool else []
   results = []
   if cc:
     slim = load_slim()
@@ -267,16 +302,26 @@ def run(state=STATE, audit_state=AUDIT_STATE, wait_queue=True):
     finally:
       if handle is not None:
         handle.close()
+  for path in cold_cc:
+    try:
+      result = dict(compress_one(path, afsctool), kind="cc_cold")
+    except OSError as error:
+      result = {"path": str(path), "kind": "cc_cold", "error": str(error)}
+    results.append(result)
+    if "error" not in result:
+      mark(seen, path)
   for path in pi:
-    info = path.stat()
-    subprocess.run(["afsctool", "-c", "-T", "LZFSE", str(path)], capture_output=True)
-    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
-    results.append({"path": str(path), "compressed": bool(path.stat().st_flags & stat.UF_COMPRESSED)})
-    mark(seen, path)
+    try:
+      result = compress_one(path, afsctool)
+    except OSError as error:
+      result = {"path": str(path), "error": str(error)}
+    results.append(result)
+    if "error" not in result:
+      mark(seen, path)
   save_seen(state, seen)
   for result in results:
     append_line(state / "log.jsonl", dict(result, at=round(now)))
-  return {"cc": len(cc), "pi": len(pi), "queued": len(queued)}
+  return {"cc": len(cc), "cc_cold": len(cold_cc), "pi": len(pi), "queued": len(queued)}
 
 
 def main(argv=None):

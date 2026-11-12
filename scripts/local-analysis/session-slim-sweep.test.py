@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -35,11 +37,12 @@ class SweepTest(unittest.TestCase):
     self.procs.write_text("[]")
     self.opened = root / "opened.json"
     self.opened.write_text("[]")
+    self.afsctool_calls = root / "afsctool.jsonl"
     fakes = {
       "ps": f'[ -f "{root}/ps-down" ] && exit 1\n'
             f"python3 -c 'import json;[print(\"%6d %s %s\" % tuple(p)) for p in json.load(open(\"{self.procs}\"))]'\n",
       "lsof": f"python3 -c 'import json,sys;hit=sys.argv[-1] in json.load(open(\"{self.opened}\"));hit and print(123);sys.exit(0 if hit else 1)' \"$@\"\n",
-      "afsctool": "exit 0\n",
+      "afsctool": f"python3 -c 'import json,os,sys;open(\"{self.afsctool_calls}\",\"a\").write(json.dumps(sys.argv[1:])+\"\\n\");os.utime(sys.argv[-1],None)' \"$@\"\n",
     }
     for name, body in fakes.items():
       fake = self.bin / name
@@ -53,9 +56,9 @@ class SweepTest(unittest.TestCase):
   def tearDown(self):
     self.tmp.cleanup()
 
-  def cli(self, *args, stdin=""):
+  def cli(self, *args, stdin="", env=None):
     return subprocess.run([sys.executable, str(SCRIPT), *args], input=stdin, text=True, capture_output=True,
-                          env=self.env, timeout=60, check=False)
+                          env=self.env if env is None else env, timeout=60, check=False)
 
   def session(self, name, idle=True, **kwargs):
     path = self.cc / "proj" / f"{name}.jsonl"
@@ -156,6 +159,75 @@ class SweepTest(unittest.TestCase):
     (self.state / "disabled").write_text("")
     self.assertIn("disabled", self.cli("run").stdout)
     self.assertEqual(path.stat().st_size, size)
+
+  def test_cold_plain_text_cc_sessions_compress_and_preserve_mtime_ns(self):
+    base_s = int(time.time())
+    cold = self.session("cold-plain", idle=False, with_duplicates=False)
+    cold_ns = (base_s - 31 * 86400) * 10**9 + 123456789
+    os.utime(cold, ns=(cold_ns, cold_ns))
+
+    warm = self.session("warm-plain", idle=False, with_duplicates=False)
+    warm_ns = (base_s - 29 * 86400) * 10**9 + 987654321
+    os.utime(warm, ns=(warm_ns, warm_ns))
+
+    cold_live = self.session("living-cold", idle=False, with_duplicates=False)
+    live_ns = (base_s - 35 * 86400) * 10**9 + 111222333
+    os.utime(cold_live, ns=(live_ns, live_ns))
+    self.running("living-cold", 404)
+
+    cold_sub = self.cc / "proj" / "living-cold" / "subagents" / "agent-1.jsonl"
+    cold_sub.parent.mkdir(parents=True, exist_ok=True)
+    cold_sub.write_text(transcript("living-cold", with_duplicates=False))
+    os.utime(cold_sub, ns=(live_ns, live_ns))
+
+    tiny = self.cc / "proj" / "tiny-cold.jsonl"
+    tiny.write_text('{"type":"user","message":{"content":"short"}}\n')
+    os.utime(tiny, ns=(cold_ns, cold_ns))
+
+    proc = self.cli("run")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertIn('"cc_cold": 1', proc.stdout)
+    calls = [json.loads(line) for line in self.afsctool_calls.read_text().splitlines()]
+    self.assertEqual(calls, [["-c", "-T", "LZFSE", str(cold)]])
+    self.assertEqual(cold.stat().st_mtime_ns, cold_ns)
+    self.assertEqual(warm.stat().st_mtime_ns, warm_ns)
+    self.assertEqual(cold_live.stat().st_mtime_ns, live_ns)
+    self.assertEqual(cold_sub.stat().st_mtime_ns, live_ns)
+    logged = [json.loads(line) for line in (self.state / "log.jsonl").read_text().splitlines()]
+    self.assertEqual([row["path"] for row in logged], [str(cold)])
+    self.assertEqual(logged[0]["kind"], "cc_cold")
+
+    second = self.cli("run")
+    self.assertEqual(second.returncode, 0, second.stderr)
+    self.assertIn('"cc_cold": 0', second.stdout)
+    self.assertEqual(len(self.afsctool_calls.read_text().splitlines()), 1)
+
+  def test_missing_afsctool_safely_skips_cold_plain_text_cc(self):
+    (self.bin / "afsctool").unlink()
+    cold = self.session("no-afsctool", idle=False, with_duplicates=False)
+    cold_ns = (int(time.time()) - 32 * 86400) * 10**9 + 555666777
+    os.utime(cold, ns=(cold_ns, cold_ns))
+    no_brew_env = dict(self.env, PATH=f"{self.bin}:/usr/bin:/bin")
+    proc = self.cli("run", env=no_brew_env)
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertIn('"cc_cold": 0', proc.stdout)
+    self.assertEqual(cold.stat().st_mtime_ns, cold_ns)
+    self.assertEqual(json.loads((self.state / "seen.json").read_text()), {})
+
+  @unittest.skipUnless(shutil.which("afsctool", path="/opt/homebrew/bin:/usr/local/bin"), "real afsctool unavailable")
+  def test_already_compressed_cold_cc_is_skipped(self):
+    real_afsctool = shutil.which("afsctool", path="/opt/homebrew/bin:/usr/local/bin")
+    already = self.session("already-compressed", idle=False, with_duplicates=False)
+    subprocess.run([real_afsctool, "-c", "-T", "LZFSE", str(already)], check=True, capture_output=True)
+    cold_ns = (int(time.time()) - 40 * 86400) * 10**9 + 222333444
+    os.utime(already, ns=(cold_ns, cold_ns))
+    if not (already.stat().st_flags & stat.UF_COMPRESSED):
+      self.skipTest("filesystem did not set UF_COMPRESSED")
+    proc = self.cli("run")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertIn('"cc_cold": 0', proc.stdout)
+    self.assertFalse(self.afsctool_calls.exists())
+    self.assertEqual(already.stat().st_mtime_ns, cold_ns)
 
 
 if __name__ == "__main__":
