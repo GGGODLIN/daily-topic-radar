@@ -128,21 +128,21 @@ QUIET="$TMP/quiet.md"
 ARGS_LOG="$TMP/quiet.log" FAKE_DATA_DIR="$DATA" python3 "$SCRIPT" --date 2026-07-31 --out "$QUIET" --root "$ROOT/quiet" --bd-bin "$FAKE" >/dev/null 2>&1
 check "無候選輸出 SILENT" test "$(cat "$QUIET")" = '__SILENT__'
 
-MALFORMED_ERR="$TMP/malformed.err"
-ARGS_LOG="$TMP/malformed.log" FAKE_DATA_DIR="$DATA" python3 "$SCRIPT" --date 2026-07-31 --out "$TMP/malformed.md" --root "$ROOT/malformed" --bd-bin "$FAKE" >/dev/null 2>"$MALFORMED_ERR"
+MALFORMED_OUT="$TMP/malformed.md"
+ARGS_LOG="$TMP/malformed.log" FAKE_DATA_DIR="$DATA" python3 "$SCRIPT" --date 2026-07-31 --out "$MALFORMED_OUT" --root "$ROOT/malformed" --bd-bin "$FAKE" >/dev/null 2>"$TMP/malformed.err"
 MALFORMED_STATUS=$?
-check "畸形 issue 明確失敗" test "$MALFORMED_STATUS" = 1
-check "畸形 issue 錯誤含 repo 與 index" bash -c "grep -qF '$ROOT/malformed' '$MALFORMED_ERR' && grep -qF 'issue 0' '$MALFORMED_ERR'"
+check "畸形 issue 寫入失敗段不中斷整體掃描" test "$MALFORMED_STATUS" = 0
+check "畸形 issue 報告含 repo 與 index" bash -c "grep -qF '掃描失敗 repo' '$MALFORMED_OUT' && grep -qF '$ROOT/malformed' '$MALFORMED_OUT' && grep -qF 'issue 0' '$MALFORMED_OUT'"
 
 LINK_OUT="$TMP/linked.md"
 ARGS_LOG="$TMP/linked.log" FAKE_DATA_DIR="$DATA" python3 "$SCRIPT" --date 2026-07-31 --out "$LINK_OUT" --root "$LINK_ROOT" --bd-bin "$FAKE" >/dev/null 2>&1
 check "symlink 專案會被掃到" grep -qF 'linked-overdue' "$LINK_OUT"
 
-SLOW_ERR="$TMP/slow.err"
-ARGS_LOG="$TMP/slow.log" FAKE_DATA_DIR="$DATA" python3 "$SCRIPT" --date 2026-07-31 --out "$TMP/slow.md" --root "$ROOT/slow" --bd-bin "$SLOW" --bd-timeout 0.1 >/dev/null 2>"$SLOW_ERR"
+SLOW_OUT="$TMP/slow.md"
+ARGS_LOG="$TMP/slow.log" FAKE_DATA_DIR="$DATA" python3 "$SCRIPT" --date 2026-07-31 --out "$SLOW_OUT" --root "$ROOT/slow" --bd-bin "$SLOW" --bd-timeout 0.1 >/dev/null 2>"$TMP/slow.err"
 SLOW_STATUS=$?
-check "bd timeout 非 0 退出" test "$SLOW_STATUS" = 1
-check "bd timeout 錯誤含 repo" bash -c "grep -qF '$ROOT/slow' '$SLOW_ERR' && grep -qi 'timed out' '$SLOW_ERR'"
+check "bd timeout 寫入失敗段並 0 退出" test "$SLOW_STATUS" = 0
+check "bd timeout 報告含 repo 與 timed out" bash -c "grep -qF '掃描失敗 repo' '$SLOW_OUT' && grep -qF '$ROOT/slow' '$SLOW_OUT' && grep -qi 'timed out' '$SLOW_OUT'"
 
 printf '\n%s PASS / %s FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

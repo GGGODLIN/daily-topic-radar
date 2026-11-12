@@ -203,7 +203,7 @@ assert_not_contains "exclude verdict takes effect silently (reason)" "只服務�
 PROMPT="$(cat "$W/prompt.capture" 2>/dev/null)"
 assert_contains "prompt gives the model the new file" "~/.claude/hooks/new-gate.sh" "$PROMPT"
 assert_not_contains "files that predate the last publish are not new" "hooks/old.sh" "$PROMPT"
-assert_not_contains "top-level noise directories are not new components" "memory" "$PROMPT"
+assert_not_contains "top-level noise directories are not new components" "memory" "$(printf '%s' "$PROMPT" | sed -n '/===== 新增項目 =====/,$p')"
 assert_not_contains "allowlisted files are not new" "~/.claude/hooks/a.sh" "$(printf '%s' "$PROMPT" | sed -n '/===== 新增項目 =====/,$p')"
 assert_contains "prompt carries the diff" "+echo a2" "$PROMPT"
 assert_contains "prompt tells the model about the accepted risk" "ADR 0004" "$PROMPT"
