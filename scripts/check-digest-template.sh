@@ -22,6 +22,11 @@ if ! grep -qi '<!doctype html>' "$HTML_PATH" || ! grep -q '<style>' "$HTML_PATH"
   exit 1
 fi
 
+if ! grep -qi '<meta[^>]*name="viewport"' "$HTML_PATH"; then
+  echo "❌ Contract 1b FAIL: missing <meta name=\"viewport\"> in $HTML_PATH (breaks @media mobile layout)" >&2
+  exit 1
+fi
+
 if ! python3 -I - "$HTML_PATH" <<'PY'
 import re, sys
 txt = open(sys.argv[1], encoding="utf-8", errors="replace").read()

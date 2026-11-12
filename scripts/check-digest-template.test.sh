@@ -50,5 +50,8 @@ expect_fail "rejects two tr tags on the same line" "$TMP_DIR/bad-row.html"
 sed 's|\.wrap {|\.wrap { overflow: hidden;|' "$TEMPLATE" > "$TMP_DIR/clipped-wrap.html"
 expect_fail "rejects overflow:hidden on .wrap" "$TMP_DIR/clipped-wrap.html"
 
+grep -vi 'name="viewport"' "$TEMPLATE" > "$TMP_DIR/no-viewport.html"
+expect_fail "rejects missing viewport meta tag" "$TMP_DIR/no-viewport.html"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
