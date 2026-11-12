@@ -1,4 +1,5 @@
 #!/bin/bash
+{
 set -euo pipefail
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -37,3 +38,5 @@ if [ "${SESSION_AUDIT_PROMOTE_FRICTION:-0}" = "1" ]; then
     --state "$STATE" \
     --friction-root "${SESSION_AUDIT_FRICTION_ROOT:-$STATE/friction}"
 fi
+exit 0
+}

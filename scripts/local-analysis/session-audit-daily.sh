@@ -20,19 +20,20 @@ mkdir -p "$OUT_DIR"
 "$PY" - "$SCRIPT" "$STATE" "$OUT" <<'PY'
 import json, subprocess, sys
 script, state, out = sys.argv[1:]
-proc = subprocess.run([sys.executable, script, "status", "--state", state], text=True, capture_output=True, check=False)
+proc = subprocess.run([sys.executable, script, "status", "--summary-only", "--state", state], text=True, capture_output=True, check=False)
 if proc.returncode:
     raise SystemExit(proc.returncode)
 data = json.loads(proc.stdout)
-sources = data.get("sources") or []
+sc = data.get("source_counts") or {}
+by_status = sc.get("by_status") or {}
 def count(status):
-    return sum(1 for row in sources if row.get("status") == status)
+    return int(by_status.get(status) or 0)
 lines = [
     "只呈概況，不另建摩擦H/M/L",
     "修法不在本報告展開，集中 trial-review。",
-    f"sources={len(sources)} included={sum(1 for row in sources if row.get('included'))}",
+    f"sources={int(sc.get('total') or 0)} included={int(sc.get('included') or 0)}",
     f"complete={count('complete')} pending={count('pending')} partial={count('partial')} failed={count('failed')} missing={count('missing')}",
-    f"candidates={len(data.get('candidates') or [])}",
+    f"candidates={int(data.get('candidate_count') or 0)}",
 ]
 open(out, "w").write("\n".join(lines) + "\n")
 PY

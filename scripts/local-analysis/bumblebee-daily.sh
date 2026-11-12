@@ -5,7 +5,7 @@ set -euo pipefail
 PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/Users/linhancheng/.local/bin"
 export PATH
 
-REPO_DIR="/Users/linhancheng/code/social-info"
+REPO_DIR="${BUMBLEBEE_REPO_DIR:-/Users/linhancheng/code/social-info}"
 VENDOR_DIR="$REPO_DIR/vendor/bumblebee"
 BIN="$VENDOR_DIR/bin/bumblebee"
 CATALOG_REPO="$VENDOR_DIR/catalog"
@@ -116,7 +116,7 @@ if [ "$SCAN_RC" -ne 0 ] || [ ! -s "$FINDINGS_FILE" ]; then
     echo ""
     echo "⚠️ findings=0 不可信（掃描未執行）。先查 binary 與 catalog schema 相容性再信結果。"
   } > "$OUT"
-  osascript -e "display notification \"Bumblebee scan FAILED (exit $SCAN_RC) — 今日零掃描覆蓋\" with title \"🚨 Bumblebee scan failed\" sound name \"Sosumi\"" 2>/dev/null || true
+  [ -z "${BUMBLEBEE_NO_NOTIFY:-}" ] && osascript -e "display notification \"Bumblebee scan FAILED (exit $SCAN_RC) — 今日零掃描覆蓋\" with title \"🚨 Bumblebee scan failed\" sound name \"Sosumi\"" 2>/dev/null || true
   log "SCAN FAILED: loud report written (rc=$SCAN_RC)"
   exit 0
 fi
@@ -176,11 +176,14 @@ CATALOG_HEAD="$(echo $NEW_HEAD | cut -c1-7)"
   fi
 } > "$OUT"
 
-# 6. Alert: findings > 0 → desktop notification + ALERT.md to repo root
+# 6. Alert: findings > 0 → desktop notification + ALERT.md to repo root;
+#    complete 0-finding scan clears stale ALERT.md (matching vpn-precheck / run-daily).
 if [ "$FINDING_COUNT" != "0" ] && [ "$FINDING_COUNT" != "?" ]; then
   log "ALERT: $FINDING_COUNT findings detected"
   cp "$OUT" "$REPO_DIR/ALERT-bumblebee.md"
-  osascript -e "display notification \"Bumblebee found $FINDING_COUNT supply-chain match(es) — see $OUT\" with title \"⚠️ Bumblebee Alert\" sound name \"Sosumi\"" 2>/dev/null || true
+  [ -z "${BUMBLEBEE_NO_NOTIFY:-}" ] && osascript -e "display notification \"Bumblebee found $FINDING_COUNT supply-chain match(es) — see $OUT\" with title \"⚠️ Bumblebee Alert\" sound name \"Sosumi\"" 2>/dev/null || true
+elif [ "$SCAN_RC" -eq 0 ] && [ "$STATUS" = "complete" ] && [ "$FINDING_COUNT" = "0" ]; then
+  rm -f "$REPO_DIR/ALERT-bumblebee.md"
 fi
 
 # 6b. Alert: 本機 binary 落後 upstream → 桌面通知（2026-07-26 加、2026-08-01 改比對基準；
@@ -188,7 +191,7 @@ fi
 #     兩者都值得一次主動打斷）
 if [ "$BIN_BEHIND" = "1" ]; then
   log "ALERT: binary behind — installed $BIN_VERSION < upstream $LATEST_RELEASE"
-  osascript -e "display notification \"本機 ${BIN_VERSION}、upstream ${LATEST_RELEASE}（pin 已 ${PIN_DAYS} 天）— 升級補掃描器，並驗 schema 0.2.0 可否解 pin\" with title \"🔔 Bumblebee binary 落後\" sound name \"Ping\"" 2>/dev/null || true
+  [ -z "${BUMBLEBEE_NO_NOTIFY:-}" ] && osascript -e "display notification \"本機 ${BIN_VERSION}、upstream ${LATEST_RELEASE}（pin 已 ${PIN_DAYS} 天）— 升級補掃描器，並驗 schema 0.2.0 可否解 pin\" with title \"🔔 Bumblebee binary 落後\" sound name \"Ping\"" 2>/dev/null || true
 fi
 
 # 7. Prune archive findings.ndjson > 30 days

@@ -3062,8 +3062,7 @@ def snapshot_candidates(connection, statuses=None, include_uncertain=True):
   return candidates
 
 
-def snapshot(connection):
-  hints = connection.execute("SELECT COUNT(*) FROM hints").fetchone()[0] if table_exists(connection, "hints") else 0
+def snapshot_sources(connection):
   sources = []
   if table_exists(connection, "sources"):
     query = """
@@ -3088,6 +3087,30 @@ def snapshot(connection):
           "excluded_thinking": row["excluded_thinking"],
         }
       )
+  return sources
+
+
+def snapshot_summary(connection):
+  total = 0
+  included = 0
+  by_status = {}
+  if table_exists(connection, "sources"):
+    for row in connection.execute(
+      "SELECT status, COUNT(*) AS n, SUM(CASE WHEN included THEN 1 ELSE 0 END) AS inc FROM sources GROUP BY status"
+    ):
+      n = int(row["n"] or 0)
+      total += n
+      included += int(row["inc"] or 0)
+      by_status[row["status"] or ""] = n
+  return {
+    "source_counts": {"total": total, "included": included, "by_status": by_status},
+    "candidate_count": len(snapshot_candidates(connection)),
+  }
+
+
+def snapshot(connection):
+  hints = connection.execute("SELECT COUNT(*) FROM hints").fetchone()[0] if table_exists(connection, "hints") else 0
+  sources = snapshot_sources(connection)
   candidates = snapshot_candidates(connection)
   segments = []
   if table_exists(connection, "segments"):
@@ -3232,6 +3255,13 @@ def read_connection(args):
 
 def cmd_status(args):
   connection = read_connection(args)
+  if getattr(args, "summary_only", False):
+    empty_summary = {"source_counts": {"total": 0, "included": 0, "by_status": {}}, "candidate_count": 0}
+    payload = empty_summary if connection is None else snapshot_summary(connection)
+    if connection is not None:
+      connection.close()
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
   if connection is None:
     print(json.dumps({"hints": 0, "sources": [], "candidates": [], "segments": [], "retained_replies": [], "rules": empty_rules()}))
     return 0
@@ -3913,6 +3943,7 @@ def build_parser():
   parser.add_argument("--leg-probe-seconds", type=float, default=LEG_PROBE_SECONDS)
   parser.add_argument("--block-bytes", type=int, default=BLOCK_BYTES)
   parser.add_argument("--grok-quota-file", default=str(Path.home() / ".cli-proxy-api" / "grok-quota-samples.jsonl"))
+  parser.add_argument("--summary-only", action="store_true")
   return parser
 
 

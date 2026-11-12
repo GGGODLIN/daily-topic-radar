@@ -53,6 +53,18 @@ class ReportEntrypointTest(unittest.TestCase):
     self.assertNotEqual(result.returncode, 0)
     self.assertFalse(self.out.exists())
 
+  def test_status_summary_only_omits_heavy_tables(self):
+    res = subprocess.run(
+      [sys.executable, str(DIR / 'session-audit.py'), 'status', '--summary-only', '--state', str(self.state)],
+      capture_output=True, text=True, timeout=10,
+    )
+    self.assertEqual(res.returncode, 0, res.stderr)
+    payload = json.loads(res.stdout)
+    self.assertIn('source_counts', payload)
+    self.assertIn('candidate_count', payload)
+    self.assertNotIn('segments', payload)
+    self.assertNotIn('retained_replies', payload)
+
 
 class RunEntrypointTest(unittest.TestCase):
   def test_run_passes_all_routing_limits(self):

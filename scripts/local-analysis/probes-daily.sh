@@ -2,7 +2,7 @@
 cd /
 set -euo pipefail
 
-PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/linhancheng/.local/bin"
 export PATH
 # headless channel run: 走 hook Defense 0 跳過 nudge 類 Stop hook（checkpoint-judge 曾把最後一則訊息蓋成「skip」、claude -p stdout 只印最後一則，2026-07-15 查因）
 export CC_VENDOR=headless-channel
@@ -58,7 +58,7 @@ PROMPT=$(cat <<'EOF'
 - `gh release view <repo>` / `gh issue list` / `gh search` 等 → Bash
 - WebFetch URL → WebFetch tool
 - Context7 SDK doc → mcp__context7__resolve-library-id + query-docs
-- claude-in-chrome（需要 cookie / JS）→ mcp__claude-in-chrome__* （見 `~/code/social-info/CLAUDE.md` URL 抓取路由段判斷）
+- 正式 LCU MCP（需要 cookie / JS）→ mcp__lcu__js （見 `~/code/social-info/CLAUDE.md` URL 抓取路由段判斷）
 - curl JSON / RSS → Bash curl
 
 ## Step 3 — 對照 Hit signal 判斷有沒有新東西
@@ -77,7 +77,7 @@ PROMPT=$(cat <<'EOF'
 
 ```bash
 PROBES_WRITEBACK_LOCK_HELD=1 node ~/.claude/scripts/daily-topic-probes-writeback.mjs <<'JSON'
-{"path":"/Users/linhancheng/code/social-info/PROBES.md","targets":[{"title":"...","expected_old_prefix":"...","new_baseline":"..."}]}
+{"path":"__PROBES_PATH__","targets":[{"title":"...","expected_old_prefix":"...","new_baseline":"..."}]}
 JSON
 ```
 
@@ -113,9 +113,15 @@ stdout 只輸出 report markdown，不要 preamble、不要結語、不要 code 
 EOF
 )
 
+PROMPT="${PROMPT//__PROBES_PATH__/$REPO_DIR/PROBES.md}"
+
+OUT_TMP="$OUT.tmp.$$"
+trap 'rm -f "$OUT_TMP"; cleanup_probes_lock' EXIT
+
 {
   echo "=== probes started: $(date) ==="
-  "$CLAUDE" -p "$PROMPT" > "$OUT" 2>&1
+  "$CLAUDE" -p "$PROMPT" > "$OUT_TMP"
+  mv "$OUT_TMP" "$OUT"
   echo "=== probes finished: $(date) ==="
   echo "Output: $OUT ($(wc -c < "$OUT") bytes)"
 } >> "$LOG" 2>&1
