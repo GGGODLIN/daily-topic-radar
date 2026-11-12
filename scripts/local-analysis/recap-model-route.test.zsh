@@ -329,6 +329,15 @@ PLURAL_ENTRY_OVERVIEW_REPORT='56 個窗內 session 檔（27 個自然 session；
 ### 複數單位與 memory entry 總覽行的匿名主題
 驗證 sessions / commits / memory entry 與標題並存時不會被誤判成前言拒收。'
 
+WORK_REPO_OVERVIEW_REPORT='107 sessions / 491 commits（446 個工作 repo + 45 個 `~/.claude`）/ 390 個新或更新的 memory / 跨 31 個工作 repo
+
+# Daily Recap
+
+## 2026-09-08
+
+### 含修飾詞 repo 總覽行的匿名主題
+驗證跨 N 個工作 repo 與標題並存時不會被誤判成前言拒收。'
+
 PREFACE='先整理四條來源，完成後再輸出報告。'
 CLOSING='以上是今日整理。'
 PROGRESS='正在核對來源，報告還沒寫。'
@@ -453,6 +462,16 @@ assert_status plural-entry-overview "$STREAM_STATUS" 0
 ((++checks))
 if ! cmp -s "$STREAM_OUT" "$plural_expected"; then
   print -ru2 -- 'plural entry overview report was not preserved byte-for-byte'
+  ((++failures))
+fi
+
+work_repo_expected="$fixture/work-repo-overview.expected"
+printf '%s\n' "$WORK_REPO_OVERVIEW_REPORT" > "$work_repo_expected"
+run_stream_case work-repo-overview "" "$preface_block" "$(assistant_event "$WORK_REPO_OVERVIEW_REPORT")" "$closing_result"
+assert_status work-repo-overview "$STREAM_STATUS" 0
+((++checks))
+if ! cmp -s "$STREAM_OUT" "$work_repo_expected"; then
+  print -ru2 -- 'work repo overview report was not preserved byte-for-byte'
   ((++failures))
 fi
 

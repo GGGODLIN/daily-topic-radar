@@ -225,7 +225,7 @@ def acceptable(text):
     overview = bool(re.fullmatch(
         r"\d+ (?:個 *)?(?:窗內 *)?(?:CC *)?sessions?(?: *檔)?(?:（[^（）]*）)? *[/／] *"
         r"\d+ (?:個 *)?commits?(?:（[^（）]*）)? *[/／] *"
-        r"\d+ (?:個 *)?(?:(?:新或更新的?|新) *)?memory(?: *entr(?:y|ies)| *檔)?(?:（[^（）]*）)? *[/／] *跨 \d+ 個 repos?(?:（[^（）]*）)?", first))
+        r"\d+ (?:個 *)?(?:(?:新或更新的?|新) *)?memory(?: *entr(?:y|ies)| *檔)?(?:（[^（）]*）)? *[/／] *跨 \d+ 個 *(?:[\w一-鿿-]+ *)?repos?(?:（[^（）]*）)?", first))
     match = re.search(r"(?m)^# ", text)
     # prompt 允許總覽先於標題，但不能因此略過任意前言。
     if match and text[:match.start()].strip():
