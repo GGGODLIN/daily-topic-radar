@@ -111,6 +111,10 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 **執行主體是 `~/.claude/workflows/daily-topic-analysis*.js` 其中一支（2026-05-26 起走 workflow、HTML 撰寫 2026-07-04 起派 sonnet subagent）；哪一支由 hook 分派，見上面「今日分析入口語意」段。Pre-flight 攔截 protocol（KNOWN_ISSUES / WATCH / PROBES stage-2 fetch）、主軸抽取、URL fact-check 分流、digest HTML 鐵律（🛠 GitHub 倉庫觀察獨立段 / 🟣 Anthropic·Claude 動態獨立段 / v3 範本 / resurface marker）——細節全部以該 workflow script 內嵌 prompt 為 SSOT，改規則改那裡、不改本檔。各版本砍掉哪些 phase 也以 script 為準（例：極簡版無 FactCheck / Verify / external-feeds）。**
 
+- **日報 HTML 版型範本與跨倉庫關聯**：版型樣式正本為 [templates/digest-template.html](/templates/digest-template.html)（由 `2026-08-18` 定版抽離，供關聯倉庫 `~/.claude` 內四支 `workflows/daily-topic-analysis*.js` 的 `DIGEST_STYLE_REFERENCE` 讀取）。平日產日報時寫作 subagent 原樣複製此範本的 `<style>` 不自改樣式；若要迭代日報畫面（如在隔離工作樹跑 `/afk`），請同時為關聯倉庫 `~/.claude` 建立配對工作樹以同步更新範本檔與 `workflows/daily-topic-analysis*.js` 的版型段，預覽走本機 HTTP 伺服器（如 `python3 -m http.server`，勿開 `file://`），且每次改動必跑下方檢查指令：
+  - 版型與結構檢查：`bash scripts/check-digest-template.sh`（回歸測試：`bash scripts/check-digest-template.test.sh`）——驗收外部 `href` 白名單、保留圖表 `class="sub"` 加總格式、單行拆列（無同行雙 `<tr>`／`<li>`）與表格外框不設 `overflow: hidden` 截斷。
+  - 無人值守改碼紅線：禁止更動 `reddit.py` 節流常數、`run-daily.sh` VPN 只警告不擋跑設計，以及 `sources.yml`／`twitter.py` 的付費上限與未核准帳號開關。
+
 Main session 需要知道的：
 
 - **workflow 三道 fail-fast guard（2026-07-28 加）**：workflow 會在早期中止並回 `aborted: true` + `abort_stage` + `next_action`，main session 拿到 result 的第一步是判 `aborted`、為 true 就跳過 digest_write / digest_audit / verify gate 那套流程。三個 stage：`input_precheck`（raw md 缺檔或截斷 → 補跑 aggregator 再重跑）、`known_issues_gate`（retry 完仍有 🚨 → **停下來問使用者**「先處理還是接受缺口」，接受才用 args `{"date":"…","accept_gaps":true}` 重跑，main 不得自行決定）、`themes`（主軸抽空 → 查 raw md 與 journal 找因，不原樣重跑）。動機：2026-07-28 raw md 缺檔 + reddit 全 403，workflow 兩次跑到一半才被手動打斷、白燒約 149 個 agent。門檻常數 `MIN_RAW_MD_BYTES` / `MIN_RAW_MD_SECTIONS` 在 workflow script 內，調它等於關掉保護
