@@ -50,20 +50,29 @@ def redact_text(text: str) -> str:
     return _TOKEN_RE.sub(_replacement, text)
 
 
-def _redact_mapping_values(mapping: dict[str, Any]) -> dict[str, Any]:
-    return {key: redact_text(value) if isinstance(value, str) else value for key, value in mapping.items()}
+def _redact_mapping_values(
+    mapping: dict[str, Any], *, skip_keys: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    return {
+        key: redact_text(value) if isinstance(value, str) and key not in skip_keys else value
+        for key, value in mapping.items()
+    }
 
 
 def redact_item(item: Item) -> Item:
+    # Leave url and canonical_url untouched: sk-[A-Za-z0-9_-]{20,} matches ordinary
+    # news slugs such as "sk-hynix-hbm4-production-2026", which would collapse
+    # distinct articles onto one L1 SHA-1 id and break rendered links.
     return replace(
         item,
         title=redact_text(item.title),
-        url=redact_text(item.url),
-        canonical_url=redact_text(item.canonical_url),
         author=redact_text(item.author),
         excerpt=redact_text(item.excerpt),
         content=redact_text(item.content),
-        also_appeared_in=[_redact_mapping_values(entry) for entry in item.also_appeared_in],
+        also_appeared_in=[
+            _redact_mapping_values(entry, skip_keys=frozenset({"url"}))
+            for entry in item.also_appeared_in
+        ],
         comments=[_redact_mapping_values(comment) for comment in item.comments],
         metadata=_redact_mapping_values(item.metadata),
     )

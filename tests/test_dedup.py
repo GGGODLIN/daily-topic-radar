@@ -394,3 +394,36 @@ def test_l1_cross_source_same_url_records_also_appeared_in(db):
     appeared = json.loads(stored["also_appeared_in"])
     assert [a["source"] for a in appeared] == ["trendshift", "hn"]
 
+
+def test_l2_merge_survives_bracketed_masked_host_in_stored_row(db):
+    deduper = Deduper(db)
+    existing = _make_item(
+        "https://sk-hynix-ai-hackathon-2026.devpost.com/",
+        "SK Hynix AI Hackathon 2026",
+        source="devpost_ai",
+        handle="devpost",
+        tier=2,
+    )
+    first = deduper.process([existing])
+    for it in first.new_items:
+        db.insert_item(it.to_db_row(
+            item_id=compute_item_id(it.canonical_url),
+            title_hash=compute_title_hash(it.title),
+        ))
+
+    # insert_item's redact_row masks sk-... inside stored URL columns to
+    # https://[REDACTED-KEY:sk].devpost.com/, which urlsplit rejects as invalid IPv6.
+    incoming = _make_item(
+        "https://mlh.io/seasons/2026/events/sk-hynix",
+        "SK Hynix AI Hackathon 2026",
+        source="mlh_prizes",
+        handle="mlh",
+        tier=2,
+    )
+    res = deduper.process([incoming])
+    assert res.new_items == []
+    row = db.find_by_title_hash(compute_title_hash("SK Hynix AI Hackathon 2026"))
+    appeared = json.loads(row["also_appeared_in"])
+    assert [a["source"] for a in appeared] == ["mlh_prizes"]
+
+

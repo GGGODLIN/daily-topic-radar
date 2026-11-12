@@ -15,6 +15,7 @@ from social_info.__main__ import _free_radar_markdown
 from social_info.config import Config, SourceConfig
 from social_info.db import Database
 from social_info.fetchers.base import FetchResult, Item
+from social_info.markdown import splice_radar_section
 from social_info.redact import redact_item, redact_result, redact_row, redact_text
 
 ARK = "ark-" + "0123abcd-0123-4abc-8abc-0123456789ab" + "-4be60"
@@ -98,19 +99,36 @@ def test_redact_result_rewrites_items_and_errors():
     assert "[REDACTED-KEY:sk]" in out.error
 
 
-def test_redact_item_masks_author_url_and_also_appeared_in():
-    item = _item(
+def test_redact_item_masks_author_and_preserves_sk_slug_urls():
+    slug_a = "https://www.blocktempo.com/sk-hynix-hbm4-production-2026/"
+    slug_b = "https://www.blocktempo.com/sk-telecom-ai-datacenter-2026/"
+    item_a = _item(
         author=f"user ({GH})",
-        url=f"https://x.test/{ARK}",
-        also_appeared_in=[{"source": "x", "source_handle": "@a", "url": f"https://x.test/{SK}"}],
+        url=slug_a,
+        canonical_url=slug_a,
+        also_appeared_in=[
+            {
+                "source": "x",
+                "source_handle": f"@{SK}",
+                "url": slug_b,
+            }
+        ],
     )
-    out = redact_item(item)
-    author_leaked = GH in out.author
-    url_leaked = ARK in out.url
-    also_leaked = SK in out.also_appeared_in[0]["url"]
+    out_a = redact_item(item_a)
+    author_leaked = GH in out_a.author
+    handle_leaked = SK in out_a.also_appeared_in[0]["source_handle"]
     assert not author_leaked, "author token leaked"
-    assert not url_leaked, "url token leaked"
-    assert not also_leaked, "also_appeared_in token leaked"
+    assert not handle_leaked, "also_appeared_in handle token leaked"
+    assert out_a.url == slug_a
+    assert out_a.canonical_url == slug_a
+    assert out_a.also_appeared_in[0]["url"] == slug_b
+
+
+def test_splice_radar_section_masks_tokens():
+    spliced = splice_radar_section("# Raw\n", f"## Radar\n- leak {SK}\n")
+    spliced_leaked = SK in spliced
+    assert not spliced_leaked, "splice_radar_section token leaked"
+    assert "[REDACTED-KEY:sk]" in spliced
 
 
 def test_db_update_also_appeared_in_masks_tokens():

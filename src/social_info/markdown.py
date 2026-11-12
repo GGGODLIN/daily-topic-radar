@@ -247,7 +247,8 @@ def render_file(
 
 def splice_radar_section(markdown: str, radar_markdown: str) -> str:
     """Replace only the radar markers. Text outside them, including diagnostics, stays."""
-    block = f"{RADAR_START}\n{radar_markdown.rstrip(chr(10))}\n{RADAR_END}\n"
+    clean_radar = redact_text(radar_markdown.rstrip("\n"))
+    block = f"{RADAR_START}\n{clean_radar}\n{RADAR_END}\n"
     pattern = re.compile(
         re.escape(RADAR_START) + r".*?" + re.escape(RADAR_END) + r"\n?",
         re.DOTALL,

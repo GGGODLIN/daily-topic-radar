@@ -45,8 +45,15 @@ def _row_metrics(row: dict) -> str:
 
 
 def _appearance_key(source: str, url: str) -> tuple[str, str]:
-    norm_url = canonical_url(url) if url else ""
-    return (source, norm_url or url)
+    if not url:
+        return (source, "")
+    try:
+        norm_url = canonical_url(url)
+    except ValueError:
+        # DB rows masked by redact_row may carry "[REDACTED-KEY:...]" in hostnames,
+        # which makes urlsplit reject them as malformed IPv6 literals.
+        norm_url = ""
+    return (source, norm_url or url.strip())
 
 
 def _merge_appearances(
