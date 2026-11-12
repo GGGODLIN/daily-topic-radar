@@ -55,12 +55,16 @@ def _section_span(text: str) -> tuple[int, int] | None:
         ):
             # splitlines(keepends) keeps one trailing newline, but the
             # daily file leaves a blank line before the first entry.
-            body_start = offset + len(line) + 1
+            body_start = offset + len(line)
+            if body_start < len(text) and text[body_start] == "\n":
+                body_start += 1
             rest = text[body_start:]
             body_end = len(text)
             cursor = 0
             for later in rest.splitlines(keepends=True):
-                if later.startswith("## ") and not later.startswith("###"):
+                if (later.startswith("## ") and not later.startswith("###")) or later.startswith(
+                    "<!-- topic-radar:start -->"
+                ):
                     # End on the line boundary. Subtracting one would eat the
                     # newline that the next section's heading is written with.
                     body_end = body_start + cursor
@@ -115,7 +119,7 @@ def _heading_identity(line: str) -> tuple[str, str]:
     # topic url comes out empty.
     body = line[4:].strip().removeprefix("🔁 ").strip()
     if body.startswith("[") and "](" in body and body.endswith(")"):
-        title, _, rest = body[1:].partition("](")
+        title, _, rest = body[1:].rpartition("](")
         return title, rest[:-1]
     return body, ""
 
@@ -266,7 +270,7 @@ def build(raw_text: str, source_path: str, max_chars: int, max_items: int) -> di
             "entries": [],
             "fragments": [],
             "batches": [],
-            "non_linuxdo": raw_text,
+            "non_linuxdo": _non_linuxdo(raw_text, None),
             "limits": [],
             "source_path": source_path,
             "max_chars": max_chars,

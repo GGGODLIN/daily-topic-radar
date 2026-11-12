@@ -27,7 +27,8 @@ fi
 TMPDIR_LOCAL=$(mktemp -d)
 trap 'rc=$?; rm -rf "$TMPDIR_LOCAL"; exit $rc' EXIT
 
-if ! yt-dlp --no-update --skip-download --write-auto-sub --sub-lang en \
+if ! yt-dlp --no-update --skip-download --write-subs --write-auto-sub \
+     --sub-langs "en.*,en" --socket-timeout 20 \
      --sub-format vtt -o "$TMPDIR_LOCAL/sub.%(ext)s" "$URL" >"$TMPDIR_LOCAL/log" 2>&1; then
   echo "yt-dlp failed for $URL" >&2
   tail -5 "$TMPDIR_LOCAL/log" >&2
@@ -41,6 +42,7 @@ if [ -z "$VTT" ]; then
 fi
 
 python3 - "$VTT" <<'PY'
+import html
 import re
 import sys
 
@@ -54,8 +56,11 @@ for line in raw.split("\n"):
         continue
     if re.fullmatch(r"\d+", line):
         continue
-    line = re.sub(r"<[^>]+>", "", line).strip()
+    line = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
     if line and (not out or out[-1] != line):
         out.append(line)
+if not out:
+    print("subtitle track contained no spoken cues", file=sys.stderr)
+    sys.exit(2)
 print(" ".join(out))
 PY

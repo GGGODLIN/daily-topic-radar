@@ -27,9 +27,10 @@ if [ -z "$DATE" ]; then
 fi
 
 SI="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RAW_GLOB="$SI/reports/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md"
-DIGEST_GLOB="$SI/reports/digest-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].html"
-FEED_GLOB="$SI/reports/external-feeds/follow-builders-blogs-*.json"
+PY_BIN="python3"
+if [ -x "$SI/.venv/bin/python" ]; then
+  PY_BIN="$SI/.venv/bin/python"
+fi
 BLOGS_FILE="$SI/reports/external-feeds/follow-builders-blogs-$DATE.json"
 X_FILE="$SI/reports/external-feeds/follow-builders-x-$DATE.json"
 SOURCES="$SI/sources.yml"
@@ -40,25 +41,59 @@ if [ ! -f "$BLOGS_FILE" ]; then
 elif ! jq -e . "$BLOGS_FILE" >/dev/null 2>&1; then
   echo "BLOGS_SEEN_CHECK=UNAVAILABLE reason=jq parse failed"
 else
-  urls=$(jq -r '.blogs[]?.url // empty' "$BLOGS_FILE" 2>/dev/null | sort -u)
-  if [ -z "$urls" ]; then
-    echo "BLOGS_SEEN_CHECK=OK note=blogs feed has 0 items, nothing to check"
-  else
-    printf '%s\n' "$urls" | while IFS= read -r u; do
-      [ -z "$u" ] && continue
-      main=$(grep -lF "$u" $RAW_GLOB 2>/dev/null | grep -v "/$DATE.md" | xargs -r -n1 basename | tr '\n' ',' | sed 's/,$//')
-      dg=$(grep -lF "$u" $DIGEST_GLOB 2>/dev/null | grep -v "digest-$DATE.html" | wc -l | tr -d ' ')
-      fd=$(grep -lF "$u" $FEED_GLOB 2>/dev/null | grep -v -- "-$DATE.json" | wc -l | tr -d ' ')
-      pub=$(jq -r --arg u "$u" '.blogs[]? | select(.url == $u) | (.publishedAt // "null")' "$BLOGS_FILE" 2>/dev/null | head -1)
-      if [ -z "$main" ] && [ "$dg" = "0" ]; then
-        verdict=GENUINE_GAP
-      else
-        verdict=ALREADY_SEEN
-      fi
-      echo "URL=$u | verdict=$verdict | main_pipeline_raw_md=${main:-NONE} | prior_digests=$dg | prior_feed_days=$fd | publishedAt=$pub"
-    done
-    echo "BLOGS_SEEN_CHECK=OK"
-  fi
+  "$PY_BIN" -I - "$SI" "$DATE" "$BLOGS_FILE" <<'PY' || echo "BLOGS_SEEN_CHECK=UNAVAILABLE reason=python blogs check failed"
+import glob
+import json
+import os
+import re
+import sys
+
+si, target_date, blogs_path = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.load(open(blogs_path, encoding="utf-8"))
+blogs = data.get("blogs") or []
+urls = sorted({str(b.get("url") or "").strip() for b in blogs if b.get("url")})
+if not urls:
+    print("BLOGS_SEEN_CHECK=OK note=blogs feed has 0 items, nothing to check")
+    raise SystemExit(0)
+
+pub_by_url = {}
+for b in blogs:
+    u = str(b.get("url") or "").strip()
+    if u and u not in pub_by_url:
+        pub_by_url[u] = str(b.get("publishedAt") or "null")
+
+date_re = re.compile(r"(\d{4}-\d{2}-\d{2})")
+raw_files = []
+for p in sorted(glob.glob(os.path.join(si, "reports", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md"))):
+    base = os.path.basename(p)
+    m = date_re.search(base)
+    if m and m.group(1) <= target_date:
+        raw_files.append((base, open(p, encoding="utf-8", errors="replace").read()))
+
+digest_texts = []
+for p in sorted(glob.glob(os.path.join(si, "reports", "digest-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].html"))):
+    m = date_re.search(os.path.basename(p))
+    if m and m.group(1) < target_date:
+        digest_texts.append(open(p, encoding="utf-8", errors="replace").read())
+
+feed_texts = []
+for p in sorted(glob.glob(os.path.join(si, "reports", "external-feeds", "follow-builders-blogs-*.json"))):
+    m = date_re.search(os.path.basename(p))
+    if m and m.group(1) < target_date:
+        feed_texts.append(open(p, encoding="utf-8", errors="replace").read())
+
+for u in urls:
+    hits = [name for name, txt in raw_files if u in txt]
+    dg = sum(1 for txt in digest_texts if u in txt)
+    fd = sum(1 for txt in feed_texts if u in txt)
+    verdict = "GENUINE_GAP" if (not hits and dg == 0) else "ALREADY_SEEN"
+    main_str = ",".join(hits) if hits else "NONE"
+    print(
+        f"URL={u} | verdict={verdict} | main_pipeline_raw_md={main_str} "
+        f"| prior_digests={dg} | prior_feed_days={fd} | publishedAt={pub_by_url.get(u, 'null')}"
+    )
+print("BLOGS_SEEN_CHECK=OK")
+PY
 fi
 
 echo "== x handle overlap =="
@@ -67,7 +102,7 @@ if [ ! -f "$X_FILE" ]; then
 elif [ ! -f "$SOURCES" ]; then
   echo "X_HANDLE_OVERLAP=UNAVAILABLE reason=sources.yml not found"
 else
-  python3 - "$SOURCES" "$X_FILE" <<'PY' || echo "X_HANDLE_OVERLAP=UNAVAILABLE reason=python extractor failed"
+  "$PY_BIN" - "$SOURCES" "$X_FILE" <<'PY' || echo "X_HANDLE_OVERLAP=UNAVAILABLE reason=python extractor failed"
 import json
 import sys
 
@@ -78,17 +113,21 @@ except ImportError:
     print('X_HANDLE_OVERLAP=UNAVAILABLE reason=pyyaml not importable')
     raise SystemExit(0)
 
-with open(sources_path) as fh:
-    conf = yaml.safe_load(fh)
+with open(sources_path, encoding="utf-8") as fh:
+    conf = yaml.safe_load(fh) or {}
 pipeline = {
     str(h).lower()
     for s in (conf.get('sources') or [])
     if isinstance(s, dict) and s.get('type') == 'twitter' and s.get('enabled')
     for h in (s.get('handles') or [])
 }
-with open(feed_path) as fh:
-    feed = json.load(fh)
-feed_handles = {str(a.get('handle', '')).lower() for a in (feed.get('x') or []) if a.get('handle')}
+try:
+    with open(feed_path, encoding="utf-8") as fh:
+        feed = json.load(fh) or {}
+except ValueError:
+    print('X_HANDLE_OVERLAP=UNAVAILABLE reason=x feed json parse failed')
+    raise SystemExit(0)
+feed_handles = {str(a.get('handle', '')).lower() for a in (feed.get('x') or []) if isinstance(a, dict) and a.get('handle')}
 overlap = sorted(feed_handles & pipeline)
 fresh = sorted(feed_handles - pipeline)
 print('pipeline_enabled_handles=%d' % len(pipeline))

@@ -555,3 +555,21 @@ def test_workflow_script_refuses_a_symlink_destination(tmp_path: Path):
     assert json.loads(result.stdout)["ok"] is False
     assert elsewhere.read_text(encoding="utf-8") == "original\n"
     assert link.is_symlink()
+
+
+def test_title_containing_bracket_paren_preserves_topic_url_and_radar_boundary(tmp_path: Path):
+    tricky_url = "https://linux.do/t/topic/3149699"
+    body = _entry("福利分享 [狗头](不是MoonLight吖~)", tricky_url, "內文")
+    radar_block = "<!-- topic-radar:start -->\n## 研究選題雷達\n\n> status: ok\n<!-- topic-radar:end -->\n"
+    raw = tmp_path / "raw.md"
+    out = tmp_path / "out"
+    _write(raw, _raw(_linux(body), radar_block))
+
+    result = _run(raw, out)
+    assert result.returncode == 0, result.stdout
+    manifest = _manifest(out)
+    assert manifest["batches"][0]["topic_urls"] == [tricky_url]
+    other = (out / "non-linuxdo.md").read_text(encoding="utf-8")
+    assert "<!-- topic-radar:start -->" in other
+    assert "<!-- topic-radar:start -->" not in _rebuilt_linux(out)
+
