@@ -69,8 +69,9 @@ BIN_VERSION="$("$BIN" --version 2>/dev/null | awk '/^bumblebee v/ {print $2; exi
 BIN_VERSION="${BIN_VERSION:-unknown}"
 LATEST_RELEASE=""
 BIN_BEHIND=0
-if command -v gh >/dev/null 2>&1; then
-  LATEST_RELEASE="$(gh api repos/perplexityai/bumblebee/releases/latest --jq '.tag_name' 2>/dev/null || echo "")"
+GH_BIN="${BUMBLEBEE_GH_BIN:-gh}"
+if command -v "$GH_BIN" >/dev/null 2>&1; then
+  LATEST_RELEASE="$("$GH_BIN" api repos/perplexityai/bumblebee/releases/latest --jq '.tag_name' 2>/dev/null || echo "")"
   if [ -n "$LATEST_RELEASE" ] && [ "$BIN_VERSION" != "unknown" ] && [ "$BIN_VERSION" != "$LATEST_RELEASE" ]; then
     BIN_BEHIND=1
     log "BINARY-BEHIND: installed $BIN_VERSION < upstream $LATEST_RELEASE (pinned ${PIN_DAYS}d) — 升級可能補掃描器，並驗 schema 0.2.0 支援以解 pin"

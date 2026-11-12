@@ -1,7 +1,6 @@
 """Behavioral tests for fetch-youtube-transcript.sh and external-feeds-seen-check.sh."""
 import json
 import os
-import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -80,25 +79,49 @@ def test_youtube_transcript_exits_2_on_cue_free_vtt(tmp_path: Path):
     assert res.returncode == 2
 
 
+def test_youtube_transcript_survives_secondary_track_429_and_skips_empty_track(tmp_path: Path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "yt-dlp"
+    stub.write_text(
+        """#!/bin/bash
+out_tpl=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-o" ]; then out_tpl="$2"; shift 2; else shift; fi
+done
+printf 'WEBVTT\\nKind: captions\\nLanguage: en-CA\\n\\n' > "${out_tpl//%(ext)s/en-CA.vtt}"
+printf 'WEBVTT\\n\\n00:00:01.000 --> 00:00:02.000\\nRecovered from en-orig\\n' > "${out_tpl//%(ext)s/en-orig.vtt}"
+echo "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests" >&2
+exit 1
+""",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"}
+    res = subprocess.run(
+        ["bash", str(YT_SCRIPT), "https://www.youtube.com/watch?v=partial429"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "Recovered from en-orig"
+
+
 def test_external_feeds_seen_check_marks_same_day_raw_seen_and_ignores_future(tmp_path: Path):
-    scripts_dir = tmp_path / "scripts"
     reports_dir = tmp_path / "reports"
     ext_dir = reports_dir / "external-feeds"
-    scripts_dir.mkdir()
     ext_dir.mkdir(parents=True)
-    local_script = scripts_dir / "external-feeds-seen-check.sh"
-    shutil.copy2(SEEN_SCRIPT, local_script)
 
     (tmp_path / "sources.yml").write_text(
         "sources:\n  - id: twitter_tier1\n    type: twitter\n    enabled: true\n    handles: [karpathy, swyx]\n",
         encoding="utf-8",
     )
-    # Present in today's 06:00 raw md (not a gap!)
     (reports_dir / "2026-10-15.md").write_text(
         "### [Postmortem](https://anthropic.com/news/postmortem)\n",
         encoding="utf-8",
     )
-    # Future file from a later day must not contaminate a historical replay of 10-15
     (reports_dir / "2026-10-16.md").write_text(
         "### [Future](https://openai.com/index/future-only)\n",
         encoding="utf-8",
@@ -118,9 +141,10 @@ def test_external_feeds_seen_check_marks_same_day_raw_seen_and_ignores_future(tm
     )
 
     res = subprocess.run(
-        ["bash", str(local_script), "2026-10-15"],
+        ["bash", str(SEEN_SCRIPT), "2026-10-15"],
         capture_output=True,
         text=True,
+        env={**os.environ, "SOCIAL_INFO_DIR": str(tmp_path)},
         check=False,
     )
     assert res.returncode == 0

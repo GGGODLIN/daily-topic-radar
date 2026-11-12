@@ -68,11 +68,13 @@ async def test_fetch_rss_sends_configured_user_agent(httpx_mock):
 async def test_fetch_rss_unescapes_double_encoded_wordpress_entities(httpx_mock):
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<rss version="2.0"><channel><title>BlockTempo</title>'
+        '<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+        '<channel><title>BlockTempo</title>'
         '<item>'
         '<title>Gemini &amp;#8212; 新進展</title>'
         '<link>https://www.blocktempo.com/a</link>'
-        '<description>&lt;p&gt;摘要文字 [&amp;#8230;]&lt;/p&gt;</description>'
+        '<description><![CDATA[<p>摘要文字 [&amp;#8230;]</p>]]></description>'
+        '<content:encoded><![CDATA[<p>全文 [&amp;#8217;] 內容</p>]]></content:encoded>'
         '</item></channel></rss>'
     )
     httpx_mock.add_response(url="https://www.blocktempo.com/feed/", text=xml)
@@ -90,6 +92,8 @@ async def test_fetch_rss_unescapes_double_encoded_wordpress_entities(httpx_mock)
     assert len(items) == 1
     assert "&#8230;" not in items[0].excerpt
     assert "[…]" in items[0].excerpt
+    assert "&#8217;" not in items[0].content
+    assert "[’]" in items[0].content
     assert items[0].title == "Gemini — 新進展"
 
 

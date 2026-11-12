@@ -27,40 +27,67 @@ fi
 TMPDIR_LOCAL=$(mktemp -d)
 trap 'rc=$?; rm -rf "$TMPDIR_LOCAL"; exit $rc' EXIT
 
-if ! yt-dlp --no-update --skip-download --write-subs --write-auto-sub \
-     --sub-langs "en.*,en" --socket-timeout 20 \
-     --sub-format vtt -o "$TMPDIR_LOCAL/sub.%(ext)s" "$URL" >"$TMPDIR_LOCAL/log" 2>&1; then
-  echo "yt-dlp failed for $URL" >&2
-  tail -5 "$TMPDIR_LOCAL/log" >&2
-  exit 1
-fi
+yt-dlp --ignore-errors --no-update --skip-download --write-subs --write-auto-sub \
+  --sub-langs "en.*,en" --socket-timeout 20 \
+  --sub-format vtt -o "$TMPDIR_LOCAL/sub.%(ext)s" "$URL" >"$TMPDIR_LOCAL/log" 2>&1
+yt_rc=$?
 
-VTT=$(find "$TMPDIR_LOCAL" -name 'sub*.vtt' -print -quit)
-if [ -z "$VTT" ]; then
+shopt -s nullglob
+vtt_files=("$TMPDIR_LOCAL"/sub*.vtt)
+shopt -u nullglob
+
+if [ "${#vtt_files[@]}" -eq 0 ]; then
+  if [ "$yt_rc" -ne 0 ] || command grep -q '^ERROR:' "$TMPDIR_LOCAL/log" 2>/dev/null; then
+    echo "yt-dlp failed for $URL" >&2
+    tail -5 "$TMPDIR_LOCAL/log" >&2
+    exit 1
+  fi
   echo "no en subtitle track for $URL" >&2
   exit 2
 fi
 
-python3 - "$VTT" <<'PY'
+python3 -I - "$TMPDIR_LOCAL" <<'PY'
+import glob
 import html
+import os
 import re
 import sys
 
-raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-out = []
-for line in raw.split("\n"):
-    line = line.strip()
-    if not line or "-->" in line:
-        continue
-    if line.startswith(("WEBVTT", "Kind:", "Language:", "NOTE")):
-        continue
-    if re.fullmatch(r"\d+", line):
-        continue
-    line = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
-    if line and (not out or out[-1] != line):
-        out.append(line)
-if not out:
-    print("subtitle track contained no spoken cues", file=sys.stderr)
-    sys.exit(2)
-print(" ".join(out))
+tmpdir = sys.argv[1]
+
+
+def priority(path: str) -> tuple[int, str]:
+    name = os.path.basename(path)
+    if name == "sub.en.vtt":
+        return (0, name)
+    if "orig" in name:
+        return (2, name)
+    return (1, name)
+
+
+def extract_cues(path: str) -> list[str]:
+    raw = open(path, encoding="utf-8", errors="replace").read()
+    out: list[str] = []
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line or "-->" in line:
+            continue
+        if line.startswith(("WEBVTT", "Kind:", "Language:", "NOTE")):
+            continue
+        if re.fullmatch(r"\d+", line):
+            continue
+        line = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
+        if line and (not out or out[-1] != line):
+            out.append(line)
+    return out
+
+
+for candidate in sorted(glob.glob(os.path.join(tmpdir, "sub*.vtt")), key=priority):
+    cues = extract_cues(candidate)
+    if cues:
+        print(" ".join(cues))
+        sys.exit(0)
+
+print("subtitle track contained no spoken cues", file=sys.stderr)
+sys.exit(2)
 PY

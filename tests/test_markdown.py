@@ -325,9 +325,9 @@ def test_render_file_collapses_multiline_failure_error_inside_blockquote():
         items=[],
         failures=[FetchResult(source_id="venturebeat_ai", ok=False, error=err)],
     )
-    for line in out.splitlines():
-        if "developer.mozilla.org" in line:
-            assert line.startswith(">   - venturebeat_ai:")
+    matched = [line for line in out.splitlines() if "developer.mozilla.org" in line]
+    assert len(matched) == 1
+    assert matched[0].startswith(">   - venturebeat_ai:")
 
 
 def test_render_item_displays_stars_and_downloads_for_github_and_hf():

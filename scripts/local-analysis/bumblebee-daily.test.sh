@@ -12,8 +12,9 @@ git -C "$ROOT/vendor/bumblebee/catalog" config user.name "Test"
 git -C "$ROOT/vendor/bumblebee/catalog" add .
 git -C "$ROOT/vendor/bumblebee/catalog" commit -q -m "init"
 
-cat > "$ROOT/bin/gh" <<'EOF'
+cat > "$ROOT/bin/gh" <<EOF
 #!/bin/bash
+echo 1 >> "$ROOT/gh-mock-calls"
 echo "v0.1.2"
 EOF
 chmod +x "$ROOT/bin/gh"
@@ -33,8 +34,9 @@ NDJSON
 EOF
 chmod +x "$ROOT/vendor/bumblebee/bin/bumblebee"
 
-BUMBLEBEE_REPO_DIR="$ROOT" BUMBLEBEE_NO_NOTIFY=1 LOCAL_ANALYSIS_DATE="2026-11-11" bash "$SCRIPT" >/dev/null
+BUMBLEBEE_REPO_DIR="$ROOT" BUMBLEBEE_GH_BIN="$ROOT/bin/gh" BUMBLEBEE_NO_NOTIFY=1 LOCAL_ANALYSIS_DATE="2026-11-11" bash "$SCRIPT" >/dev/null
 [ -f "$ROOT/ALERT-bumblebee.md" ]
+[ "$(wc -l < "$ROOT/gh-mock-calls" | tr -d ' ')" = "1" ]
 command grep -qF "bad.ext@1.0.0" "$ROOT/ALERT-bumblebee.md"
 echo "✅ findings > 0 creates ALERT-bumblebee.md"
 
@@ -46,7 +48,7 @@ exit 2
 EOF
 chmod +x "$ROOT/vendor/bumblebee/bin/bumblebee"
 
-BUMBLEBEE_REPO_DIR="$ROOT" BUMBLEBEE_NO_NOTIFY=1 LOCAL_ANALYSIS_DATE="2026-11-12" bash "$SCRIPT" >/dev/null
+BUMBLEBEE_REPO_DIR="$ROOT" BUMBLEBEE_GH_BIN="$ROOT/bin/gh" BUMBLEBEE_NO_NOTIFY=1 LOCAL_ANALYSIS_DATE="2026-11-12" bash "$SCRIPT" >/dev/null
 [ -f "$ROOT/ALERT-bumblebee.md" ]
 echo "✅ failed scan preserves existing ALERT-bumblebee.md"
 
@@ -64,6 +66,7 @@ NDJSON
 EOF
 chmod +x "$ROOT/vendor/bumblebee/bin/bumblebee"
 
-BUMBLEBEE_REPO_DIR="$ROOT" BUMBLEBEE_NO_NOTIFY=1 LOCAL_ANALYSIS_DATE="2026-11-12" bash "$SCRIPT" >/dev/null
+BUMBLEBEE_REPO_DIR="$ROOT" BUMBLEBEE_GH_BIN="$ROOT/bin/gh" BUMBLEBEE_NO_NOTIFY=1 LOCAL_ANALYSIS_DATE="2026-11-12" bash "$SCRIPT" >/dev/null
 [ ! -f "$ROOT/ALERT-bumblebee.md" ]
+[ "$(wc -l < "$ROOT/gh-mock-calls" | tr -d ' ')" = "3" ]
 echo "✅ clean complete scan removes stale ALERT-bumblebee.md"

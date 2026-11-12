@@ -8,7 +8,7 @@
 # 上游改不動 → 在消費端把判準算出來，讓寫作 agent 不用猜。
 #
 # 兩項輸出：
-#   1. blogs feed 每個 URL 在「歷史 raw md / 歷史 digest / 歷史 feed 檔」各出現幾次（都排除當天）
+#   1. blogs feed 每個 URL 在「raw md（含當天、排除晚於目標日的未來檔）/ 歷史 digest / 歷史 feed 檔」各出現幾次
 #   2. x feed 的 handle 與 sources.yml 內 enabled twitter source 的 handle 交集 / 差集
 #
 # 契約：一律 exit 0（缺檔也是）、把狀態寫在 stdout marker，讓呼叫端 fail-closed 判讀。
@@ -26,10 +26,13 @@ if [ -z "$DATE" ]; then
   exit 2
 fi
 
-SI="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SI="${SOCIAL_INFO_DIR:-$SCRIPT_ROOT}"
 PY_BIN="python3"
 if [ -x "$SI/.venv/bin/python" ]; then
   PY_BIN="$SI/.venv/bin/python"
+elif [ -x "$SCRIPT_ROOT/.venv/bin/python" ]; then
+  PY_BIN="$SCRIPT_ROOT/.venv/bin/python"
 fi
 BLOGS_FILE="$SI/reports/external-feeds/follow-builders-blogs-$DATE.json"
 X_FILE="$SI/reports/external-feeds/follow-builders-x-$DATE.json"
@@ -102,7 +105,7 @@ if [ ! -f "$X_FILE" ]; then
 elif [ ! -f "$SOURCES" ]; then
   echo "X_HANDLE_OVERLAP=UNAVAILABLE reason=sources.yml not found"
 else
-  "$PY_BIN" - "$SOURCES" "$X_FILE" <<'PY' || echo "X_HANDLE_OVERLAP=UNAVAILABLE reason=python extractor failed"
+  "$PY_BIN" -I - "$SOURCES" "$X_FILE" <<'PY' || echo "X_HANDLE_OVERLAP=UNAVAILABLE reason=python extractor failed"
 import json
 import sys
 
