@@ -49,6 +49,7 @@
     color-scheme: light;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
     margin: 0;
     background: var(--bg);
@@ -604,7 +605,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const readVar = (name, fallback) => {
     const val = getComputedStyle(root).getPropertyValue(name).trim();
-    return val || fallback;
+    return (val !== '' ? val : null) ?? fallback;
   };
   const makeBarOpts = () => ({
     indexAxis: 'y',
@@ -668,23 +669,16 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // Header actions: theme toggle + archive link
   const pageHeader = document.querySelector('header.page');
   const h1 = pageHeader?.querySelector('h1');
+  let headerActions = null;
   if (pageHeader && h1 && !pageHeader.querySelector('.header-top')) {
     const topRow = document.createElement('div');
     topRow.className = 'header-top';
     pageHeader.insertBefore(topRow, h1);
     topRow.appendChild(h1);
-    const actions = document.createElement('div');
-    actions.className = 'header-actions';
-    if (location.pathname.includes('/reports/')) {
-      const idxLink = document.createElement('a');
-      idxLink.className = 'util-btn';
-      idxLink.href = 'index.html';
-      idxLink.textContent = '📚 檢索館';
-      actions.appendChild(idxLink);
-    }
+    headerActions = document.createElement('div');
+    headerActions.className = 'header-actions';
     const toggleBtn = document.createElement('button');
     toggleBtn.type = 'button';
     toggleBtn.className = 'util-btn';
@@ -696,11 +690,10 @@ window.addEventListener('DOMContentLoaded', () => {
       try { localStorage.setItem('social-info-theme', next); } catch (e) {}
       syncCharts();
     });
-    actions.appendChild(toggleBtn);
-    topRow.appendChild(actions);
+    headerActions.appendChild(toggleBtn);
+    topRow.appendChild(headerActions);
   }
 
-  // Reading progress + sticky section jump bar + j/k shortcuts
   const sections = Array.from(document.querySelectorAll('section.fixed, section.theme'));
   if (sections.length > 0 && pageHeader) {
     const progress = document.createElement('div');
@@ -762,7 +755,6 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Inline filter pills + search above GitHub / Skills tables
   let firstSearchInput = null;
   document.querySelectorAll('section.fixed.repo table').forEach((table, tableIdx) => {
     const tbody = table.querySelector('tbody');
@@ -807,10 +799,15 @@ window.addEventListener('DOMContentLoaded', () => {
       let shown = 0;
       for (const row of rows) {
         const txt = (row.textContent ?? '').toLowerCase();
+        const hasExplicit = Boolean(row.querySelector('.verdict, .verdict-watch, .verdict-skip'));
         let ok = true;
-        if (activeKey === 'trial') ok = txt.includes('試用') || txt.includes('已在用');
-        else if (activeKey === 'star') ok = txt.includes('star 追') || txt.includes('可追蹤');
-        else if (activeKey === 'fresh') ok = !txt.includes('🔁') && !txt.includes('resurface');
+        if (activeKey === 'trial') {
+          ok = Boolean(row.querySelector('.verdict')) || (!hasExplicit && (txt.includes('📥') || txt.includes('已在用')));
+        } else if (activeKey === 'star') {
+          ok = Boolean(row.querySelector('.verdict-watch')) || (!hasExplicit && (txt.includes('star 追') || txt.includes('可追蹤')));
+        } else if (activeKey === 'fresh') {
+          ok = !txt.includes('🔁') && !txt.includes('resurface');
+        }
         if (ok && q) ok = txt.includes(q);
         row.hidden = !ok;
         if (ok) shown += 1;
@@ -853,27 +850,24 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Footer: relative raw .md link + prev/next day links when served over HTTP
   const footer = document.querySelector('footer.page');
   const dateMatch = (document.title ?? '').match(/(\d{4}-\d{2}-\d{2})/);
-  if (footer && dateMatch && location.pathname.includes('/reports/')) {
+  const inReportsDir = location.pathname.includes('/reports/');
+  let footerNavRow = null;
+  if (footer && dateMatch && inReportsDir) {
     const curDate = dateMatch[1];
     const shiftDay = (iso, delta) => {
       const [y, m, d] = iso.split('-').map(Number);
       const dt = new Date(Date.UTC(y, m - 1, d + delta));
       return dt.toISOString().slice(0, 10);
     };
-    const navRow = document.createElement('div');
-    navRow.className = 'footer-nav';
+    footerNavRow = document.createElement('div');
+    footerNavRow.className = 'footer-nav';
     const rawLink = document.createElement('a');
     rawLink.href = `${curDate}.md`;
     rawLink.textContent = `📄 原始 ${curDate}.md`;
-    navRow.appendChild(rawLink);
-    const archiveLink = document.createElement('a');
-    archiveLink.href = 'index.html';
-    archiveLink.textContent = '📚 歷史日報檢索館';
-    navRow.appendChild(archiveLink);
-    footer.appendChild(navRow);
+    footerNavRow.appendChild(rawLink);
+    footer.appendChild(footerNavRow);
 
     if (location.protocol.startsWith('http')) {
       for (const [delta, label] of [[-1, '← 前一日'], [1, '後一日 →']]) {
@@ -884,12 +878,34 @@ window.addEventListener('DOMContentLoaded', () => {
               const a = document.createElement('a');
               a.href = target;
               a.textContent = `${label} (${shiftDay(curDate, delta)})`;
-              navRow.appendChild(a);
+              footerNavRow.appendChild(a);
             }
           })
           .catch(() => {});
       }
     }
+  }
+
+  // reports/index.html is gitignored and built on demand, so probe before linking to avoid 404.
+  if (inReportsDir && location.protocol.startsWith('http')) {
+    fetch('index.html', { method: 'HEAD' })
+      .then((res) => {
+        if (!res.ok) return;
+        if (headerActions) {
+          const idxLink = document.createElement('a');
+          idxLink.className = 'util-btn';
+          idxLink.href = 'index.html';
+          idxLink.textContent = '📚 檢索館';
+          headerActions.prepend(idxLink);
+        }
+        if (footerNavRow) {
+          const archiveLink = document.createElement('a');
+          archiveLink.href = 'index.html';
+          archiveLink.textContent = '📚 歷史日報檢索館';
+          footerNavRow.insertBefore(archiveLink, footerNavRow.children[1] ?? null);
+        }
+      })
+      .catch(() => {});
   }
 });
 </script>
