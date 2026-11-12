@@ -385,14 +385,14 @@ class RetroCLI(unittest.TestCase):
     out = self.new("run")
     self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "custom", "--start", OLD,
              "--project", self.projects / "work", "--depth", "window", "--read-model", "read-sol",
-             "--merge-model", "merge-sol", "--verify-model", "verify-sol", "--effort", "max", "--concurrency", "2")
+             "--merge-model", "merge-sol", "--verify-model", "verify-sol", "--effort", "max", "--concurrency", "8")
     plan = json.loads((out / "plan.json").read_text())
     self.assertNotEqual(plan["scope"], "all")
     self.assertEqual(plan["models"], {"read": "read-sol", "merge": "merge-sol", "verify": "verify-sol",
                                       "repair": "devin-plugin/swe-2:high"})
-    self.assertEqual(plan["concurrency"], 2)
+    self.assertEqual(plan["concurrency"], 8)
     self.assertTrue(plan["limits"]["narrow_coverage"])
-    self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "day", "--concurrency", "5", code=2)
+    self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "day", "--concurrency", "17", code=2)
     self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "last-success", code=2)
 
   def test_default_window_keeps_older_context_on_demand_but_out_of_evidence(self):

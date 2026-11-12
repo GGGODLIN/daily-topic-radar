@@ -2660,7 +2660,7 @@ def parser():
   # window re-reads only the last request before the window; full re-read ~half of each daily run (2026-10-31..11-04).
   prep.add_argument("--depth", choices=["full", "window"], default="window")
   prep.add_argument("--focus", default="全面")
-  prep.add_argument("--concurrency", type=int, choices=range(1, 5), default=4)
+  prep.add_argument("--concurrency", type=int, choices=range(1, 17), default=4)
   for stage in ("read", "merge", "verify"):
     prep.add_argument("--" + stage + "-model")
     prep.add_argument("--" + stage + "-effort", choices=["low", "medium", "high", "xhigh", "max"] )
