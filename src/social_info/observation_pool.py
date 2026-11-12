@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +27,9 @@ _SOURCE_KIND = {
     "github_trending": "github_trending",
     "trendshift": "trendshift",
     "skills_sh": "skills_sh",
+    "skillhub_cn": "skillhub_cn",
+    "clawhub": "clawhub",
+    "devpost": "devpost",
     "product_hunt": "product_hunt",
     "linuxdo": "linuxdo",
     "reddit": "reddit",
@@ -104,6 +106,23 @@ def _handle_matches(source_cfg: SourceConfig, handle: str) -> bool:
     if source_cfg.type == "skills_sh":
         board, _, rank = handle.partition(":rank-")
         return board in {"trending", "hot"} and rank.isdigit()
+    if source_cfg.type in {"skillhub_cn", "clawhub"}:
+        return handle.startswith("rank-") and handle.removeprefix("rank-").isdigit()
+    if source_cfg.type == "reddit":
+        sub = str(source_cfg.params.get("subreddit") or "")
+        return bool(sub) and handle.lower() == f"r/{sub}".lower()
+    if source_cfg.type == "hn_algolia":
+        return handle == "front_page"
+    if source_cfg.type == "product_hunt":
+        return handle == "daily_top_ai"
+    if source_cfg.type == "v2ex":
+        return handle == str(source_cfg.params.get("node") or "hot").strip()
+    if source_cfg.type == "linuxdo":
+        return bool(handle)
+    if source_cfg.type == "devpost":
+        if source_cfg.params.get("mode") == "mlh_prizes":
+            return handle == "MLH"
+        return bool(handle) and handle != "MLH"
     return False
 
 
@@ -288,6 +307,5 @@ class ObservationPool:
 
 
 def pool_window(date: str) -> tuple[str, str]:
-    """Naive-UTC day window. Pool timestamps are stored the same way as state.db."""
-    day = datetime.strptime(date, "%Y-%m-%d")
-    return day.isoformat(), (day + timedelta(days=1)).isoformat()
+    """Asia/Taipei day translated to naive-UTC range, matching Database._utc_range_for_date."""
+    return Database._utc_range_for_date(date)

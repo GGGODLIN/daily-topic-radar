@@ -351,3 +351,188 @@ def test_long_alias_lists_are_capped_in_heading():
     lead = {"term": "a", "aliases": ["b", "c", "d", "e", "f", "g"]}
     assert lead_heading(lead) == "a / b / c / d / e (+2)"
     assert lead_heading({"term": "a"}) == "a"
+
+
+def test_analyze_sorts_leads_before_top_cap_and_skips_retweets(tmp_path):
+    pool = ObservationPool(tmp_path / "pool.db")
+    history = RadarHistory(tmp_path / "h.json")
+    cfg = {**load_radar_config(Path("topic-radar.yml")), "top": 1}
+
+    base = _item(content="BaselineTerm shipped", fetched_at=datetime(2026, 10, 12, 0, 0))
+    pool.record_result(_source(), FetchResult(
+        source_id="twitter_tier1", items=[base], ok=True,
+        started_at=base.fetched_at, ended_at=base.fetched_at,
+    ))
+    analyze(pool, cfg, history, "2026-10-12")
+
+    low_early = _item(
+        url="https://x.com/a/status/10", canonical_url="https://x.com/a/status/10",
+        source_handle="@ada", content="AlphaLow launches today",
+        engagement={"likes": 110}, fetched_at=datetime(2026, 10, 13, 0, 1),
+    )
+    high_late_1 = _item(
+        url="https://x.com/b/status/11", canonical_url="https://x.com/b/status/11",
+        source_handle="@bea", content="ZetaHigh launches today",
+        engagement={"likes": 500}, fetched_at=datetime(2026, 10, 13, 0, 5),
+    )
+    high_late_2 = _item(
+        url="https://x.com/c/status/12", canonical_url="https://x.com/c/status/12",
+        source_handle="@cal", content="ZetaHigh is everywhere",
+        engagement={"likes": 300}, fetched_at=datetime(2026, 10, 13, 0, 6),
+    )
+    rt_orig = _item(
+        url="https://x.com/d/status/13", canonical_url="https://x.com/d/status/13",
+        source_handle="@dan", content="RetweetOnlyName test",
+        engagement={"likes": 10}, fetched_at=datetime(2026, 10, 13, 0, 7),
+    )
+    rt_copy = _item(
+        url="https://x.com/e/status/14", canonical_url="https://x.com/e/status/14",
+        source_handle="@eve", content="RT @dan: RetweetOnlyName test",
+        engagement={"likes": 10}, fetched_at=datetime(2026, 10, 13, 0, 8),
+    )
+    pool.record_result(_source("twitter_tier1"), FetchResult(
+        source_id="twitter_tier1", items=[low_early, rt_orig], ok=True,
+        started_at=low_early.fetched_at, ended_at=low_early.fetched_at,
+    ))
+    pool.record_result(_source("twitter_radar"), FetchResult(
+        source_id="twitter_radar", items=[high_late_1, high_late_2, rt_copy], ok=True,
+        started_at=high_late_1.fetched_at, ended_at=high_late_2.fetched_at,
+    ))
+
+    report = analyze(pool, cfg, RadarHistory(history.path), "2026-10-13")
+    assert [row["term"] for row in report["leads"]] == ["zetahigh"]
+    all_saved = {row["term"] for row in RadarHistory(history.path).leads_on("2026-10-13")}
+    assert "retweetonlyname" not in all_saved
+    pool.close()
+
+
+def test_github_trending_breakout_fires_on_second_day_and_with_trendshift(tmp_path):
+    pool = ObservationPool(tmp_path / "pool.db")
+    history = RadarHistory(tmp_path / "h.json")
+    cfg = load_radar_config(Path("topic-radar.yml"))
+
+    base = _item(content="BaselineTerm", fetched_at=datetime(2026, 10, 11, 0, 0))
+    pool.record_result(_source(), FetchResult(
+        source_id="twitter_tier1", items=[base], ok=True,
+        started_at=base.fetched_at, ended_at=base.fetched_at,
+    ))
+    analyze(pool, cfg, history, "2026-10-11")
+
+    day1_gh = Item(
+        title="acme/rocket", url="https://github.com/acme/rocket",
+        canonical_url="https://github.com/acme/rocket", source="github_trending",
+        source_handle="trending:python:daily", source_tier=1,
+        posted_at=datetime(2026, 10, 12, 0, 0), fetched_at=datetime(2026, 10, 12, 0, 0),
+        author="acme", excerpt="fast engine", engagement={"stars": 1000},
+    )
+    pool.record_result(_source("github_trending", "github_trending"), FetchResult(
+        source_id="github_trending", items=[day1_gh], ok=True,
+        started_at=day1_gh.fetched_at, ended_at=day1_gh.fetched_at,
+    ))
+    day1_report = analyze(pool, cfg, RadarHistory(history.path), "2026-10-12")
+    assert day1_report["leads"] == []
+
+    day2_gh = Item(
+        title="acme/rocket", url="https://github.com/acme/rocket",
+        canonical_url="https://github.com/acme/rocket", source="github_trending",
+        source_handle="trending:python:daily", source_tier=1,
+        posted_at=datetime(2026, 10, 13, 0, 0), fetched_at=datetime(2026, 10, 13, 0, 0),
+        author="acme", excerpt="fast engine", engagement={"stars": 1600},
+    )
+    both_gh = Item(
+        title="morluto/rea", url="https://github.com/morluto/rea",
+        canonical_url="https://github.com/morluto/rea", source="github_trending",
+        source_handle="trending:rust:daily", source_tier=1,
+        posted_at=datetime(2026, 10, 13, 0, 0), fetched_at=datetime(2026, 10, 13, 0, 0),
+        author="morluto", excerpt="agent runtime", engagement={"stars": 5000},
+    )
+    both_ts = Item(
+        title="morluto/rea", url="https://github.com/morluto/rea",
+        canonical_url="https://github.com/morluto/rea", source="trendshift",
+        source_handle="rising:rank-1", source_tier=1,
+        posted_at=datetime(2026, 10, 13, 0, 0), fetched_at=datetime(2026, 10, 13, 0, 0),
+        author="morluto", excerpt="agent runtime", engagement={"rank": 1, "score": 900},
+    )
+    pool.record_result(_source("github_trending", "github_trending"), FetchResult(
+        source_id="github_trending", items=[day2_gh, both_gh], ok=True,
+        started_at=day2_gh.fetched_at, ended_at=day2_gh.fetched_at,
+    ))
+    pool.record_result(_source("trendshift", "trendshift"), FetchResult(
+        source_id="trendshift", items=[both_ts], ok=True,
+        started_at=both_ts.fetched_at, ended_at=both_ts.fetched_at,
+    ))
+
+    day2_report = analyze(pool, cfg, RadarHistory(history.path), "2026-10-13")
+    lead_terms = {row["term"] for row in day2_report["leads"]}
+    assert "acme/rocket" in lead_terms
+    assert "morluto/rea" in lead_terms
+    pool.close()
+
+
+def test_render_radar_markdown_collapses_multiline_evidence_titles():
+    from social_info.topic_radar import render_radar_markdown
+
+    md = render_radar_markdown({
+        "date": "2026-11-12",
+        "status": "ok",
+        "health": [{"source_id": "twitter_tier1", "status": "success"}],
+        "leads": [{
+            "term": "claude data",
+            "sources": ["twitter_anthropic"],
+            "accounts": ["claudeai"],
+            "likes": 60000,
+            "evidence": [{
+                "url": "https://x.com/claudeai/status/1",
+                "account": "claudeai",
+                "title": "Line one.\n\nLine [two]",
+                "body_excerpt": "excerpt",
+                "source_id": "twitter_anthropic",
+                "content_status": "content",
+            }],
+            "github": [],
+        }],
+    })
+    assert "- [Line one. Line \\[two\\]](https://x.com/claudeai/status/1) @claudeai (content)" in md
+
+
+def test_seed_maps_reddit_product_hunt_v2ex_and_skill_registries_and_taipei_window(tmp_path):
+    from social_info.observation_pool import pool_window
+
+    assert pool_window("2026-10-13") == Database._utc_range_for_date("2026-10-13")
+
+    db = Database(tmp_path / "state.db")
+    db.init_schema()
+    samples = [
+        ("reddit", "r/LocalLLaMA", "reddit_localllama", "reddit"),
+        ("product_hunt", "daily_top_ai", "product_hunt", "product_hunt"),
+        ("v2ex", "create", "v2ex_create", "v2ex"),
+        ("skillhub_cn", "rank-1", "skillhub_cn", "skillhub_cn"),
+        ("clawhub", "rank-2", "clawhub", "clawhub"),
+        ("hn", "front_page", "hn", "hn_algolia"),
+    ]
+    config = Config(defaults={}, sources=[
+        SourceConfig(id="reddit_localllama", type="reddit", enabled=True, tier=1, params={"subreddit": "LocalLLaMA"}),
+        SourceConfig(id="product_hunt", type="product_hunt", enabled=True, tier=2),
+        SourceConfig(id="v2ex_create", type="v2ex", enabled=True, tier=2, params={"node": "create"}),
+        SourceConfig(id="skillhub_cn", type="skillhub_cn", enabled=True, tier=2),
+        SourceConfig(id="clawhub", type="clawhub", enabled=True, tier=2),
+        SourceConfig(id="hn", type="hn_algolia", enabled=True, tier=1),
+    ])
+    for idx, (src, handle, _, _) in enumerate(samples):
+        db.insert_item({
+            "id": str(idx), "url": f"https://example.com/s{idx}",
+            "canonical_url": f"https://example.com/s{idx}", "title": "t",
+            "title_hash": f"h{idx}", "source": src, "source_handle": handle,
+            "source_tier": 1, "posted_at": "2026-10-13T01:00:00",
+            "fetched_at": "2026-10-13T00:00:00", "author": "", "excerpt": "",
+            "language": "en", "engagement_json": "{}", "also_appeared_in": "[]",
+        })
+    pool = ObservationPool(tmp_path / "pool.db")
+    pool.seed_from_database(db, "2026-10-13", config)
+    rows = pool.conn.execute("SELECT source_id, source_type FROM observations ORDER BY url").fetchall()
+    assert [(r["source_id"], r["source_type"]) for r in rows] == [
+        (sid, stype) for _, _, sid, stype in samples
+    ]
+    pool.close()
+    db.close()
+

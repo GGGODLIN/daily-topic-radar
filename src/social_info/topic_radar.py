@@ -33,6 +33,8 @@ def default_config() -> dict[str, Any]:
         "min_sources": 2,
         "min_likes": 100,
         "top": 25,
+        "github_window_days": 14,
+        "github_delta_min": 400,
         "exclude_source_ids": [
             "techcrunch_ai", "venturebeat_ai", "theregister_security",
             "arstechnica_security", "thehackernews", "krebs_security",
@@ -199,6 +201,10 @@ def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, d
         }
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
+        if row["source_type"] == "twitter":
+            raw_body = row.get("content") or row.get("excerpt") or row.get("title") or ""
+            if raw_body.lstrip().startswith("RT @"):
+                continue
         found, strong = _names_for(row)
         for term in found:
             if not term or term in terms.STOP:
@@ -237,8 +243,8 @@ def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, d
         rss_only = slot["kinds"] <= {"rss"}
         hf_only = slot["kinds"] <= {"huggingface"}
         github_only = slot["kinds"] <= {"github_search", "github_trending"}
-        trend_only = slot["kinds"] <= {"trendshift"}
-        if hf_only or trend_only:
+        has_trendshift = "trendshift" in slot["kinds"]
+        if hf_only or has_trendshift:
             enough = True
         elif github_only:
             enough = _github_breakout(pool, slot["github"], int(cfg.get("github_window_days") or 14), int(cfg.get("github_delta_min") or 400))
@@ -249,7 +255,10 @@ def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, d
                 slot["strong"] and slot["likes"] >= min_likes
             )
         if not enough:
-            history.remember(term, date, None)
+            # GitHub repos without a prior observation fail _github_breakout on day 1;
+            # poisoning terms here would block genuine +400 star surges on day 2+.
+            if not github_only:
+                history.remember(term, date, None)
             continue
         github_note = _github_note(pool, slot["github"])
         lead = {
@@ -263,10 +272,11 @@ def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, d
         }
         history.remember(term, date, lead)
         leads.append(lead)
-    leads.sort(key=lambda row: (-len(row["sources"]), -row["likes"], row["term"]))
-    leads = merge_leads_by_url(leads)[: int(cfg.get("top") or 25)]
+    top_n = int(cfg.get("top") or 25)
     if not baseline_only:
-        leads = merge_leads_by_url(history.leads_on(date))[: int(cfg.get("top") or 25)]
+        leads = list(history.leads_on(date))
+    leads.sort(key=lambda row: (-len(row["sources"]), -row["likes"], row["term"]))
+    leads = merge_leads_by_url(leads)[:top_n]
     history.save()
     limited = any(
         row["content_status"] in {"legacy_excerpt", "excerpt", "title"} for row in rows
@@ -427,7 +437,10 @@ def render_radar_markdown(report: dict[str, Any]) -> str:
         lines.append("> baseline_only: true")
         lines.append("> " + report.get("note", ""))
     if report.get("limited_input"):
-        lines.append("> limited_input: legacy_excerpt bootstrap, not full text")
+        if report.get("bootstrap") == "legacy_excerpt":
+            lines.append("> limited_input: legacy_excerpt bootstrap, not full text")
+        else:
+            lines.append("> limited_input: selected sources include title/excerpt-only feeds, not full text")
     if report.get("failed"):
         lines.append("> failed sources:")
         for row in report["failed"]:
@@ -454,7 +467,7 @@ def render_radar_markdown(report: dict[str, Any]) -> str:
         lines.append("Baseline evidence:")
         lines.append("")
         for ev in report.get("baseline_evidence") or []:
-            title = ev["title"].replace("[", "\\[").replace("]", "\\]")
+            title = " ".join(ev["title"].split()).replace("[", "\\[").replace("]", "\\]")
             lines.append(f"- [{title}]({ev['url']}) @{ev['account']}")
         lines.append("")
         return "\n".join(lines)
@@ -470,7 +483,7 @@ def render_radar_markdown(report: dict[str, Any]) -> str:
             + " · accounts: " + ", ".join(lead.get("accounts") or [])
         )
         for ev in lead.get("evidence") or []:
-            title = ev["title"].replace("[", "\\[").replace("]", "\\]")
+            title = " ".join(ev["title"].split()).replace("[", "\\[").replace("]", "\\]")
             lines.append(f"- [{title}]({ev['url']}) @{ev['account']} ({ev['content_status']})")
             if ev.get("body_excerpt"):
                 lines.append("> " + ev["body_excerpt"].replace("\n", " "))
