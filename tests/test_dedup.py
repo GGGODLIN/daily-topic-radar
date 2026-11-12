@@ -273,3 +273,124 @@ def test_higher_tier_incoming_carries_existing_metrics_from_db(db):
     assert appeared[0]["source"] == "clawhub"
     assert "196,868 downloads" in appeared[0]["metrics"]
     assert "665 stars" in appeared[0]["metrics"]
+
+
+def test_emoji_or_punctuation_only_titles_do_not_collide_in_l2(db):
+    deduper = Deduper(db)
+    reddit_emoji = _make_item(
+        "https://www.reddit.com/r/OpenAI/comments/1/x",
+        "🤨 🧃",
+        source="reddit",
+        handle="r/OpenAI",
+        tier=1,
+    )
+    first = deduper.process([reddit_emoji])
+    for it in first.new_items:
+        db.insert_item(it.to_db_row(
+            item_id=compute_item_id(it.canonical_url),
+            title_hash=compute_title_hash(it.title),
+        ))
+
+    x_emoji = _make_item(
+        "https://x.com/dotey/status/999",
+        "🔥 🚀",
+        source="x",
+        handle="@dotey",
+        tier=1,
+    )
+    batch_punct = _make_item(
+        "https://x.com/sama/status/1000",
+        "...",
+        source="x",
+        handle="@sama",
+        tier=1,
+    )
+    second = deduper.process([x_emoji, batch_punct])
+    assert [it.url for it in second.new_items] == [
+        "https://x.com/dotey/status/999",
+        "https://x.com/sama/status/1000",
+    ]
+
+
+def test_l2_dedup_deduplicates_repeated_also_appeared_in_and_updates_metrics(db):
+    deduper = Deduper(db)
+    existing = _make_item(
+        "https://skills.sh/vercel-labs/agent-browser",
+        "agent-browser",
+        source="skills_sh",
+        handle="trending:rank-1",
+        tier=1,
+    )
+    first = deduper.process([existing])
+    for it in first.new_items:
+        db.insert_item(it.to_db_row(
+            item_id=compute_item_id(it.canonical_url),
+            title_hash=compute_title_hash(it.title),
+        ))
+
+    for installs in (1000, 2500, 4000):
+        dup = _make_item(
+            "https://clawhub.ai/skills/agent-browser",
+            "agent browser",
+            source="clawhub",
+            handle="rank-3",
+            tier=2,
+        )
+        dup.engagement = {"installs": installs}
+        deduper.process([dup])
+
+    row = db.find_by_title_hash(compute_title_hash("agent-browser"))
+    appeared = json.loads(row["also_appeared_in"])
+    assert len(appeared) == 1
+    assert appeared[0]["source"] == "clawhub"
+    assert "4,000 installs" in appeared[0]["metrics"]
+
+
+def test_l1_cross_source_same_url_records_also_appeared_in(db):
+    deduper = Deduper(db)
+    gh = _make_item(
+        "https://github.com/JuliusBrussee/caveman",
+        "JuliusBrussee/caveman",
+        source="github_trending",
+        handle="trending:typescript:daily",
+        tier=1,
+    )
+    gh.engagement = {"stars": 8500}
+    ts = _make_item(
+        "https://github.com/JuliusBrussee/caveman",
+        "JuliusBrussee/caveman",
+        source="trendshift",
+        handle="rising:rank-2",
+        tier=1,
+    )
+    batch_res = deduper.process([gh, ts])
+    assert len(batch_res.new_items) == 1
+    assert [a["source"] for a in batch_res.new_items[0].also_appeared_in] == ["trendshift"]
+
+    for it in batch_res.new_items:
+        db.insert_item(it.to_db_row(
+            item_id=compute_item_id(it.canonical_url),
+            title_hash=compute_title_hash(it.title),
+        ))
+
+    # Same source re-fetching tomorrow stays silent; a third platform adds once.
+    gh_again = _make_item(
+        "https://github.com/JuliusBrussee/caveman",
+        "JuliusBrussee/caveman",
+        source="github_trending",
+        handle="trending:typescript:weekly",
+        tier=1,
+    )
+    hn_link = _make_item(
+        "https://github.com/JuliusBrussee/caveman",
+        "Show HN: Caveman",
+        source="hn",
+        handle="front_page",
+        tier=1,
+    )
+    deduper.process([gh_again, hn_link])
+
+    stored = db.get_items_by_ids([compute_item_id(gh.canonical_url)])[0]
+    appeared = json.loads(stored["also_appeared_in"])
+    assert [a["source"] for a in appeared] == ["trendshift", "hn"]
+

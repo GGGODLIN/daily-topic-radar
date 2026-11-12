@@ -244,7 +244,7 @@ async def run_pipeline(
         items = r.items[:limit_per_source] if limit_per_source else r.items
         all_items.extend(items)
 
-    deduper = Deduper(db, resurface_days=resurface_days)
+    deduper = Deduper(db, resurface_days=resurface_days, dry_run=dry_run)
     dedup_result = deduper.process(all_items)
     new_items = dedup_result.new_items
     annotate_net_new(results, new_items)
