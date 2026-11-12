@@ -10,6 +10,7 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().with_name("session-slim-sweep.py")
 OLD = time.time() - 3 * 3600
+START = "Wed Nov 11 18:30:44 2026"
 
 
 def transcript(session_id, with_duplicates=True):
@@ -28,18 +29,26 @@ class SweepTest(unittest.TestCase):
     self.cc, self.pi, self.state, self.audit, self.bin = root / "cc", root / "pi", root / "state", root / "audit", root / "bin"
     for path in (self.cc, self.pi, self.audit, self.bin):
       path.mkdir(parents=True)
-    self.live = root / "live.json"
-    self.live.write_text("[]")
-    herdr = self.bin / "herdr"
-    herdr.write_text(
-      "#!/bin/sh\n"
-      f'[ -f "{root}/herdr-down" ] && exit 1\n'
-      f"python3 -c 'import json;print(json.dumps({{\"result\":{{\"agents\":[{{\"agent_session\":{{\"value\":v}}}} for v in json.load(open(\"{self.live}\"))]}}}}))'\n"
-    )
-    herdr.chmod(0o755)
+    self.registry = root / "sessions"
+    self.registry.mkdir()
+    self.procs = root / "procs.json"
+    self.procs.write_text("[]")
+    self.opened = root / "opened.json"
+    self.opened.write_text("[]")
+    fakes = {
+      "ps": f'[ -f "{root}/ps-down" ] && exit 1\n'
+            f"python3 -c 'import json;[print(\"%6d %s %s\" % tuple(p)) for p in json.load(open(\"{self.procs}\"))]'\n",
+      "lsof": f"python3 -c 'import json,sys;hit=sys.argv[-1] in json.load(open(\"{self.opened}\"));hit and print(123);sys.exit(0 if hit else 1)' \"$@\"\n",
+      "afsctool": "exit 0\n",
+    }
+    for name, body in fakes.items():
+      fake = self.bin / name
+      fake.write_text("#!/bin/sh\n" + body)
+      fake.chmod(0o755)
     self.root = root
     self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", SESSION_SLIM_STATE=str(self.state),
-                    SESSION_SLIM_CC_ROOT=str(self.cc), SESSION_SLIM_PI_ROOT=str(self.pi), SESSION_SLIM_AUDIT_STATE=str(self.audit))
+                    SESSION_SLIM_CC_ROOT=str(self.cc), SESSION_SLIM_PI_ROOT=str(self.pi), SESSION_SLIM_AUDIT_STATE=str(self.audit),
+                    SESSION_SLIM_REGISTRY=str(self.registry))
 
   def tearDown(self):
     self.tmp.cleanup()
@@ -54,6 +63,20 @@ class SweepTest(unittest.TestCase):
     path.write_text(transcript(name, **kwargs))
     if idle:
       os.utime(path, (OLD, OLD))
+    return path
+
+  def running(self, session_id, pid, registry=True, start=START, comm="/Users/x/.local/bin/claude"):
+    procs = json.loads(self.procs.read_text())
+    procs.append([pid, start, comm])
+    self.procs.write_text(json.dumps(procs))
+    if registry:
+      (self.registry / f"{pid}.json").write_text(json.dumps({"pid": pid, "procStart": START, "sessionId": session_id}))
+
+  def pi_session(self, name):
+    path = self.pi / "proj" / f"2026-11-01_{name}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x" * (300 * 1024))
+    os.utime(path, (OLD, OLD))
     return path
 
   def test_enqueue_accepts_only_transcripts_under_the_projects_root(self):
@@ -82,7 +105,8 @@ class SweepTest(unittest.TestCase):
     live = self.session("living")
     fresh = self.session("fresh", idle=False)
     clean = self.session("clean", with_duplicates=False)
-    self.live.write_text(json.dumps(["living"]))
+    self.running("living", 101)
+    self.running(None, 7, registry=False, comm="/Applications/Claude.app/Contents/Helpers/chrome-native-host")
     sizes = {p: p.stat().st_size for p in (ended, live, fresh, clean)}
     proc = self.cli("run")
     self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -93,7 +117,7 @@ class SweepTest(unittest.TestCase):
     second = self.cli("run")
     self.assertIn('"cc": 0', second.stdout)
 
-  def test_queued_session_is_processed_right_after_it_leaves_herdr(self):
+  def test_queued_session_is_processed_right_after_its_process_exits(self):
     path = self.session("queued", idle=False)
     os.utime(path, (time.time() - 120, time.time() - 120))
     self.cli("enqueue", stdin=json.dumps({"transcript_path": str(path), "session_id": "queued"}))
@@ -102,13 +126,32 @@ class SweepTest(unittest.TestCase):
     self.assertIn('"queued": 1', proc.stdout)
     self.assertLess(path.stat().st_size, size)
 
-  def test_disabled_or_herdr_unavailable_changes_nothing(self):
+  def test_unknown_live_sessions_change_nothing_and_keep_the_queue(self):
     path = self.session("ccc")
     size = path.stat().st_size
-    (self.root / "herdr-down").write_text("")
-    self.assertIn("herdr agent list unavailable", self.cli("run").stdout)
+    self.cli("enqueue", stdin=json.dumps({"transcript_path": str(path), "session_id": "ccc"}))
+    (self.root / "ps-down").write_text("")
+    self.assertIn("live sessions unknown: ps failed", self.cli("run").stdout)
+    (self.root / "ps-down").unlink()
+    self.running("other", 202, registry=False)
+    self.assertIn("claude pid 202 has no readable registry", self.cli("run").stdout)
+    self.procs.write_text("[]")
+    self.running("other", 303, start="Thu Nov 12 01:00:00 2026")
+    self.assertIn("claude pid 303 registry does not match", self.cli("run").stdout)
     self.assertEqual(path.stat().st_size, size)
-    (self.root / "herdr-down").unlink()
+    self.assertEqual(len((self.state / "queue.jsonl").read_text().splitlines()), 1)
+
+  def test_pi_session_held_open_by_a_process_is_not_compressed(self):
+    closed, held = self.pi_session("closed"), self.pi_session("held")
+    self.opened.write_text(json.dumps([str(held)]))
+    proc = self.cli("run")
+    self.assertIn('"pi": 1', proc.stdout, proc.stderr)
+    logged = [json.loads(line)["path"] for line in (self.state / "log.jsonl").read_text().splitlines()]
+    self.assertEqual(logged, [str(closed)])
+
+  def test_disabled_changes_nothing(self):
+    path = self.session("ddd")
+    size = path.stat().st_size
     self.state.mkdir(exist_ok=True)
     (self.state / "disabled").write_text("")
     self.assertIn("disabled", self.cli("run").stdout)

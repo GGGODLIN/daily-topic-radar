@@ -2,14 +2,18 @@
 """Run session-slim on Claude Code sessions that have ended, and compress ended pi sessions.
 
 Threat model: 這是給誠實系統用的自動整理，不是安全閘門；判斷不出 session 是否結束時一律不動，留給下一輪。
-不保證：Herdr 以外開的 session 只靠閒置時間判斷；程式被強制結束時 SessionEnd 可能沒觸發，由每小時補漏接手。
+不保證：只認得程序名稱是 claude 的 Claude Code（用 node 跑的不算）；註冊檔不在 ~/.claude/sessions 的
+claude 程序（例如另一個 CLAUDE_CONFIG_DIR）會讓整輪不動；pi 沒有註冊檔，只靠「沒被任何程序開著＋閒置」判斷；
+程式被強制結束時 SessionEnd 可能沒觸發，由每小時補漏接手。
 停用：建立 <state>/disabled。
 """
 import argparse
+import contextlib
 import importlib.util
 import json
 import mmap
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -22,6 +26,8 @@ STATE = Path(os.environ.get("SESSION_SLIM_STATE", HOME / ".local/state/session-s
 CC_ROOT = Path(os.environ.get("SESSION_SLIM_CC_ROOT", HOME / ".claude/projects"))
 PI_ROOT = Path(os.environ.get("SESSION_SLIM_PI_ROOT", HOME / ".pi/agent/sessions"))
 AUDIT_STATE = Path(os.environ.get("SESSION_SLIM_AUDIT_STATE", HERE.parents[1] / "reports/local-analysis/session-audit"))
+REGISTRY = Path(os.environ.get("SESSION_SLIM_REGISTRY", HOME / ".claude/sessions"))
+PS_LINE = re.compile(r"\s*(?P<pid>\d+)\s+(?P<start>\w{3} \w{3} +\d+ \d\d:\d\d:\d\d \d{4})\s+(?P<comm>.+)$")
 IDLE_SECONDS = 30 * 60
 QUEUE_SETTLE_SECONDS = 60
 QUEUE_WAIT_SECONDS = 120
@@ -65,21 +71,44 @@ def enqueue(stdin_text, state=STATE):
   return append_line(state / "queue.jsonl", {"path": str(resolved), "session_id": payload.get("session_id", ""), "at": time.time()})
 
 
+class LiveUnknown(Exception):
+  pass
+
+
 def live_sessions():
-  # 回傳 Herdr 裡還活著的 agent 的 session id／路徑；拿不到就回 None，呼叫端整輪不動
+  # 不問 Herdr：Herdr 沒在跑或換版時 agent list 拿不到，整個排程就停擺，而且不在 Herdr 裡的 session 根本不在名單上。
+  # Claude Code 自己寫的 ~/.claude/sessions/<pid>.json 不依賴任何終端機；任何一個 claude 程序對不上註冊檔就丟
+  # LiveUnknown，呼叫端整輪不動。
   try:
-    proc = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=20)
-    agents = json.loads(proc.stdout)["result"]["agents"]
-  except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-    return None
+    proc = subprocess.run(["ps", "-axo", "pid=,lstart=,comm="], capture_output=True, text=True, timeout=20,
+                          env=dict(os.environ, TZ="UTC", LC_ALL="C"), check=True)
+  except (OSError, subprocess.SubprocessError) as error:
+    raise LiveUnknown(f"ps failed: {error}") from error
   live = set()
-  for agent in agents:
-    value = str((agent.get("agent_session") or {}).get("value") or "")
-    if value:
-      # claude 給 session id；pi 有時給 id、有時給檔案路徑（檔名是「時間_id」），兩種都記
-      stem = Path(value).stem if value.endswith(".jsonl") else value
-      live.update({stem, stem.split("_")[-1]})
+  for line in proc.stdout.splitlines():
+    match = PS_LINE.match(line)
+    if not match or Path(match["comm"].strip()).name != "claude":
+      continue
+    pid = int(match["pid"])
+    try:
+      record = json.loads((REGISTRY / f"{pid}.json").read_text())
+    except (OSError, ValueError) as error:
+      raise LiveUnknown(f"claude pid {pid} has no readable registry") from error
+    # 比對啟動時間：pid 被重用時，舊程序留下的註冊檔不能拿來代表新程序
+    started = " ".join(str(record.get("procStart", "")).split())
+    if record.get("pid") != pid or started != " ".join(match["start"].split()) or not record.get("sessionId"):
+      raise LiveUnknown(f"claude pid {pid} registry does not match the process")
+    live.add(str(record["sessionId"]))
   return live
+
+
+def opened(path):
+  # pi 沒有註冊檔，被任何程序開著就當還在用；lsof 出錯或跑不了一律當開著
+  try:
+    proc = subprocess.run(["lsof", "-t", "--", str(path)], capture_output=True, text=True, timeout=20)
+  except (OSError, subprocess.SubprocessError):
+    return True
+  return bool(proc.stdout.strip()) or proc.returncode != 1 or bool(proc.stderr.strip())
 
 
 def session_key(path):
@@ -185,7 +214,7 @@ def pi_candidates(seen, live, now):
       continue
     if info.st_mtime < horizon or info.st_size < MIN_BYTES or info.st_flags & stat.UF_COMPRESSED:
       continue
-    if ended(path, live, pi_key(path), now, IDLE_SECONDS) and not unchanged_since(seen, path):
+    if ended(path, live, pi_key(path), now, IDLE_SECONDS) and not unchanged_since(seen, path) and not opened(path):
       picked.append(path)
   return picked
 
@@ -202,15 +231,18 @@ def run(state=STATE, audit_state=AUDIT_STATE, wait_queue=True):
   if (state / "disabled").exists():
     return {"skip": "disabled"}
   state.mkdir(parents=True, exist_ok=True)
+  try:
+    live = live_sessions()
+  except LiveUnknown as error:
+    return {"skip": f"live sessions unknown: {error}"}
+  # 判斷得出誰還開著才取佇列：先取再放棄，SessionEnd 登記的項目會被刪掉卻沒處理
   queued = take_queue(state)
-  live = live_sessions()
-  if live is None:
-    return {"skip": "herdr agent list unavailable"}
   deadline = time.time() + (QUEUE_WAIT_SECONDS if wait_queue and queued else 0)
-  # SessionEnd 觸發時 CC 還沒完全退出：等它離開 Herdr 名單、檔案靜下來，最多等兩分鐘，其餘交給每小時補漏
+  # SessionEnd 觸發時 CC 還沒完全退出：等它的程序結束、檔案靜下來，最多等兩分鐘，其餘交給每小時補漏
   while queued and time.time() < deadline and any(session_key(p) in live for p in queued):
     time.sleep(5)
-    live = live_sessions() or live
+    with contextlib.suppress(LiveUnknown):
+      live = live_sessions()
   seen = load_seen(state)
   now = time.time()
   cc = cc_candidates(seen, live, now, queued)
