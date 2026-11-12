@@ -232,9 +232,13 @@ def _github(cfg: dict, state: Path) -> dict:
     original = breakout._get
 
     def _get(path: str) -> dict:
-        response = subprocess.run(
-            ["gh", "api", path], capture_output=True, text=True, check=True, timeout=40,
-        )
+        try:
+            response = subprocess.run(
+                ["gh", "api", path], capture_output=True, text=True, check=True, timeout=40,
+            )
+        except subprocess.SubprocessError as exc:
+            # breakout.breakouts catches OSError around optional /users/{owner} lookups.
+            raise OSError(str(exc)) from exc
         payload = json.loads(response.stdout)
         if "/search/repositories" in path:
             captured.extend(payload.get("items") or [])
@@ -348,12 +352,13 @@ def _raw_items(blocks: dict[str, dict], observed_on: str) -> list[dict[str, Any]
             if not repo_id:
                 continue
             proven = repo_id in new_ids and not hf.get("first_run")
+            is_first_hf = bool(hf.get("first_run"))
             items.append({
                 "kind": "hf", "category": category, "title": repo_id,
                 "url": _hf_url(category, repo_id),
-                "status": "new" if proven else "baseline_candidate",
+                "status": "new" if proven else ("baseline_candidate" if is_first_hf else "retained"),
                 "proven_new": proven,
-                "note": "新進榜" if proven else "首次榜單觀察，未證新上榜",
+                "note": "新進榜" if proven else ("首次榜單觀察，未證新上榜" if is_first_hf else "已在前次榜單"),
                 "description": row.get("pipeline_tag") or row.get("sdk") or "",
                 "tags": row.get("tags") or [],
                 "created_at": row.get("createdAt") or row.get("created_at") or "",
@@ -416,14 +421,25 @@ def _leads(blocks: dict[str, dict]) -> list[dict[str, str]]:
     return leads
 
 
-def _remote(cfg: dict, state: Path, transports: dict | None) -> dict[str, dict]:
+def _remote(
+    cfg: dict,
+    state: Path,
+    transports: dict | None,
+    *,
+    skip_kinds: set[str] | None = None,
+) -> dict[str, dict]:
     chosen = transports or {}
     calls = {
         "hf": chosen.get("hf_new", sources.hf_new),
         "github": chosen.get("breakouts", _github),
         "sitemap": chosen.get("diff", sitemaps.diff),
     }
-    return {kind: _call(kind, fn, cfg, state) for kind, fn in calls.items()}
+    skip = skip_kinds or set()
+    return {
+        kind: _call(kind, fn, cfg, state)
+        for kind, fn in calls.items()
+        if kind not in skip
+    }
 
 
 def collect(source: SourceConfig, date: str | None = None, *, now: datetime | None = None,
@@ -445,16 +461,30 @@ def collect(source: SourceConfig, date: str | None = None, *, now: datetime | No
     identity = _identity(cfg)
     cache_path = report_dir / f"{label}.json"
     cached = _read_cache(cache_path)
-    reused = bool(cached) and cached.get("date") == label and cached.get("config") == identity
+    same_day_cfg = bool(cached) and cached.get("date") == label and cached.get("config") == identity
+    cached_health = (cached or {}).get("health") or {}
+    remote_healthy = all(
+        bool((cached_health.get(k) or {}).get("ok")) for k in ("hf", "github", "sitemap")
+    )
+    reused = same_day_cfg and remote_healthy
     if reused:
         blocks = dict(cached.get("blocks") or {})
     else:
-        blocks = _remote(cfg, state, transports)
-        if cached and cached.get("date") == label:
-            blocks = {
-                kind: _merge_block(kind, (cached.get("blocks") or {}).get(kind), block)
-                for kind, block in blocks.items()
-            }
+        prior_blocks = (cached.get("blocks") or {}) if cached and cached.get("date") == label else {}
+        healthy_kinds = (
+            {k for k in ("hf", "github", "sitemap") if (cached_health.get(k) or {}).get("ok")}
+            if same_day_cfg
+            else set()
+        )
+        fresh = _remote(cfg, state, transports, skip_kinds=healthy_kinds)
+        blocks = {}
+        for kind in ("hf", "github", "sitemap"):
+            if kind in healthy_kinds and kind in prior_blocks:
+                blocks[kind] = prior_blocks[kind]
+            elif prior_blocks:
+                blocks[kind] = _merge_block(kind, prior_blocks.get(kind), fresh[kind])
+            else:
+                blocks[kind] = fresh[kind]
     try:
         x_block, x_notes = _x_block(pool_path, state, moment, label)
     except Exception as exc:
@@ -487,7 +517,12 @@ def to_items(report: dict[str, Any], tier: int = 2) -> list[Item]:
     fetched = _naive(_aware(report["captured_at"]))
     items: list[Item] = []
     for row in report.get("raw_items") or []:
-        if row.get("kind") == "sitemap" and row.get("status") != "new":
+        # Unfetched sitemap URLs stay in sitemaps/*.json.gz and {date}.json;
+        # turning thousands of bare URL slugs into Items bloats state.db toward
+        # GitHub's 100 MB push limit without carrying page content.
+        if row.get("kind") == "sitemap" and (
+            row.get("status") != "new" or row.get("page_text") == "not_fetched"
+        ):
             continue
         if not row.get("url"):
             continue
@@ -558,12 +593,18 @@ def render_report(report: dict[str, Any]) -> str:
     lines.append(json.dumps(report.get("baseline") or {}, ensure_ascii=False))
     lines.append("")
     lines.append("### raw")
+    omitted_sitemap_stubs = 0
     for row in report.get("raw_items") or []:
+        if row.get("kind") == "sitemap" and row.get("page_text") == "not_fetched":
+            omitted_sitemap_stubs += 1
+            continue
         note = " · ".join(str(row[key]) for key in ("note", "description") if row.get(key))
         details = {key: row[key] for key in ("tags", "rank", "trending_score", "created_at") if row.get(key)}
         lines.append(f"- {row.get('status')} [{row.get('title')}]({row.get('url')}) — {note}".rstrip())
         if details:
             lines.append("  " + json.dumps(details, ensure_ascii=False))
+    if omitted_sitemap_stubs:
+        lines.append(f"- (omitted {omitted_sitemap_stubs} unfetched sitemap URL-slug stubs; full list in JSON)")
     lines.append("")
     lines.append("### limitations")
     for note in report.get("limitations") or []:

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS idx_items_title_hash ON items(title_hash);
 CREATE INDEX IF NOT EXISTS idx_items_posted_at ON items(posted_at);
+CREATE INDEX IF NOT EXISTS idx_items_fetched_at ON items(fetched_at);
 
 CREATE TABLE IF NOT EXISTS fetch_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

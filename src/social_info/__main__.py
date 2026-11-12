@@ -179,6 +179,7 @@ async def _main() -> int:
         dry_run=dry_run,
         limit_per_source=limit_per_source,
         pool=pool,
+        target_date=args.date,
     )
     failures = [r for r in results if not r.ok]
 

@@ -335,3 +335,8 @@ def test_compact_prunes_expired_rows_and_trims_old_excerpts(db):
     assert "legacy_src" in issues
     assert issues["legacy_src"]["last_ok_at"] is not None
 
+
+def test_items_schema_creates_fetched_at_index(db):
+    indexes = {row["name"] for row in db.conn.execute("PRAGMA index_list(items)")}
+    assert "idx_items_fetched_at" in indexes
+

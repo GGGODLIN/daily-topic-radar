@@ -152,3 +152,88 @@ def test_sitemap_first_run_failure_and_next_snapshot(tmp_path, monkeypatch):
     failed = sitemaps.diff(cfg, tmp_path)
     assert "error" in failed["sites"]["test"]
     assert snap.load(path) == before
+
+
+def test_same_day_retry_reruns_only_failed_remote_block(tmp_path):
+    source = _source(tmp_path)
+    calls = []
+    now = datetime(2026, 10, 14, 12, tzinfo=UTC)
+    transports = _transports(calls)
+    gh_attempts = {"n": 0}
+    good_github = transports["breakouts"]
+
+    def flaky_github(cfg, state):
+        gh_attempts["n"] += 1
+        if gh_attempts["n"] == 1:
+            raise RuntimeError("temporary gh 502")
+        return good_github(cfg, state)
+
+    transports["breakouts"] = flaky_github
+    first = collect(source, "2026-10-14", now=now, transports=transports)
+    assert first["health"]["github"]["ok"] is False
+    assert calls == ["hf", "sitemap"]
+
+    calls.clear()
+    second = collect(source, "2026-10-14", now=now, transports=transports)
+    assert second["reused"] is False
+    assert second["health"]["github"]["ok"] is True
+    assert calls == ["github"]
+
+
+def test_github_user_lookup_timeout_is_translated_to_oserror(tmp_path, monkeypatch):
+    import subprocess
+    from datetime import timedelta
+
+    from social_info.free_radar import _github
+
+    recent_iso = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def fake_run(cmd, **kwargs):
+        path = cmd[2]
+        if "/search/repositories" in path:
+            out = {
+                "items": [{
+                    "full_name": "acme/new-agent",
+                    "html_url": "https://github.com/acme/new-agent",
+                    "stargazers_count": 600,
+                    "created_at": recent_iso,
+                    "description": "agent harness",
+                }]
+            }
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(out), stderr="")
+        if path.startswith("/users/"):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=40)
+        return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr("social_info.free_radar.subprocess.run", fake_run)
+    cfg = {"breakout": {"window_days": 14, "min_stars": 300, "velocity_min": 50, "delta_min": 400}}
+    block = _github(cfg, tmp_path / "state")
+    assert "error" not in block
+    assert any(r["repo"] == "acme/new-agent" for r in block["repos"])
+
+
+def test_unfetched_sitemap_stubs_stay_out_of_items_and_raw_markdown(tmp_path):
+    source = _source(tmp_path)
+    calls = []
+    transports = _transports(calls)
+    transports["diff"] = lambda cfg, state: {
+        "sites": {
+            "glama": {
+                "first_run": False,
+                "urls": 500,
+                "new_urls": [f"https://glama.ai/mcp/connectors/tool-{i}" for i in range(5)],
+            }
+        },
+        "terms": [{"term": "mcp-bridge", "note": "5 new urls"}],
+    }
+    report = collect(
+        source, "2026-10-15", now=datetime(2026, 10, 15, 6, tzinfo=UTC), transports=transports
+    )
+    assert sum(1 for r in report["raw_items"] if r.get("kind") == "sitemap") == 5
+    items = to_items(report)
+    assert all(not it.source_handle.startswith("sitemap:") for it in items)
+    md = render_report(report)
+    assert "mcp-bridge" in md
+    assert "https://glama.ai/mcp/connectors/tool-0" not in md
+    assert "omitted 5 unfetched sitemap" in md
+

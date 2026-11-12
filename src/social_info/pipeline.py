@@ -202,6 +202,7 @@ async def run_pipeline(
     limit_per_source: int | None = None,
     resurface_days: int = RESURFACE_DAYS,
     pool: ObservationPool | None = None,
+    target_date: str | None = None,
 ) -> tuple[list[Item], list[FetchResult], list[str]]:
     """Run all enabled fetchers in parallel, dedup, return (new_items, all_results, resurface_ids).
 
@@ -229,7 +230,19 @@ async def run_pipeline(
 
         # The independent collector reads shared X observations from this run.
         for source in independent:
-            result = redact_result(await _run_one_fetcher(source, http))
+            effective = (
+                SourceConfig(
+                    id=source.id,
+                    type=source.type,
+                    enabled=source.enabled,
+                    tier=source.tier,
+                    language=source.language,
+                    params={**source.params, "date": target_date},
+                )
+                if target_date and "date" not in source.params
+                else source
+            )
+            result = redact_result(await _run_one_fetcher(effective, http))
             results.append(result)
             if pool is not None and not dry_run:
                 pool.record_result(source, result)
