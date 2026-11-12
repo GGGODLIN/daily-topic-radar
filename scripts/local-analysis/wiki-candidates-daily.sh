@@ -100,7 +100,7 @@ grep -rli '<專名1>\|<專名2>' ~/.claude/wiki/*.md
 
 # 前一日候選 follow-up（必做）
 
-讀 /Users/linhancheng/code/social-info/reports/local-analysis/，找昨天日期 (today - 1d) 的 wiki.md：
+讀 /Users/linhancheng/code/social-info/reports/local-analysis/，找昨天日期 (today - 1d) 的 `<date>-wiki-candidates.md`：
 
 - 抽出昨日「升級候選」+「不確定 / 待你決定」段所有候選 entity name
 - 對每個候選查 ~/.claude/wiki/<slug>.md：

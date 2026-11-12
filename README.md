@@ -1,6 +1,6 @@
 # social-info
 
-Daily AI ecosystem raw aggregator. Pipeline produces a structured Markdown digest each morning at 09:00 Asia/Taipei; downstream consumption is via Claude Code + gh CLI.
+Daily AI ecosystem raw aggregator. Pipeline produces a structured Markdown digest each morning at 06:00 Asia/Taipei via local launchd ([scripts/run-daily.sh](/scripts/run-daily.sh)); downstream consumption is via Claude Code + gh CLI.
 
 ## How to consume the daily digest
 
@@ -32,10 +32,10 @@ See full reference in [docs/superpowers/specs/2026-04-26-daily-ai-aggregator-des
 
 1. Install uv: https://docs.astral.sh/uv/
 2. `uv sync`
-3. Copy `.env.example` to `.env`, fill in keys (or set GitHub Secrets for cloud run)
+3. Copy [`.env.example`](/.env.example) to `.env`, fill in keys (`APIFY_RELAY_URL`, or direct `APIFY_TOKEN_TWITTER` / `APIFY_TOKEN_THREADS`)
 4. Verify: `uv run python -m social_info --smoke`
-5. Push to GitHub, set repository Secrets identical to `.env`
-6. The daily workflow runs at 09:00 Asia/Taipei automatically
+5. Push to GitHub ([scripts/run-daily.sh](/scripts/run-daily.sh) commits and pushes daily `state.db` and `reports/`)
+6. Load the local LaunchAgent (`com.gggodlin.social-info-daily`) so [scripts/run-daily.sh](/scripts/run-daily.sh) runs daily at 06:00 Asia/Taipei automatically
 
 ## Local commands
 
@@ -53,11 +53,11 @@ uv run pytest                                   # tests
 ## Common problems
 
 - **Public RSSHub returns 410**: try later or self-host (see spec Appendix D)
-- **Threads token expired**: refresh with `THREADS_REFRESH_TOKEN`
-- **twitterapi.io credit low**: check at https://twitterapi.io dashboard, consider trimming KOLs
+- **Threads fetch failing / quota low**: active Threads fetching uses Apify (`APIFY_RELAY_URL` or `APIFY_TOKEN_THREADS`; legacy Meta API `THREADS_ACCESS_TOKEN` is dormant unless `user_handles` is re-enabled, and `threads_muse` is currently disabled — see [CLAUDE.md](/CLAUDE.md))
+- **X / Twitter fetch failing / credit low**: X fetching uses Apify (`APIFY_RELAY_URL` or `APIFY_TOKEN_TWITTER`), not `twitterapi.io`; check the resident Apify relay or Apify account usage and consider trimming KOLs
 
 ## Spec & Plan
 
 - Spec: [docs/superpowers/specs/2026-04-26-daily-ai-aggregator-design.md](docs/superpowers/specs/2026-04-26-daily-ai-aggregator-design.md)
 - Plan: [docs/superpowers/plans/2026-04-26-daily-ai-aggregator.md](docs/superpowers/plans/2026-04-26-daily-ai-aggregator.md)
-- Status of in-progress setup: [STATUS.md](STATUS.md)
+- Historical PoC snapshot (2026-04-26): [STATUS.md](/STATUS.md)

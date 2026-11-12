@@ -94,8 +94,8 @@ cat <<'EOF'
 
 Priority:
 - HIGH = lifecycle:stale 已 60+ 天（建議 archive 或 promote 已逾期）
-- MED = lifecycle:stale 30-60 天 + 久未 changelog 180+ 天
-- LOW = 久未 changelog 90-180 天
+- MED = lifecycle:stale 30-60 天 + 久未 changelog（`volatility: high` 60+ 天；一般 medium/low/留空 180+ 天）
+- LOW = 久未 changelog（`volatility: high` 31-60 天；一般 medium/low/留空 90-180 天）
 
 # 前一日 follow-up
 
