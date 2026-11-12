@@ -7,9 +7,10 @@ import pytest
 from social_info.pipeline import classify_error
 
 
-def _http_status_error(code: int) -> httpx.HTTPStatusError:
+def _http_status_error(code: int, headers: dict[str, str] | None = None) -> httpx.HTTPStatusError:
     response = MagicMock(spec=httpx.Response)
     response.status_code = code
+    response.headers = httpx.Headers(headers or {})
     return httpx.HTTPStatusError("status", request=MagicMock(), response=response)
 
 
@@ -30,6 +31,8 @@ def _http_status_error(code: int) -> httpx.HTTPStatusError:
         (_http_status_error(400), "persistent_error"),
         (_http_status_error(404), "persistent_error"),
         (_http_status_error(429), "transient"),
+        (_http_status_error(429, {"x-vercel-mitigated": "challenge"}), "persistent_error"),
+        (_http_status_error(429, {"cf-mitigated": "challenge"}), "persistent_error"),
         (ValueError("random non-http exception"), "persistent_error"),
     ],
 )

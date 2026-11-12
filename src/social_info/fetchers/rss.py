@@ -30,7 +30,9 @@ def _feed_content(entry) -> tuple[str, str]:
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     url = source.params["url"]
     limit = source.params.get("limit", 30)
-    resp = await http.get(url, timeout=30.0)
+    user_agent = source.params.get("user_agent")
+    headers = {"User-Agent": str(user_agent)} if user_agent else None
+    resp = await http.get(url, headers=headers, timeout=30.0)
     resp.raise_for_status()
     parsed = feedparser.parse(resp.text)
 

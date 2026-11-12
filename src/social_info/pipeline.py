@@ -79,6 +79,18 @@ def classify_error(exc: BaseException) -> str:
         return "transient"
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
+        headers = getattr(exc.response, "headers", None)
+        # Vercel / Cloudflare JS security checkpoints return HTTP 429; non-JS
+        # httpx retries waste 50s of backoff and never solve the challenge.
+        if (
+            code == 429
+            and headers is not None
+            and (
+                str(headers.get("x-vercel-mitigated", "")).lower() == "challenge"
+                or str(headers.get("cf-mitigated", "")).lower() == "challenge"
+            )
+        ):
+            return "persistent_error"
         if code >= 500 or code == 429:
             return "transient"
         if code in (401, 403):
