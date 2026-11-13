@@ -2773,6 +2773,41 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertIn("155 text SAFE_SANDBOX_API_USER", redacted)
     self.assertIn("158 text [REDACTED]", redacted)
     self.assertIn("161 text [REDACTED]", redacted)
+
+    # Read line-number prefixes (arrow and tab), standalone JSON string, JSON-wrapped Read output, and Key->Value form
+    read_arrow_ax = "\n".join(
+      f"  {idx + 1}→{ln}" for idx, ln in enumerate(ax_sample.rstrip("\n").split("\n"))
+    )
+    read_tab_ax = "\n".join(
+      f"     {idx + 1}\t{ln}" for idx, ln in enumerate(ax_sample.rstrip("\n").split("\n"))
+    )
+    standalone_json_ax = json.dumps(ax_sample, ensure_ascii=False)
+    json_obj_read_ax = json.dumps(
+      {"tool_output": read_arrow_ax, "win_path": r"C:\new\test_folder"},
+      ensure_ascii=False,
+    )
+    for variant_name, payload in (
+      ("read-arrow", read_arrow_ax),
+      ("read-tab", read_tab_ax),
+      ("standalone-json-str", standalone_json_ax),
+      ("json-obj-read-arrow", json_obj_read_ax),
+    ):
+      with self.subTest(ax_variant=variant_name):
+        out = mod.redact_text(payload)
+        self.assertFalse(fake_ax_render_val in out, f"{variant_name}: Key->Value secret leaked")
+        self.assertFalse(fake_ax_nvp_pw in out, f"{variant_name}: Password leaked")
+        self.assertFalse(fake_ax_nvp_sig in out, f"{variant_name}: Signature leaked")
+        self.assertFalse(fake_ax_cjk_key in out, f"{variant_name}: CJK API key leaked")
+        self.assertIn("SAFE_SANDBOX_API_USER", out)
+        self.assertIn("https://safe.example.com", out)
+        self.assertEqual(mod.redact_text(out), out, f"{variant_name}: redaction must be idempotent")
+    self.assertIn("  1→\t\t249 text Key", mod.redact_text(read_arrow_ax))
+    self.assertIn("     1\t\t\t249 text Key", mod.redact_text(read_tab_ax))
+    parsed_standalone = json.loads(mod.redact_text(standalone_json_ax))
+    self.assertIsInstance(parsed_standalone, str)
+    self.assertIn("158 text [REDACTED]", parsed_standalone)
+    parsed_obj = json.loads(mod.redact_text(json_obj_read_ax))
+    self.assertEqual(parsed_obj["win_path"], r"C:\new\test_folder")
     self.assertFalse(fake_webhook_tok in redacted, "discord webhook path token was not redacted")
     self.assertFalse(fake_oauth_code in redacted, "oauth callback code was not redacted")
     self.assertFalse(fake_oauth_state in redacted, "oauth callback state was not redacted")

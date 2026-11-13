@@ -166,6 +166,8 @@ CJK_SECRET_PAREN_RE = re.compile(
 URL_KEY_PARAM_RE = re.compile(
   r"(?i)((?:[?&]|&amp;|%3[fF]|%26)(?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)(?:=|%3[dD]))((?:(?!&amp;)[^&#%\s\"'<>`\\]|%(?!26|23)[0-9A-Fa-f]{2})+)"
 )
+AX_READ_PREFIX_RE = re.compile(r"^([+-]?[ \t]*\d+(?:\t|→))(.*)$")
+JSON_STRING_LITERAL_RE = re.compile(r'"(?:[^"\\\r\n]|\\.)*"')
 AX_KEY_VALUE_FIELD_RE = re.compile(r"^[+-]?[ \t]*\d+\s+text\b[^\r\n]*\bKey,\s*Value:\s*([A-Za-z0-9_.-]+)\s*$")
 AX_KEY_BOUNDARY_RE = re.compile(r"^[+-]?[ \t]*\d+\s+text\s+Key\s*$")
 AX_VALUE_FIELD_RE = re.compile(r"^([+-]?[ \t]*\d+\s+text\b[^\r\n]*\bValue,\s*Value:\s*)([^\r\n]+)$")
@@ -489,6 +491,21 @@ def redact_text(value):
     pieces.append(json.dumps(sanitized, ensure_ascii=False) if sanitized != parsed else value[match.start():end])
     cursor = end
   text = "".join(pieces) + value[cursor:] if pieces else value
+  if "\\n" in text and ("text " in text or "heading " in text):
+    def replace_escaped_ax_json_string(match):
+      literal = match.group(0)
+      if "\\n" not in literal or ("text " not in literal and "heading " not in literal):
+        return literal
+      try:
+        decoded = json.loads(literal)
+      except ValueError:
+        return literal
+      if not isinstance(decoded, str):
+        return literal
+      sanitized_str = redact_text(decoded)
+      return json.dumps(sanitized_str, ensure_ascii=False) if sanitized_str != decoded else literal
+
+    text = JSON_STRING_LITERAL_RE.sub(replace_escaped_ax_json_string, text)
   text = PRIVATE_KEY_RE.sub("[PRIVATE_KEY_REDACTED]", text)
   text = JSON_SECRET_RE.sub(
     lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]{match.group(4)}",
@@ -531,7 +548,9 @@ def redact_ax_tree_secrets(text):
   lines = text.split("\n")
   pending_field_window = 0
   pending_token_window = 0
-  for index, line in enumerate(lines):
+  for index, raw_line in enumerate(lines):
+    prefix_match = AX_READ_PREFIX_RE.match(raw_line)
+    read_prefix, line = (prefix_match.group(1), prefix_match.group(2)) if prefix_match else ("", raw_line)
     key_match = AX_KEY_VALUE_FIELD_RE.match(line)
     if key_match:
       pending_field_window = 6 if sensitive_key(key_match.group(1)) else 0
@@ -541,22 +560,26 @@ def redact_ax_tree_secrets(text):
       pending_field_window = 0
       pending_token_window = 0
       continue
+    if AX_SECRET_LABEL_LINE_RE.match(line):
+      pending_field_window = 0
+      pending_token_window = 3
+      continue
     if pending_field_window > 0:
       val_match = AX_VALUE_FIELD_RE.match(line)
-      if val_match and not PLACEHOLDER_RE.match(val_match.group(2).strip()):
-        lines[index] = f"{val_match.group(1)}[REDACTED]"
+      if val_match:
+        if not PLACEHOLDER_RE.match(val_match.group(2).strip()):
+          lines[index] = f"{read_prefix}{val_match.group(1)}[REDACTED]"
         pending_field_window = 0
       else:
         pending_field_window -= 1
     if pending_token_window > 0:
       tok_match = AX_TEXT_TOKEN_LINE_RE.match(line)
-      if tok_match and not PLACEHOLDER_RE.match(tok_match.group(2).strip()):
-        lines[index] = f"{tok_match.group(1)}[REDACTED]"
+      if tok_match:
+        if not PLACEHOLDER_RE.match(tok_match.group(2).strip()):
+          lines[index] = f"{read_prefix}{tok_match.group(1)}[REDACTED]"
         pending_token_window = 0
       else:
         pending_token_window -= 1
-    if AX_SECRET_LABEL_LINE_RE.match(line):
-      pending_token_window = 3
   return "\n".join(lines)
 
 
