@@ -350,6 +350,7 @@ class RetroCLI(unittest.TestCase):
       {"type": "user", "timestamp": RECENT, "message": {"role": "user", "content": "<local-command-stdout>Cancelled</local-command-stdout>"}},
     ])
     inventory, data = self.inventory()
+    self.assertEqual(data["default_model"], "group/gemini-pro:medium")
     self.assertIn("empty-meta", {r["session"] for r in data["excluded"]})
     self.assertIn("local-cmd", {r["session"] for r in data["excluded"]})
     self.assertNotIn("empty-meta", {r["session"] for r in data["unknown"]})
@@ -370,9 +371,10 @@ class RetroCLI(unittest.TestCase):
     self.assertTrue(plan["limits"]["thinking_omitted"])
     self.assertEqual(plan["page_count"], 2)
     self.assertEqual(plan["models"]["read"], result["models"]["read"])
-    self.assertEqual(plan["models"], {"read": "group/gemini-pro:high", "merge": "group/gemini-pro:high", "verify": "gpt-6.1-sol(xhigh)[1m]",
+    self.assertEqual(plan["models"], {"read": "group/gemini-pro:medium", "merge": "group/gemini-pro:medium", "verify": "gpt-6.1-sol(xhigh)[1m]",
                                       "repair": "devin-plugin/swe-2:high"})
-    self.assertEqual(plan["efforts"], {"read": "high", "merge": "high", "verify": "xhigh"})
+    self.assertEqual(plan["efforts"], {"read": "medium", "merge": "medium", "verify": "xhigh"})
+    self.assertEqual(plan["concurrency"], 2)
     self.assertIn("[line=1 timestamp=2026-10-20T01:00:00Z window user]", document)
     for page in session["shards"][0]["pages"]:
       self.assertTrue(Path(page["path"]).read_text().endswith("END_PAGE " + page["id"] + "\n"))
@@ -1636,6 +1638,42 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     self.assertEqual(self.stage(path, "verify", critic_parts=manifest)["items"], [])
     (path.parent / "final.md").write_text("post-fix finish", encoding="utf-8")
     self.assertEqual(self.cli("finish", "--plan", path)["status"], "complete")
+
+  def test_shard_page_chunks_caps_at_two_pages_and_merges_small_tail_orphan(self):
+    retro = self.retro()
+    line = ("中" * 300 + "\n")
+    page_block = line * 260
+    five_with_small_tail = page_block * 4 + line * 25
+    groups = retro.shard_page_chunks(five_with_small_tail)
+    self.assertEqual([len(g) for g in groups], [2, 3])
+    three_with_large_tail = page_block * 2 + line * 160
+    self.assertEqual([len(g) for g in retro.shard_page_chunks(three_with_large_tail)], [2, 1])
+
+  def test_reading_validate_accepts_two_step_partial_write_then_complete_edit(self):
+    path, _ = self.prepare([user("source finding"), call("toolu_TW", RECENT)])
+    item = self.stage(path, "reading")["items"][0]
+    finding = {"id": item["unit"] + "-F1", "evidence": [{"session": "human", "source_line": 1, "quote": "source finding"}]}
+    partial_report = self.report(item, [finding], status="partial", tracking_observations=[])
+    obs = [{"issue_id": "iss-1", "change_id": "chg-1", "outcome": "recurrence",
+            "evidence": [{"session": "human", "source_line": 2, "quote": "ls", "role": "action"}]}]
+    complete_report = self.report(item, [finding], status="complete", tracking_observations=obs)
+    folder = self.transcript(item, partial_report)
+    agent_file = folder / "agent-fixture.jsonl"
+    partial_json = json.dumps(partial_report, indent=2)
+    complete_json = json.dumps(complete_report, indent=2)
+    Path(item["report_path"]).write_text(complete_json, encoding="utf-8")
+    rows = [json.loads(line) for line in agent_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for row in rows:
+      for block in row.get("message", {}).get("content", []):
+        if isinstance(block, dict) and block.get("name") == "Write":
+          block["input"]["content"] = partial_json
+    rows.append(assistant([{"type": "tool_use", "id": "edit-step2", "name": "Edit", "input": {
+      "file_path": item["report_path"], "old_string": partial_json, "new_string": complete_json, "replace_all": False}}]))
+    rows.append(user([{"type": "tool_result", "tool_use_id": "edit-step2", "content": "The file has been updated."}]))
+    self.assertIn('"status": "partial"', partial_json)
+    agent_file.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    res = self.validate(path, "reading", [folder])
+    self.assertTrue(res["pass"])
 
 
 def inst(text, timestamp, path="/fixture/RULES.md"):

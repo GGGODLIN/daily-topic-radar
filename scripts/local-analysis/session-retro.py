@@ -17,17 +17,20 @@ sys.dont_write_bytecode = True
 PAGE_CHARS = 240000
 MAX_PAGE_BYTES = 240000
 MAX_PAGE_LINES = 1800
-SHARD_CHARS = 6 * 140000
+MAX_SHARD_PAGES = 2
+# 超過 2 頁的大單在單跳 32,768 token 上限下易思考耗盡；僅尾頁不足半頁時併入前片，避免拆出單頁孤片而失去跨頁脈絡。
+SHARD_TAIL_MERGE_BYTES = MAX_PAGE_BYTES // 2
+SHARD_CHARS = MAX_SHARD_PAGES * PAGE_CHARS
 STAGES = ("reading", "session-merge", "cross", "verify")
 DESTINATIONS = ("kept", "merged", "reclassified", "rejected")
 # action 是犯錯（或照做）的那個動作，只有它產生事件；context 是佐證（停掉指令、縮小範圍重查、讀存檔），歸到某個事件底下。
 EVIDENCE_ROLES = ("action", "context")
 ACCOUNTING_ERROR_CAP = 25
 DEFAULT_MODEL = "gpt-6.1-sol[1m]"
-DEFAULT_GEMINI_PRO_MODEL = "group/gemini-pro:high"
+DEFAULT_GEMINI_PRO_MODEL = "group/gemini-pro:medium"
 DEFAULT_TERRA_MODEL = "gpt-6.1-terra"
 DEFAULT_SOL_MODEL = "gpt-6.1-sol"
-DEFAULT_EFFORTS = {"read": "high", "merge": "high", "verify": "xhigh"}
+DEFAULT_EFFORTS = {"read": "medium", "merge": "medium", "verify": "xhigh"}
 DEFAULT_REPAIR_MODEL = "devin-plugin/swe-2:high"
 WORKFLOW_TEMPLATE = Path.home() / ".claude/workflows/retro-workflow.js"
 REFERENCES = [str(Path.home() / ".claude/references/retro-workflow" / name)
@@ -198,8 +201,7 @@ def format_model(base, effort=None):
 
 
 def read_model():
-  table = read_model_table()
-  return format_model(table["GPT_TERRA"], DEFAULT_EFFORTS["read"])
+  return DEFAULT_GEMINI_PRO_MODEL
 
 
 def latest_success(root, cutoff, scope="all"):
@@ -303,13 +305,17 @@ def slice_page_chunks(text):
   return chunks
 
 
+def shard_page_chunks(text):
+  chunks = slice_page_chunks(text)
+  groups = [chunks[i:i + MAX_SHARD_PAGES] for i in range(0, len(chunks), MAX_SHARD_PAGES)]
+  if len(groups) >= 2 and len(groups[-1]) == 1 and len(groups[-1][0].encode("utf-8")) < SHARD_TAIL_MERGE_BYTES:
+    groups[-2].extend(groups.pop())
+  return groups
+
+
 def count_body_pages_and_units(body):
-  units = 0
-  total_pages = 0
-  for position in range(0, max(1, len(body)), SHARD_CHARS):
-    units += 1
-    total_pages += len(slice_page_chunks(body[position:position + SHARD_CHARS]))
-  return total_pages, units
+  groups = shard_page_chunks(body)
+  return sum(len(group) for group in groups), len(groups)
 
 
 def build_visible_events(numbered_rows, start=None, include_forwarded=True, audit=None):
@@ -421,6 +427,7 @@ def inventory(args):
       projects[row["project"]] = projects.get(row["project"], 0) + 1
     full_pages = full_units = win_pages = win_units = 0
     def_full_pages = def_full_units = def_win_pages = def_win_units = 0
+    long_sessions = []
     for row in selected + forwarded:
       events, _ = build_visible_events(active_rows_by_session.get(row["session"], []), start=start)
       full_body = render_events_body(events)
@@ -436,6 +443,8 @@ def inventory(args):
         full_units += fu
         win_pages += wp
         win_units += wu
+        if fu > 1:
+          long_sessions.append(row["session"])
     options[key] = {"window_start": iso(start), "cutoff": iso(cutoff), "sessions_count": len(selected),
                     "forwarded_sessions_count": len(forwarded), "forwarded_sessions": [row["session"] for row in forwarded],
                     "estimated_pages": full_pages,
@@ -446,7 +455,7 @@ def inventory(args):
                     "default_estimated_reader_units": def_full_units,
                     "default_window_estimated_pages": def_win_pages,
                     "default_window_estimated_reader_units": def_win_units,
-                    "projects": projects, "long_sessions": [row["session"] for row in selected if row["estimated_chars"] > SHARD_CHARS],
+                    "projects": projects, "long_sessions": long_sessions,
                     "estimate_basis": "visible blocks after omitting thinking/api-request-blob; redaction can slightly change length"}
   scoped_completions = []
   for completion_path in Path(args.reports_root).glob("*/completion.json"):
@@ -468,15 +477,19 @@ def inventory(args):
   return {"inventory_path": str(out / "inventory.json"), "options": options, "unknown_count": len(data["unknown"]), "excluded_count": len(data["excluded"]), "model": data["default_model"]}
 
 
-def pages(text, directory, prefix):
+def write_page_chunks(chunks, directory, prefix):
   directory.mkdir(parents=True, exist_ok=True)
   result = []
-  for number, chunk in enumerate(slice_page_chunks(text), 1):
+  for number, chunk in enumerate(chunks, 1):
     page_id = f"{prefix}-p{number:02d}"
     path = directory / f"p{number:02d}.txt"
     path.write_text(chunk + "\nEND_PAGE " + page_id + "\n", encoding="utf-8")
     result.append({"id": page_id, "path": str(path)})
   return result
+
+
+def pages(text, directory, prefix):
+  return write_page_chunks(slice_page_chunks(text), directory, prefix)
 
 
 def prepare(args):
@@ -564,10 +577,10 @@ def prepare(args):
       context_ref = {"context_document": str(context_document)}
     body = document.read_text(encoding="utf-8")
     shards = []
-    for unit_number, position in enumerate(range(0, max(1, len(body)), SHARD_CHARS), 1):
+    for unit_number, page_chunks in enumerate(shard_page_chunks(body), 1):
       unit = f"{name}-u{unit_number:02d}"
       unit_dir = home / f"u{unit_number:02d}"
-      page_list = pages(body[position:position + SHARD_CHARS], unit_dir, unit)
+      page_list = write_page_chunks(page_chunks, unit_dir, unit)
       packet_path = unit_dir / "packet.json"
       report_path = out / "reports" / f"{unit}.json"
       packet = {"session": row["session"], "unit": unit, "source_document": str(document), **context_ref,
@@ -2660,7 +2673,8 @@ def parser():
   # window re-reads only the last request before the window; full re-read ~half of each daily run (2026-10-31..11-04).
   prep.add_argument("--depth", choices=["full", "window"], default="window")
   prep.add_argument("--focus", default="全面")
-  prep.add_argument("--concurrency", type=int, choices=range(1, 17), default=4)
+  # Magpie Google 通道為 concurrency=1、排隊逾時 600s；大背景單每輪約 200s，並行超過 2 席會讓後段請求排隊逾時斷線。
+  prep.add_argument("--concurrency", type=int, choices=range(1, 17), default=2)
   for stage in ("read", "merge", "verify"):
     prep.add_argument("--" + stage + "-model")
     prep.add_argument("--" + stage + "-effort", choices=["low", "medium", "high", "xhigh", "max"] )
