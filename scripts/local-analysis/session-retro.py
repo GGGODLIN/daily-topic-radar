@@ -2056,13 +2056,18 @@ def critic_read_errors(agent, item, report, canonical, plan, reuse=False):
       current = verdict.get("current_evidence", [])
       if not current:
         errors.append(f"current-state verdict lacks current evidence (pattern={verdict.get('pattern_id')})")
+      run_root = Path(item["input_reports"][0]).resolve().parent.parent if item.get("input_reports") else None
       for evidence in current:
         path = Path(evidence.get("path", "")).expanduser().resolve()
         line = evidence.get("line")
+        inside_run = run_root is not None and path.is_relative_to(run_root)
         if reuse:
-          ok = isinstance(line, int) and line in transcript_read_lines(agent, path)
-        else:
+          ok = isinstance(line, int) and (line in read_lines(agent, path) if inside_run else line in transcript_read_lines(agent, path))
+        elif inside_run:
           ok = path.is_file() and isinstance(line, int) and line in read_lines(agent, path)
+        else:
+          # External workspace files can shift concurrently between the critic's Read and main's validate call.
+          ok = path.is_file() and isinstance(line, int) and line in transcript_read_lines(agent, path)
         if not ok:
           errors.append(f"current-state evidence lacks matching successful Read (pattern={verdict.get('pattern_id')}, path={path})")
   return errors
@@ -2179,7 +2184,16 @@ def validate_verify_parts(args, plan, run, canonical, source_unit=None):
                      "validated_path": str(destination), "original_report": original, "report": report})
       union.extend(verdicts)
     except (OSError, ValueError, KeyError, TypeError) as error:
-      result["errors"].append(str(error))
+      if not result["errors"]:
+        result["errors"].append(str(error))
+      if prior.get("pass") is True:
+        with suppress(OSError, ValueError, KeyError, TypeError):
+          agents = transcript_agents(transcript_dirs)
+          agent, _, _ = report_writer(agents, item)
+          if Path(agent["path"]).resolve() == Path(prior["agent"]).resolve():
+            verify_part_reuse(plan, run, context, prior)
+            result = {**prior, "transcript_dirs": transcript_dirs}
+            union.extend(prior["report"].get("verdicts", prior["report"].get("findings", [])))
     units.append(result)
   counts = {"expected": len(units), "passed": sum(unit["pass"] for unit in units), "failed": sum(not unit["pass"] for unit in units)}
   validation = {"schema_version": 1, "run_id": plan["run_id"], "stage": "verify-current-parts", "pass": counts["failed"] == 0,

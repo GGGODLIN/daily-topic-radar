@@ -1639,6 +1639,60 @@ console.log(JSON.stringify({ unconfirmed, confirmed_ok: confirmed.ok, calls }))
     (path.parent / "final.md").write_text("post-fix finish", encoding="utf-8")
     self.assertEqual(self.cli("finish", "--plan", path)["status"], "complete")
 
+  def test_verify_current_parts_validate_tolerates_concurrent_external_edits_and_reuses_passed_parts(self):
+    path, manifest, _patterns = self.normal_verify_parts_fixture(part_count=2)
+    ext_one = self.root / "startup_credits.md"
+    ext_two = self.root / "competitive_memory.md"
+    ext_one.write_text("title\nrow one\n", encoding="utf-8")
+    ext_two.write_text("---\nname: check\n---\nPerkRadar: 0 incidents\n", encoding="utf-8")
+
+    _, _, source_dir = self.verify_source(path)
+    data = json.loads(Path(manifest).read_text())
+    plan = json.loads(path.read_text())
+
+    def make_part(index, pid, ext_path, line_no):
+      part = data["parts"][index]
+      item = {"session": "cross-session", "unit": part["unit"], "report_path": part["report_path"],
+              "input_reports": [str(path.parent / "validated" / "cross-session.json")],
+              "slice_path": part["slice_path"], "index_path": part["index_path"]}
+      rep = self.report(item, findings=[{
+        "id": item["unit"] + "-F1",
+        "pattern_id": pid,
+        "verdict": "CONFIRMED",
+        "evidence": [{"session": "alpha", "source_line": 2, "quote": "ls"}],
+        "current_evidence": [{"path": str(ext_path), "line": line_no, "observation": "present at read time"}],
+      }])
+      reads = ([Path(part["slice_path"]), Path(part["index_path"])]
+               + [Path(s["document"]) for s in plan["sessions"]]
+               + [ext_path])
+      return self.transcript(item, rep, reads=reads)
+
+    p1_dir = make_part(0, "P1", ext_one, 2)
+    data["parts"][0]["transcript_dirs"] = [str(p1_dir)]
+    dump(manifest, data)
+
+    # First validate run: p1 passes, p2 is still missing -> validation fails overall, p1 recorded as passed.
+    first = self.validate(path, "verify", [source_dir], critic_parts=manifest, code=2)
+    self.assertEqual([u["pass"] for u in first["units"]], [True, False])
+
+    # Another live session archives ext_one (already validated in p1) and prepends rows to ext_two AFTER p2 reads it.
+    ext_one.unlink()
+    p2_dir = make_part(1, "P2", ext_two, 4)
+    ext_two.write_text("---\nname: check\n---\nNewEntry1: added concurrently\nNewEntry2: added concurrently\nPerkRadar: 0 incidents\n", encoding="utf-8")
+    data["parts"][1]["transcript_dirs"] = [str(p2_dir)]
+    dump(manifest, data)
+
+    # Control: if ext_two were completely absent at initial validation of p2, validation must still reject it.
+    ext_two_backup = ext_two.read_text(encoding="utf-8")
+    ext_two.unlink()
+    self.validate(path, "verify", [source_dir], critic_parts=manifest, code=2)
+    ext_two.write_text(ext_two_backup, encoding="utf-8")
+
+    # With ext_two present on disk and line 4 recorded in p2's Read transcript, both reused p1 and concurrent-edited p2 pass.
+    second = self.validate(path, "verify", [source_dir], critic_parts=manifest)
+    self.assertTrue(second["pass"])
+    self.assertEqual([u["pass"] for u in second["units"]], [True, True])
+
   def test_shard_page_chunks_caps_at_two_pages_and_merges_small_tail_orphan(self):
     retro = self.retro()
     line = ("中" * 300 + "\n")
