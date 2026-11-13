@@ -56,13 +56,15 @@ HEALTH = os.path.join(DIR, "rule-family-health.py")
 HOME = os.path.expanduser("~")
 
 TERMINAL = ("done", "killed")
+# 刻意不含 beads-aging、publish-candidate、session-audit（規則明訂不進 pending-actions.jsonl）
 ALLOWED_FINDING_CHANNELS = frozenset({
-    "memory", "wiki-candidates", "wiki-cross-link", "wiki-graduation", "wiki-lint",
+    "memory", "memory-conflict", "memory-origin", "wiki-candidates", "wiki-cross-link", "wiki-graduation", "wiki-lint",
     "wiki-stale", "deep-research-pending", "skill-desc-quality", "recap", "codemap",
     "distill", "recurring-errors", "rba-verify", "bumblebee", "symlink", "skill-upstream",
-    "skill-doctor", "tool-updates", "codex-violation", "rules-size", "ledger-lifecycle", "skill-collision",
+    "skill-doctor", "tool-updates", "tool-reliability", "tool-latency", "skill-evidence", "skillevaluator",
+    "codex-violation", "rules-size", "ledger-lifecycle", "skill-collision",
     "agnix", "skill-trigger", "skill-changes", "evidence-level", "ccp-free-watch", "path-rot", "free-pool", "codex-cdp",
-    "session-audit-consume",
+    "session-audit-consume", "failure-mode", "hash-reflow",
 })
 PATH_RE = re.compile(r"(?<![\w./@-])(~?/[\w./@-]+\.\w{1,6}|[\w-]+\.(?:md|sh|py|js|mjs|json|jsonl|txt|toml))")
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")

@@ -186,10 +186,13 @@ EOF
 cat > "$TMP/beads-channel.json" <<'EOF'
 [{"title":"beads-item","match":null,"channel":"beads-aging"}]
 EOF
+cat > "$TMP/publish-channel.json" <<'EOF'
+[{"title":"publish-item","match":null,"channel":"publish-candidate"}]
+EOF
 cat > "$TMP/near-channel.json" <<'EOF'
 [{"title":"near-channel-item","match":null,"channel":"skill-changes-extra"}]
 EOF
-for case_name in missing-channel unknown-channel beads-channel near-channel; do
+for case_name in missing-channel unknown-channel beads-channel publish-channel near-channel; do
   cp "$TMP/gates.jsonl" "$TMP/$case_name.jsonl"
   cp "$TMP/$case_name.jsonl" "$TMP/$case_name.before"
   python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/$case_name.jsonl" --findings "$TMP/$case_name.json" --apply --no-health >/dev/null 2>&1
@@ -222,6 +225,16 @@ cp "$TMP/gates.jsonl" "$TMP/session-audit-consume-channel.jsonl"
 python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/session-audit-consume-channel.jsonl" --findings "$TMP/session-audit-consume-channel.json" --apply --no-health >/dev/null 2>&1
 check "session-audit-consume -> 白名單接受" 0 "$?"
 check "session-audit-consume -> 新 entry 寫入" 1 "$(grep -c 'session-audit-consume-item' "$TMP/session-audit-consume-channel.jsonl")"
+
+cat > "$TMP/new-channels.json" <<'EOF'
+[{"title":"mc-item","match":null,"channel":"memory-conflict"},
+ {"title":"mo-item","match":null,"channel":"memory-origin"},
+ {"title":"hr-item","match":null,"channel":"hash-reflow"}]
+EOF
+cp "$TMP/gates.jsonl" "$TMP/new-channels.jsonl"
+python3 "$SCRIPT" --date 2026-07-30 --ledger "$TMP/new-channels.jsonl" --findings "$TMP/new-channels.json" --apply --no-health >/dev/null 2>&1
+check "memory-conflict/origin/hash-reflow -> 白名單接受" 0 "$?"
+check "新白名單 3 筆全數寫入" 3 "$(grep -cE '"(mc|mo|hr)-item"' "$TMP/new-channels.jsonl")"
 
 echo "== 壞輸入要明確失敗、不得靜默 =="
 printf '{"title":"ok","status":"pending","count":1,"first_seen":"2026-07-01","last_seen":"2026-07-01","note":""}\nNOT JSON\n' > "$TMP/broken.jsonl"
