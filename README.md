@@ -10,12 +10,6 @@ Open Claude Code in this repository and trigger the stage-2 daily topic workflow
 今日話題分析
 ```
 
-To build a standalone searchable HTML index and GitHub repo decision library across all historical `reports/digest-*.html` files:
-
-```bash
-uv run python -m social_info.archive
-```
-
 ## How to add or remove sources
 
 Edit `sources.yml`. Schema:
@@ -53,7 +47,6 @@ uv run python -m social_info --smoke                      # real API, limit=3, p
 uv run python -m social_info --analyze-pool --date 2026-11-12  # recompute local topic radar into raw md
 uv run python -m social_info.health --problems-only       # read-only 7-day source health (empty / stale / failing)
 uv run python -m social_info.health --resonance           # cross-check GitHub star spikes vs community mentions
-uv run python -m social_info.archive                      # build reports/index.html search & repo decision library
 uv run pytest                                             # tests
 ```
 
