@@ -101,7 +101,7 @@ Priority:
 
 抽昨日「💤 stale」+「📜 久未 changelog」段 entity → 看今日狀態：
 - 已 archive (entity 不存在) → 標 ✅ 解決
-- lifecycle 升 verified → 標 ✅ refreshed
+- 已刷新（更新正文、`last_updated` 與 `Changelog` 轉回 fresh，維持原 `draft`／`reviewed` 不要求升 `verified`；或 `lifecycle` 升 `verified`）→ 標 ✅ refreshed
 - 加 `wiki_stale.override_until` → 移「⏸ HOLD」段
 
 # 紀律
