@@ -134,11 +134,40 @@ def npm_global_roots():
         return [r for r in override.split(os.pathsep) if os.path.isdir(r)]
     import glob
     roots = ["/opt/homebrew/lib/node_modules", "/usr/local/lib/node_modules"]
-    nvm = glob.glob(os.path.expanduser("~/.nvm/versions/node/v*"))
-    if nvm:
-        newest = max(nvm, key=lambda p: _vkey(os.path.basename(p)))
-        roots.append(os.path.join(newest, "lib/node_modules"))
+    nvm_dir = os.environ.get("CCTOOL_NVM_VERSIONS_DIR") or os.path.expanduser("~/.nvm/versions/node")
+    nvm = sorted(glob.glob(os.path.join(nvm_dir, "v*")), key=lambda p: _vkey(os.path.basename(p)), reverse=True)
+    for vdir in nvm:
+        roots.append(os.path.join(vdir, "lib/node_modules"))
     return [r for r in roots if os.path.isdir(r)]
+
+def resolve_nvm_shim_target(executable, bin_name):
+    try:
+        if os.path.islink(executable) or not os.path.isfile(executable):
+            return None
+        with open(executable, encoding="utf-8", errors="replace") as fh:
+            head = [fh.readline() for _ in range(4)]
+    except OSError:
+        return None
+    if len(head) < 2 or head[1].strip() != "# Managed-By: sync-nvm-global-bins":
+        return None
+    import glob
+    nvm_dir = os.environ.get("CCTOOL_NVM_VERSIONS_DIR") or os.path.expanduser("~/.nvm/versions/node")
+    nvm = sorted(glob.glob(os.path.join(nvm_dir, "v*")), key=lambda p: _vkey(os.path.basename(p)), reverse=True)
+    for vdir in nvm:
+        cand = os.path.join(vdir, "bin", bin_name)
+        if not (os.path.isfile(cand) or os.path.islink(cand)):
+            continue
+        real = os.path.realpath(cand)
+        if not os.path.isfile(real):
+            continue
+        try:
+            with open(real, "rb") as fh:
+                if b"postinstall script was not run" in fh.read(256):
+                    continue
+        except OSError:
+            continue
+        return real
+    return None
 
 def npm_g_installed():
     found = {}
@@ -184,7 +213,7 @@ def npm_g_installed():
                 executable = shutil.which(bin_name)
                 if not executable:
                     continue
-                executable_real = os.path.realpath(executable)
+                executable_real = resolve_nvm_shim_target(executable, bin_name) or os.path.realpath(executable)
                 target_real = os.path.realpath(os.path.join(install["package_dir"], target))
                 if executable_real == target_real or executable_real.startswith(package_root):
                     key = (install["root"], install["package_dir"])
