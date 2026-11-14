@@ -53,5 +53,38 @@ expect_fail "rejects overflow:hidden on .wrap" "$TMP_DIR/clipped-wrap.html"
 grep -vi 'name="viewport"' "$TEMPLATE" > "$TMP_DIR/no-viewport.html"
 expect_fail "rejects missing viewport meta tag" "$TMP_DIR/no-viewport.html"
 
+python3 -I - "$TEMPLATE" "$TMP_DIR/reconciled-ok.html" "$TMP_DIR/reconciled-same-line.html" <<'PY'
+import sys
+tpl, ok_out, bad_out = sys.argv[1], sys.argv[2], sys.argv[3]
+src = open(tpl, encoding="utf-8").read()
+anchor = "      </table>\n    </div>"
+assert anchor in src, "missing repo table closing anchor in template"
+
+valid_block = (
+  anchor
+  + "\n    <details class=\"repo-reconciled\">\n"
+  + "      <summary>已評估重現（2 筆：immich-app/immich — ⏭ 既評不採用、milanvarady/Applite — ⏭ 既評不採用）</summary>\n"
+  + "      <ul>\n"
+  + "        <li><a href=\"https://github.com/immich-app/immich\">immich-app/immich</a> — ⏭ 既評不採用；自架相片管理非目標範疇</li>\n"
+  + "        <li><a href=\"https://github.com/milanvarady/Applite\">milanvarady/Applite</a> — ⏭ 既評不採用；維持純 CLI 操作 Homebrew</li>\n"
+  + "      </ul>\n"
+  + "    </details>"
+)
+open(ok_out, "w", encoding="utf-8").write(src.replace(anchor, valid_block, 1))
+
+invalid_block = (
+  anchor
+  + "\n    <details class=\"repo-reconciled\">\n"
+  + "      <summary>已評估重現（2 筆：immich-app/immich、milanvarady/Applite）</summary>\n"
+  + "      <ul>\n"
+  + "        <li><a href=\"https://github.com/immich-app/immich\">immich-app/immich</a></li><li><a href=\"https://github.com/milanvarady/Applite\">milanvarady/Applite</a></li>\n"
+  + "      </ul>\n"
+  + "    </details>"
+)
+open(bad_out, "w", encoding="utf-8").write(src.replace(anchor, invalid_block, 1))
+PY
+expect_pass "accepts details.repo-reconciled with single-line li items" "$TMP_DIR/reconciled-ok.html"
+expect_fail "rejects details.repo-reconciled with two li tags on the same line" "$TMP_DIR/reconciled-same-line.html"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
