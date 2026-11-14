@@ -7,20 +7,24 @@
 """
 
 import argparse
-from datetime import datetime, timezone
+import contextlib
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 
 
 CURSOR_FILENAME = "consume-cursor.json"
 PENDING_FILENAME = "pending-consume.json"
 DEFAULT_MAX_BATCH_BYTES = 60_000
+DEFAULT_BG_MODE_FILE = Path.home() / ".magpie-machine" / "home" / ".config" / "magpie" / "bg-mode.json"
+DEFAULT_SHADOW_STARTED_AT = "2026-11-15T00:00:00+08:00"
+PLACEHOLDER_TARGETS = frozenset({"", "unknown", "none", "n/a", "null", "-", "unspecified"})
 DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "reports" / "local-analysis" / "pending-actions.jsonl"
 RECONCILE_SCRIPT = Path(__file__).with_name("ledger-reconcile.py")
 EMBEDDED_FINDINGS_RE = re.compile(r"<!--\s*session-audit-ledger-findings:\s*(\[.*?\])\s*-->", re.DOTALL)
@@ -107,16 +111,21 @@ def table_exists(cur: sqlite3.Cursor, table_name: str) -> bool:
   return row is not None
 
 
-def read_bg_mode(path: str) -> str | None:
-  if not path:
-    return None
+def read_bg_mode(path: str) -> str:
+  target = Path(path).expanduser() if path else DEFAULT_BG_MODE_FILE
   try:
-    data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    data = json.loads(target.read_text(encoding="utf-8"))
   except (OSError, ValueError):
     return "quality"
   if isinstance(data, dict) and data.get("mode") == "eco":
     return "eco"
   return "quality"
+
+
+def parse_shadow_cutoff(raw: str) -> float | None:
+  if not raw:
+    return None
+  return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
 
 
 def load_shadow_status_map(cur: sqlite3.Cursor) -> tuple[bool, dict]:
@@ -128,17 +137,23 @@ def load_shadow_status_map(cur: sqlite3.Cursor) -> tuple[bool, dict]:
   return True, status_map
 
 
-def is_source_ready(inode: str, generation: int, has_shadow: bool, shadow_map: dict, bg_mode: str | None) -> bool:
+def is_source_ready(
+  inode: str,
+  generation: int,
+  source_mtime: float,
+  has_shadow: bool,
+  shadow_map: dict,
+  bg_mode: str | None,
+  shadow_cutoff: float | None = None,
+) -> bool:
   if not has_shadow:
     return True
   statuses = shadow_map.get((inode, int(generation)), [])
   if "pending" in statuses:
     return False
   if statuses:
-    return all(st in ("complete", "partial") for st in statuses)
-  if bg_mode == "quality":
-    return False
-  return True
+    return True
+  return not (bg_mode == "quality" and (shadow_cutoff is None or source_mtime >= shadow_cutoff))
 
 
 def ensure_consume_schema(conn: sqlite3.Connection, state_dir: Path) -> None:
@@ -154,15 +169,16 @@ def ensure_consume_schema(conn: sqlite3.Connection, state_dir: Path) -> None:
   cursor = load_cursor(state_dir)
   legacy_f = int(cursor.get("last_finding_id") or 0)
   legacy_r = int(cursor.get("last_rule_tag_id") or 0)
+  migrated_now = False
   if not cursor.get("consumed_migrated") and (legacy_f > 0 or legacy_r > 0):
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     has_shadow, shadow_map = load_shadow_status_map(cur)
     ready_sources = {
       (ino, int(gen))
-      for ino, gen in cur.execute(
-        "SELECT inode, generation FROM sources WHERE status IN ('complete', 'partial')"
+      for ino, gen, smtime in cur.execute(
+        "SELECT inode, generation, mtime FROM sources WHERE status IN ('complete', 'partial')"
       ).fetchall()
-      if is_source_ready(ino, gen, has_shadow, shadow_map, None)
+      if is_source_ready(ino, int(gen), float(smtime or 0.0), has_shadow, shadow_map, None, None)
     }
     if legacy_f > 0 and table_exists(cur, "findings"):
       cand_f = cur.execute(
@@ -185,19 +201,21 @@ def ensure_consume_schema(conn: sqlite3.Connection, state_dir: Path) -> None:
         marks = ",".join("?" for _ in chunk)
         conn.execute(f"UPDATE rule_tags SET consumed_at = ? WHERE id IN ({marks}) AND consumed_at IS NULL", (now_iso, *chunk))
     changed = True
-    cursor["consumed_migrated"] = True
-    write_json_atomic(state_dir / CURSOR_FILENAME, cursor)
+    migrated_now = True
 
   if changed:
     conn.commit()
+  if migrated_now:
+    cursor["consumed_migrated"] = True
+    write_json_atomic(state_dir / CURSOR_FILENAME, cursor)
 
 
 def _normalize_premerge_key(item: dict) -> str | None:
   raw_target = " ".join(str(item.get("target") or "").strip().lower().split())
-  if raw_target:
+  if raw_target not in PLACEHOLDER_TARGETS:
     return f"t:{raw_target}"
   raw_cat = " ".join(str(item.get("category") or "").strip().lower().split())
-  if raw_cat:
+  if raw_cat not in PLACEHOLDER_TARGETS:
     return f"c:{raw_cat}"
   return None
 
@@ -455,123 +473,132 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     print(json.dumps({"ok": False, "reason": "state-sqlite-missing", "path": str(db_path)}))
     return 1
 
-  conn = sqlite3.connect(db_path)
-  conn.execute("PRAGMA busy_timeout=30000")
-  ensure_consume_schema(conn, state_dir)
+  with contextlib.closing(sqlite3.connect(db_path)) as conn:
+    conn.execute("PRAGMA busy_timeout=30000")
+    ensure_consume_schema(conn, state_dir)
 
-  cursor = load_cursor(state_dir)
-  min_finding_id = args.after_finding_id if args.after_finding_id is not None else int(cursor.get("last_finding_id") or 0)
-  min_rule_tag_id = args.after_rule_tag_id if args.after_rule_tag_id is not None else int(cursor.get("last_rule_tag_id") or 0)
-  since_mtime = float(args.since_mtime or 0.0)
-  since_iso = args.since_iso or ""
-  bg_mode = read_bg_mode(args.bg_mode_file)
+    cursor = load_cursor(state_dir)
+    min_finding_id = args.after_finding_id if args.after_finding_id is not None else int(cursor.get("last_finding_id") or 0)
+    min_rule_tag_id = args.after_rule_tag_id if args.after_rule_tag_id is not None else int(cursor.get("last_rule_tag_id") or 0)
+    since_mtime = float(args.since_mtime or 0.0)
+    since_iso = args.since_iso or ""
+    bg_mode = read_bg_mode(args.bg_mode_file)
+    shadow_cutoff = parse_shadow_cutoff(args.shadow_started_at)
 
-  cur = conn.cursor()
-  has_shadow, shadow_map = load_shadow_status_map(cur)
-  f_cols = table_columns(cur, "findings")
-  lane_expr = "COALESCE(NULLIF(f.lane, ''), 'primary')" if "lane" in f_cols else "'primary'"
+    cur = conn.cursor()
+    has_shadow, shadow_map = load_shadow_status_map(cur)
+    f_cols = table_columns(cur, "findings")
+    lane_expr = "COALESCE(NULLIF(f.lane, ''), 'primary')" if "lane" in f_cols else "'primary'"
 
-  f_params = []
-  after_f_clause = ""
-  if args.after_finding_id is not None:
-    after_f_clause = "AND f.id > ?"
-    f_params.append(args.after_finding_id)
-  f_params.append(since_mtime)
+    f_params = []
+    after_f_clause = ""
+    if args.after_finding_id is not None:
+      after_f_clause = "AND f.id > ?"
+      f_params.append(args.after_finding_id)
+    f_params.append(since_mtime)
 
-  raw_f_rows = cur.execute(
-    f"""
-    SELECT f.id, s.path, s.classification, f.source_line, f.target,
-           f.observation, f.check_direction, f.quote,
-           COALESCE(NULLIF(f.issue_ref, ''), f.inode || ':' || f.source_line) AS iref,
-           f.inode, f.generation, {lane_expr} AS lane
-    FROM findings f
-    JOIN sources s ON s.inode = f.inode AND s.generation = f.generation
-    WHERE s.included = 1
-      AND s.status IN ('complete', 'partial')
-      AND f.status = 'unresolved'
-      AND f.consumed_at IS NULL
-      {after_f_clause}
-      AND s.mtime >= ?
-    ORDER BY f.id ASC
-    """,
-    tuple(f_params),
-  ).fetchall()
+    raw_f_rows = cur.execute(
+      f"""
+      SELECT f.id, s.path, s.classification, f.source_line, f.target,
+             f.observation, f.check_direction, f.quote,
+             COALESCE(NULLIF(f.issue_ref, ''), f.inode || ':' || f.source_line) AS iref,
+             f.inode, f.generation, {lane_expr} AS lane, s.mtime
+      FROM findings f
+      JOIN sources s ON s.inode = f.inode AND s.generation = f.generation
+      WHERE s.included = 1
+        AND s.status IN ('complete', 'partial')
+        AND f.status = 'unresolved'
+        AND f.consumed_at IS NULL
+        {after_f_clause}
+        AND s.mtime >= ?
+      ORDER BY f.id ASC
+      """,
+      tuple(f_params),
+    ).fetchall()
 
-  f_rows = [
-    row for row in raw_f_rows
-    if is_source_ready(row[9], int(row[10]), has_shadow, shadow_map, bg_mode)
-  ]
+    f_rows = [
+      row for row in raw_f_rows
+      if is_source_ready(row[9], int(row[10]), float(row[12] or 0.0), has_shadow, shadow_map, bg_mode, shadow_cutoff)
+    ]
 
-  iref_groups = {}
-  dedup_order = []
-  prepared_finding_ids = []
-  max_finding_id = min_finding_id
-  for row in f_rows:
-    fid, spath, scls, sline, target, obs, direction, quote, iref, inode, gen, lane = row
-    prepared_finding_ids.append(fid)
-    if fid > max_finding_id:
-      max_finding_id = fid
-    gkey = (lane, iref)
-    if gkey in iref_groups:
-      iref_groups[gkey]["raw_ids"].append(fid)
-      continue
-    short_path = re.sub(r"^/Users/[^/]+/", "~/", spath or "")
-    entry = {
-      "id": fid,
-      "inode": inode,
-      "generation": int(gen),
-      "lane": lane,
-      "source_line": int(sline),
-      "source": f"{short_path}:{sline}",
-      "cls": scls,
-      "target": one_line(target, 120),
-      "observation": one_line(obs, 260),
-      "check_direction": one_line(direction, 180),
-      "quote": one_line(quote, 180),
-      "raw_ids": [fid],
-    }
-    iref_groups[gkey] = entry
-    dedup_order.append(entry)
+    iref_groups = {}
+    dedup_order = []
+    prepared_finding_ids = []
+    max_finding_id = min_finding_id
+    for row in f_rows:
+      fid, spath, scls, sline, target, obs, direction, quote, iref, inode, gen, lane, _smtime = row
+      prepared_finding_ids.append(fid)
+      if fid > max_finding_id:
+        max_finding_id = fid
+      gkey = (lane, iref)
+      if gkey in iref_groups:
+        iref_groups[gkey]["raw_ids"].append(fid)
+        continue
+      short_path = re.sub(r"^/Users/[^/]+/", "~/", spath or "")
+      entry = {
+        "id": fid,
+        "inode": inode,
+        "generation": int(gen),
+        "lane": lane,
+        "source_line": int(sline),
+        "source": f"{short_path}:{sline}",
+        "cls": scls,
+        "target": one_line(target, 120),
+        "observation": one_line(obs, 260),
+        "check_direction": one_line(direction, 180),
+        "quote": one_line(quote, 180),
+        "raw_ids": [fid],
+      }
+      iref_groups[gkey] = entry
+      dedup_order.append(entry)
 
-  dedup_findings = premerge_cross_lane_findings(dedup_order)
+    dedup_findings = premerge_cross_lane_findings(dedup_order)
+    for item in dedup_findings:
+      for rid in item.get("raw_ids") or [item["id"]]:
+        if int(rid) > max_finding_id:
+          max_finding_id = int(rid)
 
-  rt_cols = table_columns(cur, "rule_tags")
-  rt_line_expr = "rt.source_line" if "source_line" in rt_cols else "0"
-  rt_params = []
-  after_rt_clause = ""
-  if args.after_rule_tag_id is not None:
-    after_rt_clause = "AND rt.id > ?"
-    rt_params.append(args.after_rule_tag_id)
-  rt_params.extend([since_iso, since_iso])
+    rt_cols = table_columns(cur, "rule_tags")
+    rt_line_expr = "rt.source_line" if "source_line" in rt_cols else "0"
+    rt_params = []
+    after_rt_clause = ""
+    if args.after_rule_tag_id is not None:
+      after_rt_clause = "AND rt.id > ?"
+      rt_params.append(args.after_rule_tag_id)
+    rt_params.extend([since_iso, since_iso])
 
-  raw_rt_rows = cur.execute(
-    f"""
-    SELECT rt.id, rt.rule_path, rt.rule_heading, rt.rule_id, rt.quote,
-           rt.conversation_time, s.inode, s.classification,
-           rt.generation, {rt_line_expr} AS source_line, s.path
-    FROM rule_tags rt
-    JOIN sources s ON s.inode = rt.inode AND s.generation = rt.generation
-    WHERE s.included = 1
-      AND s.status IN ('complete', 'partial')
-      AND rt.verdict = 'violated'
-      AND rt.consumed_at IS NULL
-      {after_rt_clause}
-      AND (? = '' OR rt.conversation_time >= ?)
-    ORDER BY rt.id ASC
-    """,
-    tuple(rt_params),
-  ).fetchall()
-  rt_rows = [
-    row for row in raw_rt_rows
-    if is_source_ready(row[6], int(row[8]), has_shadow, shadow_map, bg_mode)
-  ]
-  blocked_rt_ids = detect_pretooluse_gate_blocks(cur, rt_rows)
-  conn.close()
+    raw_rt_rows = cur.execute(
+      f"""
+      SELECT rt.id, rt.rule_path, rt.rule_heading, rt.rule_id, rt.quote,
+             rt.conversation_time, s.inode, s.classification,
+             rt.generation, {rt_line_expr} AS source_line, s.path, s.mtime
+      FROM rule_tags rt
+      JOIN sources s ON s.inode = rt.inode AND s.generation = rt.generation
+      WHERE s.included = 1
+        AND s.status IN ('complete', 'partial')
+        AND rt.verdict = 'violated'
+        AND rt.consumed_at IS NULL
+        {after_rt_clause}
+        AND (? = '' OR rt.conversation_time >= ?)
+      ORDER BY rt.id ASC
+      """,
+      tuple(rt_params),
+    ).fetchall()
+    rt_rows = [
+      row[:11] for row in raw_rt_rows
+      if is_source_ready(row[6], int(row[8]), float(row[11] or 0.0), has_shadow, shadow_map, bg_mode, shadow_cutoff)
+    ]
+    blocked_rt_ids = detect_pretooluse_gate_blocks(cur, rt_rows)
 
   prepared_rule_tag_ids = [row[0] for row in rt_rows]
+  finding_groups = [
+    {"rep_id": int(it["id"]), "raw_ids": [int(x) for x in it.get("raw_ids") or [it["id"]]]}
+    for it in dedup_findings
+  ]
   pending_payload = {
     "prepared_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "finding_ids": prepared_finding_ids,
+    "finding_groups": finding_groups,
     "rule_tag_ids": prepared_rule_tag_ids,
   }
   write_json_atomic(state_dir / PENDING_FILENAME, pending_payload)
@@ -581,7 +608,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
   rule_groups = {}
   executed_total = 0
   blocked_total = 0
-  for rtid, rpath, rhead, rid, quote, ctime, inode, scls, _gen, _sline, _spath in rt_rows:
+  for rtid, rpath, rhead, rid, quote, _ctime, inode, scls, _gen, _sline, _spath in rt_rows:
     if rtid > max_rule_tag_id:
       max_rule_tag_id = rtid
     is_blocked = rtid in blocked_rt_ids
@@ -826,35 +853,46 @@ def stamp_consumed_rows(state_dir: Path, finding_id: int, rule_tag_id: int, now_
   pending_path = state_dir / PENDING_FILENAME
   if not db_path.is_file() or not pending_path.is_file():
     return
-  conn = sqlite3.connect(db_path)
-  conn.execute("PRAGMA busy_timeout=30000")
-  ensure_consume_schema(conn, state_dir)
-  cur = conn.cursor()
+  with contextlib.closing(sqlite3.connect(db_path)) as conn:
+    conn.execute("PRAGMA busy_timeout=30000")
+    ensure_consume_schema(conn, state_dir)
+    cur = conn.cursor()
 
-  pending = json.loads(pending_path.read_text(encoding="utf-8"))
-  f_all = [int(i) for i in pending.get("finding_ids") or []]
-  r_all = [int(i) for i in pending.get("rule_tag_ids") or []]
-  f_stamp = [i for i in f_all if i <= finding_id]
-  r_stamp = [i for i in r_all if i <= rule_tag_id]
-  if table_exists(cur, "findings"):
-    for i in range(0, len(f_stamp), 500):
-      chunk = f_stamp[i : i + 500]
-      marks = ",".join("?" for _ in chunk)
-      conn.execute(f"UPDATE findings SET consumed_at = ? WHERE id IN ({marks}) AND consumed_at IS NULL", (now_iso, *chunk))
-  if table_exists(cur, "rule_tags"):
-    for i in range(0, len(r_stamp), 500):
-      chunk = r_stamp[i : i + 500]
-      marks = ",".join("?" for _ in chunk)
-      conn.execute(f"UPDATE rule_tags SET consumed_at = ? WHERE id IN ({marks}) AND consumed_at IS NULL", (now_iso, *chunk))
-  f_rem = [i for i in f_all if i > finding_id]
-  r_rem = [i for i in r_all if i > rule_tag_id]
+    pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    groups = pending.get("finding_groups")
+    if isinstance(groups, list):
+      stamp_groups = [g for g in groups if int(g["rep_id"]) <= finding_id]
+      rem_groups = [g for g in groups if int(g["rep_id"]) > finding_id]
+      f_stamp = sorted({int(rid) for g in stamp_groups for rid in (g.get("raw_ids") or [g["rep_id"]])})
+      f_rem = sorted({int(rid) for g in rem_groups for rid in (g.get("raw_ids") or [g["rep_id"]])})
+    else:
+      f_all = [int(i) for i in pending.get("finding_ids") or []]
+      f_stamp = [i for i in f_all if i <= finding_id]
+      f_rem = [i for i in f_all if i > finding_id]
+      rem_groups = None
+
+    r_all = [int(i) for i in pending.get("rule_tag_ids") or []]
+    r_stamp = [i for i in r_all if i <= rule_tag_id]
+    if table_exists(cur, "findings"):
+      for i in range(0, len(f_stamp), 500):
+        chunk = f_stamp[i : i + 500]
+        marks = ",".join("?" for _ in chunk)
+        conn.execute(f"UPDATE findings SET consumed_at = ? WHERE id IN ({marks}) AND consumed_at IS NULL", (now_iso, *chunk))
+    if table_exists(cur, "rule_tags"):
+      for i in range(0, len(r_stamp), 500):
+        chunk = r_stamp[i : i + 500]
+        marks = ",".join("?" for _ in chunk)
+        conn.execute(f"UPDATE rule_tags SET consumed_at = ? WHERE id IN ({marks}) AND consumed_at IS NULL", (now_iso, *chunk))
+    r_rem = [i for i in r_all if i > rule_tag_id]
+    conn.commit()
+
   if f_rem or r_rem:
-    write_json_atomic(pending_path, {"prepared_at": pending.get("prepared_at"), "finding_ids": f_rem, "rule_tag_ids": r_rem})
+    rem_payload = {"prepared_at": pending.get("prepared_at"), "finding_ids": f_rem, "rule_tag_ids": r_rem}
+    if rem_groups is not None:
+      rem_payload["finding_groups"] = rem_groups
+    write_json_atomic(pending_path, rem_payload)
   else:
     pending_path.unlink(missing_ok=True)
-
-  conn.commit()
-  conn.close()
 
 
 def cmd_commit(args: argparse.Namespace) -> int:
@@ -907,7 +945,8 @@ def main() -> int:
   p_prep.add_argument("--since-iso", default="")
   p_prep.add_argument("--after-finding-id", type=int, default=None)
   p_prep.add_argument("--after-rule-tag-id", type=int, default=None)
-  p_prep.add_argument("--bg-mode-file", default="")
+  p_prep.add_argument("--bg-mode-file", default=str(DEFAULT_BG_MODE_FILE))
+  p_prep.add_argument("--shadow-started-at", default=DEFAULT_SHADOW_STARTED_AT)
 
   p_commit = sub.add_parser("commit-cursor")
   p_commit.add_argument("--state", required=True)

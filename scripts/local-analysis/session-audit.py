@@ -1717,7 +1717,7 @@ def upsert(connection, item):
       ),
     )
     connection.execute(
-      "UPDATE shadow_cursors SET status = 'pending' WHERE inode = ? AND status IN ('complete', 'partial')",
+      "UPDATE shadow_cursors SET status = 'pending' WHERE inode = ? AND status IN ('complete', 'partial', 'failed')",
       (item["inode"],),
     )
     return
@@ -2722,11 +2722,20 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
 
 
 def prepare_shadow_source(connection, row, raw, shadow_lane):
+  src_row = connection.execute(
+    "SELECT generation, file_size, file_tail FROM sources WHERE inode = ?",
+    (row["inode"],),
+  ).fetchone()
+  if src_row is None:
+    return None
+  prev_size, prev_tail = src_row["file_size"], src_row["file_tail"]
+  if prev_size is not None and prev_tail is not None and (len(raw) < prev_size or prefix_tail(raw, prev_size) != prev_tail):
+    return None
   document, images, limits, thinking, _synthetic, _session_ids, parts = build_document(raw)
   parts = locate_parts(document, parts)
   doc_bytes = document.encode()
   mtime_ns = raw.mtime_ns
-  generation = row["generation"]
+  generation = src_row["generation"]
   cursor_row = connection.execute(
     "SELECT doc_offset, continuity, status FROM shadow_cursors WHERE inode = ? AND generation = ? AND lane = ?",
     (row["inode"], generation, shadow_lane),
@@ -3155,6 +3164,9 @@ def cmd_run(args):
     shadow_configured = parse_legs(args.shadow_legs)
     shadow_enabled = bool(shadow_configured) and bg_mode == "quality"
     shadow_lane = shadow_configured[0][0] if shadow_configured else ""
+    shadow_cutoff = cutoff
+    if args.shadow_started_at:
+      shadow_cutoff = datetime.fromisoformat(args.shadow_started_at.replace("Z", "+00:00")).timestamp()
 
     def scan():
       observed = refresh(connection, args.projects, args.self_session, window["bounds"] if window is not None else None)
@@ -3195,8 +3207,8 @@ def cmd_run(args):
               ON sc.inode = sources.inode AND sc.generation = sources.generation AND sc.lane = ?
             WHERE sources.included = 1
               AND sources.status IN ('pending', 'complete', 'partial')
-              AND (sc.status IS NULL OR sc.status = 'pending')
-            ORDER BY sources.status = 'pending' DESC, -sources.mtime, sources.path
+              AND (sc.status IS NULL OR sc.status IN ('pending', 'failed'))
+            ORDER BY COALESCE(sc.status, '') = 'failed', sources.status = 'pending' DESC, -sources.mtime, sources.path
             """,
             (shadow_lane,),
           )
@@ -3205,7 +3217,7 @@ def cmd_run(args):
         shadow_queue.clear()
         shadow_queue.extend(
           row for row in shadow_rows
-          if (cutoff is None or row["mtime"] >= cutoff)
+          if (shadow_cutoff is None or row["mtime"] >= shadow_cutoff)
           and (row["status"] in ("complete", "partial") or closed(row) or now - row["mtime"] >= args.quiet_seconds)
         )
 
@@ -4625,6 +4637,7 @@ def build_parser():
   # 增量的備用線，格式同 --direct-legs：主線冷卻中，或最早一份等待中的新來源等超過上線時才接工作，降到下線以內才停。
   parser.add_argument("--standby-legs", default="")
   parser.add_argument("--shadow-legs", default="")
+  parser.add_argument("--shadow-started-at", default="")
   parser.add_argument(
     "--bg-mode-file",
     default=str(Path.home() / ".magpie-machine" / "home" / ".config" / "magpie" / "bg-mode.json"),

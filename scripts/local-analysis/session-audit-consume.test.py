@@ -33,7 +33,7 @@ def load_dual_lane_module():
 def oracle_p1_consume_once(consumed_f_ids_per_round, all_ready_f_ids, unready_f_ids_per_round, consumed_rt_ids_per_round, all_ready_rt_ids, unready_rt_ids_per_round):
   """Independent Oracle P1: every ready finding/rule_tag is consumed at most once per round, never when unready, and eventually exactly once."""
   seen_f = set()
-  for rnd_idx, (batch_f, unready_f) in enumerate(zip(consumed_f_ids_per_round, unready_f_ids_per_round)):
+  for rnd_idx, (batch_f, unready_f) in enumerate(zip(consumed_f_ids_per_round, unready_f_ids_per_round, strict=True)):
     overlap_unready = set(batch_f) & set(unready_f)
     if overlap_unready:
       return False, f"round {rnd_idx} consumed unready finding ids: {sorted(overlap_unready)}"
@@ -46,7 +46,7 @@ def oracle_p1_consume_once(consumed_f_ids_per_round, all_ready_f_ids, unready_f_
     return False, f"finding ids skipped permanently: {sorted(missing_f)}"
 
   seen_rt = set()
-  for rnd_idx, (batch_rt, unready_rt) in enumerate(zip(consumed_rt_ids_per_round, unready_rt_ids_per_round)):
+  for rnd_idx, (batch_rt, unready_rt) in enumerate(zip(consumed_rt_ids_per_round, unready_rt_ids_per_round, strict=True)):
     overlap_unready = set(batch_rt) & set(unready_rt)
     if overlap_unready:
       return False, f"round {rnd_idx} consumed unready rule_tag ids: {sorted(overlap_unready)}"
@@ -79,12 +79,15 @@ def oracle_p4_shuffle_and_idempotent(premerge_fn, items, rng):
 
 def oracle_p5_coverage_and_window(items, merged_out):
   """Independent Oracle P5: every input finding has a rep in same (inode, generation) within <= 15 lines; no false merges."""
+  placeholders = {"", "unknown", "none", "n/a", "null", "-", "unspecified"}
   by_id = {it["id"]: it for it in items}
   covered = set()
   for rep in merged_out:
     rids = rep.get("raw_ids") or [rep["id"]]
-    rep_key = " ".join(str(rep.get("target") or "").strip().lower().split())
-    rep_cat = " ".join(str(rep.get("category") or "").strip().lower().split())
+    raw_rep_t = " ".join(str(rep.get("target") or "").strip().lower().split())
+    raw_rep_c = " ".join(str(rep.get("category") or "").strip().lower().split())
+    rep_key = "" if raw_rep_t in placeholders else raw_rep_t
+    rep_cat = "" if raw_rep_c in placeholders else raw_rep_c
     for rid in rids:
       if rid not in by_id:
         return False, f"unknown raw_id {rid} in merged output"
@@ -93,11 +96,13 @@ def oracle_p5_coverage_and_window(items, merged_out):
         return False, f"cross-(inode,generation) merge: {orig} into {rep}"
       if abs(int(orig["source_line"]) - int(rep["source_line"])) > 15:
         return False, f"merged line distance > 15: {orig['source_line']} vs {rep['source_line']}"
-      orig_key = " ".join(str(orig.get("target") or "").strip().lower().split())
-      orig_cat = " ".join(str(orig.get("category") or "").strip().lower().split())
+      raw_orig_t = " ".join(str(orig.get("target") or "").strip().lower().split())
+      raw_orig_c = " ".join(str(orig.get("category") or "").strip().lower().split())
+      orig_key = "" if raw_orig_t in placeholders else raw_orig_t
+      orig_cat = "" if raw_orig_c in placeholders else raw_orig_c
       if len(rids) > 1:
         if not rep_key and not rep_cat:
-          return False, f"empty target merged: {rids}"
+          return False, f"empty or placeholder target merged: {rids}"
         if rep_key and orig_key != rep_key:
           return False, f"different target merged: {orig_key} vs {rep_key}"
         if not rep_key and orig_cat != rep_cat:
@@ -806,10 +811,10 @@ class RowLevelConsumeAndPremergeTest(unittest.TestCase):
     conn.execute("INSERT INTO shadow_cursors VALUES ('inoB', 1, 'bg-audit-shadow', 100, '', 'complete', 0)")
     conn.execute("INSERT INTO findings VALUES (8, 'inoB', 1, 'unresolved', 'hook:b', 'obs B8', 'chk', 'q8', 10, 'ref-b8', 'primary')")
     conn.execute("INSERT INTO rule_tags VALUES (4, 'inoB', 1, 'bbbb2222bbbb2222', 'CLAUDE.md', 'H', 'violated', 'q4', '2026-11-01T00:00:00Z')")
-    # inoC: complete, no shadow_cursors row -> ready when --bg-mode-file omitted or eco, blocked when quality
-    conn.execute("INSERT INTO sources VALUES ('inoC', '/Users/test/c.jsonl', 'human-main', 1, 'complete', 1, 1793000000.0)")
+    # inoC: post-cutoff complete, no shadow_cursors row -> ready when eco, blocked when quality
+    conn.execute("INSERT INTO sources VALUES ('inoC', '/Users/test/c.jsonl', 'human-main', 1, 'complete', 1, 1794750000.0)")
     conn.execute("INSERT INTO findings VALUES (14, 'inoC', 1, 'unresolved', 'hook:c', 'obs C14', 'chk', 'q14', 10, 'ref-c14', 'primary')")
-    conn.execute("INSERT INTO rule_tags VALUES (8, 'inoC', 1, 'cccc3333cccc3333', 'CLAUDE.md', 'H', 'violated', 'q8', '2026-11-01T00:00:00Z')")
+    conn.execute("INSERT INTO rule_tags VALUES (8, 'inoC', 1, 'cccc3333cccc3333', 'CLAUDE.md', 'H', 'violated', 'q8', '2026-11-15T01:00:00Z')")
     conn.commit()
     conn.close()
 
@@ -925,7 +930,7 @@ class RowLevelConsumeAndPremergeTest(unittest.TestCase):
       {"id": 2, "inode": "i1", "generation": 1, "lane": "bg-audit-shadow", "target": "hook:a", "source_line": 26},
     ])), 2)
 
-    # 3. Different target, empty target, different inode/generation, same-lane-only never falsely merge
+    # 3. Different target, empty/unknown placeholder target, different inode/generation, same-lane-only never falsely merge
     non_merge = [
       {"id": 1, "inode": "i1", "generation": 1, "lane": "primary", "target": "hook:foo", "source_line": 10},
       {"id": 2, "inode": "i1", "generation": 1, "lane": "bg-audit-shadow", "target": "hook:bar", "source_line": 10},
@@ -935,34 +940,39 @@ class RowLevelConsumeAndPremergeTest(unittest.TestCase):
       {"id": 6, "inode": "i1", "generation": 2, "lane": "bg-audit-shadow", "target": "hook:foo", "source_line": 10},
       {"id": 7, "inode": "i1", "generation": 1, "lane": "primary", "target": "hook:solo", "source_line": 10},
       {"id": 8, "inode": "i1", "generation": 1, "lane": "primary", "target": "hook:solo", "source_line": 14},
+      {"id": 9, "inode": "i1", "generation": 1, "lane": "primary", "target": "unknown", "source_line": 10},
+      {"id": 10, "inode": "i1", "generation": 1, "lane": "bg-audit-shadow", "target": "Unknown", "source_line": 12},
     ]
-    self.assertEqual(len(premerge(non_merge)), 8)
+    self.assertEqual(len(premerge(non_merge)), 10)
 
-    # 4. End-to-end prepare + commit-cursor stamps both merged raw rows
+    # 4. End-to-end prepare + partial commit-cursor stamps whole premerged cluster by rep_id
     conn = sqlite3.connect(self.db_path)
-    conn.execute("INSERT INTO sources VALUES ('inoM', '/Users/test/m.jsonl', 'human-main', 1, 'complete', 1, 1793000000.0)")
+    conn.execute("INSERT INTO sources VALUES ('inoM', '/Users/test/m.jsonl', 'human-main', 1, 'complete', 1, 1794750000.0)")
     conn.execute("INSERT INTO shadow_cursors VALUES ('inoM', 1, 'bg-audit-shadow', 100, '', 'complete', 0)")
     conn.execute("INSERT INTO findings VALUES (101, 'inoM', 1, 'unresolved', 'Hook:Dup', 'obs p', 'chk', 'qp', 10, 'ref-p', 'primary')")
-    conn.execute("INSERT INTO findings VALUES (102, 'inoM', 1, 'unresolved', 'hook:dup', 'obs s', 'chk', 'qs', 22, 'ref-s', 'bg-audit-shadow')")
+    conn.execute("INSERT INTO findings VALUES (250, 'inoM', 1, 'unresolved', 'hook:dup', 'obs s', 'chk', 'qs', 22, 'ref-s', 'bg-audit-shadow')")
+    conn.execute("INSERT INTO findings VALUES (150, 'inoM', 1, 'unresolved', 'hook:later', 'obs later', 'chk', 'ql', 60, 'ref-l', 'primary')")
     conn.commit()
     conn.close()
 
     m = self._run_prepare(self.root / "out_merge")
-    self.assertEqual(m["raw_finding_rows"], 2)
-    self.assertEqual(m["dedup_finding_count"], 1)
-    self._run_commit(m["cursor_candidate"]["last_finding_id"], m["cursor_candidate"]["last_rule_tag_id"])
+    self.assertEqual(m["raw_finding_rows"], 3)
+    self.assertEqual(m["dedup_finding_count"], 2)
+    # Truncated commit up to rep_id=101 must stamp BOTH 101 and 250, while leaving rep_id=150 unstamped!
+    self._run_commit(101, 0)
 
     conn = sqlite3.connect(self.db_path)
-    stamped = dict(conn.execute("SELECT id, consumed_at FROM findings WHERE id IN (101, 102)").fetchall())
+    stamped = dict(conn.execute("SELECT id, consumed_at FROM findings WHERE id IN (101, 150, 250)").fetchall())
     conn.close()
     self.assertIsNotNone(stamped[101])
-    self.assertIsNotNone(stamped[102])
+    self.assertIsNotNone(stamped[250])
+    self.assertIsNone(stamped[150])
 
   def test_p4_p5_conditional_pbt_premerge_invariants(self):
     mod = load_consume_module()
     premerge = mod.premerge_cross_lane_findings
     rng = random.Random(20261115)
-    targets = ["hook:alpha", "  Hook:Alpha  ", "hook:beta", "skill:gamma", "", "   "]
+    targets = ["hook:alpha", "  Hook:Alpha  ", "hook:beta", "skill:gamma", "", "   ", "unknown", "Unknown", "N/A"]
     lanes = ["primary", "bg-audit-shadow"]
     inodes = ["ino1", "ino2"]
 
@@ -1081,9 +1091,10 @@ class JointP1ToP5PatrolTest(_dual_mod.DualLaneBaseTests):
     with sqlite3.connect(db_path) as conn:
       conn.row_factory = sqlite3.Row
       bg_mode = json.loads(self.bg_mode_file.read_text())["mode"]
+      shadow_cutoff = 1794672000.0  # 2026-11-15T00:00:00+08:00
       has_shadow = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shadow_cursors'").fetchone() is not None
       unready_sources = set()
-      for s in conn.execute("SELECT inode, generation, status, included FROM sources").fetchall():
+      for s in conn.execute("SELECT inode, generation, status, included, mtime FROM sources").fetchall():
         ready = bool(s["included"]) and s["status"] in ("complete", "partial")
         if ready and has_shadow:
           sc_rows = conn.execute(
@@ -1091,9 +1102,9 @@ class JointP1ToP5PatrolTest(_dual_mod.DualLaneBaseTests):
             (s["inode"], s["generation"]),
           ).fetchall()
           sc_statuses = [r["status"] for r in sc_rows]
-          if "pending" in sc_statuses or any(st not in ("complete", "partial") for st in sc_statuses):
+          if "pending" in sc_statuses:
             ready = False
-          elif not sc_statuses and bg_mode == "quality":
+          elif not sc_statuses and bg_mode == "quality" and float(s["mtime"] or 0.0) >= shadow_cutoff:
             ready = False
         if not ready:
           unready_sources.add((s["inode"], s["generation"]))

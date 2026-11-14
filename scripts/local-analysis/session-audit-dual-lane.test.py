@@ -3,13 +3,18 @@
 
 import importlib.util
 import json
+import os
 import random
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+SLIM_SCRIPT = Path(__file__).with_name('session-slim.py')
 
 spec = importlib.util.spec_from_file_location('dual_lane_fixtures', Path(__file__).with_name('session-audit-population.test.py'))
 population = importlib.util.module_from_spec(spec)
@@ -383,9 +388,58 @@ class ConcreteCapabilityExamples(DualLaneBaseTests):
     self.assertEqual(paused, {'bg-audit-primary', 'bg-audit-shadow'})
     snap = self.state_snapshot()
     self.assertEqual(snap['sources'][0]['status'], 'complete')
-    # Shadow cursor must remain pending (or not failed) when paused on 402
-    for sc in snap['shadow_cursors']:
-      self.assertEqual(sc['status'], 'pending')
+    self.assertEqual(snap['shadow_cursors'], [])
+
+    # Pre-seed a partial shadow_cursor, clear leg_pauses, and confirm 402 leaves it pending (not failed)
+    inode = snap['sources'][0]['inode']
+    with sqlite3.connect(self.state / 'state.sqlite') as conn:
+      conn.execute(
+        "INSERT INTO shadow_cursors VALUES (?, 1, 'bg-audit-shadow', 10, 'ctx', 'pending', 0)",
+        (inode,),
+      )
+      conn.execute("DELETE FROM leg_pauses")
+      conn.commit()
+    done2 = self.cli(['run', *self.dual_flags(url, standby='audit-tail:10')], timeout=30)
+    self.assertEqual(done2.returncode, 0, done2.stderr)
+    snap2 = self.state_snapshot()
+    self.assertEqual(len(snap2['shadow_cursors']), 1)
+    self.assertEqual(snap2['shadow_cursors'][0]['status'], 'pending')
+
+  def test_shadow_started_at_cutoff_skips_historical_complete_and_slim_rebases_shadow_offsets(self):
+    self.set_bg_mode('quality')
+    old_path = self.source('work/old-oct.jsonl', 'OLD_OCT_SESSION')
+    new_path = self.source('work/new-nov.jsonl', 'NEW_NOV_SESSION')
+    os.utime(old_path, (1760000000, 1760000000))  # < 2026-11-15T00:00:00Z
+    seen = []
+
+    def reply(body):
+      data = json.loads(body)
+      seen.append((data['model'], fixtures.user_text(body)))
+      return fixtures.analysis([fixtures.finding('NEW_NOV_SESSION', observation='nov-obs')]), 200
+
+    _, url = self.provider(reply)
+    # Mark old_path complete in DB (simulating 12k historical complete sessions since 2026-10-05)
+    self.assertEqual(self.cli(['scan', *self.flags(url)]).returncode, 0)
+    with sqlite3.connect(self.state / 'state.sqlite') as conn:
+      conn.execute("UPDATE sources SET status = 'complete', latest_complete = 1 WHERE path LIKE '%old-oct.jsonl'")
+      conn.commit()
+
+    done = self.cli(
+      ['run', *self.dual_flags(url), '--shadow-started-at', '2026-11-15T00:00:00+08:00'],
+      timeout=30,
+    )
+    self.assertEqual(done.returncode, 0, done.stderr)
+    shadow_texts = [txt for model, txt in seen if model == 'bg-audit-shadow']
+    self.assertEqual(len(shadow_texts), 1)
+    self.assertIn('NEW_NOV_SESSION', shadow_texts[0])
+    self.assertFalse(any('OLD_OCT_SESSION' in txt for _, txt in seen))
+
+    # Verify session-slim rebases shadow_cursors and shadow_replies without error
+    slim_res = subprocess.run(
+      [sys.executable, str(SLIM_SCRIPT), str(new_path), '--state', str(self.state), '--no-compress'],
+      capture_output=True, text=True, timeout=15,
+    )
+    self.assertEqual(slim_res.returncode, 0, slim_res.stderr)
 
 
 class DualLanePropertyTests(DualLaneBaseTests):

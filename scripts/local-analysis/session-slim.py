@@ -173,9 +173,22 @@ def rebase(connection, inode, plan):
   if new_size is None:
     return "analyzed size is not a line boundary"
   # 換算錯一格，session-audit 就會從錯的地方續跑；寫入前逐段對過，對不上就整份不動。
+  existing_tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
   spans = [(0, doc_offset)] + [tuple(item) for item in connection.execute(
     "SELECT doc_start, doc_end FROM segments WHERE inode = ? AND generation = ?", (inode, generation)
   )]
+  if "shadow_cursors" in existing_tables:
+    spans += [
+      (0, sc_off) for (sc_off,) in connection.execute(
+        "SELECT doc_offset FROM shadow_cursors WHERE inode = ? AND generation = ?", (inode, generation)
+      ) if sc_off
+    ]
+  if "shadow_replies" in existing_tables:
+    spans += [
+      tuple(item) for item in connection.execute(
+        "SELECT doc_start, doc_end FROM shadow_replies WHERE inode = ? AND generation = ?", (inode, generation)
+      )
+    ]
   if not all(same_span(plan, start, end) for start, end in spans):
     return "mapped spans do not match"
   new_offset = plan.doc(doc_offset)
@@ -198,6 +211,23 @@ def rebase(connection, inode, plan):
       connection.execute(
         f"UPDATE {table} SET {assignments} WHERE inode = ? AND generation = ? AND {key} = ?",
         (*[plan.doc(value) for value in values], inode, generation, values[0]),
+      )
+  if "shadow_cursors" in existing_tables:
+    for lane, sc_off in connection.execute(
+      "SELECT lane, doc_offset FROM shadow_cursors WHERE inode = ? AND generation = ?", (inode, generation)
+    ).fetchall():
+      connection.execute(
+        "UPDATE shadow_cursors SET doc_offset = ? WHERE inode = ? AND generation = ? AND lane = ?",
+        (plan.doc(sc_off), inode, generation, lane),
+      )
+  if "shadow_replies" in existing_tables:
+    for lane, sr_start, sr_end in connection.execute(
+      "SELECT lane, doc_start, doc_end FROM shadow_replies WHERE inode = ? AND generation = ? ORDER BY doc_start",
+      (inode, generation),
+    ).fetchall():
+      connection.execute(
+        "UPDATE shadow_replies SET doc_start = ?, doc_end = ? WHERE inode = ? AND generation = ? AND lane = ? AND doc_start = ?",
+        (plan.doc(sr_start), plan.doc(sr_end), inode, generation, lane, sr_start),
       )
   for segment_id, start, end, byte_offset in connection.execute(
     "SELECT id, doc_start, doc_end, byte_offset FROM segments WHERE inode = ? AND generation = ?", (inode, generation)

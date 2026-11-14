@@ -9,6 +9,7 @@ PY="${SESSION_AUDIT_PYTHON:-/opt/homebrew/bin/python3}"
 STATE="${SESSION_AUDIT_STATE:-$REPO/reports/local-analysis/session-audit}"
 PROJECTS="${SESSION_AUDIT_PROJECTS:-$HOME/.claude/projects}"
 STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the deployment cutoff}"
+SHADOW_STARTED_AT="${SESSION_AUDIT_SHADOW_STARTED_AT:-2026-11-15T00:00:00+08:00}"
 
 # 平常只追新增 session：主線是 Magpie 的 bg-audit-primary（Hydrogen:high，最多同時 2 個）；quality 模式另開獨立副軌 bg-audit-shadow（2 槽）。
 # 一回 402／429／503 就冷卻並改走備用 audit-tail（devin-plugin/swe-2:high → vultr/minimax-m3.1-flash → minimax-code-global/MiniMax-M3.1-Flash，以 Magpie group/audit-tail 設定為準，10 槽）；最早一份等待中的新 session 等超過 16 小時也開備用，降到 2 小時以內才關
@@ -24,6 +25,7 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
   --projects "$PROJECTS" \
   --state "$STATE" \
   --started-at "$STARTED_AT" \
+  --shadow-started-at "$SHADOW_STARTED_AT" \
   --relay-config "${SESSION_AUDIT_RELAY_CONFIG:-$HOME/.cli-proxy-api/config.yaml}" \
   --keys-file "${SESSION_AUDIT_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}" \
   --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-bg-audit-primary:2}" \

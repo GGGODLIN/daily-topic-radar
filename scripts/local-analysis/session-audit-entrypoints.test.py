@@ -91,6 +91,7 @@ bash "$1"
     self.assertEqual(result.returncode, 77, result.stderr)
     args = json.loads(result.stdout)
     expected = {
+      '--shadow-started-at': '2026-11-15T00:00:00+08:00',
       '--direct-legs': 'bg-audit-primary:2',
       '--standby-legs': 'audit-tail:10',
       '--shadow-legs': 'bg-audit-shadow:2',
