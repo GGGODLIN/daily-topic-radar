@@ -10,8 +10,8 @@ STATE="${SESSION_AUDIT_STATE:-$REPO/reports/local-analysis/session-audit}"
 PROJECTS="${SESSION_AUDIT_PROJECTS:-$HOME/.claude/projects}"
 STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the deployment cutoff}"
 
-# 平常只追新增 session：主線是 Magpie 的 gemini-pro-low（Gemini Pro 角色群組，背後哪顆模型由 Magpie 的成員順序決定，最多同時 2 個）。
-# 一回 429／503 就冷卻並改走備用 audit-tail（devin-plugin/swe-2:high → vultr/minimax-m3.1-flash → minimax-code-global/MiniMax-M3.1-Flash，以 Magpie group/audit-tail 設定為準，10 槽）；最早一份等待中的新 session 等超過 16 小時也開備用，降到 2 小時以內才關
+# 平常只追新增 session：主線是 Magpie 的 bg-audit-primary（Hydrogen:high，最多同時 2 個）；quality 模式另開獨立副軌 bg-audit-shadow（2 槽）。
+# 一回 402／429／503 就冷卻並改走備用 audit-tail（devin-plugin/swe-2:high → vultr/minimax-m3.1-flash → minimax-code-global/MiniMax-M3.1-Flash，以 Magpie group/audit-tail 設定為準，10 槽）；最早一份等待中的新 session 等超過 16 小時也開備用，降到 2 小時以內才關
 # （使用者 2026-10-17 決定，經 GPT-6 審查修訂）。low 與 high 在同日盲評分不出差別、快約 2.6 倍
 # （local-llm-gateway .scratch/real-workload-eval/report.md）。開回填批次時改走三條平行直連線各 5 槽，批次進 review 後下一輪自動退回。
 # 回填不走主線的 Gemini Pro 群組（使用者 2026-10-17 決定，當時主線是 Argon）：它跟互動 session 共用同一把 Google key，回填佔了分析器 Argon 用量的 84%，
@@ -26,8 +26,9 @@ STARTED_AT="${SESSION_AUDIT_STARTED_AT:?SESSION_AUDIT_STARTED_AT must be the dep
   --started-at "$STARTED_AT" \
   --relay-config "${SESSION_AUDIT_RELAY_CONFIG:-$HOME/.cli-proxy-api/config.yaml}" \
   --keys-file "${SESSION_AUDIT_KEYS_FILE:-$HOME/.cli-proxy-api/keys.env}" \
-  --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-gemini-pro-low:2}" \
+  --direct-legs "${SESSION_AUDIT_DIRECT_LEGS-bg-audit-primary:2}" \
   --standby-legs "${SESSION_AUDIT_STANDBY_LEGS-audit-tail:10}" \
+  --shadow-legs "${SESSION_AUDIT_SHADOW_LEGS-bg-audit-shadow:2}" \
   --workdir-routes "${SESSION_AUDIT_WORKDIR_ROUTES-}" \
   --backfill-legs "${SESSION_AUDIT_BACKFILL_LEGS-swe2-high:5,mimo26-pool:5}" \
   --max-sessions "${SESSION_AUDIT_MAX_SESSIONS:-2}"

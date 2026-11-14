@@ -347,6 +347,9 @@ class SessionAuditCliTest(unittest.TestCase):
       # 測試不能打到本機真的 cline2api／cli2api 管理介面；健康度由 pools 測試用假服務單獨覆蓋。
       "--pool-health",
       "{}",
+      # 測試不能打到本機真的 Magpie concurrency 端點；讓路檢查由 dual-lane 測試用假服務單獨覆蓋。
+      "--concurrency-url",
+      "",
     ]
     if started_at is not None:
       args.extend(["--started-at", started_at])

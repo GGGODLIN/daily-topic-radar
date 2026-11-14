@@ -70,6 +70,13 @@ LEG_RESENDS = 2
 # 取樣器每 5 分鐘一筆；太久沒更新等於不知道用量，寧可不用。
 GROK_SAMPLE_MAX_AGE_SECONDS = 1800
 LEG_FALLBACK_FAILURES = frozenset({"bad-model-json", "empty-model-content", "finish-unconfirmed"})
+DEFAULT_CONCURRENCY_URL = "http://127.0.0.1:18417/v1/magpie/concurrency"
+DEFAULT_HYDROGEN_CAP_10M = 15
+HYDROGEN_WINDOW_SECONDS = 600
+HYDROGEN_SHARED_MODEL_RE = re.compile(
+  r"google/|gemini-4-(?:argon|carbon|hydrogen)|(?:^|/)(?:gemini-pro|gemini-flash)"
+)
+NON_FOREGROUND_AGENTS = frozenset({"Python-urllib", "claude-mem", "session-audit"})
 # SessionEnd 之後 CC 可能還補寫最後幾行；容許這段誤差仍算已關閉。
 SESSION_END_SLACK_SECONDS = 60
 EVAL_ROOTS = frozenset({"eval-roots", "synthetic-eval"})
@@ -379,7 +386,7 @@ STABLE_INODE_VERSION = 1
 # 這些表的列是某次分析的結果；同一份對話被拆成多個鍵時只留一份，否則發現與逐段紀錄會重複計算。
 ANALYSIS_TABLES = (
   "sources", "findings", "segments", "model_replies", "rule_sessions", "rule_coverage", "rule_tags", "doc_blocks",
-  "secret_exposures",
+  "secret_exposures", "shadow_cursors", "shadow_replies",
 )
 # 這兩張表記的是檔案本身（屬於哪個回填批次、掃描快取），同一檔的不同鍵併成一列即可。
 FILE_TABLES = ("history_members", "scan_cache")
@@ -836,7 +843,8 @@ def connect(state, write):
         check_direction TEXT NOT NULL,
         quote TEXT NOT NULL,
         source_line INTEGER NOT NULL,
-        issue_ref TEXT NOT NULL DEFAULT ''
+        issue_ref TEXT NOT NULL DEFAULT '',
+        lane TEXT NOT NULL DEFAULT 'primary'
       );
       CREATE TABLE IF NOT EXISTS segments (
         id INTEGER PRIMARY KEY,
@@ -954,11 +962,38 @@ def connect(state, write):
         conversation_time TEXT NOT NULL,
         commit_sha TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS shadow_cursors (
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        lane TEXT NOT NULL,
+        doc_offset INTEGER NOT NULL DEFAULT 0,
+        continuity TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        updated_at REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (inode, generation, lane)
+      );
+      CREATE TABLE IF NOT EXISTS shadow_replies (
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        lane TEXT NOT NULL,
+        doc_start INTEGER NOT NULL,
+        doc_end INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL,
+        limitations TEXT NOT NULL DEFAULT '[]',
+        model TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (inode, generation, lane, doc_start)
+      );
+      CREATE TABLE IF NOT EXISTS hydrogen_sends (
+        sent_at REAL NOT NULL
+      );
       """
     )
     columns = {row[1] for row in connection.execute('PRAGMA table_info(findings)')}
     if 'issue_ref' not in columns:
       connection.execute("ALTER TABLE findings ADD COLUMN issue_ref TEXT NOT NULL DEFAULT ''")
+    if 'lane' not in columns:
+      connection.execute("ALTER TABLE findings ADD COLUMN lane TEXT NOT NULL DEFAULT 'primary'")
     migrate_hash_free(connection)
     # 主線與備用線會輪流接同一份對話的不同段；不記實際模型，換線後品質出問題時查不到是哪一顆。
     if "model" not in table_columns(connection, "model_replies"):
@@ -975,6 +1010,10 @@ def connect(state, write):
         ON segments(inode, generation);
       CREATE INDEX IF NOT EXISTS idx_findings_inode_generation
         ON findings(inode, generation);
+      CREATE INDEX IF NOT EXISTS idx_findings_inode_gen_lane
+        ON findings(inode, generation, lane);
+      CREATE INDEX IF NOT EXISTS idx_shadow_cursors_lane_status
+        ON shadow_cursors(lane, status, inode, generation);
       """
     )
   return connection
@@ -1677,6 +1716,10 @@ def upsert(connection, item):
         item["inode"],
       ),
     )
+    connection.execute(
+      "UPDATE shadow_cursors SET status = 'pending' WHERE inode = ? AND status IN ('complete', 'partial')",
+      (item["inode"],),
+    )
     return
   connection.execute(
     """
@@ -2229,9 +2272,9 @@ def event_ref(session_id, source_line, quote):
   return f"session:{session_id}#{source_line}:{fingerprint}"
 
 
-def store_findings(connection, inode, generation, findings):
+def store_findings(connection, inode, generation, findings, lane="primary"):
   session = connection.execute('SELECT session_id FROM sources WHERE inode = ?', (inode,)).fetchone()[0]
-  prior = list(connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? ORDER BY id', (inode, generation)))
+  prior = list(connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? AND lane = ? ORDER BY id', (inode, generation, lane)))
   known = {row['issue_ref'] or event_ref(session, row['source_line'], row['quote']) for row in prior}
   prepared = []
   failure = None
@@ -2254,9 +2297,9 @@ def store_findings(connection, inode, generation, findings):
         reference = matching.pop()
     reference = reference or event_ref(session, evidence['source_line'], evidence['quote'])
     item['issue_ref'] = reference
-    prepared.append((inode, generation, item['status'], int(item['independent_recurrence']), item['target'], redact_text(item['observation']), redact_text(item['check_direction']), evidence['quote'], evidence['source_line'], reference))
+    prepared.append((inode, generation, item['status'], int(item['independent_recurrence']), item['target'], redact_text(item['observation']), redact_text(item['check_direction']), evidence['quote'], evidence['source_line'], reference, lane))
   connection.executemany(
-    'INSERT INTO findings (inode, generation, status, independent_recurrence, target, observation, check_direction, quote, source_line, issue_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO findings (inode, generation, status, independent_recurrence, target, observation, check_direction, quote, source_line, issue_ref, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     prepared,
   )
   return failure
@@ -2595,7 +2638,7 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
           # 未解析不能當成「沒遇到規則」；明確空清單才有機會計入覆蓋。
           noted.add(RULE_TAGS_MISSING)
       active = {}
-      for previous in connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? ORDER BY id', (row['inode'], generation)):
+      for previous in connection.execute('SELECT * FROM findings WHERE inode = ? AND generation = ? AND lane = ? ORDER BY id', (row['inode'], generation, 'primary')):
         active[previous['issue_ref']] = previous
       pointers = [
         f"open issue_ref={previous['issue_ref']} {previous['quote'][:80]}" for previous in active.values()
@@ -2676,6 +2719,223 @@ def analyze_one(connection, row, raw, url, key, model, fragments, deadline, frag
     )
     connection.commit()
   return produced
+
+
+def prepare_shadow_source(connection, row, raw, shadow_lane):
+  document, images, limits, thinking, _synthetic, _session_ids, parts = build_document(raw)
+  parts = locate_parts(document, parts)
+  doc_bytes = document.encode()
+  mtime_ns = raw.mtime_ns
+  generation = row["generation"]
+  cursor_row = connection.execute(
+    "SELECT doc_offset, continuity, status FROM shadow_cursors WHERE inode = ? AND generation = ? AND lane = ?",
+    (row["inode"], generation, shadow_lane),
+  ).fetchone()
+  start = 0
+  carried = ""
+  sc_status = "pending"
+  if cursor_row is not None:
+    start = cursor_row["doc_offset"] or 0
+    carried = cursor_row["continuity"] or ""
+    sc_status = cursor_row["status"] or "pending"
+  if start > len(doc_bytes):
+    start = 0
+  if start == len(doc_bytes) and sc_status in {"complete", "partial", "failed"}:
+    return None
+  return {
+    "raw": raw, "doc_bytes": doc_bytes, "parts": parts, "images": images, "limits": limits,
+    "thinking": thinking, "mtime_ns": mtime_ns, "generation": generation, "start": start, "carried": carried,
+  }
+
+
+def upsert_shadow_cursor(connection, inode, generation, lane, doc_offset, continuity, status):
+  connection.execute(
+    "INSERT OR REPLACE INTO shadow_cursors (inode, generation, lane, doc_offset, continuity, status, updated_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+    (inode, generation, lane, doc_offset, continuity, status, time.time()),
+  )
+
+
+def analyze_shadow_one(connection, row, raw, shadow_lane, model, fragments, deadline, frag_limit, prep=None):
+  if prep is None:
+    prep = prepare_shadow_source(connection, row, raw, shadow_lane)
+  if prep is None:
+    return 0
+  doc_bytes, parts, images = prep["doc_bytes"], prep["parts"], prep["images"]
+  generation, mtime_ns = prep["generation"], prep["mtime_ns"]
+  blocking = set(prep["limits"])
+  for saved in connection.execute(
+    "SELECT limitations FROM shadow_replies WHERE inode = ? AND generation = ? AND lane = ? AND status = 'review'",
+    (row["inode"], generation, shadow_lane),
+  ):
+    blocking.update(json.loads(saved["limitations"]))
+  cursor, limit, carried = prep["start"], len(doc_bytes), prep["carried"]
+  continuity = redact_text(carried)
+  produced = 0
+  path = Path(row["path"])
+  while cursor < limit and produced < frag_limit and time.monotonic() <= deadline:
+    unchanged = source_unchanged(path, raw, mtime_ns)
+    if not unchanged:
+      upsert_shadow_cursor(connection, row["inode"], generation, shadow_lane, cursor, continuity[:CONTINUITY_RESERVE], "pending")
+      connection.commit()
+      return produced
+    window = doc_bytes[cursor : min(cursor + instruction_budget(), limit)]
+    end = len(window)
+    while end > 0 and end < len(window) and window[end] & 0xC0 == 0x80:
+      end -= 1
+    if cursor + instruction_budget() < limit:
+      newline = window.rfind(b"\n")
+      if newline >= len(window) // 2:
+        end = newline + 1
+    if end <= 0:
+      end = len(window)
+    inherited = b""
+    for part in parts:
+      if part["doc_start"] < cursor < part["doc_end"]:
+        header_end = doc_bytes.find(b"\n", part["doc_start"])
+        if header_end > part["doc_start"]:
+          inherited = doc_bytes[part["doc_start"] : header_end + 1]
+        break
+    attempt = (inherited + window[:end]).decode("utf-8", "replace")
+    accepted = None
+    accepted_source = 0
+    used_images = []
+    for _shrink in range(6):
+      payload, sent, used_images, skipped = request_payload(
+        model, continuity[:CONTINUITY_RESERVE], attempt, images, None
+      )
+      if skipped:
+        blocking.add("media-not-sent")
+      code, body = yield payload, _shrink > 0
+      produced += 1
+      fragments["shadow"] += 1
+      unchanged = source_unchanged(path, raw, mtime_ns)
+      if not unchanged:
+        upsert_shadow_cursor(connection, row["inode"], generation, shadow_lane, cursor, continuity[:CONTINUITY_RESERVE], "pending")
+        connection.commit()
+        return produced
+      if code in {400, 413} and len(sent) > 400:
+        attempt = sent[: max(200, len(sent) // 2)]
+        continue
+      if code != 200:
+        upsert_shadow_cursor(connection, row["inode"], generation, shadow_lane, cursor, continuity[:CONTINUITY_RESERVE], "failed")
+        connection.commit()
+        return produced
+      content, failure = message_from_response(body)
+      if failure == "finish-length" and len(sent) > 400:
+        attempt = sent[: max(200, len(sent) // 2)]
+        continue
+      if failure:
+        upsert_shadow_cursor(connection, row["inode"], generation, shadow_lane, cursor, continuity[:CONTINUITY_RESERVE], "failed")
+        connection.commit()
+        return produced
+      analyzed, failure = parse_analysis(content, sent)
+      review_failures = {failure} if isinstance(failure, str) else failure
+      if analyzed is None:
+        analyzed = {"continuity": "前段完整回覆待整理；未解析的發現與規則仍未知。", "findings": [], "limitations": []}
+      blocking.update(redact_text(note) for note in analyzed["limitations"] if note.strip())
+      if used_images and not media_verified(analyzed, used_images):
+        blocking.add("media-not-read")
+      failure = store_findings(connection, row["inode"], generation, analyzed["findings"], lane=shadow_lane)
+      if failure:
+        review_failures.add(failure)
+      if review_failures:
+        blocking.update(review_failures | {"response-needs-review"})
+      active_refs = {}
+      for previous in connection.execute(
+        "SELECT * FROM findings WHERE inode = ? AND generation = ? AND lane = ? ORDER BY id",
+        (row["inode"], generation, shadow_lane),
+      ):
+        active_refs[previous["issue_ref"]] = previous
+      pointers = [
+        f"open issue_ref={previous['issue_ref']} {previous['quote'][:80]}"
+        for previous in active_refs.values()
+        if previous["status"] in {"unresolved", "uncertain"}
+      ]
+      continuity = redact_text(("\n".join(pointers) + "\n" + analyzed["continuity"]).strip())
+      sent_bytes = sent.encode()
+      if inherited and sent_bytes.startswith(inherited):
+        accepted_source = len(sent_bytes) - len(inherited)
+      else:
+        accepted_source = len(sent_bytes)
+      accepted = sent
+      reply_status = "review" if review_failures else "parsed"
+      connection.execute(
+        "INSERT OR REPLACE INTO shadow_replies "
+        "(inode, generation, lane, doc_start, doc_end, content, status, limitations, model) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+          row["inode"], generation, shadow_lane, cursor, cursor + accepted_source,
+          redact_text(content), reply_status,
+          json.dumps(sorted(review_failures | {"response-needs-review"} if review_failures else set())),
+          served_model(body),
+        ),
+      )
+      break
+    if accepted is None or accepted_source <= 0:
+      upsert_shadow_cursor(connection, row["inode"], generation, shadow_lane, cursor, continuity[:CONTINUITY_RESERVE], "failed")
+      connection.commit()
+      return produced
+    cursor += accepted_source
+    upsert_shadow_cursor(connection, row["inode"], generation, shadow_lane, cursor, continuity[:CONTINUITY_RESERVE], "pending")
+    connection.commit()
+  if cursor >= len(doc_bytes):
+    final_status = "partial" if blocking else "complete"
+    upsert_shadow_cursor(connection, row["inode"], generation, shadow_lane, len(doc_bytes), continuity[:CONTINUITY_RESERVE], final_status)
+    connection.commit()
+  return produced
+
+
+def read_bg_mode(path):
+  if not path:
+    return "quality"
+  try:
+    data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return "quality"
+  if isinstance(data, dict) and data.get("mode") == "eco":
+    return "eco"
+  return "quality"
+
+
+def is_hydrogen_primary_leg(leg):
+  return leg.startswith(("bg-audit-primary", "gemini-pro-low", "google/"))
+
+
+def hydrogen_should_yield(connection, concurrency_url, cap_10m):
+  if not concurrency_url:
+    return False
+  now = time.time()
+  connection.execute("DELETE FROM hydrogen_sends WHERE sent_at < ?", (now - HYDROGEN_WINDOW_SECONDS,))
+  sent_count = connection.execute("SELECT COUNT(*) FROM hydrogen_sends").fetchone()[0]
+  if sent_count >= cap_10m:
+    return True
+  opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirect)
+  request = urllib.request.Request(concurrency_url, method="GET", headers={"User-Agent": "session-audit"})
+  try:
+    with opener.open(request, timeout=2.5) as response:
+      if response.status != 200:
+        return False
+      data = json.loads(response.read(MAX_RESPONSE_BYTES))
+  except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
+    return False
+  if not isinstance(data, dict):
+    return False
+  active = data.get("active") or []
+  if not isinstance(active, list):
+    return False
+  for entry in active:
+    if not isinstance(entry, dict):
+      continue
+    agent = str(entry.get("agent") or "")
+    if agent in NON_FOREGROUND_AGENTS:
+      continue
+    model_l = str(entry.get("model") or "").lower()
+    if model_l.startswith(("antigravity/", "bg-", "group/bg-")):
+      continue
+    if HYDROGEN_SHARED_MODEL_RE.search(model_l):
+      return True
+  return False
 
 
 def refresh(connection, projects, self_id, time_window=None):
@@ -2881,14 +3141,20 @@ def cmd_run(args):
     # 沒開歷史窗口時舊來源每輪只涓流一段；開了窗口就跟新來源一樣補滿空位，窗口進 review 後整批停送。
     remaining = {"new": float("inf"), "old": MAX_OLD_FRAGMENTS if window is None else float("inf")}
     queues = {"new": deque(), "old": deque()}
+    shadow_queue = deque()
     # 失敗的來源本輪不再排回去；否則每次重新掃描都會再送一次，把名額耗在同一個壞回覆上。
     attempted = set()
+    shadow_attempted = set()
 
     def is_old(row):
       # doc_offset>0 的 pending 仍是 old，不能下輪升成 new。
       return cutoff is not None and row["mtime"] < cutoff
 
     mode = {"backfill": False}
+    bg_mode = read_bg_mode(args.bg_mode_file)
+    shadow_configured = parse_legs(args.shadow_legs)
+    shadow_enabled = bool(shadow_configured) and bg_mode == "quality"
+    shadow_lane = shadow_configured[0][0] if shadow_configured else ""
 
     def scan():
       observed = refresh(connection, args.projects, args.self_session, window["bounds"] if window is not None else None)
@@ -2920,6 +3186,28 @@ def cmd_run(args):
       queues["old"] = deque(
         row for row in rows if history_open and is_old(row) and (members is None or row["inode"] in members)
       )
+      if shadow_enabled:
+        shadow_rows = [
+          row for row in connection.execute(
+            """
+            SELECT sources.* FROM sources
+            LEFT JOIN shadow_cursors sc
+              ON sc.inode = sources.inode AND sc.generation = sources.generation AND sc.lane = ?
+            WHERE sources.included = 1
+              AND sources.status IN ('pending', 'complete', 'partial')
+              AND (sc.status IS NULL OR sc.status = 'pending')
+            ORDER BY sources.status = 'pending' DESC, -sources.mtime, sources.path
+            """,
+            (shadow_lane,),
+          )
+          if row["inode"] not in shadow_attempted
+        ]
+        shadow_queue.clear()
+        shadow_queue.extend(
+          row for row in shadow_rows
+          if (cutoff is None or row["mtime"] >= cutoff)
+          and (row["status"] in ("complete", "partial") or closed(row) or now - row["mtime"] >= args.quiet_seconds)
+        )
 
     scan()
     reason, model = choose_model(args.relay_config)
@@ -2929,11 +3217,12 @@ def cmd_run(args):
       connection.close()
       return 0
     rules_repo = Path(args.rules_repo).expanduser()
-    fragments = {"new": 0}
+    fragments = {"new": 0, "shadow": 0}
     lifetime = time.monotonic() + args.max_run_seconds
     next_scan = time.monotonic() + args.rescan_seconds
     active = {}
     sessions = set()
+    shadow_sessions = set()
 
     def transcript(row):
       # 同一份對話被複製到兩個目錄時不能同時送（接續狀態會互相覆蓋）；subagent 檔共用父 session id，但各是獨立對話。
@@ -2964,6 +3253,14 @@ def cmd_run(args):
         queue.append(row)
       return None
 
+    def take_shadow():
+      for _ in range(len(shadow_queue)):
+        row = shadow_queue.popleft()
+        if transcript(row) not in shadow_sessions:
+          return row
+        shadow_queue.append(row)
+      return None
+
     def next_row():
       # 新 session 嚴格優先；歷史只在沒有可送的新工作時補位。
       for group in ("new", "old"):
@@ -2982,6 +3279,12 @@ def cmd_run(args):
       sessions.add(session_key)
       resume(session_key, group, analyzer)
 
+    def start_shadow(row, raw, prep):
+      session_key = transcript(row)
+      analyzer = analyze_shadow_one(connection, row, raw, shadow_lane, model, fragments, lifetime, float("inf"), prep)
+      shadow_sessions.add(session_key)
+      resume_shadow(session_key, analyzer)
+
     # 平常只追新 session，走 free、名額小；開回填批次時才換成高併發的直連腿，批次進 review 後下一輪自動退回。
     configured = parse_legs(args.backfill_legs if mode["backfill"] and args.backfill_legs else args.direct_legs)
     # 備用線只給增量用：平常不接新工作，主線冷卻中或積壓太久才補上。回填本來就是多條平行線，不再疊一層。
@@ -2998,8 +3301,13 @@ def cmd_run(args):
     uses_free = sum(slots for _, slots in configured + standby) < base
     free_slots = base - sum(slots for _, slots in legs) if uses_free else 0
     capacity = {**({"free": free_slots} if free_slots > 0 else {}), **dict(legs)}
+    shadow_eligible = eligible_legs(shadow_configured, args.grok_quota_file) if shadow_enabled else []
+    shadow_slots_of = dict(shadow_configured)
+    shadow_capacity = {alias: slots for alias, slots in shadow_eligible if alias not in paused_now}
     # 指定的池名額加總超過基準時（例如 Grok 額外加 10），總量跟著名額走；基準只是 free 補位的上限。
-    concurrency = max(base, sum(slots for _, slots in configured + standby))
+    concurrency = max(base, sum(slots for _, slots in configured + standby)) + (
+      sum(slots for _, slots in shadow_configured) if shadow_enabled else 0
+    )
     try:
       pool_specs = json.loads(args.pool_health)
     except ValueError:
@@ -3009,16 +3317,35 @@ def cmd_run(args):
     cli2api_key = env_value(args.keys_file, "CLI2API_API_KEY")
     health_cache = {}
     probing = set()
+    primary_yielded = {"value": False}
+
+    def active_primary_legs():
+      return [leg for leg in capacity if not (primary_yielded["value"] and is_hydrogen_primary_leg(leg))]
+
+    def busy_count(lane_kind):
+      return sum(1 for item in active.values() if item[0] == lane_kind)
 
     def pick_leg(avoid=None):
       busy = {}
-      for _, _, _, leg, _, _ in active.values():
-        busy[leg] = busy.get(leg, 0) + 1
-      candidates = [leg for leg in capacity if leg != avoid]
+      for lane_kind, _, _, _, leg, _, _ in active.values():
+        if lane_kind == "primary":
+          busy[leg] = busy.get(leg, 0) + 1
+      candidates = [leg for leg in active_primary_legs() if leg != avoid]
       if not candidates:
         return None
       open_legs = [leg for leg in candidates if busy.get(leg, 0) < capacity[leg]]
       # 全部滿槽就回 None 讓呼叫端等槽：以前會照樣挑一條，續段與重送因此打穿主線 2 槽、試打 1 槽的上限。
+      return min(open_legs, key=lambda leg: busy.get(leg, 0)) if open_legs else None
+
+    def pick_shadow_leg(avoid=None):
+      busy = {}
+      for lane_kind, _, _, _, leg, _, _ in active.values():
+        if lane_kind == "shadow":
+          busy[leg] = busy.get(leg, 0) + 1
+      candidates = [leg for leg in shadow_capacity if leg != avoid]
+      if not candidates:
+        return None
+      open_legs = [leg for leg in candidates if busy.get(leg, 0) < shadow_capacity[leg]]
       return min(open_legs, key=lambda leg: busy.get(leg, 0)) if open_legs else None
 
     workdir_routes = parse_workdir_routes(args.workdir_routes)
@@ -3036,12 +3363,12 @@ def cmd_run(args):
         cwd_cache[(ident, name)] = session_cwd(found["path"]) if found else None
       return routed_model(leg, cwd_cache[(ident, name)], workdir_routes)
 
-    def send(session_id, analyzer, group, leg, payload, resends=0):
+    def send(lane_kind, session_id, analyzer, group, leg, payload, resends=0):
       if leg == "free":
         future = pool.submit(post_json, url, key, payload)
       else:
         future = pool.submit(post_json, url, key, {**payload, "model": model_for(session_id, leg)}, DIRECT_LEG_TIMEOUT_SECONDS)
-      active[future] = (session_id, analyzer, group, leg, payload, resends)
+      active[future] = (lane_kind, session_id, analyzer, group, leg, payload, resends)
 
     consecutive_failures = {}
 
@@ -3114,21 +3441,25 @@ def cmd_run(args):
       slots = capacity.pop(leg, 0)
       if "free" in capacity:
         capacity["free"] += slots
+      shadow_capacity.pop(leg, None)
       refresh_standby()
 
     def resume_leg(leg):
       connection.execute("DELETE FROM leg_pauses WHERE alias = ?", (leg,))
       connection.commit()
       probing.discard(leg)
-      if "free" in capacity:
-        capacity["free"] = max(0, capacity["free"] - slots_of[leg])
-      capacity[leg] = slots_of[leg]
+      if leg in slots_of:
+        if "free" in capacity:
+          capacity["free"] = max(0, capacity["free"] - slots_of[leg])
+        capacity[leg] = slots_of[leg]
+      if shadow_enabled and leg in shadow_slots_of:
+        shadow_capacity[leg] = shadow_slots_of[leg]
       refresh_standby()
 
     def review_legs():
       paused = {alias: until for alias, until in connection.execute("SELECT alias, until FROM leg_pauses")}
       # 沒開的備用線不試打；開著時它暫停了一樣要試打，才回得來。
-      for leg, _slots in eligible + (standby if standby_state["wanted"] else []):
+      for leg, _slots in eligible + (standby if standby_state["wanted"] else []) + (shadow_eligible if shadow_enabled else []):
         value = health(leg)
         if leg in paused:
           if value is not None and value[0] > 0:
@@ -3138,27 +3469,50 @@ def cmd_run(args):
             connection.execute("UPDATE leg_pauses SET until = ? WHERE alias = ?", (time.time() + args.leg_probe_seconds, leg))
             connection.commit()
             probing.add(leg)
-            capacity[leg] = 1
+            if leg in shadow_slots_of and leg not in slots_of:
+              shadow_capacity[leg] = 1
+            else:
+              capacity[leg] = 1
         # 正常中的腿只記錄健康度、不據此暫停：健康度與實際回應衝突時（顯示 0 但打得通）以回應為準。
       refresh_standby()
 
     # 有線可送但全部滿槽的段先停在這裡等槽；送回剛失敗的線或硬塞進滿槽的線都不對。
     parked = deque()
+    shadow_parked = deque()
 
     def dispatch(item):
       session_id, analyzer, group, payload, resends, avoid = item
       leg = pick_leg(avoid)
       if leg is None:
         return False
+      if is_hydrogen_primary_leg(leg) and hydrogen_should_yield(connection, args.concurrency_url, args.hydrogen_cap_10m):
+        primary_yielded["value"] = True
+        leg = pick_leg(avoid)
+        if leg is None:
+          return False
       if not resends:
         remaining[group] -= 1
-      send(session_id, analyzer, group, leg, payload, resends)
+      if is_hydrogen_primary_leg(leg):
+        connection.execute("INSERT INTO hydrogen_sends (sent_at) VALUES (?)", (time.time(),))
+      send("primary", session_id, analyzer, group, leg, payload, resends)
+      return True
+
+    def dispatch_shadow(item):
+      session_id, analyzer, payload, resends, avoid = item
+      leg = pick_shadow_leg(avoid)
+      if leg is None:
+        return False
+      send("shadow", session_id, analyzer, "shadow", leg, payload, resends)
       return True
 
     def drop(session_id, analyzer):
       # 先放下這段，來源維持原狀態，下一輪從存好的水位接著送；池死掉不是 session 的錯。
       analyzer.close()
       sessions.remove(session_id)
+
+    def drop_shadow(session_id, analyzer):
+      analyzer.close()
+      shadow_sessions.remove(session_id)
 
     def resume(session_id, group, analyzer, response=None):
       try:
@@ -3172,10 +3526,26 @@ def cmd_run(args):
       # 已開始的 400/413 縮片保留原本的重送流程；到期只擋下一個新片段，不丟棄在途回件。
       item = (session_id, analyzer, group, payload, 0, None)
       if not dispatch(item):
-        if capacity:
+        if active_primary_legs():
           parked.append(item)
         else:
           drop(session_id, analyzer)
+
+    def resume_shadow(session_id, analyzer, response=None):
+      try:
+        payload, shrinking = next(analyzer) if response is None else analyzer.send(response)
+      except StopIteration:
+        shadow_sessions.remove(session_id)
+        return
+      if not shrinking and time.monotonic() >= lifetime:
+        drop_shadow(session_id, analyzer)
+        return
+      item = (session_id, analyzer, payload, 0, None)
+      if not dispatch_shadow(item):
+        if shadow_capacity:
+          shadow_parked.append(item)
+        else:
+          drop_shadow(session_id, analyzer)
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
       refresh_standby()
@@ -3191,13 +3561,19 @@ def cmd_run(args):
           next_review = time.monotonic() + LEG_REVIEW_SECONDS
         for _ in range(len(parked)):
           item = parked.popleft()
-          if not any(leg != item[5] for leg in capacity):
+          if not any(leg != item[5] for leg in active_primary_legs()):
             drop(item[0], item[1])
           elif not dispatch(item):
             parked.append(item)
+        for _ in range(len(shadow_parked)):
+          item = shadow_parked.popleft()
+          if not any(leg != item[4] for leg in shadow_capacity):
+            drop_shadow(item[0], item[1])
+          elif not dispatch_shadow(item):
+            shadow_parked.append(item)
         # 總量照各腿名額加總：暫停的腿名額空著，不把它的量壓到其他池上。等槽的段在上面先送，新來源只補剩下的空槽。
         # 每取一筆都重看期限：準備一份大 transcript 可能要好幾分鐘，只在外層看一次時，到期後仍會把整條佇列讀完才停。
-        while time.monotonic() < lifetime and capacity and len(active) < min(concurrency, sum(capacity.values())):
+        while time.monotonic() < lifetime and active_primary_legs() and busy_count("primary") < min(concurrency, sum(capacity.get(leg, 0) for leg in active_primary_legs())):
           group, row = next_row()
           if row is None:
             break
@@ -3225,39 +3601,67 @@ def cmd_run(args):
             continue
           block_items[group].extendleft((row, raw, block, prep) for block in reversed(blocks[1:]))
           start(group, row, raw, prep, blocks[0])
+        while time.monotonic() < lifetime and shadow_enabled and shadow_capacity and busy_count("shadow") < sum(shadow_capacity.values()):
+          row = take_shadow()
+          if row is None:
+            break
+          shadow_attempted.add(row["inode"])
+          raw, error = read_source(Path(row["path"]))
+          if error:
+            continue
+          prep = prepare_shadow_source(connection, row, raw, shadow_lane)
+          if prep is None:
+            continue
+          start_shadow(row, raw, prep)
         # 回件可能要等好幾分鐘；等之前先交出寫入交易，SessionEnd hook 才寫得進 hints（它不拿 run.lock）。
         connection.commit()
         if not active:
           # 沒有在途也沒有可送的：結束讓 runner 寫出發現，排程 10 秒後重開並重新掃描，不在這裡空轉。
           for session_id, analyzer, *_ in parked:
             drop(session_id, analyzer)
+          for session_id, analyzer, *_ in shadow_parked:
+            drop_shadow(session_id, analyzer)
           break
         timeout = max(0.0, min(next_scan, next_review) - time.monotonic()) if open_for_work else None
         done, _ = wait(active, timeout=timeout, return_when=FIRST_COMPLETED)
         for future in done:
-          session_id, analyzer, group, leg, payload, resends = active.pop(future)
+          lane_kind, session_id, analyzer, group, leg, payload, resends = active.pop(future)
           code, body = future.result()
           if leg != "free" and (code != 200 or message_from_response(body)[1] in LEG_FALLBACK_FAILURES):
             # 直連腿額度用完、斷線或回空時，同一段改送別條腿；不讓那條腿的狀況變成來源失敗。
             print(f"session-audit: leg-fallback {leg} http-{code}", file=sys.stderr)
             if leg in probing:
               pause_leg(leg)
-            elif standby_slots and leg in primary and code in (429, 503):
-              # 有備用線時主線一被限流就冷卻：連續失敗門檻每輪歸零、一次成功也歸零，可能永遠湊不到，備用遲遲不開。
+            elif code == 402 or (standby_slots and leg in primary and code in (429, 503)):
+              # 402 代表帳號／額度到期立即停腿；有備用線時主線被 429/503 限流也立即冷卻。
               pause_leg(leg)
             else:
               consecutive_failures[leg] = consecutive_failures.get(leg, 0) + 1
               value = health(leg, max_age=0)
               dead = value is not None and value[0] == 0
-              if leg in capacity and (dead or consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE):
+              if (leg in capacity or leg in shadow_capacity) and (dead or consecutive_failures[leg] >= LEG_FAILURES_BEFORE_PAUSE):
                 pause_leg(leg)
+            if lane_kind == "shadow":
+              if resends >= LEG_RESENDS:
+                drop_shadow(session_id, analyzer)
+                continue
+              if any(other != leg for other in shadow_capacity):
+                item = (session_id, analyzer, payload, resends + 1, leg)
+              elif leg in shadow_capacity:
+                item = (session_id, analyzer, payload, resends + 1, None)
+              else:
+                drop_shadow(session_id, analyzer)
+                continue
+              if not dispatch_shadow(item):
+                shadow_parked.append(item)
+              continue
             if resends >= LEG_RESENDS:
               drop(session_id, analyzer)
               continue
-            if any(other != leg for other in capacity):
+            if any(other != leg for other in active_primary_legs()):
               # 有別條線就換線，滿了就等槽，不送回剛失敗的線：主線回 429 的那段因此只會往備用走。
               item = (session_id, analyzer, group, payload, resends + 1, leg)
-            elif leg in capacity:
+            elif leg in active_primary_legs():
               item = (session_id, analyzer, group, payload, resends + 1, None)
             else:
               drop(session_id, analyzer)
@@ -3271,7 +3675,10 @@ def cmd_run(args):
               resume_leg(leg)
             else:
               pause_leg(leg)
-          resume(session_id, group, analyzer, (code, body))
+          if lane_kind == "shadow":
+            resume_shadow(session_id, analyzer, (code, body))
+          else:
+            resume(session_id, group, analyzer, (code, body))
     if window is not None:
       update_history_review(connection)
     connection.commit()
@@ -3283,7 +3690,9 @@ def snapshot_candidates(connection, statuses=None, include_uncertain=True):
   candidates = []
   latest = {}
   if table_exists(connection, "findings"):
-    issue_col = "findings.issue_ref" if "issue_ref" in table_columns(connection, "findings") else "'' AS issue_ref"
+    columns = table_columns(connection, "findings")
+    issue_col = "findings.issue_ref" if "issue_ref" in columns else "'' AS issue_ref"
+    lane_col = "findings.lane" if "lane" in columns else "'primary' AS lane"
     status_clause = (
       f" AND sources.status IN ({', '.join('?' for _ in statuses)})"
       if statuses else ""
@@ -3292,7 +3701,8 @@ def snapshot_candidates(connection, statuses=None, include_uncertain=True):
     query = f"""
       SELECT findings.id, findings.inode, findings.status, findings.independent_recurrence,
              findings.target, findings.observation, findings.check_direction, findings.quote,
-             findings.source_line, {issue_col}, sources.session_id, sources.status AS source_status
+             findings.source_line, {issue_col}, sources.session_id, sources.status AS source_status,
+             {lane_col}
       FROM findings
       CROSS JOIN sources ON sources.inode = findings.inode AND sources.generation = findings.generation
       WHERE sources.included = 1{status_clause}
@@ -3300,7 +3710,7 @@ def snapshot_candidates(connection, statuses=None, include_uncertain=True):
     """
     for row in connection.execute(query, tuple(statuses or ())).fetchall():
       reference = row[9] or event_ref(row[10], row[8], row[7])
-      latest[(row[1], reference)] = row
+      latest[(row[1], row[12], reference)] = row
   kept_statuses = {"unresolved", "uncertain"} if include_uncertain else {"unresolved"}
   for row in latest.values():
     keep = row[2] in kept_statuses or (row[2] == "resolved" and row[3])
@@ -3320,6 +3730,7 @@ def snapshot_candidates(connection, statuses=None, include_uncertain=True):
         "issue_ref": row[9] or source_ref,
         "source_ref": source_ref,
         "source_status": row[11],
+        "lane": row[12],
       }
     )
   return candidates
@@ -4213,6 +4624,13 @@ def build_parser():
   parser.add_argument("--backfill-legs", default="")
   # 增量的備用線，格式同 --direct-legs：主線冷卻中，或最早一份等待中的新來源等超過上線時才接工作，降到下線以內才停。
   parser.add_argument("--standby-legs", default="")
+  parser.add_argument("--shadow-legs", default="")
+  parser.add_argument(
+    "--bg-mode-file",
+    default=str(Path.home() / ".magpie-machine" / "home" / ".config" / "magpie" / "bg-mode.json"),
+  )
+  parser.add_argument("--concurrency-url", default=DEFAULT_CONCURRENCY_URL)
+  parser.add_argument("--hydrogen-cap-10m", type=int, default=DEFAULT_HYDROGEN_CAP_10M)
   # 依 session 工作目錄改送模型，格式 leg:根目錄:模型；例如 calyx 公司 session 的 audit-tail 改走帶公司帳號的群組。
   parser.add_argument("--workdir-routes", default="")
   # 16／2 小時是暫定值：白天積壓留給夜裡消化，拖到隔天才叫備用；上線後依實測速度再調。

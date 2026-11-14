@@ -91,8 +91,9 @@ bash "$1"
     self.assertEqual(result.returncode, 77, result.stderr)
     args = json.loads(result.stdout)
     expected = {
-      '--direct-legs': 'gemini-pro-low:2',
+      '--direct-legs': 'bg-audit-primary:2',
       '--standby-legs': 'audit-tail:10',
+      '--shadow-legs': 'bg-audit-shadow:2',
       '--workdir-routes': '',
       '--backfill-legs': 'swe2-high:5,mimo26-pool:5',
       '--max-sessions': '2',
