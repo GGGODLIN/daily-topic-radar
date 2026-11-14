@@ -2880,6 +2880,98 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertIn("?code=200&state=open", redacted)
     self.assertIn("?client_id=abc123def456ghi789jkl012", redacted)
 
+  def test_redaction_p12_new_leaks_and_p6_tightened_exemptions(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_p12_p6", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    otp_cn_nextline = "839201"
+    otp_en_nextline = "G-741852"
+    slash_pw_spaced = "SlashPassSpaced99!"
+    slash_pw_tight = "SlashPassTight88#"
+    slash_pw_prefix = "PrefixCredPass77$"
+    tw_mobile_compact = "0912345678"
+    tw_mobile_json = "0987654321"
+    plain_pipe_pw = "LeftHalfPw|RightHalfPw"
+    table_cell_pw = "TableCellSecret55"
+    db_pass_bool_pw = "True"
+    recovery_num_tok = "87654321"
+    spaced_header_jwt = "eyAiYWxnIjogIkhTMjU2In0.eyJzdWIiOiJzeW50aCJ9.SpacedJwtSigTail99"
+    newline_header_jwt = "ewogICJhbGciOiAiSFMyNTYiCn0.eyJzdWIiOiJzeW50aCJ9.NewlineJwtSigTail88"
+
+    payload = "\n".join([
+      f"您的登入驗證碼是：\n  {otp_cn_nextline}",
+      f"Verification code:\n> `{otp_en_nextline}`",
+      f"測試人員：tester@example.com / {slash_pw_spaced}（帳密請妥善保管）",
+      f"登入資訊：owner@example.com/{slash_pw_tight} 密碼勿外流",
+      f"帳密：admin_user / {slash_pw_prefix}",
+      f"聯絡方式 Phone: {tw_mobile_compact}，備註正常",
+      json.dumps({
+        "phone": tw_mobile_json,
+        "prior_composition_pass": True,
+        "validation_pass": False,
+        "DB_PASS": True,
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+        "input_tokens": 158458398,
+        "RECOVERY_TOKENS": recovery_num_tok,
+        "MAX_OUTPUT_TOKENS_PIN": "012345",
+      }, ensure_ascii=False),
+      f"密碼：{plain_pipe_pw}",
+      f"|帳號|初始密碼：{table_cell_pw}|狀態正常|",
+      f"DB_PASS={db_pass_bool_pw} must_pass=True prior_composition_pass=false max_output_tokens=32768",
+      f"jwt1={spaced_header_jwt} jwt2={newline_header_jwt}",
+      "dotted=scripts.local_analysis.SessionRetroTests",
+      "prs=282 286 287",
+      'svg=<svg viewBox="0 0 282 286"><path d="M 091 234 567 L 02-2345-6789 415-555-0199"/></svg>',
+      "data_svg=data:image/svg+xml;utf8,<svg><path d='M10 20L02-2345-6789'/></svg>",
+      "safe_url=https://user@example.com/password_reset and two_emails=a@example.com / b@example.com（帳密通知對象）",
+    ])
+
+    out = mod.redact_text(payload)
+    # Idempotence across double redact_text pass
+    self.assertEqual(mod.redact_text(out), out, "redact_text must remain idempotent")
+
+    # P12 leaks must be redacted (using assertFalse without echoing full text)
+    self.assertFalse(otp_cn_nextline in out, "next-line CJK OTP leaked")
+    self.assertFalse(otp_en_nextline in out, "next-line English OTP leaked")
+    self.assertFalse(slash_pw_spaced in out, "spaced email/password pair leaked")
+    self.assertFalse(slash_pw_tight in out, "tight email/password pair leaked")
+    self.assertFalse(slash_pw_prefix in out, "帳密 prefix pair leaked")
+    self.assertFalse(tw_mobile_compact in out, "labeled compact Taiwan mobile leaked")
+    self.assertFalse(tw_mobile_json in out, "JSON phone compact Taiwan mobile leaked")
+    self.assertIn("[EMAIL] / [REDACTED]（帳密請妥善保管）", out)
+    self.assertIn("[EMAIL]/[REDACTED] 密碼勿外流", out)
+    self.assertIn("帳密：admin_user / [REDACTED]", out)
+    self.assertIn("Phone: [PHONE]", out)
+
+    # P6 tightened boundaries: counterexamples from advisor review MUST still be redacted
+    self.assertFalse("LeftHalfPw" in out, "left half of plain pipe password leaked")
+    self.assertFalse("RightHalfPw" in out, "right half of plain pipe password leaked")
+    self.assertFalse(table_cell_pw in out, "Markdown table cell password leaked")
+    self.assertIn("|帳號|初始密碼：[REDACTED]|狀態正常|", out)
+    self.assertIn("DB_PASS=[REDACTED]", out)
+    self.assertFalse(recovery_num_tok in out, "numeric RECOVERY_TOKENS leaked")
+    self.assertFalse("SpacedJwtSigTail99" in out, "eyAi JWT signature leaked")
+    self.assertFalse("NewlineJwtSigTail88" in out, "ew JWT signature leaked")
+    self.assertFalse('"012345"' in out, "leading-zero PIN-shaped token string was not redacted")
+
+    # P6 legitimate non-secrets MUST remain readable
+    self.assertIn('"prior_composition_pass": true', out)
+    self.assertIn('"validation_pass": false', out)
+    self.assertIn('"DB_PASS": "[REDACTED]"', out)
+    self.assertIn('"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"', out)
+    self.assertIn('"input_tokens": 158458398', out)
+    self.assertIn("must_pass=True", out)
+    self.assertIn("prior_composition_pass=false", out)
+    self.assertIn("max_output_tokens=32768", out)
+    self.assertIn("dotted=scripts.local_analysis.SessionRetroTests", out)
+    self.assertIn("prs=282 286 287", out)
+    self.assertIn('viewBox="0 0 282 286"', out)
+    self.assertIn('d="M 091 234 567 L 02-2345-6789 415-555-0199"', out)
+    self.assertIn("[EMAIL] / [EMAIL]（帳密通知對象）", out)
+    self.assertEqual(mod.credential_names("CLAUDE_CODE_MAX_OUTPUT_TOKEN=10000000"), set())
+    self.assertIn("RECOVERY_TOKEN", mod.credential_names("RECOVERY_TOKEN=87654321"))
+
 
 def analysis_with_media(media):
   return openai(

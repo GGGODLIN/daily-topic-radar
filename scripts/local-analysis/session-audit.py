@@ -132,30 +132,74 @@ TOKEN_RE = re.compile(
   r"|\bbW9kYWwgdG9rZW4gc2V0[A-Za-z0-9+/=]{16,}(?![A-Za-z0-9+/=_-]))"
 )
 JSON_SECRET_RE = re.compile(
-  r"(?i)([\"'][A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|management[_-]?key|token|secret"
+  r"(?i)(([\"'])([A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|management[_-]?key|token|secret"
   r"|private[_-]?key|privatekey|vapid[_-]?private|cookie|authorization"
-  r"|初始密碼|預設密碼|臨時密碼|登入密碼|密碼|口令|金鑰|密鑰|私鑰)[A-Za-z0-9_.-]*[\"']\s*:\s*)([\"'])([^\"']*)([\"'])"
+  r"|初始密碼|預設密碼|臨時密碼|登入密碼|密碼|口令|金鑰|密鑰|私鑰)[A-Za-z0-9_.-]*)\2\s*:\s*)([\"'])([^\"']*)([\"'])"
 )
 # Magpie providers.json 等設定把憑證欄位命名為裸 key；只遮無空白／冒號／斜線且英數混合的長值，保留一般識別字與 v2:... 快取鍵。
 BARE_KEY_SECRET_RE = re.compile(r"(?i)([\"']key[\"']\s*:\s*)([\"'])([^\"'\r\n]+)([\"'])")
 AUTHORIZATION_RE = re.compile(r"(?im)\bAuthorization\s*:\s*[^\r\n]+")
 COOKIE_RE = re.compile(r"(?im)\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]+")
 URI_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@/\s]+)@")
+# JWS/JWT header 為 Base64URL 編碼的 JSON 物件 `{...}`（如 `{"` -> `eyJ`、`{ "` -> `eyAi`、`{\n` -> `ew`），要求首段具此結構以避免誤遮 Python/Java 點分測試與類別名。
 JWT_RE = re.compile(
-  r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])"
+  r"(?<![A-Za-z0-9_-])(?:"
+  r"(?:ey|ew)[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+  r"|(?:ey|ew)[A-Za-z0-9_-]{8,}\.(?:ey|ew)[A-Za-z0-9_-]{18,}"
+  r")(?![A-Za-z0-9_-])"
 )
-PHONE_RE = re.compile(r"(?<!\w)(?:\+\d{8,15}|\(?\d{2,4}\)?[- .]\d{3,4}[- .]\d{3,4})(?!\w)")
+PHONE_RE = re.compile(
+  r"(?<!\w)(?:"
+  r"\+\d{8,15}"
+  r"|\+\d{1,3}(?:[- .]\d{1,4}){2,4}"
+  r"|\(\d{2,4}\)[ \t]*\d{3,4}[- .]\d{3,4}"
+  r"|0\d{1,3}-\d{3,4}-\d{3,4}"
+  r"|09\d{2}-\d{6}"
+  r"|[2-9]\d{2}-\d{3}-\d{4}"
+  r")(?!\w)"
+)
+LABELED_PHONE_RE = re.compile(
+  r"((?:(?i:\b(?:phone|mobile|tel|telephone|cell)(?:[_ -]?number)?\b)|聯絡電話|行動電話|手機號碼|電話號碼|手機|電話)"
+  r"(?:[\"']\s*:\s*[\"']|\s*[：:=]\s*|[ \t]+))"
+  r"(\+?\d(?:[\d -]{6,15}\d|\d{7,14}))(?!\w)"
+)
+SVG_NO_PHONE_RE = re.compile(
+  r"(?i)(?:data:image/svg\+xml[^\s\"'<>]*|\b(?:d|points|viewBox)\s*=\s*([\"'])[^\"']*\1)"
+)
 ASSIGNMENT_RE = re.compile(
-  r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]{0,127})\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+  r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]{0,127})(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
 CJK_SENSITIVE_KEY_RE = re.compile(
-  r"^(?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰)$"
+  r"^(?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰|驗證碼|認證碼|動態碼|一次性密碼)$"
 )
 # Slack／信件常把初始密碼寫成中文條列（如「• 初始密碼：...」），不含英文鍵名；排除「忘記／重設／修改／設定／輸入／確認密碼」等動作詞。
 CJK_SECRET_LABEL_RE = re.compile(
   r"(?<!忘記|重設|修改|變更|設定|輸入|驗證|確認)"
   r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
   r"(\s*[：:=]\s*)(?:`[^`\r\n]+`|\"[^\"\r\n]*\"|'[^'\r\n]*'|(?:(?!(?:\\[nrt\"'\\]))[^\s,，。；;、\r\n\"'`])+)"
+)
+CJK_SECRET_LABEL_TABLE_RE = re.compile(
+  r"(?<!忘記|重設|修改|變更|設定|輸入|驗證|確認)"
+  r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
+  r"(\s*[：:=]\s*)(?:`[^`\r\n|]+`|\"[^\"\r\n|]*\"|'[^'\r\n|]*'|(?:\\\|(?=\S)|(?!(?:\\[nrt\"'\\]|\|))[^\s,，。；;、\r\n\"'`])+)"
+)
+OTP_LABEL_RE = re.compile(
+  r"(?i)((?:(?<!忘記|重設|修改|變更|設定|輸入|確認)(?:簡訊|登入|動態|一次性|信箱|郵件)?(?:驗證碼|認證碼|動態碼|一次性密碼)"
+  r"|\b(?:verification\s+code|one-time\s+(?:pass)?code|security\s+code|auth(?:entication)?\s+code|otp(?:\s+code)?)\b)"
+  r"(?:是|為)?\s*[：:=][ \t]*(?:(?:\r?\n|\\r?\\n)[ \t>*•-]*)?)"
+  r"(?:`([^`\r\n]{4,16})`|\"([^\"\r\n]{4,16})\"|'([^'\r\n]{4,16})'|((?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{4,12}))(?![A-Za-z0-9_-])"
+)
+SLASH_CREDENTIAL_PREFIX_RE = re.compile(
+  r"(?i)((?:帳密|帳號密碼|帳號\s*[/／]\s*密碼|credentials?)\s*[：:=]\s*"
+  r"(?:\[EMAIL\]|[A-Za-z0-9_.+-]{2,64})[ \t]*[/／][ \t]*)"
+  r"(?:`([^`\r\n]+)`|\"([^\"\r\n]+)\"|'([^'\r\n]+)'|(?!\[[A-Z_]+\])([^\s,，。；;、（）()\r\n|\"'`]{4,}))"
+)
+EMAIL_SLASH_CREDENTIAL_RE = re.compile(
+  r"(?<!://)(\[EMAIL\][ \t]*[/／][ \t]*)"
+  r"(?:`([^`\r\n]+)`|\"([^\"\r\n]+)\"|'([^'\r\n]+)'|(?!\[[A-Z_]+\]|https?:)([^\s,，。；;、（）()\r\n|\"'`]{4,}))"
+)
+CREDENTIAL_LINE_HINT_RE = re.compile(
+  r"(?i)(?:帳密|密碼|口令|登入|帳號|password|passwd|credential)"
 )
 # 口語括號註記（如「密碼（`abc123...`）」）只遮引號／反引號或無空白純 ASCII 密碼，避免誤殺「密碼（含大小寫英文）」等規則描述。
 CJK_SECRET_PAREN_RE = re.compile(
@@ -406,6 +450,25 @@ def migrate_stable_inode(connection):
   connection.commit()
 
 
+NON_SECRET_BOOL_PASS_KEY_RE = re.compile(
+  r"^(?:(?:[A-Z0-9]+_)*"
+  r"(?:MUST|SHOULD|CAN|DID|ALL|ANY|IS|HAS|PRIOR|PREV|PREVIOUS|FIRST|SECOND|FINAL|SINGLE|MULTI|FAST|DRY"
+  r"|LINT|TEST|TESTS|CHECK|CHECKS|VERIFY|VALIDATION|COMPOSITION|AUDIT|REVIEW|GATE|SMOKE|BUILD|CI|SCHEMA|CONTRACT|SHADOW|RED|GREEN|REFACTOR)"
+  r"_PASS)$"
+)
+TOKEN_COUNT_KEY_RE = re.compile(
+  r"^(?:(?:[A-Z0-9]+_)*"
+  r"(?:MAX|MIN|LIMIT|BUDGET|CAP|RESERVE|TARGET|QUOTA|INPUT|OUTPUT|PROMPT|COMPLETION|REASONING|THINKING"
+  r"|CACHE|CACHED|READ|CREATION|TOTAL|USED|SPENT|REMAINING|ESTIMATED|AVG|MEAN|PEAK|NUM|COUNT)"
+  r"(?:_[A-Z0-9]+)*_TOKENS?"
+  r"|TOKENS?_(?:LIMIT|BUDGET|CAP|RESERVE|COUNT|USED|SPENT|REMAINING|TOTAL|MAX|MIN))$"
+)
+NON_NEG_INT_STR_RE = re.compile(r"^(?:0|[1-9]\d{0,11})$")
+BOOL_LITERAL_RE = re.compile(r"^(?:true|false)$", re.IGNORECASE)
+PHONE_OBJ_KEY_RE = re.compile(r"^(?:(?:[A-Z0-9]+_)*(?:PHONE|MOBILE|CELL|TELEPHONE)|TEL)(?:_NUMBER)?$")
+COMPACT_PHONE_VAL_RE = re.compile(r"^\+?\d(?:[\d -]{6,15}\d|\d{7,14})$")
+
+
 def sensitive_key(name):
   if CJK_SENSITIVE_KEY_RE.search(name.strip()):
     return True
@@ -415,6 +478,27 @@ def sensitive_key(name):
     (key == suffix and suffix not in {"PASS", "PWD"}) or key.endswith(f"_{suffix}")
     for suffix in SENSITIVE_SUFFIXES
   )
+
+
+def is_exempt_sensitive_value(name, value, raw_text=False):
+  key = re.sub(r"[^A-Za-z0-9]+", "_", name).upper().strip("_")
+  if NON_SECRET_BOOL_PASS_KEY_RE.match(key):
+    if isinstance(value, bool):
+      return True
+    if isinstance(value, str):
+      s = value.strip()
+      if raw_text and len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return False
+      return bool(BOOL_LITERAL_RE.match(s))
+  if TOKEN_COUNT_KEY_RE.match(key):
+    if isinstance(value, int) and not isinstance(value, bool):
+      return 0 <= value < 10**12
+    if isinstance(value, str):
+      s = value.strip()
+      if raw_text and len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        s = s[1:-1].strip()
+      return bool(NON_NEG_INT_STR_RE.match(s))
+  return False
 
 
 def bare_key_secret(value):
@@ -442,7 +526,7 @@ def credential_names(text):
   names = set()
   for match in ENV_SECRET_RE.finditer(text):
     value = match.group(2)
-    if len(value) >= 8 and not PLACEHOLDER_RE.match(value):
+    if len(value) >= 8 and not PLACEHOLDER_RE.match(value) and not is_exempt_sensitive_value(match.group(1), value, raw_text=True):
       names.add(match.group(1))
   if PRIVATE_KEY_RE.search(text):
     names.add("PRIVATE_KEY")
@@ -465,12 +549,65 @@ class _NoLineCount(str):
     return -1
 
 
+def _redact_cjk_secret_labels(text):
+  out = []
+  for raw_line in text.splitlines(keepends=True):
+    core = raw_line.rstrip("\r\n")
+    ending = raw_line[len(core):]
+    stripped = core.strip()
+    # 只有整行確認為 Markdown 表格列時才在未跳脫 `|` 欄界截止，避免一般文字 `密碼：left|right` 漏遮後半段。
+    if (stripped.startswith("|") or stripped.endswith("|")) and stripped.count("|") >= 2:
+      out.append(CJK_SECRET_LABEL_TABLE_RE.sub(r"\1\2[REDACTED]", core) + ending)
+    else:
+      out.append(CJK_SECRET_LABEL_RE.sub(r"\1\2[REDACTED]", core) + ending)
+  return "".join(out)
+
+
+def _redact_otp_labels(text):
+  def _sub(match):
+    tok = match.group(2) or match.group(3) or match.group(4) or match.group(5) or ""
+    if PLACEHOLDER_RE.match(tok.strip()) or not any(ch.isdigit() for ch in tok):
+      return match.group(0)
+    return f"{match.group(1)}[REDACTED]"
+  return OTP_LABEL_RE.sub(_sub, text)
+
+
+def _redact_slash_credentials(text):
+  out = []
+  for raw_line in text.splitlines(keepends=True):
+    core = raw_line.rstrip("\r\n")
+    ending = raw_line[len(core):]
+    def _sub_pair(match):
+      tok = match.group(2) or match.group(3) or match.group(4) or match.group(5) or ""
+      if PLACEHOLDER_RE.match(tok.strip()):
+        return match.group(0)
+      return f"{match.group(1)}[REDACTED]"
+    core = SLASH_CREDENTIAL_PREFIX_RE.sub(_sub_pair, core)
+    if "[EMAIL]" in core and ("/" in core or "／" in core) and CREDENTIAL_LINE_HINT_RE.search(core):
+      core = EMAIL_SLASH_CREDENTIAL_RE.sub(_sub_pair, core)
+    out.append(core + ending)
+  return "".join(out)
+
+
+def _redact_unlabeled_phones(text):
+  # 略過 SVG 路徑／viewBox／data:image/svg+xml 區段，避免把向量座標誤遮成 [PHONE]
+  pieces = []
+  cursor = 0
+  for match in SVG_NO_PHONE_RE.finditer(text):
+    pieces.append(PHONE_RE.sub("[PHONE]", text[cursor:match.start()]))
+    pieces.append(match.group(0))
+    cursor = match.end()
+  pieces.append(PHONE_RE.sub("[PHONE]", text[cursor:]))
+  return "".join(pieces)
+
+
 def redact_text(value):
   # 先遮整段再切片，避免 private key / token 被切到兩個 chunk 後對不上。
   # 不截斷、不壓空白；既有 sanitize_excerpt 會留 600 字，不能拿來做全量分析。
   def replace_assignment(match):
-    if sensitive_key(match.group(1)):
-      return f"{match.group(1)}=[REDACTED]"
+    key_name, _sep, raw_val = match.group(1), match.group(2), match.group(3)
+    if sensitive_key(key_name) and not is_exempt_sensitive_value(key_name, raw_val, raw_text=True):
+      return f"{key_name}=[REDACTED]"
     return match.group(0)
 
   decoder = json.JSONDecoder()
@@ -509,7 +646,9 @@ def redact_text(value):
     text = JSON_STRING_LITERAL_RE.sub(replace_escaped_ax_json_string, text)
   text = PRIVATE_KEY_RE.sub("[PRIVATE_KEY_REDACTED]", text)
   text = JSON_SECRET_RE.sub(
-    lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]{match.group(4)}",
+    lambda match: match.group(0)
+    if is_exempt_sensitive_value(match.group(3), match.group(5), raw_text=False)
+    else f"{match.group(1)}{match.group(4)}[REDACTED]{match.group(6)}",
     text,
   )
   text = BARE_KEY_SECRET_RE.sub(
@@ -533,13 +672,16 @@ def redact_text(value):
   )
   text = ASSIGNMENT_RE.sub(replace_assignment, text)
   text = MFA_CODE_RE.sub(r"\1[REDACTED]\2", text)
-  text = CJK_SECRET_LABEL_RE.sub(r"\1\2[REDACTED]", text)
+  text = _redact_cjk_secret_labels(text)
   text = CJK_SECRET_PAREN_RE.sub(r"\1\2[REDACTED]\3", text)
+  text = _redact_otp_labels(text)
   text = redact_ax_tree_secrets(text)
   text = TOKEN_RE.sub("[REDACTED]", text)
   text = JWT_RE.sub("[JWT_REDACTED]", text)
   text = EMAIL_RE.sub("[EMAIL]", text)
-  text = PHONE_RE.sub("[PHONE]", text)
+  text = _redact_slash_credentials(text)
+  text = LABELED_PHONE_RE.sub(r"\1[PHONE]", text)
+  text = _redact_unlabeled_phones(text)
   return text
 
 
@@ -585,11 +727,15 @@ def redact_ax_tree_secrets(text):
 
 
 def redact_obj(value, key_name=None):
-  if key_name and (
-    sensitive_key(key_name)
-    or (key_name.strip().lower() == "key" and bare_key_secret(value))
-  ):
-    return "[REDACTED]"
+  if key_name:
+    norm_key = re.sub(r"[^A-Za-z0-9]+", "_", key_name).upper().strip("_")
+    if PHONE_OBJ_KEY_RE.match(norm_key) and isinstance(value, str) and COMPACT_PHONE_VAL_RE.match(value.strip()):
+      return "[PHONE]"
+    if (
+      (sensitive_key(key_name) and not is_exempt_sensitive_value(key_name, value, raw_text=False))
+      or (key_name.strip().lower() == "key" and bare_key_secret(value))
+    ):
+      return "[REDACTED]"
   if isinstance(value, dict):
     return {key: redact_obj(item, key) for key, item in value.items()}
   if isinstance(value, list):
