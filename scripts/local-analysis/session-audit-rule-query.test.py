@@ -238,6 +238,79 @@ class RuleQueryTest(QueryBase):
     # 對照：能唯一對上的原文照常解析。
     self.assertTrue(self.query("CLAUDE.md", "ALPHA_RULE")["found"])
 
+  def test_colon_parent_splits_subbullets_and_resolves_legacy_merged_rule_id(self):
+    fx = self.fx
+    nested_md = (
+      "# 全域設定\n\n## 工作紀律\n\n"
+      "- 宣稱與證據層級對位（hard rule，不要只說「做好了」）：\n"
+      "  - SUB_ONE 說「完成」同句附枚舉指令\n"
+      "  - SUB_TWO 給出具體數字附計算方式或出處\n"
+      "  - SUB_THREE 敘述機制附實測證據\n"
+      "- **分類標題僅作群組**：\n"
+      "  - CAT_PERSONAL 個人倉庫直推\n"
+      "  - CAT_WORK 公司倉庫先問\n"
+      "- 上游貢獻公開前先走三步（非冒號結尾程序不拆子項）\n"
+      "  1. STEP_BUNDLE 先打包\n"
+      "  2. STEP_REVIEW 再送審\n"
+    )
+    c_nested = fx.commit_rules({"CLAUDE.md": nested_md}, "2026-10-08T00:00:00+00:00")
+    loaded = fx.audit.load_rules(str(fx.rules_repo), c_nested)
+    texts = [r["text"] for r in loaded["labels"].values()]
+    self.assertTrue(any(t.startswith("- 宣稱與證據層級對位（hard rule") for t in texts))
+    sub_rules = [r for r in loaded["labels"].values() if "[宣稱與證據層級對位]" in r["text"]]
+    self.assertEqual(len(sub_rules), 3)
+    self.assertEqual(len({r["id"] for r in sub_rules}), 3)
+    # 純群組標題不另外生出空殼母規則，只生出帶前綴的兩個子項
+    cat_rules = [r for r in loaded["labels"].values() if "[分類標題僅作群組]" in r["text"]]
+    self.assertEqual(len(cat_rules), 2)
+    self.assertFalse(any(t == "- **分類標題僅作群組**：" for t in texts))
+    # 非冒號結尾的多步程序保持合併為單一規則
+    proc_rules = [r for r in loaded["labels"].values() if "STEP_BUNDLE" in r["text"]]
+    self.assertEqual(len(proc_rules), 1)
+    self.assertIn("STEP_REVIEW", proc_rules[0]["text"])
+
+    # 各子項違反獨立計數，且帶縮排原行引文也能對回該子項
+    fx.add_session("s-sub1", stamps(11, 1), c_nested, [("SUB_ONE", 1, "HIT_SUB_ONE")], mtime=epoch("2026-10-11T03:00:00Z"))
+    fx.add_session("s-sub2", stamps(12, 1), c_nested, [("SUB_TWO", 1, "HIT_SUB_TWO")], mtime=epoch("2026-10-12T03:00:00Z"))
+    q1 = self.query("CLAUDE.md", "  - SUB_ONE 說「完成」同句附枚舉指令")
+    q2 = self.query("CLAUDE.md", "SUB_TWO 給出具體數字附計算方式或出處")
+    self.assertEqual([v["quote"] for v in q1["violations"]], ["HIT_SUB_ONE"])
+    self.assertEqual([v["quote"] for v in q2["violations"]], ["HIT_SUB_TWO"])
+
+    # 歷史資料庫中殘留舊版合併 rule_id 時，rule_text 與 apply_rule_violations 仍能查回原文而不退回 unknown
+    self.assertEqual(len(loaded["legacy_labels"]), 2)
+    legacy_claim = next(r for r in loaded["legacy_labels"].values() if "SUB_ONE" in r["text"])
+    self.assertNotIn(legacy_claim["id"], {r["id"] for r in loaded["labels"].values()})
+    resolved_old = fx.audit.rule_text(fx.rules_repo, {"commit_sha": c_nested, "rule_id": legacy_claim["id"]})
+    self.assertIn("SUB_THREE", resolved_old)
+    resolved_new = fx.audit.rule_text(fx.rules_repo, {"commit_sha": c_nested, "rule_id": sub_rules[1]["id"]})
+    self.assertIn("[宣稱與證據層級對位] SUB_TWO", resolved_new)
+    _merged_doc, fresh_lines, entries_n, _sub_n = fx.audit.apply_rule_violations(
+      "## 待折\n",
+      [{
+        "rule_path": "CLAUDE.md",
+        "rule_heading": "全域設定 > 工作紀律",
+        "rule_id": legacy_claim["id"],
+        "source_ref": "session:legacy#1:0000000000000001",
+        "quote": "LEGACY_VIOL_QUOTE",
+        "conversation_time": "2026-10-11T01:00:00Z",
+        "commit_sha": c_nested,
+      }],
+      fx.rules_repo,
+      "2026-11-14",
+    )
+    self.assertEqual(entries_n, 1)
+    self.assertNotIn('why="unknown"', fresh_lines[0])
+    self.assertIn("宣稱與證據層級對位", fresh_lines[0])
+
+  def test_rules_instruction_declares_language_path_and_batch_menu_exemptions(self):
+    text = self.fx.audit.RULES_INSTRUCTION
+    self.assertIn("中途伴隨工具呼叫的英文過場短句與 subagent 內部過場豁免繁體中文要求", text)
+    self.assertNotIn("此判讀不豁免其他仍適用的語言", text)
+    for token in ("遠端／容器內路徑", "已刪除路徑", "私鑰與內部狀態檔", "self-closeout", "/daily-local", "/retro-workflow"):
+      self.assertIn(token, text)
+    self.assertIn("此判讀不豁免工具操作或程式碼規則", text)
+
 
 class StoreBase(QueryBase):
   """累積庫只透過 retro-store CLI 建；規則錨點用 backfill 補在改動上，路徑指向臨時規則 repo 的真檔。"""

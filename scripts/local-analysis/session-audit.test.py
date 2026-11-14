@@ -2548,6 +2548,43 @@ class SessionAuditCliTest(unittest.TestCase):
       self.item_for(text, marker)
     self.assertNotIn("FENCED_CODE_TEXT", text)
 
+  def test_zero_use_inherits_legacy_merged_last_seen_for_split_subbullets(self):
+    nested = (
+      "# 全域設定\n\n## 工作紀律\n\n"
+      "- 宣稱對位總則（hard rule，附出處）：\n"
+      "  - ZU_SUB_A 第一子條\n"
+      "  - ZU_SUB_B 第二子條\n"
+    )
+    commit_id = self.commit_zero_rules({"CLAUDE.md": nested, "rules/common/alpha.md": None})
+    for week in ("W38", "W39", "W40", "W41"):
+      self.zero_week_session(week)
+    server = serve(lambda body: (analysis([], rule_tags=[]), 200))
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    # 拆子項前尚未見過任何紀錄 → 4 週覆蓋後兩個子項都進零使用清單
+    before_seed = self.zero_use()
+    self.item_for(before_seed, "ZU_SUB_A")
+    self.item_for(before_seed, "ZU_SUB_B")
+    # 模擬歷史資料庫在 W41 曾以舊版合併 rule_id 記錄過 last_seen → 子項繼承後不誤判為 4 週零使用
+    spec = importlib.util.spec_from_file_location("sa_legacy_zu", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    loaded = mod.load_rules(str(self.rules_repo), commit_id)
+    legacy_id = next(iter(loaded["legacy_labels"].keys()))
+    conn = mod.connect(self.state, write=True)
+    try:
+      conn.execute(
+        "INSERT OR REPLACE INTO rule_last_seen (rule_id, verdict, conversation_time, commit_sha, rule_path, rule_heading) VALUES (?, 'applied', ?, ?, 'CLAUDE.md', '全域設定 > 工作紀律')",
+        (legacy_id, "2026-10-06T10:00:00Z", commit_id),
+      )
+      conn.commit()
+    finally:
+      conn.close()
+    after_seed = self.zero_use()
+    self.assertNotIn("ZU_SUB_A", after_seed)
+    self.assertNotIn("ZU_SUB_B", after_seed)
+
   def test_response_without_rule_tags_list_is_not_coverage(self):
     for name, marker in (("miss", "RT_MISSING"), ("bad", "RT_NOTLIST"), ("empty", "RT_EMPTY")):
       write_jsonl(

@@ -58,6 +58,7 @@ PROMPT=$(cat <<'EOF'
 - 整份報告用 code fence 包起來
 - Preamble（「以下是 ...」「整理完...」「以下提供...」）
 - 略過任何 1 個段標題
+- 給 main 的內部交接備註、「本輪未做」宣稱對帳、或「本 channel 僅回傳…／沒有待提交的 checkpoint 或狀態值」等內部說明混入報告正文（本輸出將原樣落檔為使用者閱讀的正式報告；由 workflow 呼叫時任何簡短交接或摘要一律放 `summary` 欄位，不得寫入 `report_markdown`）
 
 **Orphan / 孤兒警訊 suppress 規則**（agent 若主動加孤兒段時遵守；2026-07-22 加）：掃到「不在任何 `_index_*.md` 或 `MEMORY.md` 中被引用」的檔前，先查兩件事——(1) frontmatter 有無 `archived: true` / `wiki_promote: declined-*` / `stale: true`；(2) 檔首 body 前 5 行有無 `⚠️ STALE` / `⚠️ ARCHIVED` / `⚠️ DEPRECATED` marker。命中任一 → 從孤兒警訊移除、改列 `## 已 archived / stale 記憶`（若無此段可簡化為孤兒段內以「[⚠️ archived] <檔名>」單行掛註）。理由：`reference_search_tool_comparison_2026_05_10.md` 2026-07-20 檔頭已補 ⚠️ STALE 註記、內容有殘值不刪；audit 若忽視 marker 每天續列孤兒 = 誤報疲勞。
 

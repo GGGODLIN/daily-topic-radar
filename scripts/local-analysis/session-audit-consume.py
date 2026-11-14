@@ -19,10 +19,14 @@ import tempfile
 
 
 CURSOR_FILENAME = "consume-cursor.json"
+DEFAULT_MAX_BATCH_BYTES = 60_000
 DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "reports" / "local-analysis" / "pending-actions.jsonl"
 RECONCILE_SCRIPT = Path(__file__).with_name("ledger-reconcile.py")
 EMBEDDED_FINDINGS_RE = re.compile(r"<!--\s*session-audit-ledger-findings:\s*(\[.*?\])\s*-->", re.DOTALL)
 REPORT_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})-session-audit-consume\.md$")
+PRETOOLUSE_BLOCK_RE = re.compile(
+  r"(?:^|\n)\s*(?:(?:Hook\s+)?PreToolUse:[^\n]*hook error:|<tool_use_error>Blocked:)",
+)
 
 
 def load_cursor(state_dir: Path) -> dict:
@@ -85,6 +89,170 @@ def one_line(text: str, limit: int = 300) -> str:
   return clean[:limit]
 
 
+def table_columns(cur: sqlite3.Cursor, table_name: str) -> set:
+  rows = cur.execute(f"PRAGMA table_info({table_name})").fetchall()
+  return {row[1] for row in rows}
+
+
+def render_finding_entry(item: dict) -> str:
+  return (
+    f"## F{item['id']} | target={item['target']} | cls={item['cls']} | src={item['source']}\n"
+    f"- observation: {item['observation']}\n"
+    f"- check: {item['check_direction']}\n"
+    f"- quote: {item['quote']}\n"
+  )
+
+
+def render_batch_markdown(batch_id: str, chunk: list) -> str:
+  lines = [
+    f"# Session-Audit Findings Batch {batch_id}",
+    f"- finding_count: {len(chunk)}",
+    f"- id_range: {chunk[0]['id']}..{chunk[-1]['id']}",
+    "",
+  ]
+  for item in chunk:
+    lines.append(render_finding_entry(item))
+  return "\n".join(lines)
+
+
+def slice_finding_batches(
+  dedup_findings: list,
+  batch_size: int,
+  max_batch_bytes: int = DEFAULT_MAX_BATCH_BYTES,
+) -> list:
+  item_cap = max(1, int(batch_size or 280))
+  byte_cap = max(1, int(max_batch_bytes or DEFAULT_MAX_BATCH_BYTES))
+  sliced = []
+  current_chunk = []
+  entries_utf8_sum = 0
+
+  def flush_current():
+    nonlocal current_chunk, entries_utf8_sum
+    if not current_chunk:
+      return
+    b_id = f"B{len(sliced) + 1:02d}"
+    content = render_batch_markdown(b_id, current_chunk)
+    utf8_len = len(content.encode("utf-8"))
+    sliced.append((b_id, current_chunk, content, utf8_len))
+    current_chunk = []
+    entries_utf8_sum = 0
+
+  for item in dedup_findings:
+    entry_utf8_len = len(render_finding_entry(item).encode("utf-8"))
+    if not current_chunk:
+      current_chunk = [item]
+      entries_utf8_sum = entry_utf8_len
+      continue
+    next_b_id = f"B{len(sliced) + 1:02d}"
+    next_count = len(current_chunk) + 1
+    header_prefix = (
+      f"# Session-Audit Findings Batch {next_b_id}\n"
+      f"- finding_count: {next_count}\n"
+      f"- id_range: {current_chunk[0]['id']}..{item['id']}\n"
+    )
+    candidate_bytes = len(header_prefix.encode("utf-8")) + next_count + entries_utf8_sum + entry_utf8_len
+    if len(current_chunk) >= item_cap or candidate_bytes > byte_cap:
+      flush_current()
+      current_chunk = [item]
+      entries_utf8_sum = entry_utf8_len
+    else:
+      current_chunk.append(item)
+      entries_utf8_sum += entry_utf8_len
+
+  flush_current()
+  return sliced
+
+
+def extract_tool_result_error_text(raw_line: str, tool_use_id: str) -> str:
+  try:
+    obj = json.loads(raw_line)
+  except (json.JSONDecodeError, ValueError):
+    return ""
+  if not isinstance(obj, dict):
+    return ""
+  msg = obj.get("message")
+  content = msg.get("content") if isinstance(msg, dict) else None
+  if not isinstance(content, list):
+    return ""
+  parts = []
+  for blk in content:
+    if not isinstance(blk, dict):
+      continue
+    if blk.get("type") != "tool_result" or blk.get("tool_use_id") != tool_use_id:
+      continue
+    if blk.get("is_error") is not True:
+      continue
+    val = blk.get("content")
+    if isinstance(val, str):
+      parts.append(val)
+    elif isinstance(val, list):
+      parts.extend(x.get("text", "") for x in val if isinstance(x, dict) and isinstance(x.get("text"), str))
+  return "\n".join(parts)
+
+
+def detect_pretooluse_gate_blocks(cur: sqlite3.Cursor, rt_rows: list) -> set:
+  required_seg_cols = {"inode", "generation", "line", "byte_offset", "role", "tool_use_id"}
+  has_segments = required_seg_cols.issubset(table_columns(cur, "segments"))
+  line_block_cache = {}
+  raw_line_cache = {}
+  blocked_ids = set()
+
+  def read_line_at(spath: str, byte_offset: int) -> str:
+    cache_key = (spath, byte_offset)
+    if cache_key in raw_line_cache:
+      return raw_line_cache[cache_key]
+    line_str = ""
+    try:
+      p = Path(spath)
+      if p.is_file():
+        with p.open("rb") as fh:
+          fh.seek(byte_offset)
+          line_str = fh.readline().decode("utf-8", errors="replace")
+    except OSError:
+      line_str = ""
+    raw_line_cache[cache_key] = line_str
+    return line_str
+
+  for rtid, _rpath, _rhead, _rid, quote, _ctime, inode, _scls, gen, sline, spath in rt_rows:
+    if PRETOOLUSE_BLOCK_RE.search(quote or ""):
+      blocked_ids.add(rtid)
+      continue
+    if not has_segments or not sline or not spath:
+      continue
+    loc_key = (inode, gen, sline)
+    if loc_key not in line_block_cache:
+      is_blocked = False
+      tu_rows = cur.execute(
+        """
+        SELECT DISTINCT tool_use_id
+        FROM segments
+        WHERE inode = ? AND generation = ? AND line = ? AND tool_use_id != '-'
+        """,
+        (inode, gen, sline),
+      ).fetchall()
+      for (tuid,) in tu_rows:
+        tr_rows = cur.execute(
+          """
+          SELECT DISTINCT byte_offset
+          FROM segments
+          WHERE inode = ? AND generation = ? AND tool_use_id = ? AND role = 'user'
+          """,
+          (inode, gen, tuid),
+        ).fetchall()
+        for (boff,) in tr_rows:
+          err_txt = extract_tool_result_error_text(read_line_at(spath, int(boff)), tuid)
+          if err_txt and PRETOOLUSE_BLOCK_RE.search(err_txt):
+            is_blocked = True
+            break
+        if is_blocked:
+          break
+      line_block_cache[loc_key] = is_blocked
+    if line_block_cache[loc_key]:
+      blocked_ids.add(rtid)
+
+  return blocked_ids
+
+
 def cmd_prepare(args: argparse.Namespace) -> int:
   state_dir = Path(args.state).expanduser().resolve()
   out_dir = Path(args.out_dir).expanduser().resolve()
@@ -140,10 +308,13 @@ def cmd_prepare(args: argparse.Namespace) -> int:
       "quote": one_line(quote, 180),
     })
 
+  rt_cols = table_columns(cur, "rule_tags")
+  rt_line_expr = "rt.source_line" if "source_line" in rt_cols else "0"
   rt_rows = cur.execute(
-    """
+    f"""
     SELECT rt.id, rt.rule_path, rt.rule_heading, rt.rule_id, rt.quote,
-           rt.conversation_time, s.inode, s.classification
+           rt.conversation_time, s.inode, s.classification,
+           rt.generation, {rt_line_expr} AS source_line, s.path
     FROM rule_tags rt
     JOIN sources s ON s.inode = rt.inode AND s.generation = rt.generation
     WHERE s.included = 1
@@ -155,14 +326,22 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     """,
     (min_rule_tag_id, since_iso, since_iso),
   ).fetchall()
+  blocked_rt_ids = detect_pretooluse_gate_blocks(cur, rt_rows)
   conn.close()
 
   rule_why = load_rule_why_map(state_dir)
   max_rule_tag_id = min_rule_tag_id
   rule_groups = {}
-  for rtid, rpath, rhead, rid, quote, ctime, inode, scls in rt_rows:
+  executed_total = 0
+  blocked_total = 0
+  for rtid, rpath, rhead, rid, quote, ctime, inode, scls, _gen, _sline, _spath in rt_rows:
     if rtid > max_rule_tag_id:
       max_rule_tag_id = rtid
+    is_blocked = rtid in blocked_rt_ids
+    if is_blocked:
+      blocked_total += 1
+    else:
+      executed_total += 1
     why_text = rule_why.get(rid, f"{rpath} > {rhead} (@{rid[:8]})")
     key = why_text if rid in rule_why else rid
     grp = rule_groups.setdefault(key, {
@@ -171,9 +350,14 @@ def cmd_prepare(args: argparse.Namespace) -> int:
       "rule_ids": set(),
       "rule_text": why_text,
       "hits": 0,
+      "executed_hits": 0,
+      "gate_blocked_hits": 0,
       "inodes": set(),
       "main_inodes": set(),
-      "quotes": [],
+      "executed_inodes": set(),
+      "executed_main_inodes": set(),
+      "executed_quotes": [],
+      "blocked_quotes": [],
     })
     grp["rule_ids"].add(rid)
     grp["hits"] += 1
@@ -181,31 +365,24 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     if scls == "human-main":
       grp["main_inodes"].add(inode)
     q_clean = one_line(quote, 140)
-    if q_clean and len(grp["quotes"]) < 3 and q_clean not in grp["quotes"]:
-      grp["quotes"].append(q_clean)
+    if is_blocked:
+      grp["gate_blocked_hits"] += 1
+      if q_clean and len(grp["blocked_quotes"]) < 2 and q_clean not in grp["blocked_quotes"]:
+        grp["blocked_quotes"].append(q_clean)
+    else:
+      grp["executed_hits"] += 1
+      grp["executed_inodes"].add(inode)
+      if scls == "human-main":
+        grp["executed_main_inodes"].add(inode)
+      if q_clean and len(grp["executed_quotes"]) < 3 and q_clean not in grp["executed_quotes"]:
+        grp["executed_quotes"].append(q_clean)
 
   out_dir.mkdir(parents=True, exist_ok=True)
   batch_size = int(args.batch_size or 280)
+  max_batch_bytes = int(getattr(args, "max_batch_bytes", None) or DEFAULT_MAX_BATCH_BYTES)
   batches = []
-  for idx in range(0, len(dedup_findings), batch_size):
-    chunk = dedup_findings[idx:idx + batch_size]
-    b_num = (idx // batch_size) + 1
-    b_id = f"B{b_num:02d}"
+  for b_id, chunk, content, utf8_len in slice_finding_batches(dedup_findings, batch_size, max_batch_bytes):
     b_path = out_dir / f"findings-{b_id}.md"
-    lines = [
-      f"# Session-Audit Findings Batch {b_id}",
-      f"- finding_count: {len(chunk)}",
-      f"- id_range: {chunk[0]['id']}..{chunk[-1]['id']}",
-      "",
-    ]
-    for item in chunk:
-      lines.append(
-        f"## F{item['id']} | target={item['target']} | cls={item['cls']} | src={item['source']}\n"
-        f"- observation: {item['observation']}\n"
-        f"- check: {item['check_direction']}\n"
-        f"- quote: {item['quote']}\n"
-      )
-    content = "\n".join(lines)
     b_path.write_text(content, encoding="utf-8")
     batches.append({
       "batch_id": b_id,
@@ -214,26 +391,45 @@ def cmd_prepare(args: argparse.Namespace) -> int:
       "first_finding_id": chunk[0]["id"],
       "last_finding_id": chunk[-1]["id"],
       "chars": len(content),
+      "bytes": utf8_len,
     })
 
   sorted_rules = sorted(
     rule_groups.values(),
-    key=lambda g: (-len(g["main_inodes"]), -len(g["inodes"]), -g["hits"]),
+    key=lambda g: (
+      -len(g["executed_main_inodes"]),
+      -len(g["executed_inodes"]),
+      -g["executed_hits"],
+      -len(g["main_inodes"]),
+      -len(g["inodes"]),
+      -g["hits"],
+    ),
   )
   rules_md_lines = [
     "# Session-Audit Rule Violations Summary",
     f"- total_violation_tags: {len(rt_rows)}",
+    f"- executed_violation_tags: {executed_total}",
+    f"- gate_blocked_unexecuted_tags: {blocked_total}",
     f"- distinct_merged_rules: {len(sorted_rules)}",
     f"- rule_tag_id_range: {min_rule_tag_id + 1}..{max_rule_tag_id}",
+    "- execution_note: gate_blocked 代表該工具呼叫已被 PreToolUse gate 當場攔下未實際執行（既有防線已生效），判讀時不得將已攔截嘗試當成無防護繞過缺口；優先審視 executed > 0 的規則。",
     "",
   ]
   for r_idx, g in enumerate(sorted_rules, 1):
     rids = ",".join(sorted(r[:8] for r in g["rule_ids"]))
+    if g["gate_blocked_hits"] > 0 and g["executed_hits"] == 0:
+      exec_status = f"all_blocked_by_pretooluse_gate（全數 {g['gate_blocked_hits']} 筆皆已被既有 PreToolUse gate 當場攔下未執行，非無防護繞過）"
+    elif g["gate_blocked_hits"] > 0:
+      exec_status = f"mixed（實際執行違規 {g['executed_hits']} 筆；另有 {g['gate_blocked_hits']} 筆已被既有 PreToolUse gate 當場攔下未執行）"
+    else:
+      exec_status = f"executed_only（{g['executed_hits']} 筆皆為實際執行）"
+    quote_lines = [f"- sample_quote [executed]: {q}" for q in g["executed_quotes"]]
+    quote_lines.extend(f"- sample_quote [blocked_by_pretooluse_gate]: {q}" for q in g["blocked_quotes"])
     rules_md_lines.append(
-      f"## R{r_idx:02d} | main_sessions={len(g['main_inodes'])} | all_files={len(g['inodes'])} | hits={g['hits']} | {g['rule_path']} > {g['rule_heading']} ({rids})\n"
+      f"## R{r_idx:02d} | main_sessions={len(g['main_inodes'])} (executed={len(g['executed_main_inodes'])}) | all_files={len(g['inodes'])} | hits={g['hits']} (executed={g['executed_hits']}, gate_blocked={g['gate_blocked_hits']}) | {g['rule_path']} > {g['rule_heading']} ({rids})\n"
       f"- rule_text: {g['rule_text']}\n"
-      + "\n".join(f"- sample_quote: {q}" for q in g["quotes"])
-      + "\n"
+      f"- execution_status: {exec_status}\n"
+      + ("\n".join(quote_lines) + "\n" if quote_lines else "")
     )
   rules_path = out_dir / "rule-violations.md"
   rules_content = "\n".join(rules_md_lines)
@@ -256,6 +452,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     "batch_count": len(batches),
     "batches": batches,
     "rule_violation_rows": len(rt_rows),
+    "executed_rule_violation_rows": executed_total,
+    "gate_blocked_rule_violation_rows": blocked_total,
     "distinct_merged_rules": len(sorted_rules),
     "rules_summary_path": str(rules_path),
     "rules_summary_chars": len(rules_content),
@@ -418,6 +616,7 @@ def main() -> int:
   p_prep.add_argument("--state", required=True)
   p_prep.add_argument("--out-dir", required=True)
   p_prep.add_argument("--batch-size", type=int, default=280)
+  p_prep.add_argument("--max-batch-bytes", type=int, default=DEFAULT_MAX_BATCH_BYTES)
   p_prep.add_argument("--since-mtime", type=float, default=0.0)
   p_prep.add_argument("--since-iso", default="")
   p_prep.add_argument("--after-finding-id", type=int, default=None)

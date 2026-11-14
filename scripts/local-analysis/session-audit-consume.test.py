@@ -374,6 +374,237 @@ class SessionAuditConsumeTest(unittest.TestCase):
     self.assertEqual(cursor_now["last_finding_id"], 11)
     self.assertEqual(cursor_now["last_rule_tag_id"], 5)
 
+  def test_prepare_enforces_utf8_byte_cap_and_keeps_single_oversized_row_intact(self):
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM findings")
+    # 每筆約 950 UTF-8 bytes，100 筆總量約 95KB > 60,000 bytes，但筆數遠小於 --batch-size 420
+    cjk_obs = "繁體中文觀察紀錄" * 30
+    cjk_chk = "檢查目標腳本與設定" * 18
+    cjk_quo = "引述對話原始片段內容" * 16
+    for idx in range(1, 101):
+      cur.execute(
+        "INSERT INTO findings VALUES (?, 'ino1', 1, 'unresolved', 'hook:utf8', ?, ?, ?, ?, ?)",
+        (idx, cjk_obs, cjk_chk, cjk_quo, idx * 2, f"issue-utf8-{idx}"),
+      )
+    conn.commit()
+    conn.close()
+
+    out_cap = self.root / "out_cap"
+    proc = subprocess.run(
+      [
+        sys.executable,
+        str(SCRIPT),
+        "prepare",
+        "--state",
+        str(self.state_dir),
+        "--out-dir",
+        str(out_cap),
+        "--batch-size",
+        "420",
+      ],
+      text=True,
+      capture_output=True,
+      check=True,
+    )
+    manifest = json.loads(proc.stdout)
+    self.assertGreaterEqual(manifest["batch_count"], 2)
+    self.assertEqual(sum(b["finding_count"] for b in manifest["batches"]), 100)
+    for b in manifest["batches"]:
+      raw_bytes = Path(b["path"]).read_bytes()
+      self.assertEqual(b["bytes"], len(raw_bytes))
+      self.assertLessEqual(len(raw_bytes), 60_000)
+
+    # 單筆超過上限時維持 1 筆獨立成批，不丟失也不死迴圈
+    out_tiny = self.root / "out_tiny"
+    proc_tiny = subprocess.run(
+      [
+        sys.executable,
+        str(SCRIPT),
+        "prepare",
+        "--state",
+        str(self.state_dir),
+        "--out-dir",
+        str(out_tiny),
+        "--batch-size",
+        "420",
+        "--max-batch-bytes",
+        "300",
+      ],
+      text=True,
+      capture_output=True,
+      check=True,
+    )
+    m_tiny = json.loads(proc_tiny.stdout)
+    self.assertEqual(m_tiny["batch_count"], 100)
+    self.assertTrue(all(b["finding_count"] == 1 for b in m_tiny["batches"]))
+
+  def test_prepare_separates_pretooluse_gate_blocked_rule_tags_from_executed_violations(self):
+    transcript_path = self.root / "s-gate.jsonl"
+    lines = [
+      json.dumps({
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [{"type": "tool_use", "id": "call_blocked_1", "name": "Bash", "input": {"command": "find ~/.claude -name foo"}}],
+        },
+      }, ensure_ascii=False) + "\n",
+      json.dumps({
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [{
+            "type": "tool_result",
+            "tool_use_id": "call_blocked_1",
+            "is_error": True,
+            "content": "PreToolUse:Bash hook error: 偵測到對 `~/.claude` 根目錄執行無排除條件的遞迴搜尋。",
+          }],
+        },
+      }, ensure_ascii=False) + "\n",
+      json.dumps({
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": [{"type": "tool_use", "id": "call_exec_2", "name": "Bash", "input": {"command": "grep -r foo src/"}}],
+        },
+      }, ensure_ascii=False) + "\n",
+      json.dumps({
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [{
+            "type": "tool_result",
+            "tool_use_id": "call_exec_2",
+            "is_error": False,
+            "content": "src/a.txt:1:PreToolUse:Bash hook error: literal text in normal stdout",
+          }],
+        },
+      }, ensure_ascii=False) + "\n",
+    ]
+    raw_blob = b"".join(line.encode("utf-8") for line in lines)
+    transcript_path.write_bytes(raw_blob)
+
+    offsets = []
+    pos = 0
+    for line in lines:
+      offsets.append(pos)
+      pos += len(line.encode("utf-8"))
+
+    state2 = self.root / "state_with_segments"
+    state2.mkdir(parents=True)
+    conn = sqlite3.connect(state2 / "state.sqlite")
+    cur = conn.cursor()
+    cur.executescript(
+      """
+      CREATE TABLE sources (
+        inode TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        classification TEXT NOT NULL,
+        included INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        mtime REAL NOT NULL
+      );
+      CREATE TABLE findings (
+        id INTEGER PRIMARY KEY,
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        target TEXT NOT NULL,
+        observation TEXT NOT NULL,
+        check_direction TEXT NOT NULL,
+        quote TEXT NOT NULL,
+        source_line INTEGER NOT NULL,
+        issue_ref TEXT NOT NULL
+      );
+      CREATE TABLE segments (
+        id INTEGER PRIMARY KEY,
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        doc_start INTEGER NOT NULL,
+        doc_end INTEGER NOT NULL,
+        line INTEGER NOT NULL,
+        block INTEGER NOT NULL,
+        byte_offset INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        record_type TEXT NOT NULL,
+        record_uuid TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        tool_use_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        limitations TEXT NOT NULL DEFAULT '[]'
+      );
+      CREATE TABLE rule_tags (
+        id INTEGER PRIMARY KEY,
+        inode TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        rule_id TEXT NOT NULL,
+        rule_path TEXT NOT NULL,
+        rule_heading TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        source_line INTEGER NOT NULL,
+        source_ref TEXT NOT NULL,
+        quote TEXT NOT NULL,
+        conversation_time TEXT NOT NULL,
+        commit_sha TEXT NOT NULL
+      );
+      """
+    )
+    cur.execute(
+      "INSERT INTO sources VALUES ('inoG', ?, 'human-main', 1, 'complete', 1, 1794000000.0)",
+      (str(transcript_path),),
+    )
+    cur.execute(
+      "INSERT INTO segments VALUES (1, 'inoG', 1, 0, 100, 1, 0, ?, 'assistant', 'assistant', 'u1', 'Bash', 'call_blocked_1', 'analyzed', '[]')",
+      (offsets[0],),
+    )
+    cur.execute(
+      "INSERT INTO segments VALUES (2, 'inoG', 1, 100, 200, 2, 0, ?, 'user', 'user', 'u2', '-', 'call_blocked_1', 'analyzed', '[]')",
+      (offsets[1],),
+    )
+    cur.execute(
+      "INSERT INTO segments VALUES (3, 'inoG', 1, 200, 300, 3, 0, ?, 'assistant', 'assistant', 'u3', 'Bash', 'call_exec_2', 'analyzed', '[]')",
+      (offsets[2],),
+    )
+    cur.execute(
+      "INSERT INTO segments VALUES (4, 'inoG', 1, 300, 400, 4, 0, ?, 'user', 'user', 'u4', '-', 'call_exec_2', 'analyzed', '[]')",
+      (offsets[3],),
+    )
+    # R-blocked: 2 筆（1 筆來自 tool_use 對應 PreToolUse error tool_result，1 筆直接引述 PreToolUse error）
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (1, 'inoG', 1, 'aaaa1111aaaa1111', 'rules/common/code-search.md', 'Code search', 'violated', 1, 's#1', 'find ~/.claude -name foo', '2026-11-10T00:00:00Z', 'c1')"
+    )
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (2, 'inoG', 1, 'aaaa1111aaaa1111', 'rules/common/code-search.md', 'Code search', 'violated', 99, 's#99', 'PreToolUse:Bash hook error: 偵測到無排除遞迴搜尋', '2026-11-10T00:01:00Z', 'c1')"
+    )
+    # R-executed: 1 筆（雖然 stdout 含字面 PreToolUse 字串，但 is_error=false，屬實際執行）
+    cur.execute(
+      "INSERT INTO rule_tags VALUES (3, 'inoG', 1, 'bbbb2222bbbb2222', 'CLAUDE.md', '工作紀律', 'violated', 3, 's#3', 'grep -r foo src/', '2026-11-10T00:02:00Z', 'c1')"
+    )
+    conn.commit()
+    conn.close()
+
+    out_seg = self.root / "out_seg"
+    proc = subprocess.run(
+      [sys.executable, str(SCRIPT), "prepare", "--state", str(state2), "--out-dir", str(out_seg)],
+      text=True,
+      capture_output=True,
+      check=True,
+    )
+    res = json.loads(proc.stdout)
+    self.assertEqual(res["rule_violation_rows"], 3)
+    self.assertEqual(res["executed_rule_violation_rows"], 1)
+    self.assertEqual(res["gate_blocked_rule_violation_rows"], 2)
+
+    rv_md = (out_seg / "rule-violations.md").read_text(encoding="utf-8")
+    self.assertIn("- executed_violation_tags: 1", rv_md)
+    self.assertIn("- gate_blocked_unexecuted_tags: 2", rv_md)
+    # 實際執行違規排在 R01，全數被 gate 攔下的排在 R02
+    self.assertLess(rv_md.index("bbbb2222"), rv_md.index("aaaa1111"))
+    self.assertIn("all_blocked_by_pretooluse_gate", rv_md)
+    self.assertIn("sample_quote [executed]: grep -r foo src/", rv_md)
+    self.assertIn("sample_quote [blocked_by_pretooluse_gate]: find ~/.claude -name foo", rv_md)
+
 
 if __name__ == "__main__":
   unittest.main()
