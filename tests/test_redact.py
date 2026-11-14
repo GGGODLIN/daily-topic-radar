@@ -40,6 +40,24 @@ def test_mask_keeps_surrounding_text():
 
 
 @pytest.mark.parametrize(
+    "sample, token, expected",
+    [
+        (f"user-{GH}", GH, "user-[REDACTED-KEY:github]"),
+        (f"{GH}-prod", GH, "[REDACTED-KEY:github]-prod"),
+        (f"key-{ARK}", ARK, "key-[REDACTED-KEY:ark]"),
+        (f"my-{AWS}-dev", AWS, "my-[REDACTED-KEY:aws]-dev"),
+        # JWT signature segment uses base64url ([A-Za-z0-9_-]), so trailing -end is part of the token.
+        (f"tok-{JWT}-end", JWT, "tok-[REDACTED-KEY:jwt]"),
+    ],
+)
+def test_hyphen_adjacent_tokens_are_masked(sample, token, expected):
+    out = redact_text(sample)
+    leaked = token in out
+    assert not leaked, "hyphen-adjacent token leaked"
+    assert out == expected
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "task-12345678901234567890 是工單編號",  # prefix inside a longer identifier

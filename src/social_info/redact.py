@@ -33,10 +33,15 @@ _KINDS: tuple[tuple[str, str], ...] = (
     ("jwt", r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
 )
 
-# The look-around keeps prefixes from firing inside longer identifiers (e.g. "task-…" must not match "sk-…").
-_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])(?:" + "|".join(f"(?P<{kind}>{pattern})" for kind, pattern in _KINDS) + r")(?![A-Za-z0-9_-])"
-)
+# sk-… keeps hyphen in look-around so ordinary hyphenated slugs (e.g. "non-sk-…") do not
+# match inside prose; distinct vendor prefixes allow adjacent hyphens (e.g. "user-ghp_…").
+def _wrap_kind(kind: str, pattern: str) -> str:
+    if kind == "sk":
+        return rf"(?<![A-Za-z0-9_-])(?P<{kind}>{pattern})(?![A-Za-z0-9_-])"
+    return rf"(?<![A-Za-z0-9_])(?P<{kind}>{pattern})(?![A-Za-z0-9_])"
+
+
+_TOKEN_RE = re.compile("|".join(_wrap_kind(kind, pattern) for kind, pattern in _KINDS))
 
 
 def _replacement(match: re.Match[str]) -> str:
