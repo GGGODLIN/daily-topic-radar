@@ -14,11 +14,11 @@ You are the owner and long-term maintainer of this codebase, and its design is u
 
 ## 自動排程
 
-- **Label**: `com.gggodlin.social-info-daily`
-- **Plist**: `~/Library/LaunchAgents/com.gggodlin.social-info-daily.plist`
-- **Schedule**: 每天 06:00 Asia/Taipei（launchd `StartCalendarInterval`）
-- **Wrapper**: `scripts/run-daily.sh` — VPN pre-check + `uv run python -m social_info` + `git add state.db reports/` + `commit` + `push`
-- **Log**: `logs/cron-{date}.log`（gitignored）
+- **Label**: `com.gggodlin.morning-tui-factory`（原獨立 `com.gggodlin.social-info-daily` 06:00 排程已移除，統一由晨間工廠串接）
+- **Plist**: `~/Library/LaunchAgents/com.gggodlin.morning-tui-factory.plist`（設定檔 `~/.claude/scripts/morning-tui-factory/config.json`）
+- **Schedule**: 每天 04:00 Asia/Taipei 起（`daily-topic` 任務 `not_before: "04:00"`；同排程 02:30 另開 `/trial-review` 與 `每日本機分析`）
+- **Wrapper**: 先跑 `pre_command` `scripts/run-daily.sh`（VPN pre-check + `uv run python -m social_info` + `git add state.db reports/` + `commit` + `push`），成功後自動在 Herdr 開啟 `/daily-topic` 分頁送出「每日話題分析」產出 Stage-2 HTML
+- **Log**: `logs/cron-{date}.log`（`run-daily.sh` 紀錄，gitignored）與 `~/.claude/scripts/morning-tui-factory/logs/launchd.log`
 
 **VPN / 雲端出口 pre-check（2026-08-05 加）**：`run-daily.sh` 起跑前先跑 [`scripts/vpn-precheck.sh`](/scripts/vpn-precheck.sh) 查對外出口 ASN。**刻意「偵測不擋跑」**——擋下等於當天零資料、比殘缺更糟；命中只做三件事：cron log 印 `⚠️ VPN-PRECHECK 命中`、寫 `ALERT-vpn-precheck.md` 到 repo root（gitignored、出口恢復正常那天自動刪）、跳桌面通知。判準是**出口 ASN 不是「有沒有 utun 介面」**（Tailscale 這類 split-tunnel 走 utun 但不影響出口、用介面判會誤殺）。查不到 / 逾時 / 無網路一律放行（exit 20），這道 gate 絕不自己弄垮 daily run。改它或改 `run-daily.sh` 的 `VPN_PRECHECK_START/END` 段後**必跑** `bash scripts/vpn-precheck.test.sh`（25 項，含 set -e 下不中斷、ALERT 檔生成與清除）。
 
@@ -31,19 +31,15 @@ You are the owner and long-term maintainer of this codebase, and its design is u
 ### 常用指令
 
 ```bash
-# 手動觸發
-launchctl kickstart -p gui/$(id -u)/com.gggodlin.social-info-daily
+# 看晨間工廠排程狀態
+launchctl print gui/$(id -u)/com.gggodlin.morning-tui-factory | grep -E "state|active count|last exit"
 
-# 看狀態
-launchctl print gui/$(id -u)/com.gggodlin.social-info-daily | grep -E "state|active count|last exit"
-
-# 暫停 / 重新載入
-launchctl bootout gui/$(id -u)/com.gggodlin.social-info-daily
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gggodlin.social-info-daily.plist
-
-# debug 直接跑 wrapper
+# 手動補跑 raw 收集 wrapper（不經晨間工廠）
 bash scripts/run-daily.sh
 tail -f logs/cron-$(date +%Y-%m-%d).log
+
+# 手動補跑 Stage-2 話題日報（在 CC session 內）
+# 直接輸入「每日話題分析」或執行 /daily-topic
 ```
 
 ## 本機分析 routine（不 commit）
@@ -76,13 +72,13 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 `.github/workflows/` 已於 `1fcfcc3`（2026-08-31）整包移除——雲端 runner IP 跑 Reddit 持續 403，且本機 Apify relay 與觀察池皆住在本機。Reddit 抓法細節見「已知 fetcher gap」段（該段是 SSOT）。
 
-**操作注意**：06:00 launchd 觸發前 VPN 應該關著（消費級 VPN exit IP 連 old.reddit HTML 都可能整個被 ban；**雲端 ASN 出口更死**——2026-08-05 實測 WireGuard 走 AWS Tokyo AS16509 時 5 個 sub 全 403，關掉後同樣 5 個全 200），或設 split-tunnel 把 reddit.com 排除走真實出口。忘了關不會靜默失敗：「自動排程」段的 VPN pre-check 會在 06:00 當下就發桌面通知 + 寫 `ALERT-vpn-precheck.md`。
+**操作注意**：04:00 晨間排程起跑 `run-daily.sh` 前 VPN 應該關著（消費級 VPN exit IP 連 old.reddit HTML 都可能整個被 ban；**雲端 ASN 出口更死**——2026-08-05 實測 WireGuard 走 AWS Tokyo AS16509 時 5 個 sub 全 403，關掉後同樣 5 個全 200），或設 split-tunnel 把 reddit.com 排除走真實出口。忘了關不會靜默失敗：「自動排程」段的 VPN pre-check 會在起跑當下就發桌面通知 + 寫 `ALERT-vpn-precheck.md`。
 
 ## 「今日分析」入口語意
 
 這個專案有兩條 daily routine，是**分開的兩件事、各自獨立 session 處理**（2026-05-19 使用者明確指正，對應 memory `feedback_digest_excludes_local_analysis.md`）：
 
-1. **今日話題分析 = Stage-2 daily digest**：`reports/digest-{date}.html`，手動 trigger 產出 ecosystem 個人化整理。詳「Stage-2 digest」。
+1. **今日話題分析 = Stage-2 daily digest**：`reports/digest-{date}.html`，每日 04:00 由 `com.gggodlin.morning-tui-factory` 在 `run-daily.sh` 完成後自動開分頁執行（亦可手動輸入「每日話題分析」或 `/daily-topic` 補跑）。詳「Stage-2 digest」。
 2. **今日本機分析 = 本機分析 multi-channel workflow**：`reports/local-analysis/{date}-{channel}.md`，2026-05-26 起走 on-demand workflow（[`~/.claude/workflows/local-analysis.js`](file:///Users/linhancheng/.claude/workflows/local-analysis.js)），原 launchd 排程已停用。詳「本機分析 routine」。
 
 - 使用者說「今日話題分析」/「跑日報」/「產 digest」→ **跑 stage-2 digest workflow**（2026-05-26 起）：pre-flight（KNOWN_ISSUES.md + WATCH.md + PROBES.md stage-2 fetch）→ 主軸抽取 →（視版本）URL fact-check → `WriteDigest` subagent 產出 HTML 並交 main session 跑 verify gate。**不掃 `reports/local-analysis/`、digest「系統當天動態」段只寫 digest pipeline 自身（不寫本機 channel 跑了沒 / 失敗沒 / drift proposal）**。
@@ -105,7 +101,7 @@ tail -f logs/cron-$(date +%Y-%m-%d).log
 
 ## Stage-2 digest
 
-`reports/{date}.md` 是 raw aggregator 輸出（06:00 launchd 自動產生）。`reports/digest-{date}.html` 是 Claude 個人化整理（**手動 trigger**，使用者叫我產才做）。
+`reports/{date}.md` 是 raw aggregator 輸出（每日 04:00 由 `com.gggodlin.morning-tui-factory` 先跑 `run-daily.sh` 自動產生）。`reports/digest-{date}.html` 是 Claude 個人化整理（緊接在 `run-daily.sh` 完成後自動開 `/daily-topic` 分頁產出，亦可手動觸發補跑）。
 
 共用觀察池與研究選題雷達的入口、資料限制與回放指令見 [docs/topic-radar.md](/docs/topic-radar.md)。本機雷達不另抓來源；`free_radar` 原工具免費收集器另抓新搜尋角度、共用池中 X 正文，接在一般來源存池後，沿用現有每日排程。daily topic 的選題與呈現仍引用當日 raw，新增資料與原工具報告供「新來源觀察」取用。已啟用與未啟用功能的盤點見 [docs/topic-radar-sources.md](/docs/topic-radar-sources.md)。
 
