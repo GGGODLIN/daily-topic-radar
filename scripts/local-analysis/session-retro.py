@@ -797,8 +797,11 @@ def stage_items(plan, run, stage, enforce=True):
     return [{"session": "cross-session", "unit": "cross-session", "report_path": str(run / "reports/cross-session.json"),
              "input_reports": [selected_report(plan, run, s) for s in plan["sessions"]], "source_documents": documents,
              **contexts}]
+  cross_file = validated_path(run, "cross-session")
+  span = primary_patterns_span(cross_file.read_text(encoding="utf-8")) if cross_file.is_file() else None
+  primary_range = {"primary_read_range": {"offset": span[0], "limit": span[1] - span[0] + 1}} if span else {}
   return [{"session": "cross-session", "unit": unit, "report_path": str(run / "reports" / (unit + ".json")),
-           "input_reports": [str(validated_path(run, "cross-session"))], "source_documents": documents, **contexts}
+           "input_reports": [str(cross_file)], **primary_range, "source_documents": documents, **contexts}
           for unit in ("verify-source", "verify-current")]
 
 
@@ -2032,10 +2035,60 @@ def critic_input_paths(item):
   return [item["slice_path"], item["index_path"]]
 
 
+def primary_patterns_span(text):
+  # Critics only judge primary patterns; requiring them to load multi-MB trailing tracking_observations overflows 922k-1M windows.
+  decoder = json.JSONDecoder()
+  length = len(text)
+
+  def skip_ws(pos):
+    while pos < length and text[pos] in " \t\r\n":
+      pos += 1
+    return pos
+
+  pos = skip_ws(0)
+  if pos >= length or text[pos] != "{":
+    return None
+  pos = skip_ws(pos + 1)
+  if pos < length and text[pos] == "}":
+    return None
+  try:
+    while pos < length:
+      key_start = pos
+      key, pos = decoder.raw_decode(text, pos)
+      pos = skip_ws(pos)
+      if pos >= length or text[pos] != ":":
+        return None
+      pos = skip_ws(pos + 1)
+      _, val_end = decoder.raw_decode(text, pos)
+      if key == "patterns":
+        return (text.count("\n", 0, key_start) + 1, text.count("\n", 0, val_end) + 1)
+      pos = skip_ws(val_end)
+      if pos < length and text[pos] == ",":
+        pos = skip_ws(pos + 1)
+      elif pos < length and text[pos] == "}":
+        return None
+      else:
+        return None
+  except ValueError:
+    return None
+  return None
+
+
+def critic_required_lines(path, primary_only=False):
+  text = Path(path).read_text(encoding="utf-8")
+  lines = text.split("\n")
+  if primary_only:
+    span = primary_patterns_span(text)
+    if span is not None:
+      return {n for n in range(span[0], span[1] + 1) if lines[n - 1].strip()}
+  return {n for n, line in enumerate(lines, 1) if line.strip()}
+
+
 def critic_read_errors(agent, item, report, canonical, plan, reuse=False):
   errors = []
+  primary_only = not item.get("slice_path")
   for path in critic_input_paths(item):
-    required = {n for n, line in enumerate(Path(path).read_text().split("\n"), 1) if line.strip()}
+    required = critic_required_lines(path, primary_only=primary_only)
     if required - read_lines(agent, path):
       errors.append("critic did not read assigned verify input fully")
   documents = {s["session"]: Path(s["document"]).resolve() for s in plan["sessions"]}

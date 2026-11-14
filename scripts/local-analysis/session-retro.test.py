@@ -2147,6 +2147,52 @@ class EventEvidenceCLI(unittest.TestCase):
     with self.assertRaisesRegex(retro.Invalid, "index differs"):
       retro.critic_input_paths(item)
 
+  def test_critic_primary_only_read_skips_trailing_tracking_tail_but_rejects_partial_patterns(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, run, manifest, plan_data = fixture.composition_fixture()
+    retro.composition_check(manifest, write=True)
+    verify = fixture.cli("stage-args", "--plan", run / "plan.json", "--stage", "verify")
+    self.assertIn("primary_read_range", verify["items"][0])
+    cross_path = run / "validated" / "cross-session.json"
+    retro.save(cross_path, {
+      "session": "cross-session",
+      "unit": "cross-session",
+      "status": "complete",
+      "patterns": [
+        {"id": "P1", "observation": "first", "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}]},
+        {"id": "P2", "observation": "second", "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}]},
+      ],
+      "secondary_patterns": [{"id": "S1", "observation": "minor"}],
+      "tracking_observations": [{"issue_id": f"I{i}", "change_id": f"C{i}", "outcome": "not_applicable", "evidence": []} for i in range(50)],
+    })
+    source_item = next(x for x in retro.stage_items(plan_data, run, "verify", enforce=False) if x["unit"] == "verify-source")
+    read_range = source_item["primary_read_range"]
+    all_lines = cross_path.read_text(encoding="utf-8").split("\n")
+    self.assertLess(read_range["offset"] + read_range["limit"] - 1, len(all_lines) - 20)
+    document = run / "source-doc.txt"
+    document.write_text("evidence\n", encoding="utf-8")
+    plan = {"sessions": [{"session": "human", "document": str(document)}]}
+    report = {"verdicts": [
+      {"pattern_id": "P1", "verdict": "CONFIRMED", "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}]},
+      {"pattern_id": "P2", "verdict": "CONFIRMED", "evidence": [{"session": "human", "source_line": 1, "quote": "evidence"}]},
+    ]}
+    start, count = read_range["offset"], read_range["limit"]
+    primary_slice_text = "\n".join(f"{n}\t{all_lines[n - 1]}" for n in range(start, start + count))
+    doc_text = "1\tevidence"
+    ok_agent = {"operations": [
+      {"name": "Read", "input": {"file_path": str(cross_path), "offset": start, "limit": count}, "text": primary_slice_text},
+      {"name": "Read", "input": {"file_path": str(document), "offset": 1, "limit": 5}, "text": doc_text},
+    ]}
+    self.assertEqual(retro.critic_read_errors(ok_agent, source_item, report, {}, plan), [])
+    short_text = "\n".join(f"{n}\t{all_lines[n - 1]}" for n in range(start, start + count - 3))
+    short_agent = {"operations": [
+      {"name": "Read", "input": {"file_path": str(cross_path), "offset": start, "limit": count - 3}, "text": short_text},
+      {"name": "Read", "input": {"file_path": str(document), "offset": 1, "limit": 5}, "text": doc_text},
+    ]}
+    self.assertIn("did not read assigned verify input fully", "; ".join(retro.critic_read_errors(short_agent, source_item, report, {}, plan)))
+
   def test_composition_critic_parts_preserve_primary_and_current_read_boundaries(self):
     fixture = RetroCLI()
     fixture.setUp()
