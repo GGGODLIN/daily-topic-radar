@@ -338,6 +338,15 @@ WORK_REPO_OVERVIEW_REPORT='107 sessions / 491 commits（446 個工作 repo + 45 
 ### 含修飾詞 repo 總覽行的匿名主題
 驗證跨 N 個工作 repo 與標題並存時不會被誤判成前言拒收。'
 
+SLASH_MEMORY_OVERVIEW_REPORT='101 sessions / 272 commits / 91 個新／更新 memory / 跨 23 個 repo（含 `~/.claude`）
+
+# Daily Recap
+
+## 2026-09-08
+
+### 斜線連接新／更新 memory 總覽行的匿名主題
+驗證新／更新 memory 與括號補充 repo 並存時不會被誤判成前言拒收。'
+
 PREFACE='先整理四條來源，完成後再輸出報告。'
 CLOSING='以上是今日整理。'
 PROGRESS='正在核對來源，報告還沒寫。'
@@ -472,6 +481,16 @@ assert_status work-repo-overview "$STREAM_STATUS" 0
 ((++checks))
 if ! cmp -s "$STREAM_OUT" "$work_repo_expected"; then
   print -ru2 -- 'work repo overview report was not preserved byte-for-byte'
+  ((++failures))
+fi
+
+slash_memory_expected="$fixture/slash-memory-overview.expected"
+printf '%s\n' "$SLASH_MEMORY_OVERVIEW_REPORT" > "$slash_memory_expected"
+run_stream_case slash-memory-overview "" "$preface_block" "$(assistant_event "$SLASH_MEMORY_OVERVIEW_REPORT")" "$closing_result"
+assert_status slash-memory-overview "$STREAM_STATUS" 0
+((++checks))
+if ! cmp -s "$STREAM_OUT" "$slash_memory_expected"; then
+  print -ru2 -- 'slash memory overview report was not preserved byte-for-byte'
   ((++failures))
 fi
 
