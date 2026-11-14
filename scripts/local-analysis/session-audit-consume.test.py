@@ -1064,7 +1064,7 @@ class JointP1ToP5PatrolTest(_dual_mod.DualLaneBaseTests):
     )
     manifest = json.loads(prep.stdout)
     pending_file = self.state / "pending-consume.json"
-    pending_data = json.loads(pending_file.read_text(encoding="utf-8")) if pending_file.is_file() else {"finding_ids": [], "rule_tag_ids": []}
+    pending_data = json.loads(pending_file.read_text(encoding="utf-8")) if pending_file.is_file() else {"finding_groups": [], "rule_tag_ids": []}
     if manifest["raw_finding_rows"] > 0 or manifest["rule_violation_rows"] > 0:
       subprocess.run(
         [
@@ -1082,7 +1082,8 @@ class JointP1ToP5PatrolTest(_dual_mod.DualLaneBaseTests):
         capture_output=True,
         check=True,
       )
-    return manifest, pending_data["finding_ids"], pending_data["rule_tag_ids"]
+    finding_ids = sorted({int(rid) for g in pending_data.get("finding_groups", []) for rid in g["raw_ids"]})
+    return manifest, finding_ids, pending_data["rule_tag_ids"]
 
   def _unready_ids(self):
     db_path = self.state / "state.sqlite"

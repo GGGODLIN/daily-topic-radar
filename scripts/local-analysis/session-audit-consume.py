@@ -23,7 +23,9 @@ CURSOR_FILENAME = "consume-cursor.json"
 PENDING_FILENAME = "pending-consume.json"
 DEFAULT_MAX_BATCH_BYTES = 60_000
 DEFAULT_BG_MODE_FILE = Path.home() / ".magpie-machine" / "home" / ".config" / "magpie" / "bg-mode.json"
-DEFAULT_SHADOW_STARTED_AT = "2026-11-15T00:00:00+08:00"
+SHADOW_STARTED_AT_EPOCH = datetime.fromisoformat(
+  os.environ.get("SESSION_AUDIT_SHADOW_STARTED_AT", "2026-11-15T00:00:00+08:00").replace("Z", "+00:00")
+).timestamp()
 PLACEHOLDER_TARGETS = frozenset({"", "unknown", "none", "n/a", "null", "-", "unspecified"})
 DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "reports" / "local-analysis" / "pending-actions.jsonl"
 RECONCILE_SCRIPT = Path(__file__).with_name("ledger-reconcile.py")
@@ -122,12 +124,6 @@ def read_bg_mode(path: str) -> str:
   return "quality"
 
 
-def parse_shadow_cutoff(raw: str) -> float | None:
-  if not raw:
-    return None
-  return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-
-
 def load_shadow_status_map(cur: sqlite3.Cursor) -> tuple[bool, dict]:
   if not table_exists(cur, "shadow_cursors"):
     return False, {}
@@ -144,7 +140,6 @@ def is_source_ready(
   has_shadow: bool,
   shadow_map: dict,
   bg_mode: str | None,
-  shadow_cutoff: float | None = None,
 ) -> bool:
   if not has_shadow:
     return True
@@ -153,7 +148,7 @@ def is_source_ready(
     return False
   if statuses:
     return True
-  return not (bg_mode == "quality" and (shadow_cutoff is None or source_mtime >= shadow_cutoff))
+  return not (bg_mode == "quality" and source_mtime >= SHADOW_STARTED_AT_EPOCH)
 
 
 def ensure_consume_schema(conn: sqlite3.Connection, state_dir: Path) -> None:
@@ -178,7 +173,7 @@ def ensure_consume_schema(conn: sqlite3.Connection, state_dir: Path) -> None:
       for ino, gen, smtime in cur.execute(
         "SELECT inode, generation, mtime FROM sources WHERE status IN ('complete', 'partial')"
       ).fetchall()
-      if is_source_ready(ino, int(gen), float(smtime or 0.0), has_shadow, shadow_map, None, None)
+      if is_source_ready(ino, int(gen), float(smtime or 0.0), has_shadow, shadow_map, None)
     }
     if legacy_f > 0 and table_exists(cur, "findings"):
       cand_f = cur.execute(
@@ -483,7 +478,6 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     since_mtime = float(args.since_mtime or 0.0)
     since_iso = args.since_iso or ""
     bg_mode = read_bg_mode(args.bg_mode_file)
-    shadow_cutoff = parse_shadow_cutoff(args.shadow_started_at)
 
     cur = conn.cursor()
     has_shadow, shadow_map = load_shadow_status_map(cur)
@@ -518,16 +512,14 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 
     f_rows = [
       row for row in raw_f_rows
-      if is_source_ready(row[9], int(row[10]), float(row[12] or 0.0), has_shadow, shadow_map, bg_mode, shadow_cutoff)
+      if is_source_ready(row[9], int(row[10]), float(row[12] or 0.0), has_shadow, shadow_map, bg_mode)
     ]
 
     iref_groups = {}
     dedup_order = []
-    prepared_finding_ids = []
     max_finding_id = min_finding_id
     for row in f_rows:
       fid, spath, scls, sline, target, obs, direction, quote, iref, inode, gen, lane, _smtime = row
-      prepared_finding_ids.append(fid)
       if fid > max_finding_id:
         max_finding_id = fid
       gkey = (lane, iref)
@@ -586,7 +578,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     ).fetchall()
     rt_rows = [
       row[:11] for row in raw_rt_rows
-      if is_source_ready(row[6], int(row[8]), float(row[11] or 0.0), has_shadow, shadow_map, bg_mode, shadow_cutoff)
+      if is_source_ready(row[6], int(row[8]), float(row[11] or 0.0), has_shadow, shadow_map, bg_mode)
     ]
     blocked_rt_ids = detect_pretooluse_gate_blocks(cur, rt_rows)
 
@@ -597,7 +589,6 @@ def cmd_prepare(args: argparse.Namespace) -> int:
   ]
   pending_payload = {
     "prepared_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "finding_ids": prepared_finding_ids,
     "finding_groups": finding_groups,
     "rule_tag_ids": prepared_rule_tag_ids,
   }
@@ -859,17 +850,10 @@ def stamp_consumed_rows(state_dir: Path, finding_id: int, rule_tag_id: int, now_
     cur = conn.cursor()
 
     pending = json.loads(pending_path.read_text(encoding="utf-8"))
-    groups = pending.get("finding_groups")
-    if isinstance(groups, list):
-      stamp_groups = [g for g in groups if int(g["rep_id"]) <= finding_id]
-      rem_groups = [g for g in groups if int(g["rep_id"]) > finding_id]
-      f_stamp = sorted({int(rid) for g in stamp_groups for rid in (g.get("raw_ids") or [g["rep_id"]])})
-      f_rem = sorted({int(rid) for g in rem_groups for rid in (g.get("raw_ids") or [g["rep_id"]])})
-    else:
-      f_all = [int(i) for i in pending.get("finding_ids") or []]
-      f_stamp = [i for i in f_all if i <= finding_id]
-      f_rem = [i for i in f_all if i > finding_id]
-      rem_groups = None
+    groups = pending.get("finding_groups") or []
+    stamp_groups = [g for g in groups if int(g["rep_id"]) <= finding_id]
+    rem_groups = [g for g in groups if int(g["rep_id"]) > finding_id]
+    f_stamp = sorted({int(rid) for g in stamp_groups for rid in (g.get("raw_ids") or [g["rep_id"]])})
 
     r_all = [int(i) for i in pending.get("rule_tag_ids") or []]
     r_stamp = [i for i in r_all if i <= rule_tag_id]
@@ -886,11 +870,8 @@ def stamp_consumed_rows(state_dir: Path, finding_id: int, rule_tag_id: int, now_
     r_rem = [i for i in r_all if i > rule_tag_id]
     conn.commit()
 
-  if f_rem or r_rem:
-    rem_payload = {"prepared_at": pending.get("prepared_at"), "finding_ids": f_rem, "rule_tag_ids": r_rem}
-    if rem_groups is not None:
-      rem_payload["finding_groups"] = rem_groups
-    write_json_atomic(pending_path, rem_payload)
+  if rem_groups or r_rem:
+    write_json_atomic(pending_path, {"prepared_at": pending.get("prepared_at"), "finding_groups": rem_groups, "rule_tag_ids": r_rem})
   else:
     pending_path.unlink(missing_ok=True)
 
@@ -946,7 +927,6 @@ def main() -> int:
   p_prep.add_argument("--after-finding-id", type=int, default=None)
   p_prep.add_argument("--after-rule-tag-id", type=int, default=None)
   p_prep.add_argument("--bg-mode-file", default=str(DEFAULT_BG_MODE_FILE))
-  p_prep.add_argument("--shadow-started-at", default=DEFAULT_SHADOW_STARTED_AT)
 
   p_commit = sub.add_parser("commit-cursor")
   p_commit.add_argument("--state", required=True)
