@@ -55,7 +55,7 @@ bash ~/.claude/scripts/skill-inventory-paths.sh --counts
 
 1. state file 路徑：`~/.claude/state/skill-desc-quality.last_run`
 2. seen snapshot 路徑：`~/.claude/state/skill-desc-quality.paths`；每行格式為 `<audit-eligible absolute path>\t<正規化單行 description>`（只比對 description 是否變動，只改 SKILL.md 內文不重審）
-3. `mkdir -p ~/.claude/state` （目錄可能不存在）。在讀 path list 前先用 `mktemp` 建立本輪 `SCAN_CUTOFF`；它的 mtime 是掃描開始時間，成功前不得移動到 state file。本輪所有 `mktemp` 暫存檔（`SCAN_CUTOFF`、`PATHS_FILE`、`CHANGED_FILE`、`SEEN_NEXT`、`LAST_RUN_NEXT`）必須掛 `trap 'rm -f ...' EXIT` 於結束時清理，不得留在 `~/.claude/state/`
+3. `mkdir -p ~/.claude/state` （目錄可能不存在），並先執行 `find ~/.claude/state -maxdepth 1 \( -name 'skill-desc-quality.*tmp*' -o -name 'skill-desc-quality.*.next.*' -o -name 'skill-desc-quality.scan-cutoff.*' -o -name '.skill-desc-quality.*.tmp' -o -name '.sdq-*' \) -mtime +1 -delete` 回收跨日殘留的孤兒暫存檔。在讀 path list 前先用 `mktemp` 建立本輪 `SCAN_CUTOFF`；它的 mtime 是掃描開始時間，成功前不得移動到 state file。本輪所有 `mktemp` 暫存檔（`SCAN_CUTOFF`、`PATHS_FILE`、`CHANGED_FILE`、`SEEN_NEXT`、`LAST_RUN_NEXT`）必須掛 `trap 'rm -f ...' EXIT` 於結束時清理，不得留在 `~/.claude/state/`
 4. 先跑 canonical parser 取得完整 path list，保存為本輪的 `PATHS_FILE`；不要用手寫總數或 filesystem glob 取代它
 5. 依下列 deterministic selection recipe 產生 `CHANGED_FILE`。`PATHS_FILE`、`SEEN_PATHS`、`LAST_RUN`、`CHANGED_FILE` 必須先指向本輪實際 state／暫存檔：
 
