@@ -1011,8 +1011,9 @@ def read_regular(path):
     return stream.read()
 
 
-def decision_entry(issue, action, source, note):
-  uuid = verify_anchor(source, human=True)
+def decision_entry(issue, action, source, note, *, uuid=None):
+  if uuid is None:
+    uuid = verify_anchor(source, human=True)
   entry_id = uuid + ":" + issue + ":" + action
   body = {"issue_id": issue, "action": action, "source": source, "event_uuid": uuid}
   if note is not None:
@@ -1020,42 +1021,180 @@ def decision_entry(issue, action, source, note):
   return entry("decision", entry_id, body)
 
 
+def is_human_turn(row):
+  if row.get("isSidechain") or row.get("isMeta") or row.get("type") != "user":
+    return False
+  message = row.get("message")
+  if not isinstance(message, dict) or message.get("role") != "user":
+    return False
+  content = message.get("content")
+  if isinstance(content, str):
+    parts = [content]
+  elif isinstance(content, list):
+    parts = []
+    for block in content:
+      if isinstance(block, dict) and block.get("type") == "tool_result":
+        return False
+      if isinstance(block, str):
+        parts.append(block)
+      elif isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+        parts.append(block["text"])
+  else:
+    return False
+  joined = "\n".join(parts).lstrip()
+  return bool(joined) and not joined.startswith((*NOTICE, "<local-command-stdout>", "<command-name>"))
+
+
+def assistant_visible_text(row):
+  message = row.get("message") if isinstance(row.get("message"), dict) else None
+  if row.get("type") != "assistant" and (message is None or message.get("role") != "assistant"):
+    return ""
+  content = message.get("content") if message is not None else row.get("content")
+  if isinstance(content, str):
+    return content
+  if not isinstance(content, list):
+    return ""
+  return "\n".join(
+    block if isinstance(block, str) else block["text"]
+    for block in content
+    if isinstance(block, str)
+    or (isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
+  )
+
+
+def issue_markers(existing):
+  issues = {row["issue_id"]: row for row in existing if row["type"] == "issue"}
+  derived = {}
+  owners = {}
+  for iid, irow in issues.items():
+    tokens = set()
+    for seg in iid.split(":"):
+      if len(seg) >= 6 and seg != "imported":
+        tokens.add(seg)
+    title = (irow.get("title") or "").strip()
+    if len(title) >= 4:
+      tokens.add(title)
+    core = title.split("（", 1)[0].split("(", 1)[0].strip()
+    if len(core) >= 6:
+      tokens.add(core)
+    for row in existing:
+      if row["type"] == "discovery" and row.get("issue_id") == iid:
+        cand = (row.get("candidate") or "").strip()
+        if len(cand) >= 8:
+          tokens.add(cand)
+    derived[iid] = tokens
+    for tok in tokens:
+      owners[tok] = owners.get(tok, 0) + 1
+  return {
+    iid: {iid, *(tok for tok in derived[iid] if owners[tok] == 1)}
+    for iid in issues
+  }
+
+
+def presented_issues_in_text(body, markers):
+  if not body:
+    return set()
+  return {iid for iid, toks in markers.items() if any(tok and tok in body for tok in toks)}
+
+
+def verify_presented_before_decision(source, targets, existing):
+  # 短答（如「1, 2 都做」）不含完整 issue_id 時，核對該句之前的 assistant 候選呈現回合確實列過每一個目標問題，
+  # 防止把同一句短答順手綁到從未在場呈現的其他問題。
+  need = [iid for iid in targets if iid not in source["quote"]]
+  if not need:
+    return
+  markers = issue_markers(existing)
+  groups = [[]]
+  for number, row in jsonl_records(source["path"]):
+    if number >= source["line"]:
+      break
+    if is_human_turn(row):
+      groups.append([])
+      continue
+    shown = assistant_visible_text(row)
+    if shown:
+      groups[-1].append(shown)
+  recent_text = "\n".join(groups[-1])
+  recent_hits = presented_issues_in_text(recent_text, markers)
+  if all(iid in recent_hits for iid in need):
+    return
+  latest_table_text = ""
+  for earlier in reversed(groups[:-1]):
+    chunk = "\n".join(earlier)
+    if len(presented_issues_in_text(chunk, markers)) >= 2:
+      latest_table_text = chunk
+      break
+  combined_hits = presented_issues_in_text((latest_table_text + "\n" + recent_text).strip(), markers)
+  for iid in need:
+    require(
+      iid in combined_hits,
+      f"issue {iid} was not presented in assistant messages before line {source['line']}",
+    )
+
+
+def parse_decide_issues(args):
+  raw_items = []
+  if getattr(args, "issue", None) is not None:
+    raw_items.append(ident(args.issue, "issue"))
+  for group in getattr(args, "issues", None) or []:
+    require(isinstance(group, str) and group.strip(), "issues must be a non-empty id list")
+    parts = [part.strip() for part in group.split(",")]
+    require(all(parts), "issues contains an empty id")
+    for part in parts:
+      raw_items.append(ident(part, "issue"))
+  require(bool(raw_items), "either --issue or --issues is required")
+  seen = set()
+  ordered = []
+  for item in raw_items:
+    require(item not in seen, "duplicate issue in decide: " + item)
+    seen.add(item)
+    ordered.append(item)
+  return ordered
+
+
 def decide(args):
   source = anchor({"path": args.source, "line": args.line, "quote": args.quote}, "source")
-  issue = ident(args.issue, "issue")
-  row = decision_entry(issue, args.action, source, args.note)
+  targets = parse_decide_issues(args)
+  uuid = verify_anchor(source, human=True)
+  rows = [decision_entry(issue, args.action, source, args.note, uuid=uuid) for issue in targets]
   with locked(args.store, create=args.apply) as (_folder, handle):
     existing = load_entries(handle)
-    require(
-      any(item["type"] == "issue" and item["issue_id"] == issue for item in existing),
-      "unknown issue reference: " + issue,
-    )
-    bound_other = next(
-      (
-        item["issue_id"]
-        for item in existing
-        if item["type"] == "decision"
-        and item.get("event_uuid") == row["event_uuid"]
-        and item.get("issue_id") != issue
-      ),
-      None,
-    )
-    if bound_other is not None:
-      require(
-        issue in source["quote"],
-        f"event_uuid {row['event_uuid']} already bound to {bound_other}; quote must explicitly name {issue}",
+    known = {item["issue_id"] for item in existing if item["type"] == "issue"}
+    for issue in targets:
+      require(issue in known, "unknown issue reference: " + issue)
+    if len(targets) > 1:
+      verify_presented_before_decision(source, targets, existing)
+    fresh, skipped = plan_append(existing, rows)
+    for row in fresh:
+      issue = row["issue_id"]
+      bound_other = next(
+        (
+          item["issue_id"]
+          for item in existing
+          if item["type"] == "decision"
+          and item.get("event_uuid") == uuid
+          and item.get("issue_id") != issue
+        ),
+        None,
       )
-    fresh, skipped = plan_append(existing, [row])
+      if bound_other is not None:
+        require(
+          issue in source["quote"],
+          f"event_uuid {uuid} already bound to {bound_other}; quote must explicitly name {issue}",
+        )
     if args.apply and fresh:
       append_rows(handle, fresh)
-  return {
+  payload = {
     "ok": True,
     "command": "decision",
     "apply": args.apply,
     "appended": len(fresh),
     "noop": len(skipped),
-    "id": row["id"],
+    "id": rows[0]["id"],
   }
+  if len(rows) > 1:
+    payload["ids"] = [row["id"] for row in rows]
+  return payload
 
 
 def require_approved(rows, issue):
@@ -1871,7 +2010,8 @@ def build():
   context_cmd.add_argument("--issue")
 
   decision = commands.add_parser("decide")
-  decision.add_argument("--issue", required=True)
+  decision.add_argument("--issue")
+  decision.add_argument("--issues", action="append", default=[])
   decision.add_argument("--action", required=True, choices=ACTIONS)
   decision.add_argument("--source", required=True)
   decision.add_argument("--line", required=True, type=int)

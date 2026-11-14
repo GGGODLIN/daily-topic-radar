@@ -2261,6 +2261,260 @@ class StoreCLI(unittest.TestCase):
     for name in ("ineffective", "harmful", "needs_rejudge", "effective", "side_effects_unchecked"):
       self.assertEqual(out["pending_decisions"][name], [])
 
+  def test_batch_decide_records_presented_multi_issues_atomically(self):
+    path, _body = self.packet(
+      issues=[
+        {"id": "imported:run-1:P1", "title": "Lost handoff in workflow", "related_to": []},
+        {"id": "imported:run-1:P2", "title": "Broken file link format", "related_to": []},
+      ],
+      discoveries=[],
+      events=[],
+    )
+    self.cli("ingest", "--packet", path, "--apply")
+    session = self.new("batch-session.jsonl")
+    session.write_text(
+      "\n".join(
+        json.dumps(row, ensure_ascii=False)
+        for row in [
+          {
+            "type": "assistant",
+            "timestamp": BEFORE,
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "候選清單：\n1. Lost handoff in workflow（imported:run-1:P1）\n2. Broken file link format",
+                }
+              ],
+            },
+          },
+          {
+            "type": "user",
+            "timestamp": WHEN,
+            "uuid": "batch-human-1",
+            "message": {"role": "user", "content": "1, 2 都做"},
+          },
+        ]
+      )
+      + "\n",
+      encoding="utf-8",
+    )
+    dry = self.cli(
+      "decide",
+      "--issues",
+      "imported:run-1:P1,imported:run-1:P2",
+      "--action",
+      "approve",
+      "--source",
+      session,
+      "--line",
+      2,
+      "--quote",
+      "1, 2 都做",
+    )
+    self.assertEqual(dry["appended"], 2)
+    self.assertFalse(dry["apply"])
+    self.assertEqual(sum(row["type"] == "decision" for row in self.rows()), 0)
+
+    applied = self.cli(
+      "decide",
+      "--issues",
+      "imported:run-1:P1,imported:run-1:P2",
+      "--action",
+      "approve",
+      "--source",
+      session,
+      "--line",
+      2,
+      "--quote",
+      "1, 2 都做",
+      "--apply",
+    )
+    self.assertEqual(applied["appended"], 2)
+    self.assertEqual(
+      applied["ids"],
+      [
+        "batch-human-1:imported:run-1:P1:approve",
+        "batch-human-1:imported:run-1:P2:approve",
+      ],
+    )
+    replay = self.cli(
+      "decide",
+      "--issues",
+      "imported:run-1:P1",
+      "--issues",
+      "imported:run-1:P2",
+      "--action",
+      "approve",
+      "--source",
+      session,
+      "--line",
+      2,
+      "--quote",
+      "1, 2 都做",
+      "--apply",
+    )
+    self.assertEqual(replay["appended"], 0)
+    self.assertEqual(replay["noop"], 2)
+    for iid in ("imported:run-1:P1", "imported:run-1:P2"):
+      listed = self.cli("list", "--issue", iid)["issues"][0]
+      self.assertEqual(listed["decision"]["action"], "approve")
+
+  def test_batch_decide_rejects_unpresented_issue_atomically(self):
+    path, _body = self.packet(
+      issues=[
+        {"id": "imported:run-1:P1", "title": "Lost handoff in workflow", "related_to": []},
+        {"id": "imported:run-1:P2", "title": "Broken file link format", "related_to": []},
+        {"id": "imported:run-0:P1", "title": "Unpresented older issue", "related_to": []},
+      ],
+      discoveries=[],
+      events=[],
+    )
+    self.cli("ingest", "--packet", path, "--apply")
+    session = self.new("unpresented-session.jsonl")
+    session.write_text(
+      "\n".join(
+        json.dumps(row, ensure_ascii=False)
+        for row in [
+          {
+            "type": "user",
+            "timestamp": BEFORE,
+            "uuid": "earlier-human",
+            "message": {"role": "user", "content": "查舊紀錄"},
+          },
+          {
+            "type": "assistant",
+            "timestamp": BEFORE,
+            "message": {"role": "assistant", "content": "單獨提到 Unpresented older issue 的舊查詢"},
+          },
+          {
+            "type": "user",
+            "timestamp": BEFORE,
+            "uuid": "next-human",
+            "message": {"role": "user", "content": "看本輪候選"},
+          },
+          {
+            "type": "assistant",
+            "timestamp": BEFORE,
+            "message": {
+              "role": "assistant",
+              "content": "P1：Lost handoff in workflow\nP2：Broken file link format",
+            },
+          },
+          {
+            "type": "user",
+            "timestamp": WHEN,
+            "uuid": "batch-human-2",
+            "message": {"role": "user", "content": "P1, P2 都做"},
+          },
+        ]
+      )
+      + "\n",
+      encoding="utf-8",
+    )
+    error = self.cli(
+      "decide",
+      "--issues",
+      "imported:run-1:P1,imported:run-0:P1",
+      "--action",
+      "approve",
+      "--source",
+      session,
+      "--line",
+      5,
+      "--quote",
+      "P1, P2 都做",
+      "--apply",
+      code=2,
+    )
+    self.assertIn("not presented", error["error"])
+    self.assertIn("imported:run-0:P1", error["error"])
+    self.assertEqual(sum(row["type"] == "decision" for row in self.rows()), 0)
+
+  def test_separate_decide_calls_still_enforce_bound_other(self):
+    path, _body = self.packet(
+      issues=[
+        {"id": "imported:run-1:P1", "title": "Lost handoff in workflow", "related_to": []},
+        {"id": "imported:run-1:P2", "title": "Broken file link format", "related_to": []},
+      ],
+      discoveries=[],
+      events=[],
+    )
+    self.cli("ingest", "--packet", path, "--apply")
+    session = self.new("separate-session.jsonl")
+    session.write_text(
+      "\n".join(
+        json.dumps(row, ensure_ascii=False)
+        for row in [
+          {
+            "type": "assistant",
+            "timestamp": BEFORE,
+            "message": {
+              "role": "assistant",
+              "content": "1. imported:run-1:P1 Lost handoff in workflow\n2. imported:run-1:P2 Broken file link format",
+            },
+          },
+          {
+            "type": "user",
+            "timestamp": WHEN,
+            "uuid": "sep-human-1",
+            "message": {"role": "user", "content": "全照建議"},
+          },
+        ]
+      )
+      + "\n",
+      encoding="utf-8",
+    )
+    first = self.cli(
+      "decide",
+      "--issue",
+      "imported:run-1:P1",
+      "--action",
+      "approve",
+      "--source",
+      session,
+      "--line",
+      2,
+      "--quote",
+      "全照建議",
+      "--apply",
+    )
+    self.assertEqual(first["appended"], 1)
+    second = self.cli(
+      "decide",
+      "--issue",
+      "imported:run-1:P2",
+      "--action",
+      "approve",
+      "--source",
+      session,
+      "--line",
+      2,
+      "--quote",
+      "全照建議",
+      "--apply",
+      code=2,
+    )
+    self.assertIn("already bound to imported:run-1:P1", second["error"])
+    piggyback = self.cli(
+      "decide",
+      "--issues",
+      "imported:run-1:P1,imported:run-1:P2",
+      "--action",
+      "approve",
+      "--source",
+      session,
+      "--line",
+      2,
+      "--quote",
+      "全照建議",
+      "--apply",
+      code=2,
+    )
+    self.assertIn("already bound to imported:run-1:P1", piggyback["error"])
+    self.assertEqual(sum(row["type"] == "decision" for row in self.rows()), 1)
+
 
 if __name__ == "__main__":
   unittest.main()
