@@ -1083,6 +1083,7 @@ def post_json(url, key, payload, timeout=None):
     headers={
       "Authorization": f"Bearer {key}",
       "Content-Type": "application/json",
+      "User-Agent": "session-audit",
     },
   )
   opener = urllib.request.build_opener(RefuseRedirect)

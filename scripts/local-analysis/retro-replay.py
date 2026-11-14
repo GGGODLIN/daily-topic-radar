@@ -538,7 +538,7 @@ class RefuseRedirect(urllib.request.HTTPRedirectHandler):
 
 def post(endpoint, key, payload, timeout):
   request = urllib.request.Request(endpoint, data=payload, method="POST", headers={
-    "content-type": "application/json", "anthropic-version": "2023-06-01", "authorization": "Bearer " + key})
+    "content-type": "application/json", "anthropic-version": "2023-06-01", "authorization": "Bearer " + key, "user-agent": "retro-replay"})
   started = time.monotonic()
   status, raw, error = 0, b"", None
   try:

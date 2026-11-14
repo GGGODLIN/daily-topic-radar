@@ -277,7 +277,8 @@ def call_model(alias, prompt, key, timeout=600, max_tokens=16000):
     body = json.dumps({'model': alias, 'max_tokens': max_tokens,
                        'messages': [{'role': 'user', 'content': prompt}]}).encode()
     req = urllib.request.Request(RELAY + '/chat/completions', data=body, headers={
-        'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
+        'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key,
+        'User-Agent': 'memory-origin'})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())

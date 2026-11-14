@@ -222,7 +222,7 @@ def call_model(config, condition, blocks):
     "system": SYSTEM_PROMPT,
     "messages": [{"role": "user", "content": prompt}],
   }
-  headers = {"content-type": "application/json", "anthropic-version": "2023-06-01"}
+  headers = {"content-type": "application/json", "anthropic-version": "2023-06-01", "user-agent": "retro-judge"}
   key = os.environ.get("RETRO_JUDGE_API_KEY")
   if key:
     headers["authorization"] = "Bearer " + key

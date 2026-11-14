@@ -161,12 +161,36 @@ else:
     print("- 沒有成功請求")
 PY
 
+cat > "$TMP/token_audit_stub.py" <<'PY'
+import os
+import sys
+
+assert sys.argv[1:] == ["--daily-report"], sys.argv
+mode = os.environ.get("AUDIT_STUB_MODE", "clean")
+if mode == "fail":
+    print("Traceback: audit crash", file=sys.stderr)
+    sys.exit(1)
+print("## Token 與元件健康對帳（過去 24 小時）")
+print()
+print("> 資料來源：Magpie `usage.jsonl`（含 `direct-usage-report`）＋本機 Hook／外掛狀態檔。")
+print()
+if mode == "clean":
+    print("Token 與元件健康對帳無異常")
+    print("自檢：涵蓋 120 筆紀錄｜非快取 1.2M、快取讀取 4.5M")
+else:
+    print("結論：⚠ 1 項進行中異常")
+    print()
+    print("### 進行中異常（需檢查）")
+    print("- ⚠ **groq-qwen-3.8-27b → vultr/qwen3.8-27b**：假 200 思考耗盡空正文 187/187（100.0%）")
+PY
+
 run_wrapper() {
-  local stub_mode="$1" hello_mode="$2" rw="${3:-$TMP/relay_watch_stub.py}"
+  local stub_mode="$1" hello_mode="$2" rw="${3:-$TMP/relay_watch_stub.py}" ta="${4:-$TMP/token_audit_stub.py}"
   echo "$hello_mode" > "$TMP/mode"
   rm -rf "$TMP/out" "$TMP/logs"
   rm -f "$TMP/models" "$TMP/body"
   STUB_MODE="$stub_mode" \
+  AUDIT_STUB_MODE="${T_AUDIT_MODE:-clean}" \
   LOCAL_ANALYSIS_DATE="$DATE" \
   FREE_POOL_OUT_DIR="$TMP/out" \
   FREE_POOL_LOG_DIR_PATH="$TMP/logs" \
@@ -175,6 +199,7 @@ run_wrapper() {
   FREE_POOL_PORT_RELAY="$PORT" \
   FREE_POOL_AR_URL="http://127.0.0.1:$PORT" \
   FREE_POOL_RELAY_WATCH="$rw" \
+  FREE_POOL_TOKEN_AUDIT="$ta" \
   bash "${RUN_WITH:-$WRAPPER}" ${RUN_ARGS:-} >/dev/null 2>&1
 }
 
@@ -255,6 +280,19 @@ run_wrapper clean ok "$TMP/does-not-exist.py"; rc=$?
 RUN_WITH="$RUNNER" RUN_ARGS="$WRAPPER $out_file $DATE true" run_wrapper fail ok; rc=$?
 [ "$rc" -ne 0 ] && pass "runner reports channel failure" || fail "runner reports channel failure — rc=$rc"
 [ ! -e "$out_file" ] && pass "runner leaves no report on failure" || fail "runner leaves no report on failure"
+
+# 5. relay-status --daily-report 有異常時（即使 hello 與 relay-watch 全綠）仍出報告，且保留結尾 24h 段；崩潰時 fail-loud。
+T_AUDIT_MODE="anomaly" run_wrapper clean ok; rc=$?
+out="$(cat "$out_file" 2>/dev/null)"
+[ "$rc" -eq 0 ] && pass "token audit anomaly exits 0" || fail "token audit anomaly exits 0 — rc=$rc"
+assert_not_contains "token audit anomaly is not silent" "__SILENT__" "$out"
+assert_contains "token audit section included" "## Token 與元件健康對帳（過去 24 小時）" "$out"
+assert_contains "token audit fake-200 surfaced" "假 200 思考耗盡空正文" "$out"
+assert_day_section_preserved "token audit anomaly keeps 24h section verbatim at tail" "$out" clean
+
+T_AUDIT_MODE="fail" run_wrapper clean ok; rc=$?
+[ "$rc" -ne 0 ] && pass "token audit crash fails the wrapper" || fail "token audit crash fails the wrapper — rc=$rc"
+assert_contains "token audit crash logged" "relay-status --daily-report 失敗" "$(cat "$log_file" 2>/dev/null)"
 
 bash -n "$WRAPPER" && pass "wrapper syntax" || fail "wrapper syntax"
 

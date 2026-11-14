@@ -28,10 +28,10 @@
 # 探測失敗／config 類。動工依據 gate-authoring；2026-09-21 使用者拍板
 # 「獨立 free-pool 軸、不併 codex-cdp」——codex-cdp 管連線地基、本軸管供應鏈三層死法。
 #
-# 過去 24 小時段（2026-09-28 relay-watch 06 號票）：呼叫 cliproxyapi-setup 的
-# `relay-watch report`，把整個 relay 池過去 24 小時的門檻 alias、低樣本故障、額度拒絕、
-# 覆蓋缺口與自檢接在 hello 段後面；門檻定義只在 relay_watch.py，和 30 分鐘排程共用。
-# hello 有發現或 24 小時段有異常就出報告；兩者都沒事才 __SILENT__。report 失敗（非零、
+# 過去 24 小時段（2026-09-28 relay-watch 06 號票；2026-11-15 接上 relay-status --daily-report）：
+# 呼叫 cliproxyapi-setup 的 `relay-watch report` 與 `relay-status --daily-report`（跨層健康與
+# Token 異常對帳：假 200 思考截斷、主腿退備援、本機 Hook 對帳、7d 倍數暴衝），接在 hello 段後面。
+# hello、Token 對帳或 24 小時段任一有進行中異常就出報告；三者都沒事才 __SILENT__。任一子報表失敗（非零、
 # 找不到檔、空輸出）時本腳本非零退出，run-shell-channel 回報失敗、digest 顯示「偵測
 # channel 失敗」，不退回只看 hello 的全綠。
 # 資料來源與覆蓋限制由 relay-watch 報告，不在 wrapper 覆寫來源判斷。
@@ -67,6 +67,7 @@ PORT_RELAY="${FREE_POOL_PORT_RELAY:-8317}"
 PORT_AR="${FREE_POOL_PORT_AR:-8002}"
 AR_URL="${FREE_POOL_AR_URL:-http://127.0.0.1:$PORT_AR}"
 RELAY_WATCH="${FREE_POOL_RELAY_WATCH:-$HOME/Desktop/projects/cliproxyapi-setup/tools/relay-watch/relay_watch.py}"
+RELAY_STATUS="${FREE_POOL_TOKEN_AUDIT:-$HOME/Desktop/projects/cliproxyapi-setup/tools/relay-status/relay_status.py}"
 
 FINDINGS="$LOG_DIR/.free-pool-findings-$DATE.tmp"
 : > "$FINDINGS"
@@ -149,7 +150,7 @@ for member in members:
         "temperature": 0,
         "metadata": {"budget_mode": "diagnostic"},
     }).encode()
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "free-pool-probe"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(base + "/chat/completions", data=body, method="POST", headers=headers)
@@ -215,6 +216,19 @@ printf '%s\n' "$day_section" >> "$LOG"
 day_clean=false
 grep -qx '過去 24 小時無異常' <<< "$day_section" && day_clean=true
 
+audit_rc=0
+audit_raw=$("$PY" "$RELAY_STATUS" --daily-report 2>>"$LOG") || audit_rc=$?
+if [[ "$audit_rc" -ne 0 || -z "$audit_raw" ]]; then
+  echo "relay-status --daily-report 失敗（exit ${audit_rc}）：${RELAY_STATUS}" >> "$LOG"
+  rm -f "$FINDINGS"
+  echo "free-pool: relay-status --daily-report failed (exit ${audit_rc}), see $LOG" >&2
+  exit 1
+fi
+audit_section="$audit_raw"
+printf '%s\n' "$audit_section" >> "$LOG"
+audit_clean=false
+grep -qx 'Token 與元件健康對帳無異常' <<< "$audit_section" && audit_clean=true
+
 if [[ -s "$FINDINGS" ]]; then
   {
     echo "# free-pool liveness ${DATE}"
@@ -225,16 +239,22 @@ if [[ -s "$FINDINGS" ]]; then
       echo "- ⚠ ${msg}"
     done
     echo
+    if [[ "$audit_clean" == false ]]; then
+      printf '%s\n\n' "$audit_section"
+    fi
     printf '%s\n' "$day_section"
   } > "$OUT"
   rm -f "$FINDINGS"
   echo "free-pool: findings written to $OUT"
-elif [[ "$day_clean" == false ]]; then
+elif [[ "$day_clean" == false || "$audit_clean" == false ]]; then
   {
     echo "# free-pool liveness ${DATE}"
     echo
     echo "結論：小請求存活（free／free-smart 各腿 hello 通過，未發現程序、額度或位址異常）"
     echo
+    if [[ "$audit_clean" == false ]]; then
+      printf '%s\n\n' "$audit_section"
+    fi
     printf '%s\n' "$day_section"
   } > "$OUT"
   rm -f "$FINDINGS"
