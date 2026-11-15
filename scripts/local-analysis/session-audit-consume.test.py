@@ -1208,7 +1208,7 @@ class JointP1ToP5PatrolTest(_dual_mod.DualLaneBaseTests):
           if act == "primary_yield_shadow_ok":
             prev = mode
             self.set_bg_mode("quality")
-            self.set_concurrency(active=[{"agent": "claude-code", "model": "gemini-4-argon"}])
+            self.set_concurrency(active=[{"agent": "claude-code", "model": "gemini-4-argon"}] * 8)
             with sqlite3.connect(self.state / "state.sqlite") as conn:
               conn.execute("DELETE FROM leg_pauses WHERE alias = 'bg-audit-shadow'")
               conn.commit()

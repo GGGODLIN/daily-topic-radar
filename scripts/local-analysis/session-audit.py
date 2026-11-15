@@ -71,8 +71,10 @@ LEG_RESENDS = 2
 GROK_SAMPLE_MAX_AGE_SECONDS = 1800
 LEG_FALLBACK_FAILURES = frozenset({"bad-model-json", "empty-model-content", "finish-unconfirmed"})
 DEFAULT_CONCURRENCY_URL = "http://127.0.0.1:18417/v1/magpie/concurrency"
-DEFAULT_HYDROGEN_CAP_10M = 15
+DEFAULT_HYDROGEN_CAP_10M = 12
 HYDROGEN_WINDOW_SECONDS = 600
+HYDROGEN_FOREGROUND_YIELD_THRESHOLD = 8
+HYDROGEN_YIELD_RECHECK_SECONDS = 15.0
 HYDROGEN_SHARED_MODEL_RE = re.compile(
   r"google/|gemini-4-(?:argon|carbon|hydrogen)|(?:^|/)(?:gemini-pro|gemini-flash)"
 )
@@ -2933,17 +2935,21 @@ def hydrogen_should_yield(connection, concurrency_url, cap_10m):
   active = data.get("active") or []
   if not isinstance(active, list):
     return False
+  fg_google_active = 0
   for entry in active:
     if not isinstance(entry, dict):
       continue
     agent = str(entry.get("agent") or "")
     if agent in NON_FOREGROUND_AGENTS:
       continue
+    provider_l = str(entry.get("provider") or "").lower()
     model_l = str(entry.get("model") or "").lower()
-    if model_l.startswith(("antigravity/", "bg-", "group/bg-")):
+    if provider_l == "antigravity" or model_l.startswith(("antigravity/", "bg-", "group/bg-")):
       continue
-    if HYDROGEN_SHARED_MODEL_RE.search(model_l):
-      return True
+    if provider_l == "google" or HYDROGEN_SHARED_MODEL_RE.search(model_l):
+      fg_google_active += 1
+      if fg_google_active >= HYDROGEN_FOREGROUND_YIELD_THRESHOLD:
+        return True
   return False
 
 
@@ -3287,6 +3293,7 @@ def cmd_run(args):
 
     def start(group, row, raw, prep=None, block=None):
       session_key = transcript(row) if block is None else (transcript(row), block["block_start"])
+      inode_by_session[session_key] = row["inode"]
       analyzer = analyze_one(connection, row, raw, url, key, model, fragments, lifetime, remaining[group], rules_repo, prep, block)
       sessions.add(session_key)
       resume(session_key, group, analyzer)
@@ -3329,7 +3336,9 @@ def cmd_run(args):
     cli2api_key = env_value(args.keys_file, "CLI2API_API_KEY")
     health_cache = {}
     probing = set()
-    primary_yielded = {"value": False}
+    primary_yielded = {"value": False, "until": 0.0}
+    inode_by_session = {}
+    yielded_inodes = set()
 
     def active_primary_legs():
       return [leg for leg in capacity if not (primary_yielded["value"] and is_hydrogen_primary_leg(leg))]
@@ -3499,6 +3508,7 @@ def cmd_run(args):
         return False
       if is_hydrogen_primary_leg(leg) and hydrogen_should_yield(connection, args.concurrency_url, args.hydrogen_cap_10m):
         primary_yielded["value"] = True
+        primary_yielded["until"] = time.monotonic() + min(HYDROGEN_YIELD_RECHECK_SECONDS, args.rescan_seconds)
         leg = pick_leg(avoid)
         if leg is None:
           return False
@@ -3521,6 +3531,9 @@ def cmd_run(args):
       # 先放下這段，來源維持原狀態，下一輪從存好的水位接著送；池死掉不是 session 的錯。
       analyzer.close()
       sessions.remove(session_id)
+      inode = inode_by_session.pop(session_id, None)
+      if primary_yielded["value"] and inode is not None:
+        yielded_inodes.add(inode)
 
     def drop_shadow(session_id, analyzer):
       analyzer.close()
@@ -3565,7 +3578,15 @@ def cmd_run(args):
       next_review = time.monotonic() + LEG_REVIEW_SECONDS
       while True:
         open_for_work = time.monotonic() < lifetime
+        if open_for_work and primary_yielded["value"] and time.monotonic() >= primary_yielded["until"]:
+          primary_yielded["value"] = False
+          attempted.difference_update(yielded_inodes)
+          yielded_inodes.clear()
+          scan()
         if open_for_work and time.monotonic() >= next_scan:
+          primary_yielded["value"] = False
+          attempted.difference_update(yielded_inodes)
+          yielded_inodes.clear()
           scan()
           next_scan = time.monotonic() + args.rescan_seconds
         if open_for_work and time.monotonic() >= next_review:
@@ -3634,7 +3655,10 @@ def cmd_run(args):
           for session_id, analyzer, *_ in shadow_parked:
             drop_shadow(session_id, analyzer)
           break
-        timeout = max(0.0, min(next_scan, next_review) - time.monotonic()) if open_for_work else None
+        next_wake = min(next_scan, next_review)
+        if primary_yielded["value"]:
+          next_wake = min(next_wake, primary_yielded["until"])
+        timeout = max(0.0, next_wake - time.monotonic()) if open_for_work else None
         done, _ = wait(active, timeout=timeout, return_when=FIRST_COMPLETED)
         for future in done:
           lane_kind, session_id, analyzer, group, leg, payload, resends = active.pop(future)

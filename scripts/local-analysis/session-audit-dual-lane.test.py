@@ -103,7 +103,7 @@ class DualLaneBaseTests(population.PopulationTests):
   def set_bg_mode(self, mode):
     self.bg_mode_file.write_text(json.dumps({'mode': mode}))
 
-  def dual_flags(self, url, direct='bg-audit-primary:2', shadow='bg-audit-shadow:2', standby='', concurrency_url=None, cap_10m=15, extra=()):
+  def dual_flags(self, url, direct='bg-audit-primary:2', shadow='bg-audit-shadow:2', standby='', concurrency_url=None, cap_10m=12, extra=()):
     args = [
       *self.flags(url),
       '--direct-legs', direct,
@@ -295,8 +295,8 @@ class ConcreteCapabilityExamples(DualLaneBaseTests):
       return fixtures.analysis([fixtures.finding('YIELD_WORK', observation=f'obs-{model}')]), 200
 
     _, url = self.provider(reply)
-    # Active foreground Google Gemini request -> primary yields, shadow continues!
-    self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}])
+    # >=8 simultaneous foreground Google Gemini requests -> primary yields, shadow continues!
+    self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}] * 8)
     done = self.cli(['run', *self.dual_flags(url)], timeout=30)
     self.assertEqual(done.returncode, 0, done.stderr)
     self.assertEqual(seen, ['bg-audit-shadow'])
@@ -306,9 +306,10 @@ class ConcreteCapabilityExamples(DualLaneBaseTests):
     self.assertEqual(snap['shadow_cursors'][0]['status'], 'complete')
     self.assertEqual(self.db_query('SELECT alias FROM leg_pauses'), [])
 
-    # Background / antigravity entries do NOT trigger yield -> primary resumes and completes.
+    # <8 foreground Google calls (7 foreground + background/antigravity noise) do NOT trigger yield -> primary resumes and completes.
     seen.clear()
     self.set_concurrency(active=[
+      *[{'agent': 'claude-code', 'model': 'gemini-4-argon'}] * 7,
       {'agent': 'session-audit', 'model': 'gemini-4-hydrogen'},
       {'agent': 'claude-code', 'model': 'antigravity/gemini-pro'},
       {'agent': 'claude-code', 'model': 'bg-audit-primary'},
@@ -319,6 +320,30 @@ class ConcreteCapabilityExamples(DualLaneBaseTests):
     snap2 = self.state_snapshot()
     self.assertEqual(snap2['sources'][0]['status'], 'complete')
     self.assertTrue(snap2['sources'][0]['latest_complete'])
+
+  def test_primary_yield_rechecks_within_same_run_without_locking_whole_cycle(self):
+    self.set_bg_mode('quality')
+    self.source('work/recheck.jsonl', 'RECHECK_WORK')
+    seen = []
+
+    def reply(body):
+      model = json.loads(body)['model']
+      seen.append(model)
+      if model == 'bg-audit-shadow':
+        # While shadow is in flight, foreground burst subsides from 8 -> 2 (<8), then allow recheck timer to fire.
+        time.sleep(0.15)
+        self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-carbon'}] * 2)
+        time.sleep(0.25)
+      return fixtures.analysis([fixtures.finding('RECHECK_WORK', observation=f'obs-{model}')]), 200
+
+    _, url = self.provider(reply)
+    self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-carbon'}] * 8)
+    done = self.cli(['run', *self.dual_flags(url, extra=['--rescan-seconds', '0.1'])], timeout=30)
+    self.assertEqual(done.returncode, 0, done.stderr)
+    self.assertEqual(set(seen), {'bg-audit-shadow', 'bg-audit-primary'})
+    snap = self.state_snapshot()
+    self.assertEqual(snap['sources'][0]['status'], 'complete')
+    self.assertEqual(snap['shadow_cursors'][0]['status'], 'complete')
 
   def test_hydrogen_10m_cap_yields_primary_without_false_complete_while_shadow_continues(self):
     self.set_bg_mode('quality')
@@ -352,7 +377,7 @@ class ConcreteCapabilityExamples(DualLaneBaseTests):
 
     _, url = self.provider(reply)
     # 1. Delay longer than 2.5s timeout -> fail-open
-    self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}], delay=3.2)
+    self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}] * 8, delay=3.2)
     done = self.cli(['run', *self.dual_flags(url, shadow='')], timeout=30)
     self.assertEqual(done.returncode, 0, done.stderr)
     self.assertEqual(seen, ['bg-audit-primary'])
@@ -361,7 +386,7 @@ class ConcreteCapabilityExamples(DualLaneBaseTests):
     # 2. HTTP 500 from concurrency endpoint -> fail-open
     seen.clear()
     self.source('work/failopen2.jsonl', 'FAILOPEN_WORK_2')
-    self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}], code=500, delay=0.0)
+    self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}] * 8, code=500, delay=0.0)
     done2 = self.cli(['run', *self.dual_flags(url, shadow='')], timeout=30)
     self.assertEqual(done2.returncode, 0, done2.stderr)
     self.assertEqual(seen, ['bg-audit-primary'])
@@ -521,7 +546,7 @@ class DualLanePropertyTests(DualLaneBaseTests):
             incomplete_before = {r['inode'] for r in before['sources'] if r['status'] != 'complete'}
 
           if action == 'step_primary_yield':
-            self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}])
+            self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}] * 8)
             behavior['primary_code'] = 200
             behavior['shadow_code'] = 200
             self._run_step_cli(url)
@@ -538,7 +563,7 @@ class DualLanePropertyTests(DualLaneBaseTests):
             # Isolate shadow by ensuring quality mode and yielding primary via concurrency
             prev_mode = mode
             self.set_bg_mode('quality')
-            self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}])
+            self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}] * 8)
             with sqlite3.connect(self.state / 'state.sqlite') as conn:
               conn.execute("DELETE FROM leg_pauses WHERE alias = 'bg-audit-shadow'")
               conn.commit()
@@ -555,7 +580,7 @@ class DualLanePropertyTests(DualLaneBaseTests):
           elif action == 'step_shadow_402':
             prev_mode = mode
             self.set_bg_mode('quality')
-            self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}])
+            self.set_concurrency(active=[{'agent': 'claude-code', 'model': 'gemini-4-argon'}] * 8)
             with sqlite3.connect(self.state / 'state.sqlite') as conn:
               conn.execute("DELETE FROM leg_pauses WHERE alias = 'bg-audit-shadow'")
               conn.commit()
