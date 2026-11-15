@@ -86,5 +86,36 @@ PY
 expect_pass "accepts details.repo-reconciled with single-line li items" "$TMP_DIR/reconciled-ok.html"
 expect_fail "rejects details.repo-reconciled with two li tags on the same line" "$TMP_DIR/reconciled-same-line.html"
 
+sed 's|href="https://|href=" https://|' "$TEMPLATE" > "$TMP_DIR/leading-ws-href.html"
+expect_fail "rejects href with leading whitespace" "$TMP_DIR/leading-ws-href.html"
+
+sed 's|href="https://|href="https:// |' "$TEMPLATE" > "$TMP_DIR/embedded-ws-href.html"
+expect_fail "rejects href with embedded whitespace" "$TMP_DIR/embedded-ws-href.html"
+
+sed 's|<body>|<body><p>殘留裸反引號 `stray_code` 測試</p>|' "$TEMPLATE" > "$TMP_DIR/stray-backtick.html"
+expect_fail "rejects stray Markdown backticks in HTML prose" "$TMP_DIR/stray-backtick.html"
+
+sed 's|<body>|<body><p>殘留裸粗體 **stray_bold** 測試</p>|' "$TEMPLATE" > "$TMP_DIR/stray-bold.html"
+expect_fail "rejects stray Markdown **bold** in HTML prose" "$TMP_DIR/stray-bold.html"
+
+# Single-arg invocation on digest-YYYY-MM-DD.html must infer same-day YYYY-MM-DD.md (not 2026-08-18.md)
+cp "$TEMPLATE" "$TMP_DIR/digest-2099-12-31.html"
+if bash "$CHECK" "$TMP_DIR/digest-2099-12-31.html" >/dev/null 2>&1; then
+  echo "FAIL: single-arg digest-YYYY-MM-DD.html unexpectedly fell back to 2026-08-18.md" >&2
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS: single-arg digest-YYYY-MM-DD.html requires matching YYYY-MM-DD.md instead of 2026-08-18.md"
+  PASS=$((PASS + 1))
+fi
+
+cp "$RAW" "$TMP_DIR/2099-12-31.md"
+if bash "$CHECK" "$TMP_DIR/digest-2099-12-31.html" >/dev/null 2>&1; then
+  echo "PASS: single-arg digest-YYYY-MM-DD.html auto-discovers co-located YYYY-MM-DD.md"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: single-arg digest-YYYY-MM-DD.html failed when co-located YYYY-MM-DD.md exists" >&2
+  FAIL=$((FAIL + 1))
+fi
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
