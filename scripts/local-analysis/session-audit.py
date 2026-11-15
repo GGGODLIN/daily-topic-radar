@@ -200,11 +200,11 @@ OTP_LABEL_RE = re.compile(
 )
 SLASH_CREDENTIAL_PREFIX_RE = re.compile(
   r"(?i)((?:帳密|帳號密碼|帳號\s*[/／]\s*密碼|credentials?)\s*[：:=]\s*"
-  r"(?:\[EMAIL\]|[A-Za-z0-9_.+-]{2,64})[ \t]*[/／][ \t]*)"
+  r"[`'\"\"]?(?:\[EMAIL\]|[A-Za-z0-9_.+-]{2,64})[`'\"\"]?[ \t]*[/／][ \t]*)"
   r"(?:`([^`\r\n]+)`|\"([^\"\r\n]+)\"|'([^'\r\n]+)'|(?!\[[A-Z_]+\])([^\s,，。；;、（）()\r\n|\"'`]{4,}))"
 )
 EMAIL_SLASH_CREDENTIAL_RE = re.compile(
-  r"(?<!://)(\[EMAIL\][ \t]*[/／][ \t]*)"
+  r"(?<!://)([`'\"\"]?\[EMAIL\][`'\"\"]?[ \t]*[/／][ \t]*)"
   r"(?:`([^`\r\n]+)`|\"([^\"\r\n]+)\"|'([^'\r\n]+)'|(?!\[[A-Z_]+\]|https?:)([^\s,，。；;、（）()\r\n|\"'`]{4,}))"
 )
 CREDENTIAL_LINE_HINT_RE = re.compile(
@@ -216,9 +216,9 @@ CJK_SECRET_PAREN_RE = re.compile(
   r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
   r"(\s*[（(]\s*)(?:`[^`\r\n）)]+`|\"[^\"\r\n）)]*\"|'[^'\r\n）)]*'|[A-Za-z0-9!@#$%^&*_+=.-]{6,})(\s*[）)])"
 )
-# 本機服務、webhook 或 OAuth callback URL 常以查詢參數傳遞長隨機 token／授權碼；限縮於憑證參數名且值符合 bare_key_secret（>=20 碼英數混合，排除 ?code=200 或 ?state=open 等短參數）。
+# 本機服務、webhook、Artifact 分享連結（?sk=）或 OAuth callback URL 常以查詢參數傳遞長隨機 token／授權碼；排除 Slack `<url|label>` 與 Markdown `)` 尾界以免連帶吃進右側 URL 的 `:/` 而漏遮。
 URL_KEY_PARAM_RE = re.compile(
-  r"(?i)((?:[?&]|&amp;|%3[fF]|%26)(?:k|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)(?:=|%3[dD]))((?:(?!&amp;)[^&#%\s\"'<>`\\]|%(?!26|23)[0-9A-Fa-f]{2})+)"
+  r"(?i)((?:[?&]|&amp;|%3[fF]|%26)(?:k|sk|key|api[_-]?key|token|access[_-]?token|auth|secret|sig|signature|pass|password|pwd|code|state)(?:=|%3[dD]))((?:(?!&amp;)[^&#%\s\"'<>`\\|)\]]|%(?!26|23)[0-9A-Fa-f]{2})+)"
 )
 AX_READ_PREFIX_RE = re.compile(r"^([+-]?[ \t]*\d+(?:\t|→))(.*)$")
 JSON_STRING_LITERAL_RE = re.compile(r'"(?:[^"\\\r\n]|\\.)*"')

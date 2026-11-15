@@ -2975,6 +2975,49 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual(mod.credential_names("CLAUDE_CODE_MAX_OUTPUT_TOKEN=10000000"), set())
     self.assertIn("RECOVERY_TOKEN", mod.credential_names("RECOVERY_TOKEN=87654321"))
 
+  def test_redaction_p13_backtick_slash_and_p14_artifact_sk_param(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_p13_p14", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    backtick_pw = "SynthBacktickPw99!"
+    premasked_pw = "SynthPremaskedPw88#"
+    slack_sk = "Synthet1cShareKey22Chr"
+    amp_sk = "Synthet1cAmpShare22Key"
+    md_sk = "Synthet1cMdShare22KeyX"
+    caller_key_id = "a1b2c3d4e5f60718293a4b5c"
+
+    payload = "\n".join([
+      f"- AMD SSO & LabLab：`tester@example.com` / `{backtick_pw}`（憑證見 `~/.config/amd/credentials.json`）",
+      f"- 預遮信箱：`[EMAIL]` / `{premasked_pw}`（帳密備份）",
+      json.dumps({
+        "ok": True,
+        "messages": [
+          {"text": f"看這份 <https://claude.ai/artifact/demo-doc?sk={slack_sk}|https://claude.ai/artifact/demo-doc>"},
+        ],
+      }, ensure_ascii=False),
+      f"html=https://claude.ai/artifact/demo-doc?tab=1&amp;sk={amp_sk}&amp;mode=view",
+      f"md=[開啟文件](https://claude.ai/artifact/demo-doc?sk={md_sk})",
+      "short=https://example.com/search?sk=zh&code=200",
+      json.dumps({"callerKey": caller_key_id, "callerKeyName": "machine-cpa-key-2"}),
+    ])
+
+    out = mod.redact_text(payload)
+    self.assertEqual(mod.redact_text(out), out, "redact_text must remain idempotent")
+    self.assertFalse(backtick_pw in out, "backtick email/password pair leaked")
+    self.assertFalse(premasked_pw in out, "premasked backtick email/password pair leaked")
+    self.assertFalse(slack_sk in out, "Slack <url|label> artifact sk param leaked")
+    self.assertFalse(amp_sk in out, "HTML-escaped &amp;sk= param leaked")
+    self.assertFalse(md_sk in out, "Markdown link sk= param leaked")
+    self.assertIn("`[EMAIL]` / [REDACTED]", out)
+    self.assertIn("?sk=[REDACTED]|https://claude.ai/artifact/demo-doc>", out)
+    self.assertIn("&amp;sk=[REDACTED]&amp;mode=view", out)
+    self.assertIn("?sk=[REDACTED])", out)
+    self.assertIn("?sk=zh&code=200", out)
+    self.assertIn(f'"callerKey": "{caller_key_id}"', out)
+    self.assertIn('"callerKeyName": "machine-cpa-key-2"', out)
+    self.assertIn("URL_KEY_PARAM", mod.credential_names(f"https://claude.ai/artifact/demo?sk={slack_sk}"))
+
 
 def analysis_with_media(media):
   return openai(
