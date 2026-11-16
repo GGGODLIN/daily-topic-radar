@@ -394,8 +394,8 @@ def pin_check():
         return {"error": "cannot list candidate releases"}
     candidates = [t for t in releases.split() if _vkey(norm(t)) > _vkey(PIN_VERSION)]
     try:
-        s = run(["gh", "api", f"repos/{PIN_REPO}/contents/CHANGELOG.md", "--jq", ".content"])
-        changelog = base64.b64decode(s).decode("utf-8", "replace") if s else None
+        # GitHub Contents API 對 >1MB 檔案在預設 JSON 回應中 .content 為空字串；改要 raw 正文避免 CHANGELOG 增長後靜默失效。
+        changelog = run(["gh", "api", "-H", "Accept: application/vnd.github.raw", f"repos/{PIN_REPO}/contents/CHANGELOG.md"], timeout=30)
     except Exception:
         changelog = None
     if not changelog:

@@ -416,7 +416,7 @@ echo "\$*" >> "$GH_LOG"
 case "\$*" in
   *"issues/90299 --jq .state"*) printf '$1\n' ;;
   *"issues/90537 --jq .state"*) printf '$2\n' ;;
-  *"contents/CHANGELOG.md"*) base64 < "$CL_FIXTURE" ;;
+  *"-H Accept: application/vnd.github.raw"*"contents/CHANGELOG.md"*) cat "$CL_FIXTURE" ;;
   *"releases?per_page=100"*) printf 'v2.1.251\nv2.1.250\n' ;;
   *) exit 1 ;;
 esac
@@ -495,7 +495,7 @@ cat > "$GH_BIN/gh" <<EOF
 #!/bin/bash
 case "\$*" in
   *"issues/90299 --jq .state"*|*"issues/90537 --jq .state"*) printf 'open\n' ;;
-  *"contents/CHANGELOG.md"*) base64 < "$CL_FIXTURE" ;;
+  *"-H Accept: application/vnd.github.raw"*"contents/CHANGELOG.md"*) cat "$CL_FIXTURE" ;;
   *"releases?per_page=5"*) printf 'v2.1.257\nv2.1.256\nv2.1.255\nv2.1.254\nv2.1.253\n' ;;
   *"releases?per_page=100"*) printf 'v2.1.257\nv2.1.256\nv2.1.255\nv2.1.254\nv2.1.253\nv2.1.252\n' ;;
   *) exit 1 ;;
@@ -511,6 +511,21 @@ assert hits, '較早候選 release 的修復訊號不該被查詢窗口擠出'
 assert hits[0]['latest'] == 'v2.1.257', 'finding 應仍列最新候選 release: ' + str(hits[0])
 print('✅ 測 11 release 窗口：第六筆候選版本含修復訊號仍會 finding')
 " || fail "pin 測 11 斷言失敗"
+
+python3 - "$CL_FIXTURE" <<'PY'
+import sys
+with open(sys.argv[1], "w") as fh:
+    fh.write("## 2.1.252\n- Restored fullscreen sticky prompt header\n\n## 2.0.0\n" + ("x" * 1_300_000) + "\n")
+PY
+out_pin_big=$(pin_run)
+echo "$out_pin_big" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+errs = [e for e in d['errors'] if e.get('name') == 'claude-code-pin']
+assert hits and not errs, '>1MB CHANGELOG raw 路徑失敗: ' + str((hits, errs))
+print('✅ 測 11b >1MB CHANGELOG：走 raw Accept header 不受 1MB JSON .content 限制')
+" || fail "pin 測 11b >1MB 斷言失敗"
 
 cat > "$GH_BIN/gh" <<'EOF'
 #!/bin/bash
