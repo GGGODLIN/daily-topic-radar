@@ -375,12 +375,13 @@ def brew_latest(formula):
     except Exception:
         return None
 
-PIN_VERSION = "2.1.246"
-PIN_REPO = "anthropics/claude-code"
-PIN_ISSUES = ["90299", "90537"]
+# 2.1.246 sticky prompt 釘版已於 #90299 結案且本機解除釘版後退役；預設清空避免每日假警報，保留環境變數入口供日後釘版與測試使用。
+PIN_VERSION = os.environ.get("CCTOOL_PIN_VERSION", "").strip()
+PIN_REPO = os.environ.get("CCTOOL_PIN_REPO", "anthropics/claude-code").strip()
+PIN_ISSUES = [x.strip() for x in os.environ.get("CCTOOL_PIN_ISSUES", "").split(",") if x.strip()]
 
 def pin_check():
-    if os.environ.get("CCTOOL_PIN_CHECK") == "0":
+    if os.environ.get("CCTOOL_PIN_CHECK") == "0" or not PIN_VERSION or not PIN_ISSUES:
         return None
     states = []
     for num in PIN_ISSUES:

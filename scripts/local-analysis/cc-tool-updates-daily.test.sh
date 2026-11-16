@@ -425,13 +425,27 @@ chmod +x "$GH_BIN/gh"
 }
 
 pin_run(){
-  CCTOOL_PIN_CHECK=1 PATH="$GH_BIN:/usr/bin:/bin" \
+  CCTOOL_PIN_CHECK=1 CCTOOL_PIN_VERSION="2.1.246" CCTOOL_PIN_ISSUES="90299,90537" \
+  PATH="$GH_BIN:/usr/bin:/bin" \
   CCTOOL_MANIFEST="$TMP/m-empty.json" CCTOOL_IGNORE="$TMP/i.txt" \
   "$HELPER" --json 2>/dev/null
 }
 
 printf "[]" > "$TMP/m-empty.json"
 printf '## 2.1.251\n- Fixed something unrelated\n- Tab to toggle thinking (sticky across sessions)\n\n## 2.1.245\n- Fullscreen sticky prompt header fixed\n\n## ' > "$CL_FIXTURE"
+pin_stub closed closed
+: > "$GH_LOG"
+out_pin_default=$(CCTOOL_PIN_CHECK=1 PATH="$GH_BIN:/usr/bin:/bin" CCTOOL_MANIFEST="$TMP/m-empty.json" CCTOOL_IGNORE="$TMP/i.txt" "$HELPER" --json 2>/dev/null)
+[ ! -s "$GH_LOG" ] || fail "預設無 active pin 時不該呼叫 gh（log: $(cat "$GH_LOG")）"
+echo "$out_pin_default" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = [u for u in d['updates'] if u.get('manager') == 'claude-code-pin']
+errs = [e for e in d['errors'] if e.get('name') == 'claude-code-pin']
+assert not hits and not errs, '預設無 active pin 時不該產出 finding 或 error: ' + str((hits, errs))
+print('✅ 測 6b 預設無 active pin：不打 gh API、無 finding、無 error')
+" || fail "pin 測 6b 斷言失敗"
+
 pin_stub open open
 : > "$GH_LOG"
 out_pin1=$(pin_run)
