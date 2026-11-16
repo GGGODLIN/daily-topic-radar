@@ -34,12 +34,18 @@ const VIOLATION_TYPES = new Set(['unsourced-completion', 'unsourced-number', 'un
 const VIOLATION_ORDER = new Map([...VIOLATION_TYPES].map((type, index) => [type, index]))
 const EVIDENCE_V2_START_DATE = '2026-08-14'
 const PRIMARY_SAMPLE_COUNT = 20
-const PRIMARY_BATCH_SIZE = 5
-const PRIMARY_BATCH_COUNT = 4
+// Gemini 32K thinking+output 上限下，5 筆長回答與單批全量複核會耗盡思考額度回空字串；改為每批 ≤2 筆並提供單筆退路檔。
+const PRIMARY_BATCH_SIZE = 2
+const PRIMARY_BATCH_COUNT = 10
+const LEGACY_PRIMARY_BATCH_SIZE = 5
+const LEGACY_PRIMARY_BATCH_COUNT = 4
+const REAUDIT_BATCH_SIZE = 2
+const ITEM_BATCH_INDEX_OFFSET = 100
 const TRANSCRIPT_STABILITY_RETRIES = 3
 const TRANSCRIPT_STABILITY_WAIT_MS = 5
 const TRANSCRIPT_MAX_CANDIDATE_FILES = 128
-const TRANSCRIPT_MAX_CANDIDATE_BYTES = 8 * 1024 * 1024
+const TRANSCRIPT_MAX_SINGLE_FILE_BYTES = 8 * 1024 * 1024
+const TRANSCRIPT_MAX_CANDIDATE_BYTES = 32 * 1024 * 1024
 const MAX_READ_OFFSET = 1_000_000
 const MAX_READ_LIMIT = 100_000
 const MAX_RECONSTRUCTED_LINES = 100_000
@@ -53,7 +59,10 @@ const withoutLegacyDigests = (value) => value && typeof value === 'object' && !A
 const manifestPathFor = (reports, date) => path.join(reports, `${date}-evidence-level-manifest.json`)
 const samplesTextPathFor = (reports, date) => path.join(reports, `${date}-evidence-level-samples.txt`)
 const batchSamplesTextPathFor = (reports, date, index) => path.join(reports, `${date}-evidence-level-samples-batch-${index}.txt`)
+const itemSamplesTextPathFor = (reports, date, itemIndex) => path.join(reports, `${date}-evidence-level-samples-item-${itemIndex}.txt`)
 const reauditSamplesTextPathFor = (reports, date, attemptNonce = null) => path.join(reports, `${date}-evidence-level-reaudit-samples${attemptNonce == null ? '' : `-${attemptNonce}`}.txt`)
+const reauditBatchSamplesTextPathFor = (reports, date, attemptNonce, batchIndex) => path.join(reports, `${date}-evidence-level-reaudit-samples${attemptNonce == null ? '' : `-${attemptNonce}`}-batch-${batchIndex}.txt`)
+const reauditItemSamplesTextPathFor = (reports, date, attemptNonce, itemIndex) => path.join(reports, `${date}-evidence-level-reaudit-samples${attemptNonce == null ? '' : `-${attemptNonce}`}-item-${itemIndex}.txt`)
 const publicationPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.publish.json`)
 const reportPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.md`)
 const receiptPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.verified.json`)
@@ -380,9 +389,9 @@ const sameKeys = (value, keys) =>
   value && typeof value === 'object' && !Array.isArray(value) &&
   JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort())
 const isNonce = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
-const batchRangeFor = (index) => ({
-  start: (index - 1) * PRIMARY_BATCH_SIZE + 1,
-  end: index * PRIMARY_BATCH_SIZE,
+const batchRangeFor = (index, batchSize = PRIMARY_BATCH_SIZE) => ({
+  start: (index - 1) * batchSize + 1,
+  end: index * batchSize,
 })
 const sampleIdentity = ({ timestamp, session, path: samplePath, row_index }) => ({
   timestamp,
@@ -436,17 +445,23 @@ const parseManifest = (file, date) => {
     if (!/^[a-f0-9]{64}$/.test(manifest.challenge) || manifest.samples.length !== Math.min(manifest.eligible, PRIMARY_SAMPLE_COUNT)) return null
     if (!validSampleRecords(manifest.samples)) return null
     if (isBatched) {
-      if (manifest.samples.length !== PRIMARY_SAMPLE_COUNT || !/^[a-f0-9]{64}$/.test(manifest.audit_nonce) || !Array.isArray(manifest.batches) || manifest.batches.length !== PRIMARY_BATCH_COUNT) return null
+      const batchCount = Array.isArray(manifest.batches) ? manifest.batches.length : 0
+      const batchSize = batchCount === PRIMARY_BATCH_COUNT
+        ? PRIMARY_BATCH_SIZE
+        : batchCount === LEGACY_PRIMARY_BATCH_COUNT
+          ? LEGACY_PRIMARY_BATCH_SIZE
+          : null
+      if (manifest.samples.length !== PRIMARY_SAMPLE_COUNT || !/^[a-f0-9]{64}$/.test(manifest.audit_nonce) || batchSize == null) return null
       const indices = new Set()
       manifest.batches = manifest.batches.map(withoutLegacyDigests)
       const batchesValid = manifest.batches.every((batch) => {
         if (!sameKeys(batch, ['index', 'range', 'members', 'path', 'audit_nonce'])) return false
-        if (!Number.isInteger(batch.index) || batch.index < 1 || batch.index > PRIMARY_BATCH_COUNT || indices.has(batch.index)) return false
+        if (!Number.isInteger(batch.index) || batch.index < 1 || batch.index > batchCount || indices.has(batch.index)) return false
         indices.add(batch.index)
-        const expectedRange = batchRangeFor(batch.index)
+        const expectedRange = batchRangeFor(batch.index, batchSize)
         if (!sameKeys(batch.range, ['start', 'end']) || batch.range.start !== expectedRange.start || batch.range.end !== expectedRange.end) return false
         const expectedSamples = batchSamplesFor(manifest.samples, batch)
-        if (!Array.isArray(batch.members) || batch.members.length !== PRIMARY_BATCH_SIZE || batch.members.some((member, index) =>
+        if (!Array.isArray(batch.members) || batch.members.length !== batchSize || batch.members.some((member, index) =>
           !sameKeys(member, ['timestamp', 'session', 'path', 'row_index']) ||
           member.timestamp !== expectedSamples[index].timestamp ||
           member.session !== expectedSamples[index].session ||
@@ -456,7 +471,7 @@ const parseManifest = (file, date) => {
         if (batch.path !== batchSamplesTextPathFor(path.dirname(file), date, batch.index)) return false
         return batch.audit_nonce === manifest.audit_nonce
       })
-      if (!batchesValid || indices.size !== PRIMARY_BATCH_COUNT) return null
+      if (!batchesValid || indices.size !== batchCount) return null
     }
     return manifest
   } catch {
@@ -495,11 +510,18 @@ const readPersistedManifest = (file, date) => {
   }
   return null
 }
+const upgradeUnverifiedLegacyBatches = (reports, date, file, manifest) => {
+  if (manifest == null || !Array.isArray(manifest.batches) || manifest.batches.length !== LEGACY_PRIMARY_BATCH_COUNT) return manifest
+  if (hasVerifiedReport(reports, date) || fs.existsSync(publicationPathFor(reports, date))) return manifest
+  const upgraded = buildBatchedManifest(reports, date, manifest.eligible, manifest.samples, manifest.challenge, manifest.audit_nonce)
+  replaceFile(file, `${JSON.stringify(upgraded)}\n`)
+  return parseManifest(file, date) ?? manifest
+}
 const loadOrCreateManifest = (root, reports, date) => {
   ensurePrivateDirectory(reports)
   const file = manifestPathFor(reports, date)
   const existing = parseManifest(file, date)
-  if (existing != null) return { file, manifest: existing }
+  if (existing != null) return { file, manifest: upgradeUnverifiedLegacyBatches(reports, date, file, existing) }
   if (fs.existsSync(file)) {
     const persisted = readPersistedManifest(file, date)
     if (persisted != null) return { file, manifest: persisted }
@@ -834,6 +856,7 @@ const currentTranscriptCandidates = (root, boundaryFile) => {
   return files.filter(({ mtimeMs }) => mtimeMs >= boundaryMtimeMs)
 }
 const snapshotCandidates = (candidates) => {
+  if (candidates.some(({ size }) => size > TRANSCRIPT_MAX_SINGLE_FILE_BYTES)) return null
   const totalBytes = candidates.reduce((total, { size }) => total + size, 0)
   if (totalBytes > TRANSCRIPT_MAX_CANDIDATE_BYTES) return null
   const snapshots = []
@@ -1064,15 +1087,18 @@ const batchAuditFromRows = (rows, manifest, batch, attemptNonce) => {
   }
   return invalidTranscript || pending.size !== 0 || output == null ? null : output
 }
-const batchAttemptMatches = (rows, manifest, batch, attemptNonce) => rows.some((row) =>
+const batchAttemptMatches = (rows, auditNonce, attemptNonce, batchIndex) => rows.some((row) =>
   Array.isArray(row?.message?.content) && row.message.content.some((item) =>
     item?.type === 'tool_use' &&
     item?.name === 'StructuredOutput' &&
-    item?.input?.audit_nonce === manifest.audit_nonce &&
+    item?.input?.audit_nonce === auditNonce &&
     item?.input?.attempt_nonce === attemptNonce &&
-    item?.input?.batch_index === batch.index
+    item?.input?.batch_index === batchIndex
   )
 )
+const anyPrimaryAttemptMatches = (rows, manifest, attemptNonce) =>
+  manifest.batches.some((batch) => batchAttemptMatches(rows, manifest.audit_nonce, attemptNonce, batch.index)) ||
+  manifest.samples.some((_, idx) => batchAttemptMatches(rows, manifest.audit_nonce, attemptNonce, ITEM_BATCH_INDEX_OFFSET + idx + 1))
 const batchTranscriptSnapshot = (root, boundaryFile, manifest, attemptNonce) => {
   const candidates = currentTranscriptCandidates(root, boundaryFile)
   if (candidates == null) return null
@@ -1086,25 +1112,78 @@ const batchTranscriptSnapshot = (root, boundaryFile, manifest, attemptNonce) => 
     if (group.length > TRANSCRIPT_MAX_CANDIDATE_FILES) continue
     const snapshots = snapshotCandidates(group)
     if (snapshots == null) continue
-    const matches = manifest.batches.some((batch) => snapshots.some((snapshot) => batchAttemptMatches(snapshot.rows, manifest, batch, attemptNonce)))
+    const matches = snapshots.some((snapshot) => anyPrimaryAttemptMatches(snapshot.rows, manifest, attemptNonce))
     if (matches) return snapshots
   }
   return []
 }
-const batchAuditsFromSnapshot = (snapshots, manifest, attemptNonce) => {
-  if (snapshots == null) return null
-  const matches = []
-  for (const batch of manifest.batches) {
-    const batchWithText = { ...batch, expected_text: renderBatchText(manifest, batch) }
-    let packet = null
+const resolveSingleBatchOrItems = (snapshots, pseudoManifest, batchWithText, attemptNonce, itemDescriptorFor) => {
+  let packet = null
+  let sawBatchAttempt = false
+  for (const snapshot of snapshots) {
+    const candidate = batchAuditFromRows(snapshot.rows, pseudoManifest, batchWithText, attemptNonce)
+    if (candidate != null) {
+      packet = candidate
+      sawBatchAttempt = true
+      break
+    }
+    if (batchAttemptMatches(snapshot.rows, pseudoManifest.audit_nonce, attemptNonce, batchWithText.index)) return null
+  }
+  if (packet != null) {
+    if (itemDescriptorFor != null) {
+      for (let itemIndex = batchWithText.range.start; itemIndex <= batchWithText.range.end; itemIndex += 1) {
+        const itemBatch = itemDescriptorFor(itemIndex)
+        const itemBatchIndex = ITEM_BATCH_INDEX_OFFSET + itemIndex
+        for (const snapshot of snapshots) {
+          if (!batchAttemptMatches(snapshot.rows, pseudoManifest.audit_nonce, attemptNonce, itemBatchIndex)) continue
+          if (itemBatch == null || batchAuditFromRows(snapshot.rows, pseudoManifest, itemBatch, attemptNonce) == null) return null
+        }
+      }
+    }
+    return packet
+  }
+  if (sawBatchAttempt || itemDescriptorFor == null) return null
+  const itemRows = []
+  for (let itemIndex = batchWithText.range.start; itemIndex <= batchWithText.range.end; itemIndex += 1) {
+    const itemBatch = itemDescriptorFor(itemIndex)
+    if (itemBatch == null) return null
+    let itemPacket = null
     for (const snapshot of snapshots) {
-      const candidate = batchAuditFromRows(snapshot.rows, manifest, batchWithText, attemptNonce)
+      const candidate = batchAuditFromRows(snapshot.rows, pseudoManifest, itemBatch, attemptNonce)
       if (candidate != null) {
-        packet = candidate
+        itemPacket = candidate
         break
       }
-      if (batchAttemptMatches(snapshot.rows, manifest, batch, attemptNonce)) return null
+      if (batchAttemptMatches(snapshot.rows, pseudoManifest.audit_nonce, attemptNonce, itemBatch.index)) return null
     }
+    if (itemPacket == null || itemPacket.rows.length !== 1) return null
+    itemRows.push(itemPacket.rows[0])
+  }
+  return { auditNonce: pseudoManifest.audit_nonce, rows: itemRows }
+}
+const verifiedSliceDescriptor = (file, index, range, expectedText) => {
+  if (!fs.existsSync(file) || !isPrivateFile(file)) return null
+  try {
+    if (fs.readFileSync(file, 'utf8') !== expectedText) return null
+  } catch {
+    return null
+  }
+  return { index, range, path: file, expected_text: expectedText }
+}
+const batchAuditsFromSnapshot = (snapshots, manifest, attemptNonce, reports = null, date = null) => {
+  if (snapshots == null) return null
+  const matches = []
+  const itemDescriptorFor = reports == null || date == null
+    ? null
+    : (itemIndex) => verifiedSliceDescriptor(
+      itemSamplesTextPathFor(reports, date, itemIndex),
+      ITEM_BATCH_INDEX_OFFSET + itemIndex,
+      { start: itemIndex, end: itemIndex },
+      renderItemText(manifest, itemIndex)
+    )
+  for (const batch of manifest.batches) {
+    const batchWithText = { ...batch, expected_text: renderBatchText(manifest, batch) }
+    const packet = resolveSingleBatchOrItems(snapshots, manifest, batchWithText, attemptNonce, itemDescriptorFor)
     if (packet == null) return null
     matches.push({ batch, packet })
   }
@@ -1113,12 +1192,70 @@ const batchAuditsFromSnapshot = (snapshots, manifest, attemptNonce) => {
     .flatMap(({ packet }) => packet.rows)
   return parseAuditObject({ audit_nonce: manifest.audit_nonce, rows }, manifest.samples)
 }
+const reauditBatchRanges = (total) => Array.from({ length: Math.ceil(total / REAUDIT_BATCH_SIZE) }, (_, idx) => ({
+  index: idx + 1,
+  range: {
+    start: idx * REAUDIT_BATCH_SIZE + 1,
+    end: Math.min((idx + 1) * REAUDIT_BATCH_SIZE, total),
+  },
+}))
+const materializeReauditSlices = (reports, date, sliceAttemptNonce, passSamples, reauditNonce) => {
+  for (const { index, range } of reauditBatchRanges(passSamples.length)) {
+    const slice = passSamples.slice(range.start - 1, range.end)
+    publishFirstWins(
+      reauditBatchSamplesTextPathFor(reports, date, sliceAttemptNonce, index),
+      renderSampleRowsText(slice, reauditNonce, range.start - 1, passSamples.length)
+    )
+  }
+  for (let itemIndex = 1; itemIndex <= passSamples.length; itemIndex += 1) {
+    publishFirstWins(
+      reauditItemSamplesTextPathFor(reports, date, sliceAttemptNonce, itemIndex),
+      renderSampleRowsText([passSamples[itemIndex - 1]], reauditNonce, itemIndex - 1, passSamples.length)
+    )
+  }
+}
+const reauditBatchAuditsFromSnapshot = (snapshots, reports, date, sliceAttemptNonce, passSamples, reauditNonce) => {
+  if (snapshots == null || !isNonce(sliceAttemptNonce)) return { attempted: false, packet: null }
+  const pseudoManifest = { samples: passSamples, audit_nonce: reauditNonce, challenge: reauditNonce }
+  const ranges = reauditBatchRanges(passSamples.length)
+  const anyBatchAttempt = snapshots.some((snapshot) =>
+    ranges.some(({ index }) => batchAttemptMatches(snapshot.rows, reauditNonce, sliceAttemptNonce, index)) ||
+    passSamples.some((_, idx) => batchAttemptMatches(snapshot.rows, reauditNonce, sliceAttemptNonce, ITEM_BATCH_INDEX_OFFSET + idx + 1))
+  )
+  if (!anyBatchAttempt) return { attempted: false, packet: null }
+  const itemDescriptorFor = (itemIndex) => verifiedSliceDescriptor(
+    reauditItemSamplesTextPathFor(reports, date, sliceAttemptNonce, itemIndex),
+    ITEM_BATCH_INDEX_OFFSET + itemIndex,
+    { start: itemIndex, end: itemIndex },
+    renderSampleRowsText([passSamples[itemIndex - 1]], reauditNonce, itemIndex - 1, passSamples.length)
+  )
+  const rows = []
+  for (const { index, range } of ranges) {
+    const expectedText = renderSampleRowsText(passSamples.slice(range.start - 1, range.end), reauditNonce, range.start - 1, passSamples.length)
+    const batchDesc = verifiedSliceDescriptor(
+      reauditBatchSamplesTextPathFor(reports, date, sliceAttemptNonce, index),
+      index,
+      range,
+      expectedText
+    )
+    const itemOnly = batchDesc == null
+      ? resolveSingleBatchOrItems(snapshots, pseudoManifest, { index, range, path: '', expected_text: null }, sliceAttemptNonce, itemDescriptorFor)
+      : resolveSingleBatchOrItems(snapshots, pseudoManifest, batchDesc, sliceAttemptNonce, itemDescriptorFor)
+    if (itemOnly == null) return { attempted: true, packet: null }
+    rows.push(...itemOnly.rows)
+  }
+  return {
+    attempted: true,
+    packet: rows.length === passSamples.length ? { auditNonce: reauditNonce, rows } : null,
+  }
+}
 const prepareReaudit = (reports, date, transcriptsRoot, auditNonce, attemptNonce = null) => {
   ensurePrivateDirectory(reports)
   const manifest = parseManifest(manifestPathFor(reports, date), date)
   const batched = isBatchedManifest(manifest)
   if (batched && !isNonce(attemptNonce)) return null
-  const expectedReauditPath = reauditSamplesTextPathFor(reports, date, batched ? attemptNonce : null)
+  const sliceAttemptNonce = batched ? attemptNonce : null
+  const expectedReauditPath = reauditSamplesTextPathFor(reports, date, sliceAttemptNonce)
   const existingPath = expectedReauditPath
   if (fs.existsSync(existingPath)) {
     const existingText = fs.readFileSync(existingPath, 'utf8')
@@ -1141,7 +1278,7 @@ const prepareReaudit = (reports, date, transcriptsRoot, auditNonce, attemptNonce
       ? batchTranscriptSnapshot(transcriptsRoot, samplesTextPath, manifest, attemptNonce)
       : transcriptSnapshot(transcriptsRoot, samplesTextPath)
   const auditPacket = batched
-    ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce)
+    ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce, reports, date)
     : parseAudit(auditB64FromSnapshot(snapshots, samplesTextPath, renderSamplesText(manifest), auditNonce), manifest)
   if (auditPacket == null || auditPacket.auditNonce !== auditNonce) return null
   const passSamples = manifest.samples.filter((sample, index) => auditPacket.rows[index].result === 'PASS')
@@ -1151,6 +1288,7 @@ const prepareReaudit = (reports, date, transcriptsRoot, auditNonce, attemptNonce
   const reauditSamplesTextPath = expectedReauditPath
   if (!publishFirstWins(reauditSamplesTextPath, reauditText)) return prepareReaudit(reports, date, transcriptsRoot, auditNonce, attemptNonce)
   publishFirstWins(`${reauditSamplesTextPath}.nonce`, `${reauditNonce}\n`)
+  materializeReauditSlices(reports, date, sliceAttemptNonce, passSamples, reauditNonce)
   return {
     date,
     reaudit_sample_count: passSamples.length,
@@ -1190,7 +1328,7 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, at
       ? batchTranscriptSnapshot(transcriptsRoot, samplesTextPath, manifest, attemptNonce)
       : transcriptSnapshot(transcriptsRoot, samplesTextPath)
   const auditPacket = batched
-    ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce)
+    ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce, reports, date)
     : parseAudit(transcriptsRoot == null ? auditB64 : auditB64FromSnapshot(snapshots, samplesTextPath, renderSamplesText(manifest), auditNonce), manifest)
   if (auditPacket == null || auditPacket.auditNonce !== auditNonce) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   const primaryPassSamples = manifest.samples.filter((sample, index) => auditPacket.rows[index].result === 'PASS')
@@ -1211,9 +1349,19 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, at
       return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
     }
     if (actualReauditText !== expectedReauditText) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
-    const reauditManifest = { samples: primaryPassSamples }
-    const reauditAuditB64 = auditB64FromSnapshot(snapshots, reauditSamplesTextPath, expectedReauditText, reauditNonce)
-    reauditPacket = parseAudit(reauditAuditB64, reauditManifest)
+    const batchedReaudit = batched
+      ? reauditBatchAuditsFromSnapshot(snapshots, reports, date, attemptNonce, primaryPassSamples, reauditNonce)
+      : { attempted: false, packet: null }
+    if (batchedReaudit.attempted) {
+      if (batchedReaudit.packet == null || auditB64FromSnapshot(snapshots, reauditSamplesTextPath, expectedReauditText, reauditNonce) != null) {
+        return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
+      }
+      reauditPacket = batchedReaudit.packet
+    } else {
+      const reauditManifest = { samples: primaryPassSamples }
+      const reauditAuditB64 = auditB64FromSnapshot(snapshots, reauditSamplesTextPath, expectedReauditText, reauditNonce)
+      reauditPacket = parseAudit(reauditAuditB64, reauditManifest)
+    }
     if (reauditPacket == null || reauditPacket.auditNonce !== reauditNonce) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
     reauditAuditNonce = reauditNonce
   } else if (primaryPassSamples.length === 0 && reauditDeclared && reauditNonce !== '0') {
@@ -1266,6 +1414,7 @@ const renderSampleRowsText = (samples, challenge, startIndex = 0, total = sample
 ].join('\n')).join('\n\n')}\n`
 const renderSamplesText = (manifest) => renderSampleRowsText(manifest.samples, manifest.challenge)
 const renderBatchText = (manifest, batch) => renderSampleRowsText(batchSamplesFor(manifest.samples, batch), manifest.challenge, batch.range.start - 1, PRIMARY_SAMPLE_COUNT)
+const renderItemText = (manifest, itemIndex) => renderSampleRowsText([manifest.samples[itemIndex - 1]], manifest.challenge, itemIndex - 1, manifest.samples.length)
 const batchArtifactsValid = (reports, date, manifest) => {
   if (!isBatchedManifest(manifest)) return true
   try {
@@ -1316,6 +1465,7 @@ const main = () => {
   replaceFile(samplesTextPath, renderSamplesText(manifest))
   if (isBatchedManifest(manifest)) {
     manifest.batches.forEach((batch) => replaceFile(batch.path, renderBatchText(manifest, batch)))
+    manifest.samples.forEach((_, idx) => replaceFile(itemSamplesTextPathFor(reports, date, idx + 1), renderItemText(manifest, idx + 1)))
   }
   const batched = isBatchedManifest(manifest)
   const auditNonce = manifest.audit_nonce ?? crypto.randomBytes(32).toString('hex')
