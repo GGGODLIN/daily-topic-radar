@@ -2,8 +2,8 @@
 """Run session-slim on ended Claude Code sessions, and compress cold plain-text CC and ended pi sessions.
 
 Threat model: 這是給誠實系統用的自動整理，不是安全閘門；判斷不出 session 是否結束時一律不動，留給下一輪。
-不保證：只認得程序名稱是 claude 的 Claude Code（用 node 跑的不算）；除已確認的非對話模式或已退出程序外，註冊檔不在
-~/.claude/sessions 的 claude 程序（例如另一個 CLAUDE_CONFIG_DIR、尚未註冊的 -p 對話）會讓整輪不動；pi 沒有註冊檔，只靠「沒被任何程序開著＋閒置」判斷；
+不保證：只認得程序名稱是 claude 的 Claude Code（用 node 跑的不算）；除已確認的非對話模式或已退出程序外，事件等待後仍無法對上
+~/.claude/sessions 註冊檔的 claude 程序（例如另一個 CLAUDE_CONFIG_DIR）會讓整輪不動；pi 沒有註冊檔，只靠「沒被任何程序開著＋閒置」判斷；
 程式被強制結束時 SessionEnd 可能沒觸發，由每小時補漏接手。
 停用：建立 <state>/disabled。
 """
@@ -13,6 +13,7 @@ import json
 import mmap
 import os
 import re
+import select
 import shutil
 import stat
 import subprocess
@@ -31,6 +32,8 @@ PS_LINE = re.compile(r"\s*(?P<pid>\d+)\s+(?P<start>\w{3} \w{3} +\d+ \d\d:\d\d:\d
 IDLE_SECONDS = 30 * 60
 QUEUE_SETTLE_SECONDS = 60
 QUEUE_WAIT_SECONDS = 120
+# 實測撤註冊到退出約 1.03 秒；向上取整只限制等待，逾時後仍重新核對存活名單。
+LIVE_TRANSITION_SECONDS = 2
 SWEEP_DAYS = 14
 COLD_DAYS = 30
 MIN_BYTES = 256 * 1024
@@ -73,7 +76,39 @@ def enqueue(stdin_text, state=STATE):
 
 
 class LiveUnknown(Exception):
-  pass
+  def __init__(self, message, pid=None):
+    super().__init__(message)
+    self.pid = pid
+
+
+def wait_for_registration_or_exit(pid):
+  # 註冊檔與程序生命週期不同步；事件只喚醒重新查證，不能直接證明對話已結束。
+  try:
+    directory = os.open(REGISTRY, os.O_RDONLY)
+  except OSError:
+    return
+  watcher = None
+  try:
+    watcher = select.kqueue()
+    watcher.control([
+      select.kevent(pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                    fflags=select.KQ_NOTE_EXIT),
+      select.kevent(directory, filter=select.KQ_FILTER_VNODE, flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                    fflags=select.KQ_NOTE_WRITE),
+    ], 0, 0)
+    deadline = time.monotonic() + LIVE_TRANSITION_SECONDS
+    while time.monotonic() < deadline:
+      events = watcher.control([], 2, max(0, deadline - time.monotonic()))
+      if not events or any(event.filter == select.KQ_FILTER_PROC for event in events):
+        return
+      if (REGISTRY / f"{pid}.json").exists():
+        return
+  except OSError:
+    return
+  finally:
+    if watcher is not None:
+      watcher.close()
+    os.close(directory)
 
 
 def process_exited(pid):
@@ -100,9 +135,16 @@ def is_non_session_process(match):
     return False
   detail = PS_LINE.fullmatch(proc.stdout.strip())
   flags = ("--chrome-native-host", "--version", "-v", "--help", "-h")
-  return bool(detail and detail["pid"] == match["pid"]
-              and " ".join(detail["start"].split()) == " ".join(match["start"].split())
-              and detail["comm"].strip() in {f'{match["comm"].strip()} {flag}' for flag in flags})
+  same_identity = bool(detail and detail["pid"] == match["pid"]
+                       and " ".join(detail["start"].split()) == " ".join(match["start"].split()))
+  if same_identity and detail["comm"].strip() in {f'{match["comm"].strip()} {flag}' for flag in flags}:
+    return True
+  if detail:
+    # 只記固定旗標與身分比對，避免把 -p 的 prompt 或憑證寫進排程日誌。
+    mode = ",".join(flag for flag in (*flags, "-p", "--print") if flag in detail["comm"].split()) or "unknown"
+    raise LiveUnknown(f'claude pid {match["pid"]} has no readable registry (flags={mode}, same_identity={same_identity})',
+                      pid=int(match["pid"]))
+  return False
 
 
 def live_sessions():
@@ -125,7 +167,7 @@ def live_sessions():
     except (OSError, ValueError) as error:
       if is_non_session_process(match):
         continue
-      raise LiveUnknown(f"claude pid {pid} has no readable registry") from error
+      raise LiveUnknown(f"claude pid {pid} has no readable registry", pid=pid) from error
     # 比對啟動時間：pid 被重用時，舊程序留下的註冊檔不能拿來代表新程序
     started = " ".join(str(record.get("procStart", "")).split())
     if record.get("pid") != pid or started != " ".join(match["start"].split()) or not record.get("sessionId"):
@@ -293,7 +335,13 @@ def run(state=STATE, audit_state=AUDIT_STATE, wait_queue=True):
   try:
     live = live_sessions()
   except LiveUnknown as error:
-    return {"skip": f"live sessions unknown: {error}"}
+    if error.pid is None:
+      return {"skip": f"live sessions unknown: {error}"}
+    wait_for_registration_or_exit(error.pid)
+    try:
+      live = live_sessions()
+    except LiveUnknown as error:
+      return {"skip": f"live sessions unknown: {error}"}
   # 判斷得出誰還開著才取佇列：先取再放棄，SessionEnd 登記的項目會被刪掉卻沒處理
   queued = take_queue(state)
   deadline = time.time() + (QUEUE_WAIT_SECONDS if wait_queue and queued else 0)

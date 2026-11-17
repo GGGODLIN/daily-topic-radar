@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -186,6 +187,52 @@ class SweepTest(unittest.TestCase):
     proc = self.cli("run")
     self.assertIn('"cc": 1', proc.stdout)
     self.assertLess(path.stat().st_size, size)
+
+  def test_dialogue_registry_startup_window_waits_for_registration(self):
+    child = subprocess.Popen(["/bin/cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    path = self.session("startup-ended")
+    live = self.session("startup-living")
+    size, live_size = path.stat().st_size, live.stat().st_size
+    self.running("startup-living", child.pid, registry=False)
+    self.details.write_text(json.dumps([[child.pid, START, "/Users/x/.local/bin/claude --print hello"]]))
+    ready = threading.Timer(0.7, lambda: (self.registry / f"{child.pid}.json").write_text(
+      json.dumps({"pid": child.pid, "procStart": START, "sessionId": "startup-living"})))
+    ready.start()
+    try:
+      proc = self.cli("run")
+      self.assertIn('"cc": 1', proc.stdout)
+      self.assertLess(path.stat().st_size, size)
+      self.assertEqual(live.stat().st_size, live_size)
+      self.assertIsNone(child.poll())
+    finally:
+      ready.cancel()
+      ready.join()
+      child.stdin.close()
+      child.wait(timeout=5)
+
+  def test_dialogue_registry_teardown_window_waits_for_kernel_exit(self):
+    child = subprocess.Popen(["/bin/cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    path = self.session("teardown-ended")
+    size = path.stat().st_size
+    self.running("teardown-ending", child.pid, registry=False)
+    self.details.write_text(json.dumps([[child.pid, START, "/Users/x/.local/bin/claude --print hello"]]))
+
+    def finish():
+      self.procs.write_text("[]")
+      child.stdin.close()
+
+    exiting = threading.Timer(1.05, finish)
+    exiting.start()
+    try:
+      proc = self.cli("run")
+      self.assertIn('"cc": 1', proc.stdout)
+      self.assertLess(path.stat().st_size, size)
+    finally:
+      exiting.cancel()
+      exiting.join()
+      if not child.stdin.closed:
+        child.stdin.close()
+      child.wait(timeout=5)
 
   def test_empty_ps_result_does_not_exempt_a_still_existing_process(self):
     self.running(None, os.getpid(), registry=False)
