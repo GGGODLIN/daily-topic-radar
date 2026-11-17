@@ -20,9 +20,9 @@ if [ ! -s "$CURSOR" ]; then
   exit 0
 fi
 
-# 每輪最多 30 條、每個模型同時 5 條：一次呼叫約 1 分鐘，壓在 channel 的 10 分鐘上限內；沒做完的留給明天。
+# 每輪最多 50 條、每個模型同時 6 條：對齊日常變動量避免積壓，壓在 channel 的 10 分鐘上限內；沒做完的留給明天。
 # GPT 週額度不設暫停：使用者 2026-11-10 說週額度用完可以扣 credit，要跑到完。
-python3 -I "$SCRIPT" scan --scope changed --cursor "$CURSOR" --cap 30 --workers 5 --gpt-guard 0 --run-dir "$RUN" \
+python3 -I "$SCRIPT" scan --scope changed --cursor "$CURSOR" --cap 50 --workers 6 --gpt-guard 0 --run-dir "$RUN" \
   --model swe2max=group/swe2max-pool --model terra=group/legacy-codex-gpt-6-1-terra-max
 python3 -I "$SCRIPT" report --run-dir "$RUN" --date "$DATE" --out "$OUT" --silent-if-empty
 python3 -I "$SCRIPT" commit-cursor --run-dir "$RUN" --cursor "$CURSOR"

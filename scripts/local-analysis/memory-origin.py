@@ -4,7 +4,9 @@
 判斷與改寫交給模型；定位、抽取、套用都是確定性的程式。
 """
 import argparse
+import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,6 +19,12 @@ ORIGIN = re.compile(r'^\s*originSessionId:\s*([0-9a-f-]{36})\s*$', re.M)
 INDEX_NAME = re.compile(r'(^|/)(_index_[^/]*|_INDEX|MEMORY|_orphan_registry)\.md$')
 # 寫入當下就錯的更正，用語通常帶「初版／寫錯／誤解」；純漂移多半只寫「已改／已退役」。
 CORRECTION = re.compile(r'更正|初版|寫錯|誤解|誤判|誤記|搞錯|是錯的|原本寫|原寫')
+CORRECTION_LINE_BLOCK = re.compile(r'^[ \t]*>[ \t]*更正行[^\n]*(?:\n|$)', re.M)
+
+
+def strip_correction_lines(note_text):
+    """核對與抽錨點前移除既有的更正行：更正行保留了舊錯句引文與『寫入當下就記錯』字樣，留著會觸發重報回音。"""
+    return re.sub(r'\n{3,}', '\n\n', CORRECTION_LINE_BLOCK.sub('', note_text))
 
 
 def note_paths(root=None):
@@ -444,8 +452,32 @@ def scan_targets(transcripts):
             yield path.relative_to(MEMORY_ROOT).as_posix(), text, transcripts[origin], 'first'
 
 
+def _ts_after(ts, since_epoch):
+    if since_epoch <= 0 or not ts:
+        return True
+    try:
+        return dt.datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp() > since_epoch
+    except ValueError:
+        return True
+
+
+def _scanned_note_keys(runs_root):
+    keys = set()
+    if not runs_root or not runs_root.is_dir():
+        return keys
+    for run in runs_root.iterdir():
+        if not run.is_dir():
+            continue
+        for sub in run.iterdir():
+            if not sub.is_dir():
+                continue
+            for js in sub.glob('*.json'):
+                keys.add(js.stem)
+    return keys
+
+
 def recent_writers(since_epoch, root=None):
-    """筆記檔名 → 之後最後一次寫它的對話；只翻 since 之後有變動的 jsonl。"""
+    """筆記相對路徑／檔名 → since 之後最後一次寫它的對話；只採計時間戳在 since 之後的寫入事件。"""
     root = root if root is not None else PROJECTS_ROOT
     writers = {}
     for path in root.glob('*/*.jsonl'):
@@ -463,6 +495,8 @@ def recent_writers(since_epoch, root=None):
                 except json.JSONDecodeError:
                     continue
                 ts = row.get('timestamp') or ''
+                if not _ts_after(ts, since_epoch):
+                    continue
                 for block in ((row.get('message') or {}).get('content') or []):
                     if not isinstance(block, dict) or block.get('type') != 'tool_use':
                         continue
@@ -470,17 +504,21 @@ def recent_writers(since_epoch, root=None):
                         continue
                     target = str((block.get('input') or {}).get('file_path') or '')
                     if '/.claude/memory/' in target:
-                        name = Path(target).name
-                        if ts >= writers.get(name, ('', None))[0]:
-                            writers[name] = (ts, path)
-    return {name: path for name, (_, path) in writers.items()}
+                        rel = target.split('/.claude/memory/', 1)[1]
+                        for k in {rel, Path(target).name}:
+                            if ts >= writers.get(k, ('', None))[0]:
+                                writers[k] = (ts, path)
+    return {k: path for k, (_, path) in writers.items()}
 
 
-def changed_targets(since_epoch, transcripts, cap):
-    """since 之後改過的筆記，最舊的先查；對照最後修改它的對話，找不到才退回建立它的對話。
+def changed_targets(since_epoch, transcripts, cap, runs_root=None):
+    """since 之後改過的筆記，最舊的先查；對照最後修改它的對話，未曾掃過的新筆記才退回建立它的對話。
 
     回傳 (targets, 下次的起點)：沒處理完的留給下一輪，起點停在最後處理的那條的修改時間。
     """
+    if runs_root is None and MEMORY_ROOT == Path.home() / '.claude' / 'memory':
+        runs_root = STATE_DIR / 'runs'
+    scanned = _scanned_note_keys(runs_root)
     changed = []
     for path in note_paths():
         mtime = path.stat().st_mtime
@@ -494,11 +532,11 @@ def changed_targets(since_epoch, transcripts, cap):
             break
         text = path.read_text(encoding='utf-8', errors='replace')
         rel = path.relative_to(MEMORY_ROOT).as_posix()
-        writer = writers.get(path.name)
+        writer = writers.get(rel) or writers.get(path.name)
         origin = origin_of(text)
         if writer:
             targets.append((rel, text, writer, 'last'))
-        elif origin and origin in transcripts:
+        elif origin and origin in transcripts and note_key(rel) not in scanned:
             targets.append((rel, text, transcripts[origin], 'first'))
         next_since = mtime
     if len(targets) < cap:
@@ -552,16 +590,17 @@ def scan_one(rel, text, transcript, which, alias, label, run_dir, key, guard):
     if out.exists():
         return 'skip'
     import time
+    clean_text = strip_correction_lines(text)
     events, write_line = parse_transcript(transcript, Path(rel).name, which)
-    items = excerpt(events, write_line, 'all', note_text=text)
-    prompt = build_prompt(text, items)
+    items = excerpt(events, write_line, 'all', note_text=clean_text)
+    prompt = build_prompt(clean_text, items)
     record = None
     for attempt in range(3):
         if guard:
             guard.wait_if_needed()
         t0 = time.time()
         content, usage, model, error = call_model(alias, prompt, key)
-        record = {'note': rel, 'transcript': str(transcript), 'alias': alias, 'attempt': attempt + 1,
+        record = {'note': rel, 'transcript': str(transcript), 'which': which, 'alias': alias, 'attempt': attempt + 1,
                   'seconds': round(time.time() - t0, 1), 'usage': usage, 'error': error,
                   'verdict': parse_verdict(content), 'raw': content if not parse_verdict(content) else '',
                   'write_line': write_line, 'prompt_chars': len(prompt)}
@@ -600,7 +639,10 @@ def cmd_scan(args):
     else:
         since = json.loads(Path(args.cursor).read_text(encoding='utf-8'))['since_epoch']
         targets, next_since = changed_targets(since, transcripts, args.cap)
+        meta.setdefault('prev_since', since)
         meta.setdefault('next_since', next_since)
+        meta.setdefault('target_mtimes', {rel: (MEMORY_ROOT / rel).stat().st_mtime
+                                          for rel, *_ in targets if (MEMORY_ROOT / rel).exists()})
     meta.update({'scope': args.scope, 'models': args.model, 'targets': len(targets)})
     meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
     if args.limit:
@@ -629,10 +671,18 @@ def cmd_scan(args):
 
 
 def cmd_commit_cursor(args):
-    """報告寫好才推進起點；中途失敗時下一輪重查同一批。"""
-    meta = json.loads((Path(args.run_dir) / 'meta.json').read_text(encoding='utf-8'))
+    """報告寫好才推進起點；若當輪有筆記雙模型皆無可用回覆，起點停在最早無回覆筆記之前避免漏掃。"""
+    run_dir = Path(args.run_dir)
+    meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
     # 第一輪全量用的舊版 meta 只記 started_epoch。
     since = meta.get('next_since', meta.get('started_epoch'))
+    target_mtimes = meta.get('target_mtimes') or {}
+    if target_mtimes:
+        _, notes = load_scan(run_dir)
+        unanswered = [mtime for rel, mtime in target_mtimes.items()
+                      if not any(r.get('verdict') for r in notes.get(rel, {}).values())]
+        if unanswered:
+            since = max(meta.get('prev_since', 0), min(unanswered) - 1e-6)
     cursor = Path(args.cursor)
     cursor.parent.mkdir(parents=True, exist_ok=True)
     cursor.write_text(json.dumps({'since_epoch': since, 'from_run': str(args.run_dir)}), encoding='utf-8')
@@ -751,12 +801,13 @@ def body_of(text):
     return FRONTMATTER.sub('', text).strip()
 
 
-def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, out_path, fail_log, key):
+def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, out_path, fail_log, key,
+            which='first'):
     if out_path.exists():
         return 'skip'
     import time
-    events, found = parse_transcript(transcript, Path(note).name)
-    items = fix_excerpt(events, write_line or found, note_text, issues)
+    events, found = parse_transcript(transcript, Path(note).name, which)
+    items = fix_excerpt(events, write_line or found, strip_correction_lines(note_text), issues)
     prompt = build_fix_prompt(note_text, first_text, issues, items)
     parsed = None
     for attempt in range(3):
@@ -772,7 +823,7 @@ def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, 
                                 ensure_ascii=False) + '\n')
         return 'fail'
     # 存下當時的筆記全文：套用前比對，筆記被別的 session 改過就不套，避免蓋掉別人的修改。
-    record = {'note': note, 'transcript': str(transcript), 'alias': alias, 'model': model,
+    record = {'note': note, 'transcript': str(transcript), 'which': which, 'alias': alias, 'model': model,
               'seconds': round(time.time() - t0, 1), 'usage': usage, 'prompt_chars': len(prompt),
               'had_first_version': bool(first_text), 'issues': issues, 'note_text': note_text,
               'edits': check_edits(note_text, parsed['edits'])}
@@ -800,10 +851,14 @@ def cmd_fix(args):
             gone.append(rel)
             continue
         text = path.read_text(encoding='utf-8')
-        first = write_time_text(rel)
-        first = first if first and body_of(first) != body_of(text) else None
         rec = next(iter(recs.values()))
-        jobs.append((rel, text, first, flagged_issues(recs), rec['transcript'], rec.get('write_line')))
+        origin = origin_of(text)
+        which = rec.get('which') or (
+            'last' if origin and Path(rec['transcript']).stem != origin else 'first')
+        # 對照後續修改對話（which='last'）時不附建立筆記的首版，否則 FIX_PROMPT 第 2 條會拒修後來改壞的句子。
+        first = write_time_text(rel) if which == 'first' else None
+        first = first if first and body_of(first) != body_of(text) else None
+        jobs.append((rel, text, first, flagged_issues(recs), rec['transcript'], rec.get('write_line'), which))
     key = relay_key()
     counts = {}
     with cf.ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -811,8 +866,8 @@ def cmd_fix(args):
         for spec in args.model:
             label, alias = spec.split('=', 1)
             futures += [pool.submit(fix_one, rel, text, first, issues, tr, wl, alias,
-                                    out_dir / label / f'{note_key(rel)}.json', out_dir / 'failures.jsonl', key)
-                        for rel, text, first, issues, tr, wl in jobs]
+                                    out_dir / label / f'{note_key(rel)}.json', out_dir / 'failures.jsonl', key, which)
+                        for rel, text, first, issues, tr, wl, which in jobs]
         for fut in cf.as_completed(futures):
             status = fut.result()
             counts[status] = counts.get(status, 0) + 1
@@ -902,7 +957,10 @@ def cmd_apply(args):
             preview.parent.mkdir(parents=True, exist_ok=True)
             preview.write_text(new_text, encoding='utf-8')
         else:
+            st = target.stat()
             target.write_text(new_text, encoding='utf-8')
+            # 保留原 mtime：避免 apply 自己的寫回把剛修完的筆記排回下一輪增量隊尾製造回音。
+            os.utime(target, (st.st_atime, st.st_mtime))
         stats['notes'] = stats.get('notes', 0) + 1
         stats['edits'] = stats.get('edits', 0) + len(applied)
         stats['skipped_edits'] = stats.get('skipped_edits', 0) + len(skipped)

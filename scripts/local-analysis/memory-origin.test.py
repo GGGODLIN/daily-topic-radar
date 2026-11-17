@@ -112,6 +112,34 @@ class ChangedTargetsTest(unittest.TestCase):
         self.assertEqual([t[0] for t in targets], ['c.md'])
         self.assertEqual(next_since, 1200)
 
+    def test_already_scanned_without_post_since_writer_is_skipped(self):
+        runs = self.tmp / 'runs' / 'full' / 'swe2max'
+        runs.mkdir(parents=True)
+        (runs / 'a.json').write_text('{"verdict":{"verdict":"ok"}}', encoding='utf-8')
+        # editor timestamp is 2026-11-10T00:00:00Z (1794268800); set since after that so b.md has no post-since writer either
+        os.utime(self.memory / 'a.md', (1794300000, 1794300000))
+        os.utime(self.memory / 'c.md', (1794300100, 1794300100))
+        os.utime(self.editor, (1794300200, 1794300200))
+        targets, next_since = mo.changed_targets(
+            1794270000, {self.origin_path.stem: self.origin_path}, 10, runs_root=self.tmp / 'runs')
+        self.assertEqual([t[0] for t in targets], ['c.md'])
+        self.assertEqual(next_since, 1794300100)
+
+    def test_commit_cursor_holds_before_unanswered_note(self):
+        run = self.tmp / 'run'
+        (run / 'a').mkdir(parents=True)
+        (run / 'meta.json').write_text(json.dumps({
+            'prev_since': 1000.0, 'next_since': 1300.0,
+            'target_mtimes': {'ok.md': 1100.0, 'dead.md': 1200.0, 'later.md': 1300.0}}), encoding='utf-8')
+        for note in ('ok.md', 'later.md'):
+            (run / 'a' / f'{mo.note_key(note)}.json').write_text(
+                json.dumps({'note': note, 'verdict': {'verdict': 'ok'}}), encoding='utf-8')
+        cur = self.tmp / 'cursor.json'
+        mo.cmd_commit_cursor(type('A', (), {'run_dir': str(run), 'cursor': str(cur)}))
+        saved = json.loads(cur.read_text(encoding='utf-8'))['since_epoch']
+        self.assertGreater(saved, 1100.0)
+        self.assertLess(saved, 1200.0)
+
 
 class ReportTest(unittest.TestCase):
     def _run(self, verdicts, silent):
@@ -297,6 +325,44 @@ class FixTest(unittest.TestCase):
         finally:
             mo.MEMORY_ROOT = saved
         self.assertEqual((memory / 'n.md').read_text(encoding='utf-8'), 'changed')
+
+    def test_strip_correction_lines_and_preserve_mtime_and_last_writer_first_text(self):
+        raw = '---\noriginSessionId: 11111111-1111-1111-1111-111111111111\n---\n正確句子。\n\n> 更正行 2026-11-11：「舊錯句」改成「正確句子」，寫入當下就記錯\n\n第二段。\n'
+        stripped = mo.strip_correction_lines(raw)
+        self.assertNotIn('舊錯句', stripped)
+        self.assertIn('正確句子。', stripped)
+        self.assertIn('第二段。', stripped)
+
+        tmp = Path(tempfile.mkdtemp())
+        memory, run = tmp / 'memory', tmp / 'run'
+        memory.mkdir()
+        note = memory / 'edited.md'
+        note.write_text('---\noriginSessionId: 11111111-1111-1111-1111-111111111111\n---\nnew body\n', encoding='utf-8')
+        os.utime(note, (1500, 1500))
+        (run / 'a').mkdir(parents=True)
+        (run / 'a' / 'edited.json').write_text(json.dumps({
+            'note': 'edited.md', 'transcript': '/p/22222222-2222-2222-2222-222222222222.jsonl', 'which': 'last',
+            'verdict': {'verdict': 'mismatch', 'issues': [{'claim': 'new body', 'evidence_line': 1, 'why': 'w'}]}}),
+            encoding='utf-8')
+        seen_first = []
+        saved = (mo.MEMORY_ROOT, mo.relay_key, mo.fix_one, mo.write_time_text)
+        mo.MEMORY_ROOT, mo.relay_key, mo.write_time_text = memory, (lambda: 'k'), (lambda rel: 'old first body')
+        mo.fix_one = lambda n, nt, first, *rest: seen_first.append((first, rest[-1])) or 'ok'
+        try:
+            mo.cmd_fix(type('A', (), {'run_dir': str(run), 'out_dir': str(tmp / 'fix'), 'model': ['x=y'],
+                                      'bucket': ['any'], 'notes': None, 'limit': 0, 'workers': 1}))
+            self.assertEqual(seen_first, [(None, 'last')])
+            fix_dir = tmp / 'apply_fix'
+            fix_dir.mkdir()
+            (fix_dir / 'edited.json').write_text(json.dumps({
+                'note': 'edited.md', 'transcript': '/t', 'note_text': note.read_text(encoding='utf-8'),
+                'edits': [{'action': 'fix', 'old': 'new body', 'new': 'fixed body', 'why': 'w', 'valid': True}]}),
+                encoding='utf-8')
+            mo.cmd_apply(type('A', (), {'fix_dir': str(fix_dir), 'date': '2026-11-17', 'notes': None,
+                                        'dry_run': False, 'agree_with': []}))
+            self.assertEqual(int(note.stat().st_mtime), 1500)
+        finally:
+            mo.MEMORY_ROOT, mo.relay_key, mo.fix_one, mo.write_time_text = saved
 
 
 if __name__ == '__main__':
