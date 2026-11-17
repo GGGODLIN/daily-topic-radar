@@ -2,8 +2,8 @@
 """Run session-slim on ended Claude Code sessions, and compress cold plain-text CC and ended pi sessions.
 
 Threat model: 這是給誠實系統用的自動整理，不是安全閘門；判斷不出 session 是否結束時一律不動，留給下一輪。
-不保證：只認得程序名稱是 claude 的 Claude Code（用 node 跑的不算）；註冊檔不在 ~/.claude/sessions 的
-claude 程序（例如另一個 CLAUDE_CONFIG_DIR）會讓整輪不動；pi 沒有註冊檔，只靠「沒被任何程序開著＋閒置」判斷；
+不保證：只認得程序名稱是 claude 的 Claude Code（用 node 跑的不算）；除 Chrome native host 外，註冊檔不在
+~/.claude/sessions 的 claude 程序（例如另一個 CLAUDE_CONFIG_DIR）會讓整輪不動；pi 沒有註冊檔，只靠「沒被任何程序開著＋閒置」判斷；
 程式被強制結束時 SessionEnd 可能沒觸發，由每小時補漏接手。
 停用：建立 <state>/disabled。
 """
@@ -76,10 +76,23 @@ class LiveUnknown(Exception):
   pass
 
 
+def is_chrome_native_host(match):
+  # Chrome 的橋接程序也叫 claude，但沒有對話註冊檔；只認完整啟動模式，避免把 prompt 裡的旗標當成豁免。
+  try:
+    proc = subprocess.run(["ps", "-p", match["pid"], "-o", "pid=,lstart=,args="], capture_output=True, text=True,
+                          timeout=20, env=dict(os.environ, TZ="UTC", LC_ALL="C"), check=True)
+  except (OSError, subprocess.SubprocessError):
+    return False
+  detail = PS_LINE.fullmatch(proc.stdout.strip())
+  return bool(detail and detail["pid"] == match["pid"]
+              and " ".join(detail["start"].split()) == " ".join(match["start"].split())
+              and detail["comm"].strip() == f'{match["comm"].strip()} --chrome-native-host')
+
+
 def live_sessions():
   # 不問 Herdr：Herdr 沒在跑或換版時 agent list 拿不到，整個排程就停擺，而且不在 Herdr 裡的 session 根本不在名單上。
-  # Claude Code 自己寫的 ~/.claude/sessions/<pid>.json 不依賴任何終端機；任何一個 claude 程序對不上註冊檔就丟
-  # LiveUnknown，呼叫端整輪不動。
+  # Claude Code 自己寫的 ~/.claude/sessions/<pid>.json 不依賴任何終端機；除已確認的 Chrome native host 外，
+  # 任何一個 claude 程序對不上註冊檔就丟 LiveUnknown，呼叫端整輪不動。
   try:
     proc = subprocess.run(["ps", "-axo", "pid=,lstart=,comm="], capture_output=True, text=True, timeout=20,
                           env=dict(os.environ, TZ="UTC", LC_ALL="C"), check=True)
@@ -94,6 +107,8 @@ def live_sessions():
     try:
       record = json.loads((REGISTRY / f"{pid}.json").read_text())
     except (OSError, ValueError) as error:
+      if is_chrome_native_host(match):
+        continue
       raise LiveUnknown(f"claude pid {pid} has no readable registry") from error
     # 比對啟動時間：pid 被重用時，舊程序留下的註冊檔不能拿來代表新程序
     started = " ".join(str(record.get("procStart", "")).split())

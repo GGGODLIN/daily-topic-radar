@@ -35,12 +35,18 @@ class SweepTest(unittest.TestCase):
     self.registry.mkdir()
     self.procs = root / "procs.json"
     self.procs.write_text("[]")
+    self.details = root / "details.json"
+    self.details.write_text("[]")
     self.opened = root / "opened.json"
     self.opened.write_text("[]")
     self.afsctool_calls = root / "afsctool.jsonl"
     fakes = {
       "ps": f'[ -f "{root}/ps-down" ] && exit 1\n'
-            f"python3 -c 'import json;[print(\"%6d %s %s\" % tuple(p)) for p in json.load(open(\"{self.procs}\"))]'\n",
+            f'if [ "$1" = "-p" ]; then\n'
+            f"  python3 -c 'import json,sys;[print(\"%6d %s %s\" % tuple(p)) for p in json.load(open(\"{self.details}\")) if str(p[0]) == sys.argv[1]]' \"$2\"\n"
+            f'else\n'
+            f"  python3 -c 'import json;[print(\"%6d %s %s\" % tuple(p)) for p in json.load(open(\"{self.procs}\"))]'\n"
+            f'fi\n',
       "lsof": f"python3 -c 'import json,sys;hit=sys.argv[-1] in json.load(open(\"{self.opened}\"));hit and print(123);sys.exit(0 if hit else 1)' \"$@\"\n",
       "afsctool": f"python3 -c 'import json,os,sys;open(\"{self.afsctool_calls}\",\"a\").write(json.dumps(sys.argv[1:])+\"\\n\");os.utime(sys.argv[-1],None)' \"$@\"\n",
     }
@@ -143,6 +149,37 @@ class SweepTest(unittest.TestCase):
     self.assertIn("claude pid 303 registry does not match", self.cli("run").stdout)
     self.assertEqual(path.stat().st_size, size)
     self.assertEqual(len((self.state / "queue.jsonl").read_text().splitlines()), 1)
+
+  def test_chrome_native_host_does_not_block_ended_sessions(self):
+    ended = self.session("ended-with-host")
+    live = self.session("living-with-host")
+    size, live_size = ended.stat().st_size, live.stat().st_size
+    self.running("living-with-host", 101)
+    self.running(None, 202, registry=False)
+    self.details.write_text(json.dumps([[202, START, "/Users/x/.local/bin/claude --chrome-native-host"]]))
+    proc = self.cli("run")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertIn('"cc": 1', proc.stdout)
+    self.assertLess(ended.stat().st_size, size)
+    self.assertEqual(live.stat().st_size, live_size)
+
+  def test_unknown_claude_is_not_exempted_by_a_native_host_flag_in_prompt(self):
+    path = self.session("unknown-with-prompt")
+    size = path.stat().st_size
+    self.running(None, 202, registry=False)
+    self.details.write_text(json.dumps([[202, START, '/Users/x/.local/bin/claude -p "explain --chrome-native-host"']]))
+    proc = self.cli("run")
+    self.assertIn("claude pid 202 has no readable registry", proc.stdout)
+    self.assertEqual(path.stat().st_size, size)
+
+  def test_reused_native_host_pid_does_not_exempt_unknown_claude(self):
+    path = self.session("reused-host-pid")
+    size = path.stat().st_size
+    self.running(None, 202, registry=False)
+    self.details.write_text(json.dumps([[202, "Thu Nov 12 01:00:00 2026", "/Users/x/.local/bin/claude --chrome-native-host"]]))
+    proc = self.cli("run")
+    self.assertIn("claude pid 202 has no readable registry", proc.stdout)
+    self.assertEqual(path.stat().st_size, size)
 
   def test_pi_session_held_open_by_a_process_is_not_compressed(self):
     closed, held = self.pi_session("closed"), self.pi_session("held")
