@@ -168,6 +168,33 @@ def select_focus(g, scope, cursor, now, exclude):
     return sorted((n for n in g['known'] if g['mtime'][n] > since and n not in exclude), key=lambda n: (g['mtime'][n], n))
 
 
+def capped_changed_batches(g, focus, context_cap, context_bytes, batch_bytes, batch_files, max_batches):
+    """按 mtime 由舊到新取最大前綴 focus[:k] 使切批數 <= max_batches，避免同 cluster 新筆記被反覆重掃。"""
+    all_batches = make_batches(g, focus, context_cap, context_bytes, batch_bytes, batch_files)
+    if len(all_batches) <= max_batches:
+        return all_batches, []
+    lo, hi = 1, len(focus)
+    best_k, best_batches = 1, make_batches(g, focus[:1], context_cap, context_bytes, batch_bytes, batch_files)[:max_batches]
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = make_batches(g, focus[:mid], context_cap, context_bytes, batch_bytes, batch_files)
+        if len(cand) <= max_batches:
+            best_k, best_batches = mid, cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    # 若切點剛好落在相同 mtime 的多則筆記中間，退回該秒之前，確保 cursor_candidate 不切斷同秒筆記；全同秒則整組保留。
+    split_mtime = g['mtime'][focus[best_k]]
+    trimmed_k = best_k
+    while trimmed_k > 0 and g['mtime'][focus[trimmed_k - 1]] >= split_mtime:
+        trimmed_k -= 1
+    if trimmed_k > 0:
+        best_k = trimmed_k
+        best_batches = make_batches(g, focus[:best_k], context_cap, context_bytes, batch_bytes, batch_files)
+    best_batches.sort(key=lambda b: min(g['mtime'][n] for n in b['focus']))
+    return best_batches, focus[best_k:]
+
+
 def cmd_prepare(a):
     root = Path(a.root).expanduser().resolve()
     now = time.time() if a.now is None else a.now
@@ -176,12 +203,14 @@ def cmd_prepare(a):
         exclude = {line.strip() for line in Path(a.exclude_file).read_text(encoding='utf-8').splitlines() if line.strip()}
     g = build_graph(root)
     focus = select_focus(g, a.scope, read_cursor(a.state), now, exclude)
-    batches = make_batches(g, focus, a.context_cap, a.context_bytes, a.batch_bytes, a.batch_files)
-    # Cap by age, not by cluster name: name order defers the same clusters on every run, which pins the cursor
-    # and leaves those notes unchecked forever (2026-11-10 production run).
-    batches.sort(key=lambda b: min(g['mtime'][n] for n in b['focus']))
-    kept, deferred = batches[:a.max_batches], batches[a.max_batches:]
-    deferred_focus = [n for b in deferred for n in b['focus']]
+    if a.scope == 'changed':
+        kept, deferred_focus = capped_changed_batches(
+            g, focus, a.context_cap, a.context_bytes, a.batch_bytes, a.batch_files, a.max_batches)
+    else:
+        batches = make_batches(g, focus, a.context_cap, a.context_bytes, a.batch_bytes, a.batch_files)
+        batches.sort(key=lambda b: min(g['mtime'][n] for n in b['focus']))
+        kept, deferred = batches[:a.max_batches], batches[a.max_batches:]
+        deferred_focus = [n for b in deferred for n in b['focus']]
     if a.scope == 'changed' and deferred_focus:
         cursor_candidate = min(g['mtime'][n] for n in deferred_focus) - 1e-6
     else:
@@ -241,9 +270,9 @@ def main(argv=None):
     pp.add_argument('--exclude-file')
     pp.add_argument('--context-cap', type=int, default=6)
     pp.add_argument('--context-bytes', type=int, default=50_000)
-    pp.add_argument('--batch-bytes', type=int, default=200_000)
-    pp.add_argument('--batch-files', type=int, default=40)
-    pp.add_argument('--max-batches', type=int, default=10)
+    pp.add_argument('--batch-bytes', type=int, default=110_000)
+    pp.add_argument('--batch-files', type=int, default=22)
+    pp.add_argument('--max-batches', type=int, default=14)
     pp.add_argument('--now', type=float)
     pc = sub.add_parser('commit-cursor')
     pc.add_argument('--state', required=True)

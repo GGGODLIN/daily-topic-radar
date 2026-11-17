@@ -124,6 +124,20 @@ class MemoryConflictPrepare(unittest.TestCase):
         second = self.prepare(*args)
         self.assertEqual([Path(p).name for p in self.manifest(second['batches'][0])['focus']], ['n1.md'])
 
+    def test_same_cluster_newer_note_is_deferred_instead_of_rescanned(self):
+        # n1 (-300) and n2 (-100) share _index_alpha; g1 (-200) is in general/.
+        # Old cluster-first batching bundled [n1, n2] + [g1], scanned [n1, n2] on run 1, held cursor before g1 (-200), and rescanned n2 on run 2.
+        self.touch('n1.md', NOW - 300)
+        self.touch('general/g1.md', NOW - 200)
+        self.touch('n2.md', NOW - 100)
+        args = ('--batch-files', '2', '--context-cap', '0', '--max-batches', '1')
+        r1 = self.prepare(*args)
+        self.assertEqual(sorted(Path(p).name for p in self.manifest(r1['batches'][0])['focus']), ['g1.md', 'n1.md'])
+        self.state.mkdir()
+        (self.state / 'cursor.json').write_text(json.dumps({'last_epoch': r1['cursor_candidate']}), encoding='utf-8')
+        r2 = self.prepare(*args)
+        self.assertEqual([Path(p).name for p in self.manifest(r2['batches'][0])['focus']], ['n2.md'])
+
     def test_scope_all_respects_exclude_list(self):
         ex = Path(self.tmp.name) / 'exclude.txt'
         ex.write_text('n1.md\nn2.md\n', encoding='utf-8')
