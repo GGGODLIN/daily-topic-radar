@@ -158,6 +158,38 @@ class MainTest(unittest.TestCase):
         with contextlib.redirect_stderr(stderr):
             self.assertEqual(habits.main(["--date", "11/16"]), 2)
             self.assertEqual(habits.main(["--date", "2026-11-16", "--events-file", "/nonexistent/x.ndjson"]), 2)
+            self.assertEqual(habits.main(["--date", "2026-11-16", "--max-part-bytes", "100"]), 2)
+
+    def test_oversized_slice_splits_into_0600_parts_preserving_body_count(self):
+        events = [
+            event(f"2026-11-12T01:{i // 60:02d}:{i % 60:02d}Z", f"第三段長訊息編號 {i:03d} " + "內文填充" * 30, session=f"sess-{i:04d}")
+            for i in range(60)
+        ] + [event(f"2026-11-12T00:00:0{j}Z", "好") for j in range(4)]
+        tmp = Path(tempfile.mkdtemp())
+        events_file = tmp / "events.ndjson"
+        events_file.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n", encoding="utf-8")
+        out_dir = tmp / "out"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = habits.main(["--date", "2026-11-16", "--out-dir", str(out_dir), "--max-part-bytes", "6000", "--events-file", str(events_file)])
+        self.assertEqual(rc, 0, stderr.getvalue())
+        packet = json.loads(stdout.getvalue())
+        s1, _s2, s3 = packet["slices"]
+        self.assertNotIn("parts", s1)
+        self.assertIn("parts", s3)
+        self.assertGreater(len(s3["parts"]), 1)
+        self.assertEqual(sum(p["body_messages"] for p in s3["parts"]), s3["body_messages"])
+        for idx, part in enumerate(s3["parts"], start=1):
+            self.assertEqual(part["part"], idx)
+            self.assertEqual(stat.S_IMODE(os.stat(part["path"]).st_mode), 0o600)
+            text = Path(part["path"]).read_text(encoding="utf-8")
+            self.assertTrue(text.startswith(f"# 第 3 段第 {idx}/{len(s3['parts'])} 批：2026-11-10 ~ 2026-11-16，本批 {part['body_messages']} 則正文訊息"))
+            self.assertLessEqual(len(text.encode("utf-8")), 6000)
+            if idx == 1:
+                self.assertIn("好×4", text)
+            else:
+                self.assertNotIn("短回覆次數", text)
+
 
 
 if __name__ == "__main__":

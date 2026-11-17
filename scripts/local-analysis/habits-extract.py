@@ -41,6 +41,8 @@ SEGMENT_DAYS = 7
 SHORT_MAX_CHARS = 6
 MAX_MESSAGE_CHARS = 2000
 TOP_SHORT = 30
+MAX_PART_BYTES = 48_000
+MAX_PARTS_PER_SLICE = 20
 PROJECT_MARK = "/projects/-Users-linhancheng-"
 
 SKIP_PREFIXES = (
@@ -107,6 +109,11 @@ def in_segment(message, start, end):
     return start <= message[0][:10] <= end
 
 
+def format_body_line(message):
+    ts, session, project, text = message
+    return f"{ts[:16]} | {session[:8]} | {project} | {text.replace(chr(10), ' ⏎ ')}"
+
+
 def render_slice(index, start, end, messages):
     short = collections.Counter(m[3] for m in messages if len(m[3]) <= SHORT_MAX_CHARS)
     body = [m for m in messages if len(m[3]) > SHORT_MAX_CHARS]
@@ -120,9 +127,65 @@ def render_slice(index, start, end, messages):
         "",
         "## 訊息全文（時間｜session｜專案｜內容）",
     ]
-    for ts, session, project, text in body:
-        lines.append(f"{ts[:16]} | {session[:8]} | {project} | {text.replace(chr(10), ' ⏎ ')}")
+    for m in body:
+        lines.append(format_body_line(m))
     return "\n".join(lines) + "\n", len(body), len(sessions)
+
+
+def split_slice_parts(index, start, end, messages, max_part_bytes=MAX_PART_BYTES):
+    """當單段全文超過 max_part_bytes 時，將正文拆成 <= max_part_bytes 的多個子批文字。"""
+    short = collections.Counter(m[3] for m in messages if len(m[3]) <= SHORT_MAX_CHARS)
+    body = [m for m in messages if len(m[3]) > SHORT_MAX_CHARS]
+    sessions = {m[1] for m in messages}
+    top = "；".join(f"{text}×{n}" for text, n in short.most_common(TOP_SHORT))
+    body_lines = [format_body_line(m) for m in body]
+    if len(body_lines) <= 1:
+        return []
+
+    chunks = []
+    cur = []
+    cur_bytes = 0
+    # 預留約 1,500 bytes 給檔頭與短回覆統計（part 1 帶短回覆表）
+    first_budget = max(4_000, max_part_bytes - len(top.encode("utf-8")) - 600)
+    other_budget = max(4_000, max_part_bytes - 400)
+    for line in body_lines:
+        line_bytes = len((line + "\n").encode("utf-8"))
+        budget = first_budget if not chunks else other_budget
+        if cur and cur_bytes + line_bytes > budget:
+            chunks.append(cur)
+            cur = [line]
+            cur_bytes = line_bytes
+        else:
+            cur.append(line)
+            cur_bytes += line_bytes
+    if cur:
+        chunks.append(cur)
+
+    # 若超過上限批數，平均重分批以避免爆出過多小 agent
+    if len(chunks) > MAX_PARTS_PER_SLICE:
+        per = (len(body_lines) + MAX_PARTS_PER_SLICE - 1) // MAX_PARTS_PER_SLICE
+        chunks = [body_lines[i : i + per] for i in range(0, len(body_lines), per)]
+
+    total_parts = len(chunks)
+    if total_parts <= 1:
+        return []
+
+    rendered = []
+    for part_no, part_lines in enumerate(chunks, start=1):
+        lines = [
+            f"# 第 {index} 段第 {part_no}/{total_parts} 批：{start} ~ {end}，"
+            f"本批 {len(part_lines)} 則正文訊息（全段共 {len(messages)} 則使用者訊息、{len(sessions)} 個 session）",
+        ]
+        if part_no == 1:
+            lines.extend([
+                f"## 短回覆次數（全段 ≤{SHORT_MAX_CHARS} 字，前 {TOP_SHORT}，僅列於第 1 批）",
+                top,
+                "",
+            ])
+        lines.append("## 訊息全文（時間｜session｜專案｜內容）")
+        lines.extend(part_lines)
+        rendered.append((part_no, "\n".join(lines) + "\n", len(part_lines)))
+    return rendered
 
 
 def write_private(path, text):
@@ -165,9 +228,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=dt.date.today().isoformat())
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
+    parser.add_argument("--max-part-bytes", type=int, default=MAX_PART_BYTES)
     # 測試用：讀 ndjson 檔取代 ccsi，讓切段與過濾能用固定資料驗。
     parser.add_argument("--events-file", default=None)
     args = parser.parse_args(argv)
+    if args.max_part_bytes < 4_000:
+        print(f"--max-part-bytes 必須 >= 4000：{args.max_part_bytes}", file=sys.stderr)
+        return 2
 
     try:
         bounds = segment_bounds(args.date)
@@ -193,10 +260,14 @@ def main(argv=None):
 
     slices = []
     for i, ((start, end), msgs) in enumerate(zip(bounds, per_slice), start=1):
+        # 清理同日重跑可能殘留的舊 part 檔，避免舊批數殘留
+        for stale in out_dir.glob(f"{args.date}-habits-slice-{i}-part-*.txt"):
+            if not stale.is_symlink():
+                stale.unlink()
         text, body_count, session_count = render_slice(i, start, end, msgs)
         path = out_dir / f"{args.date}-habits-slice-{i}.txt"
         write_private(path, text)
-        slices.append({
+        slice_entry = {
             "index": i,
             "start": start,
             "end": end,
@@ -204,7 +275,22 @@ def main(argv=None):
             "total_messages": len(msgs),
             "body_messages": body_count,
             "sessions": session_count,
-        })
+        }
+        if len(text.encode("utf-8")) > args.max_part_bytes:
+            parts_meta = []
+            for part_no, part_text, part_body_count in split_slice_parts(
+                i, start, end, msgs, max_part_bytes=args.max_part_bytes
+            ):
+                part_path = out_dir / f"{args.date}-habits-slice-{i}-part-{part_no}.txt"
+                write_private(part_path, part_text)
+                parts_meta.append({
+                    "part": part_no,
+                    "path": str(part_path),
+                    "body_messages": part_body_count,
+                })
+            if parts_meta:
+                slice_entry["parts"] = parts_meta
+        slices.append(slice_entry)
     print(json.dumps({"date": args.date, "since": bounds[0][0], "slices": slices}, ensure_ascii=False))
     return 0
 

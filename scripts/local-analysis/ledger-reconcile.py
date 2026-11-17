@@ -64,7 +64,7 @@ ALLOWED_FINDING_CHANNELS = frozenset({
     "skill-doctor", "tool-updates", "tool-reliability", "tool-latency", "skill-evidence", "skillevaluator",
     "codex-violation", "rules-size", "ledger-lifecycle", "skill-collision",
     "agnix", "skill-trigger", "skill-changes", "evidence-level", "ccp-free-watch", "path-rot", "free-pool", "codex-cdp",
-    "session-audit-consume", "failure-mode", "hash-reflow",
+    "session-audit-consume", "failure-mode", "hash-reflow", "habits",
 })
 PATH_RE = re.compile(r"(?<![\w./@-])(~?/[\w./@-]+\.\w{1,6}|[\w-]+\.(?:md|sh|py|js|mjs|json|jsonl|txt|toml))")
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
