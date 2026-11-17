@@ -43,6 +43,8 @@ class SweepTest(unittest.TestCase):
     fakes = {
       "ps": f'[ -f "{root}/ps-down" ] && exit 1\n'
             f'if [ "$1" = "-p" ]; then\n'
+            f'  [ -f "{root}/ps-gone" ] && exit 1\n'
+            f'  if [ -f "{root}/ps-detail-down" ]; then echo "ps failed" >&2; exit 1; fi\n'
             f"  python3 -c 'import json,sys;[print(\"%6d %s %s\" % tuple(p)) for p in json.load(open(\"{self.details}\")) if str(p[0]) == sys.argv[1]]' \"$2\"\n"
             f'else\n'
             f"  python3 -c 'import json;[print(\"%6d %s %s\" % tuple(p)) for p in json.load(open(\"{self.procs}\"))]'\n"
@@ -163,14 +165,56 @@ class SweepTest(unittest.TestCase):
     self.assertLess(ended.stat().st_size, size)
     self.assertEqual(live.stat().st_size, live_size)
 
+  def test_query_only_claude_does_not_block_ended_sessions(self):
+    self.running(None, 202, registry=False)
+    for flag in ("--version", "-v", "--help", "-h"):
+      with self.subTest(flag=flag):
+        path = self.session(f"query-{flag}")
+        size = path.stat().st_size
+        self.details.write_text(json.dumps([[202, START, f"/Users/x/.local/bin/claude {flag}"]]))
+        proc = self.cli("run")
+        self.assertIn('"cc": 1', proc.stdout)
+        self.assertLess(path.stat().st_size, size)
+
+  def test_process_exiting_after_ps_snapshot_does_not_block_sweep(self):
+    child = subprocess.Popen(["/usr/bin/true"])
+    child.wait(timeout=5)
+    self.running(None, child.pid, registry=False)
+    (self.root / "ps-gone").write_text("")
+    path = self.session("exited-after-snapshot")
+    size = path.stat().st_size
+    proc = self.cli("run")
+    self.assertIn('"cc": 1', proc.stdout)
+    self.assertLess(path.stat().st_size, size)
+
+  def test_empty_ps_result_does_not_exempt_a_still_existing_process(self):
+    self.running(None, os.getpid(), registry=False)
+    (self.root / "ps-gone").write_text("")
+    path = self.session("still-alive")
+    size = path.stat().st_size
+    proc = self.cli("run")
+    self.assertIn(f"claude pid {os.getpid()} has no readable registry", proc.stdout)
+    self.assertEqual(path.stat().st_size, size)
+
+  def test_detail_query_error_does_not_exempt_an_unknown_process(self):
+    self.running(None, 202, registry=False)
+    (self.root / "ps-detail-down").write_text("")
+    path = self.session("ps-query-error")
+    size = path.stat().st_size
+    proc = self.cli("run")
+    self.assertIn("claude pid 202 has no readable registry", proc.stdout)
+    self.assertEqual(path.stat().st_size, size)
+
   def test_unknown_claude_is_not_exempted_by_a_native_host_flag_in_prompt(self):
     path = self.session("unknown-with-prompt")
     size = path.stat().st_size
     self.running(None, 202, registry=False)
-    self.details.write_text(json.dumps([[202, START, '/Users/x/.local/bin/claude -p "explain --chrome-native-host"']]))
-    proc = self.cli("run")
-    self.assertIn("claude pid 202 has no readable registry", proc.stdout)
-    self.assertEqual(path.stat().st_size, size)
+    for args in ('-p "explain --chrome-native-host"', '-p "--version"', '--print "hello"', '--version extra'):
+      with self.subTest(args=args):
+        self.details.write_text(json.dumps([[202, START, f"/Users/x/.local/bin/claude {args}"]]))
+        proc = self.cli("run")
+        self.assertIn("claude pid 202 has no readable registry", proc.stdout)
+        self.assertEqual(path.stat().st_size, size)
 
   def test_reused_native_host_pid_does_not_exempt_unknown_claude(self):
     path = self.session("reused-host-pid")
