@@ -91,3 +91,21 @@
 14 個帳號每日一次的配置已獲使用者核准；首輪實抓只跑新增 `twitter_radar`，不重抓原來源。2026-10-14 首輪14次請求完成，回件中25則可解析貼文來自7個帳號，另7個帳號回`empty/no_results`；TeksEdge達10筆上限，不追加抓取。25則已存共用池與當日raw；6則較完整的`full_text`以已保存回件離線補存，不重抓。回件、池與raw對照是本輪驗證，不保證下一輪每帳號都有消息。
 
 自然使用時追蹤每帳號回件、是否碰上限、以及使用者有沒有想研究的新題目。更早找到可寫題目的收益留待觀察；額外訂閱、充值、其他候選與增加頻率均未啟用。
+
+## 實作向個人帳號試用（2026-11-17 起）
+
+使用者於 2026-11-17 核准新增 `twitter_practitioners` 試用 7 天，沿用現役 Apify relay、每日一次、每帳號最多 10 筆與每次 Actor 費上限 US$0.01。2026-11-24 review，依這批帳號的貼文進了幾則日報決定留不留。名單取自 [XFeed 作者精選](https://xfeed.ai/authors/)（2026-11-16 版，64 位），只挑 Claude Code／agent 實作向的 5 位；dotey、TeksEdge 已在既有來源。啟用的 X 帳號由 43 增到 48，不分大小寫無重複。
+
+| 帳號 | 用途 | 身分來源 |
+|---|---|---|
+| levelsio | 用終端版 Claude Code 解決日常問題的獨立開發者 | XFeed 作者頁連到 x.com/levelsio；首輪回件 10 則 |
+| vikingmute | 管理多個 repo 的 agent 規則、篩選 skill 包 | XFeed 作者頁連到 x.com/vikingmute；首輪回件 5 則 |
+| bebuu_ai | 官方文件的提示詞細節、壓低 subagent 用量 | XFeed 作者頁連到 x.com/bebuu_ai；首輪回件 10 則 |
+| xulijian1994 | 無人值守的循環工作流 | XFeed 作者頁連到 x.com/xulijian1994；首輪回件 10 則 |
+| tetumemo | agent 記憶檔膨脹的巡檢與瘦身（日文） | XFeed 作者頁連到 x.com/tetumemo；首輪回件 10 則 |
+
+用途欄是 XFeed 用 AI 寫的作者描述，不是讀完這些帳號貼文後的判斷。
+
+費用照上方算法：5 × 10 × 1 × 30 × 0.00015 = **估計 US$0.23／30 日**事件費；名義 Actor 費限制 5 × 30 × 0.01 = **US$1.50／30 日**，同樣不保證封頂。
+
+首輪只跑 `--source twitter_practitioners`：45 則新貼文、0 個失敗，已存共用池與當日 raw；4 個帳號頂到 10 筆上限。45 則裡有 21 則標題以 `@` 開頭（多半是回覆），其中 levelsio、xulijian1994 各 9 則。原因是抓取 query 只寫 `from:<handle>`、沒有排除回覆（`src/social_info/fetchers/twitter.py`），既有帳號也一樣；review 時要把回覆擠掉上限名額的影響算進去。
