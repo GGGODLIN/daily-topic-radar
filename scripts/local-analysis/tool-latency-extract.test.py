@@ -60,14 +60,17 @@ def write(path, entries):
 
 
 print("(1) 分組鍵")
-check("python 腳本取檔名", "closeout-provenance.py", tlx.group_key("Bash", {"command": "python3 ~/.claude/scripts/closeout-provenance.py --repo ~/.claude --plan /tmp/x"}))
-check("cd 與 -I 前綴略過", "closeout-provenance.py", tlx.group_key("Bash", {"command": "cd /tmp && python3 -I /Users/x/.claude/scripts/closeout-provenance.py --self-repos"}))
+check("python 腳本取檔名與模式旗標", "closeout-provenance.py --plan", tlx.group_key("Bash", {"command": "python3 ~/.claude/scripts/closeout-provenance.py --repo ~/.claude --plan /tmp/x"}))
+check("cd 與 -I 前綴略過並保留模式旗標", "closeout-provenance.py --self-repos", tlx.group_key("Bash", {"command": "cd /tmp && python3 -I /Users/x/.claude/scripts/closeout-provenance.py --self-repos"}))
+check("無模式旗標的腳本只取檔名", "solo.py", tlx.group_key("Bash", {"command": "python3 /x/solo.py --repo /tmp/r"}))
+check("腳本明確子命令納入分組", "memory-origin.py scan", tlx.group_key("Bash", {"command": "python3 /x/memory-origin.py scan --cap 30"}))
 check("變數賦值段略過", "run-shell-channel.sh", tlx.group_key("Bash", {"command": "D=/tmp/a; bash /x/run-shell-channel.sh a b c false"}))
 check("pnpm run 取 script 名", "pnpm typecheck", tlx.group_key("Bash", {"command": "pnpm run typecheck 2>&1 | tail -5"}))
 check("git -C 取子命令", "git push", tlx.group_key("Bash", {"command": "git -C ~/.claude push origin main"}))
 check("heredoc python 歸 inline", "python3 (inline)", tlx.group_key("Bash", {"command": "python3 -I - rows.json <<'EOF'\nprint(1)\nEOF"}))
 check("一般程式取程式名", "sleep", tlx.group_key("Bash", {"command": "sleep 30"}))
-check("echo 開場取後面的程式", "closeout-provenance.py", tlx.group_key("Bash", {"command": "echo '---'; python3 /x/closeout-provenance.py --self-repos"}))
+check("echo 開場取後面的程式", "closeout-provenance.py --self-repos", tlx.group_key("Bash", {"command": "echo '---'; python3 /x/closeout-provenance.py --self-repos"}))
+check("scp && ssh 多工具串接歸 (compound)", "(compound)", tlx.group_key("Bash", {"command": "scp -q a calyx-m4:/tmp/a && ssh calyx-m4 'pytest -q'"}))
 check("整串只有 echo 才用 echo", "echo", tlx.group_key("Bash", {"command": "echo done"}))
 check("$() 不產生假分組", "ccsi search", tlx.group_key("Bash", {"command": "S=$(date +%s); ccsi search foo -k 5"}))
 check("$() 內層有括號也剝乾淨", "find", tlx.group_key("Bash", {"command": "P=$(python3 -c 'print(len(\"a\"))'); find ~/x -name y"}))
@@ -94,6 +97,8 @@ with tempfile.TemporaryDirectory() as tmp:
     + [use_line(CUR_DAY, 300, "ask", name="AskUserQuestion"), result_line(CUR_DAY, 900, "ask")]
     + [use_line(CUR_DAY, 350, "agent", name="Agent"), result_line(CUR_DAY, 380, "agent")]
     + [result_line(CUR_DAY, 400, "orphan")]
+    + [use_line(CUR_DAY, 420, "err1", tool_input={"command": "python3 /x/err.py"}), {"type": "user", "timestamp": ts(CUR_DAY, 421), "message": {"content": [{"type": "tool_result", "tool_use_id": "err1", "is_error": True, "content": "boom"}]}}]
+    + [use_line(CUR_DAY, 430, "skip1", tool_input={"command": "python3 /x/skip.py"}), {"type": "user", "timestamp": ts(CUR_DAY, 430.2), "message": {"content": [{"type": "tool_result", "tool_use_id": "skip1", "content": '{"status": "skip", "reason": "empty-diff"}'}]}}]
     + call(CUR_DAY, 500, "long", 3600, "python3 /x/long.py")
   )
   write(session, entries)
@@ -103,6 +108,8 @@ with tempfile.TemporaryDirectory() as tmp:
   check("背景 Bash 不計", None, got.get("bg.py"))
   check("等人回應的工具不計", None, got.get("AskUserQuestion"))
   check("委派類工具不計", None, got.get("Agent"))
+  check("is_error 失敗呼叫不計入基線", None, got.get("err.py"))
+  check("structured skip 快退不計入基線", None, got.get("skip.py"))
   check("單次上限 15 分鐘", 900.0, got.get("long.py"))
   check("孤兒 tool_result 不產生紀錄", ["long.py", "solo.py"], sorted(got))
 

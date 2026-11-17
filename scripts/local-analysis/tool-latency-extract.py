@@ -50,14 +50,42 @@ SUBCOMMAND_TOOLS = {"git", "gh", "docker", "brew", "launchctl", "herdr", "hc", "
 SKIP_PROGRAMS = {"cd", "set", "export", "true", ":", "pushd", "popd"}
 # 常見的開場動作：後面還有別的程式就取後面那個，整串只有它們才用它們分組
 PREFIX_PROGRAMS = {"echo", "printf", "mkdir", "source", "."}
-SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+STEP_SPLIT = re.compile(r"&&|\|\||;|\n")
 SHELL_KEYWORDS = {"for", "while", "until", "if", "case", "select", "do", "then", "else", "elif", "done", "fi", "esac", "{", "}"}
-# 沒有固定身分的分組：每次內容不同的即興腳本、迴圈、agent 自選長短的 sleep；留在總表但不參加變慢排名
+# 沒有固定身分的分組：每次內容不同的即興腳本、多工具串接複合命令、迴圈、agent 自選長短的 sleep；留在總表但不參加變慢排名
 # （2026-11-10 回溯 4 個週二，這幾類佔滿前 3 名，把真正變慢的 closeout-provenance.py 擠出榜外）
-NO_IDENTITY = {"(loop/control)", "sleep", "bash (empty)"}
+NO_IDENTITY = {"(loop/control)", "(compound)", "sleep", "bash (empty)"}
 MIN_DELTA_SECONDS = 0.5
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SCRIPT_EXT = re.compile(r"\.(?:py|sh|mjs|cjs|js|ts|rb|pl)$")
+SUBCMD_WORD = re.compile(r"^[a-z][a-z0-9_-]{2,20}$")
+# 帶路徑／參數值的通用選項旗標不當模式分組；其餘長旗標（如 --plan vs --self-repos）代表執行模式，拆開避免雙峰混組失真
+VALUE_FLAGS = {
+  "--repo", "--cwd", "--dir", "--directory", "--out", "--out-dir", "--output", "--file", "--path",
+  "--date", "--since", "--until", "--cursor", "--run-dir", "--fix-dir", "--ticket-file", "--worktree",
+  "--model", "--workers", "--cap", "--limit", "--session", "--format", "--json", "--quiet", "--verbose",
+}
+SKIP_RESULT_RE = re.compile(
+  r'(?:^Unreviewed\b|"status"\s*:\s*"skip"|\bskip\s+empty-diff\b|^__SILENT__\s*$)',
+  re.M,
+)
+HEREDOC_START = re.compile(r"<<-?\s*(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def strip_heredocs(command):
+  lines = command.splitlines()
+  out, i = [], 0
+  while i < len(lines):
+    line = lines[i]
+    m = HEREDOC_START.search(line)
+    out.append(HEREDOC_START.sub("", line) if m else line)
+    if m:
+      delim = m.group(1) or m.group(2) or m.group(3)
+      i += 1
+      while i < len(lines) and lines[i].strip() != delim:
+        i += 1
+    i += 1
+  return "\n".join(out)
 
 
 def parse_ts(ts):
@@ -97,6 +125,22 @@ def _tokens(segment):
     return segment.split()
 
 
+def _script_qualifier(args):
+  if args and SUBCMD_WORD.match(args[0]) and args[0] not in ("true", "false"):
+    return args[0]
+  i = 0
+  while i < len(args):
+    tok = args[i]
+    flag = tok.split("=", 1)[0]
+    if flag in VALUE_FLAGS:
+      i += 1 if "=" in tok else 2
+      continue
+    if flag.startswith("--") and len(flag) > 3:
+      return flag
+    i += 1
+  return None
+
+
 def _program_key(tokens):
   while tokens and (ASSIGNMENT.match(tokens[0]) or tokens[0] in ("env", "command", "time", "exec", "nohup")):
     tokens = tokens[1:]
@@ -117,7 +161,9 @@ def _program_key(tokens):
       return f"{prog} (inline)"
     if rest[0] == "-m" and len(rest) > 1:
       return f"{prog} -m {rest[1]}"
-    return os.path.basename(rest[0])
+    script = os.path.basename(rest[0])
+    qual = _script_qualifier(rest[1:])
+    return f"{script} {qual}" if qual else script
   if prog in PACKAGE_RUNNERS:
     rest = [t for t in tokens[1:] if not t.startswith("-")]
     if rest and rest[0] in ("run", "exec", "x"):
@@ -129,33 +175,67 @@ def _program_key(tokens):
       rest = [t for t in tokens[3:] if not t.startswith("-")]
     return f"{prog} {rest[0]}" if rest else prog
   if "/" in tokens[0] or SCRIPT_EXT.search(prog):
-    return prog
+    qual = _script_qualifier(tokens[1:])
+    return f"{prog} {qual}" if qual else prog
   return prog
 
 
-def group_key(tool, tool_input):
-  if tool != "Bash":
-    return tool
-  command = strip_substitutions(((tool_input or {}).get("command") or "").replace("\\\n", " "))
+def _step_key(step):
   prefix = None
-  for segment in SEGMENT_SPLIT.split(command):
-    segment = segment.strip().lstrip("(").rstrip(")").strip()
-    if not segment:
+  for pipe_part in step.split("|"):
+    pipe_part = pipe_part.strip().lstrip("(").rstrip(")").strip()
+    if not pipe_part:
       continue
-    key = _program_key(_tokens(segment))
+    key = _program_key(_tokens(pipe_part))
     if not key:
       continue
     if key in PREFIX_PROGRAMS:
       prefix = prefix or key
       continue
     return key
-  return prefix or "bash (empty)"
+  return prefix
+
+
+def group_key(tool, tool_input):
+  if tool != "Bash":
+    return tool
+  raw = strip_heredocs((tool_input or {}).get("command") or "")
+  command = strip_substitutions(raw.replace("\\\n", " "))
+  step_keys, prefixes = [], []
+  for step in STEP_SPLIT.split(command):
+    step = step.strip().lstrip("(").rstrip(")").strip()
+    if not step:
+      continue
+    key = _step_key(step)
+    if not key:
+      continue
+    if key == "(loop/control)":
+      return "(loop/control)"
+    if key in PREFIX_PROGRAMS:
+      prefixes.append(key)
+      continue
+    step_keys.append(key)
+  if not step_keys:
+    return prefixes[0] if prefixes else "bash (empty)"
+  distinct = list(dict.fromkeys(step_keys))
+  return distinct[0] if len(distinct) == 1 else "(compound)"
+
+
+def _result_text(content):
+  if isinstance(content, str):
+    return content[:400]
+  if isinstance(content, list):
+    for item in content:
+      if isinstance(item, dict) and item.get("type") == "text":
+        return str(item.get("text") or "")[:400]
+  return ""
 
 
 def scan_file(path):
   uses = {}
   per_message = defaultdict(int)
   results = {}
+  skipped_or_errored = set()
   try:
     with open(path, encoding="utf-8", errors="replace") as handle:
       for index, line in enumerate(handle):
@@ -178,12 +258,15 @@ def scan_file(path):
             per_message[message_id] += 1
             uses.setdefault(block["id"], (ts, block.get("name"), block.get("input") or {}, message_id))
           elif block.get("type") == "tool_result" and block.get("tool_use_id"):
-            results.setdefault(block["tool_use_id"], ts)
+            tid = block["tool_use_id"]
+            results.setdefault(tid, ts)
+            if block.get("is_error") or SKIP_RESULT_RE.search(_result_text(block.get("content"))):
+              skipped_or_errored.add(tid)
   except OSError:
     return []
   out = []
   for tool_id, (ts, name, tool_input, message_id) in uses.items():
-    if per_message[message_id] != 1 or name in EXCLUDED_TOOLS:
+    if per_message[message_id] != 1 or name in EXCLUDED_TOOLS or tool_id in skipped_or_errored:
       continue
     if name == "Bash" and isinstance(tool_input, dict) and tool_input.get("run_in_background"):
       continue
@@ -286,9 +369,9 @@ def render(windows, bounds):
     "",
     "</details>",
     "",
-    f"（方法：主 session、同一則訊息只有一個工具呼叫才計；排除背景 Bash、等人回應與 Agent 等委派類工具；單次上限 15 分鐘。"
+    f"（方法：主 session、同一則訊息只有一個工具呼叫才計；排除背景 Bash、失敗／skip 快退、等人回應與 Agent 等委派類工具；單次上限 15 分鐘。"
     f"變慢條件：兩週各 ≥{MIN_CALLS} 次、中位數 +{MIN_GROWTH:.0%} 且 +{MIN_DELTA_SECONDS} 秒以上、估計多等 ≥{MIN_EXTRA_SECONDS} 秒；"
-    "即興腳本（inline）、迴圈與 sleep 只列總表、不參加排名。"
+    "即興腳本（inline）、多工具串接（compound）、迴圈與 sleep 只列總表、不參加排名。"
     "權限確認視窗的等待無法分離，會算進耗時。）",
   ]
   return "\n".join(lines)
