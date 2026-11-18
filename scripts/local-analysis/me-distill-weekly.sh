@@ -10,5 +10,11 @@ cat <<'EOF'
 python3 /Users/linhancheng/Desktop/projects/me-distill/scripts/manifest_tool.py --profile /Users/linhancheng/Documents/me-profile commit_distill --tag local-analysis-<date>
 ```
 
-報告落檔失敗、本輪有子來源失敗告警，或 `deferred_writeback` 為空字串時，不得推進蒸餾游標。
+報告落檔失敗時，不得推進蒸餾游標，並應立即執行對應標籤的快照還原以回復本輪已改寫的分面與個人摘要：
+
+```bash
+python3 /Users/linhancheng/Desktop/projects/me-distill/scripts/manifest_tool.py --profile /Users/linhancheng/Documents/me-profile bundle_rollback --tag local-analysis-<date>
+```
+
+本輪若有子來源失敗告警或 `deferred_writeback` 為空字串時，同樣不得推進蒸餾游標。
 EOF
