@@ -4,6 +4,7 @@
 import copy
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -46,9 +47,10 @@ class RetroCLI(unittest.TestCase):
     self.serial += 1
     return self.root / f"{name}-{self.serial}"
 
-  def cli(self, *args, code=0):
+  def cli(self, *args, code=0, home=None):
+    env = None if home is None else {**os.environ, "HOME": str(home)}
     result = subprocess.run([sys.executable, "-I", str(SCRIPT), *map(str, args)],
-                            text=True, capture_output=True)
+                            text=True, capture_output=True, env=env)
     self.assertEqual(result.returncode, code, result.stdout + result.stderr)
     return json.loads(result.stdout)
 
@@ -357,7 +359,10 @@ class RetroCLI(unittest.TestCase):
     self.assertNotIn("local-cmd", {r["session"] for r in data["unknown"]})
     source.write_text(json.dumps(user("LIVE_CHANGED")))
     out = self.new("run")
-    result = self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "day")
+    home = self.root / "home"
+    (home / ".claude/config").mkdir(parents=True)
+    (home / ".claude/config/gpt-models.env").write_text("GPT_SOL=gpt-9.9-sol\nGPT_TERRA=gpt-9.9-terra\n")
+    result = self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "day", home=home)
     plan = json.loads(Path(result["plan_path"]).read_text())
     session = plan["sessions"][0]
     document = Path(session["document"]).read_text()
@@ -371,7 +376,7 @@ class RetroCLI(unittest.TestCase):
     self.assertTrue(plan["limits"]["thinking_omitted"])
     self.assertEqual(plan["page_count"], 2)
     self.assertEqual(plan["models"]["read"], result["models"]["read"])
-    self.assertEqual(plan["models"], {"read": "group/gemini-pro:medium", "merge": "group/gemini-pro:medium", "verify": "gpt-6.1-sol(xhigh)[1m]",
+    self.assertEqual(plan["models"], {"read": "group/gemini-pro:medium", "merge": "group/gemini-pro:medium", "verify": "codex/gpt-9.9-sol:xhigh[1m]",
                                       "repair": "devin-plugin/swe-2:high"})
     self.assertEqual(plan["efforts"], {"read": "medium", "merge": "medium", "verify": "xhigh"})
     self.assertEqual(plan["concurrency"], 2)

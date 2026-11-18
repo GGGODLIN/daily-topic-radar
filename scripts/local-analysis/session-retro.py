@@ -195,6 +195,13 @@ def read_model_table():
 
 def format_model(base, effort=None):
   base = re.sub(r"\[1m\]$", "", base)
+  bare = re.fullmatch(r"([^/()]+?)(?:\(([a-z]+)\))?", base)
+  if bare:
+    # The relay only resolves bare GPT names it keeps aliases for: on 2026-11-18 gpt-6.2-sol(xhigh)[1m]
+    # returned 404 while codex/gpt-6.2-sol:xhigh[1m] resolved, so name the channel instead of relying on aliases.
+    name, own_effort = bare.groups()
+    effort = own_effort or effort
+    return f"codex/{name}:{effort}[1m]" if effort else f"codex/{name}[1m]"
   if effort and not re.search(r"\([a-z]+\)$", base):
     base = f"{base}({effort})"
   return base + "[1m]"
