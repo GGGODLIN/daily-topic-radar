@@ -3018,6 +3018,40 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertIn('"callerKeyName": "machine-cpa-key-2"', out)
     self.assertIn("URL_KEY_PARAM", mod.credential_names(f"https://claude.ai/artifact/demo?sk={slack_sk}"))
 
+  def test_redaction_keeps_non_literal_assignments_and_stays_on_one_line(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_assign_values", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    kept = [
+      "GH_TOKEN=$(gh auth token -u GGGODLIN) gh pr view 12",
+      "export API_TOKEN=${API_TOKEN:-unset}",
+      "def fetch(page_token: str, limit: int) -> dict:",
+      "def refresh(access_token: Optional[str] = None):",
+      "if page_token:\n    resp = fetch(page_token)",
+      "token = os.environ.get('GH_TOKEN')",
+      "remote_token: git@github.com:GGGODLIN/claude-config.git",
+      'api_key = "00000000-0000-0000-0000-000000000000"',
+    ]
+    for text in kept:
+      self.assertEqual(mod.redact_text(text), text, "non-secret assignment value was masked")
+
+    # No vendor prefix, so only the assignment rule can catch it.
+    unknown_secret = "Synth" + "Q7w" * 8
+    for text in [
+      f"SERVICE_TOKEN={unknown_secret}",
+      f'api_key: "{unknown_secret}"',
+      f"password = '{unknown_secret}'",
+      f"client = Client(api_key={unknown_secret})",
+    ]:
+      self.assertFalse(unknown_secret in mod.redact_text(text), "assignment secret leaked")
+    self.assertEqual(
+      mod.redact_text(f"client = Client(api_key={unknown_secret})"), "client = Client(api_key=[REDACTED])"
+    )
+    # A value on the next line is out of the assignment rule's reach; a vendor prefix is still caught.
+    vendor = "ghp_" + "A1b2" * 9
+    self.assertFalse(vendor in mod.redact_text(f"secret_token:\n  {vendor}"), "vendor token on next line leaked")
+
 
 def analysis_with_media(media):
   return openai(

@@ -127,7 +127,8 @@ PRIVATE_KEY_RE = re.compile(
 )
 BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 BASIC_RE = re.compile(r"\bBasic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE)
-EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])", re.IGNORECASE)
+# `git@github.com:owner/repo` 是 SSH remote，不是人的信箱；遮成 [EMAIL] 只會看不出推到哪個 repo。
+EMAIL_RE = re.compile(r"(?<![\w.+-])(?!git@[A-Za-z0-9.-]+:)[\w.+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])", re.IGNORECASE)
 TOKEN_RE = re.compile(
   r"(?:\b(?:sk_(?:live|test)_[A-Za-z0-9_-]{6,}|sk-(?:ant|proj)-[A-Za-z0-9_-]{10,}"
   r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
@@ -173,10 +174,13 @@ LABELED_PHONE_RE = re.compile(
   r"(\+?\d(?:[\d -]{6,15}\d|\d{7,14}))(?!\w)"
 )
 SVG_NO_PHONE_RE = re.compile(
-  r"(?i)(?:data:image/svg\+xml[^\s\"'<>]*|\b(?:d|points|viewBox)\s*=\s*([\"'])[^\"']*\1)"
+  r"(?i)(?:data:image/svg\+xml[^\s\"'<>]*|\b(?:d|points|viewBox)\s*=\s*([\"'])[^\"']*\1"
+  # UUID 的數字段（如全零測試 UUID 的 0000-0000-0000）會被當成電話；電話不會長成 8-4-4-4-12。
+  r"|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b)"
 )
 ASSIGNMENT_RE = re.compile(
-  r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]{0,127})(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+  # 分隔只認同一行的空白：跨行會把 `if page_token:` 下一行的程式碼當成值吞掉。
+  r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]{0,127})([ \t]*[:=][ \t]*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
 CJK_SENSITIVE_KEY_RE = re.compile(
   r"^(?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰|驗證碼|認證碼|動態碼|一次性密碼)$"
@@ -522,6 +526,28 @@ def bare_key_secret(value):
 
 
 PLACEHOLDER_RE = re.compile(r"^(?:\$|<|\[REDACTED|\*{3}|x{3,}$|your[-_])", re.IGNORECASE)
+TYPE_ANNOTATION_RE = re.compile(
+  r"^(?:(?:str|int|float|bool|bytes|dict|list|tuple|set|object|None|Any)\b"
+  r"|(?:Optional|Union|Literal|Sequence|Mapping|Dict|List|Tuple)\[)"
+)
+ZERO_UUID_RE = re.compile(r"^0{8}-0{4}-0{4}-0{4}-0{12}$")
+
+
+def non_literal_assignment_value(raw_val):
+  # 右邊是 shell 展開、型別標註、函式呼叫、SSH remote 或全零測試 UUID 時不是憑證；遮掉只會讓副本看不出原本做了什麼。
+  # 引號包住的值照遮，因為那才是字面值。
+  value = raw_val.strip()
+  if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+    return bool(ZERO_UUID_RE.match(value[1:-1]))
+  return bool(
+    PLACEHOLDER_RE.match(value)
+    or TYPE_ANNOTATION_RE.match(value)
+    or "(" in value
+    or value.startswith("git@")
+    or ZERO_UUID_RE.match(value)
+  )
+
+
 # 偵測比遮罩嚴：遮罩寧可多遮，偵測要少誤報。只認 env 檔寫法（大寫名、等號、帶前綴的憑證字尾），
 # 「token: 說明文字」「PASS: 測試名」這類冒號寫法在歷史資料裡幾乎都是誤報（2026-10-08 量到 1347 行、106 個 session）。
 ENV_SECRET_RE = re.compile(
@@ -614,10 +640,20 @@ def redact_text(value):
   # 先遮整段再切片，避免 private key / token 被切到兩個 chunk 後對不上。
   # 不截斷、不壓空白；既有 sanitize_excerpt 會留 600 字，不能拿來做全量分析。
   def replace_assignment(match):
-    key_name, _sep, raw_val = match.group(1), match.group(2), match.group(3)
-    if sensitive_key(key_name) and not is_exempt_sensitive_value(key_name, raw_val, raw_text=True):
-      return f"{key_name}=[REDACTED]"
-    return match.group(0)
+    key_name, sep, raw_val = match.group(1), match.group(2), match.group(3)
+    if not sensitive_key(key_name) or non_literal_assignment_value(raw_val):
+      # 引號字串與 shell 展開不往裡找：`${TOKEN:-unset}` 的冒號不是賦值。
+      if raw_val[:1] in "\"'$":
+        return match.group(0)
+      # 沒引號的值可能還包著另一個賦值（`client = Client(api_key=...)`），整段放行會連裡面的憑證一起漏掉。
+      return f"{key_name}{sep}{ASSIGNMENT_RE.sub(replace_assignment, raw_val)}"
+    if is_exempt_sensitive_value(key_name, raw_val, raw_text=True):
+      return match.group(0)
+    # `Client(api_key=...)` 的值會連右括號一起抓進來；沒配對的右括號放回去，程式碼才讀得懂。
+    tail = ""
+    while raw_val.endswith(")") and raw_val.count(")") > raw_val.count("("):
+      raw_val, tail = raw_val[:-1], ")" + tail
+    return f"{key_name}=[REDACTED]{tail}"
 
   decoder = json.JSONDecoder()
   pieces = []
