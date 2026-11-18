@@ -1374,8 +1374,6 @@ def composition_manifest_chain(manifest_path):
   decisions = []
   for index, artifact in enumerate(decision_artifacts):
     input_path = composition_path(run, artifact.get("input_path"), artifact["unit"] + " input")
-    output = composition_writer(artifact, run, cache, artifact["unit"])
-    composition_require_reads([output["writer_agent"]], [input_path], artifact["unit"])
     decision_input = load(input_path)
     start = index * 70
     stop = min(len(pending), start + 70)
@@ -1383,6 +1381,15 @@ def composition_manifest_chain(manifest_path):
                       "existing_secondary_patterns": partial.get("secondary_patterns", []),
                       "candidates": pending[start:stop]}
     require(decision_input == expected_input, artifact["unit"] + " input differs from remaining packet")
+    if not expected_input["candidates"]:
+      # A seat with no candidates has exactly one correct outcome; demanding a full read of the shared
+      # existing patterns only made models refuse (2026-11-18: one empty seat refused six times).
+      decisions.append({"artifact": artifact, "input": decision_input,
+                        "report": {"unit": artifact["unit"], "status": "complete", "decisions": [], "new_groups": []},
+                        "writer": None})
+      continue
+    output = composition_writer(artifact, run, cache, artifact["unit"])
+    composition_require_reads([output["writer_agent"]], [input_path], artifact["unit"])
     report = output["report"]
     require(report.get("status") == "complete" and {row.get("id") for row in report.get("decisions", [])} ==
             {row.get("id") for row in decision_input["candidates"]}, artifact["unit"] + " decisions are incomplete")

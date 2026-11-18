@@ -2077,6 +2077,31 @@ class EventEvidenceCLI(unittest.TestCase):
       retro.composition_manifest_chain(manifest)
     self.assertIn("did not fully read", str(error.exception))
 
+  def test_composition_empty_decision_seat_needs_no_report_or_reads(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, run, manifest, _plan = fixture.composition_fixture()
+    data = json.loads(manifest.read_text())
+    for artifact in data["semantic_artifacts"]["decision_artifacts"]:
+      Path(artifact.pop("report_path")).unlink()
+      artifact.pop("transcript_dirs")
+    dump(manifest, data)
+    chain = retro.composition_manifest_chain(manifest)
+    self.assertEqual([d["report"]["decisions"] for d in chain["decisions"]], [[]] * 6)
+    self.assertNotIn("cross-decide-01", [row["unit"] for row in chain["writer_artifacts"]])
+
+  def test_composition_empty_decision_seat_still_binds_its_input(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, run, manifest, _plan = fixture.composition_fixture()
+    dump(run / "cross-decide-04-input.json", {"unit": "cross-decide-04", "existing_patterns": [],
+                                              "existing_secondary_patterns": [], "candidates": [{"id": "forged"}]})
+    with self.assertRaises(retro.Invalid) as error:
+      retro.composition_manifest_chain(manifest)
+    self.assertIn("cross-decide-04 input differs", str(error.exception))
+
   def test_composition_verify_requires_two_critic_seats_and_uses_composed_cross(self):
     fixture = RetroCLI()
     fixture.setUp()
