@@ -1,6 +1,6 @@
 # social-info
 
-Daily AI ecosystem raw aggregator. Pipeline produces a structured Markdown digest each morning at 06:00 Asia/Taipei via local launchd ([scripts/run-daily.sh](/scripts/run-daily.sh)); downstream consumption is via Claude Code + gh CLI.
+Daily AI ecosystem raw aggregator. At 04:00 Asia/Taipei, the local LaunchAgent `com.gggodlin.morning-tui-factory` runs [scripts/run-daily.sh](/scripts/run-daily.sh) if the day's Markdown report is missing or empty. Claude Code and the gh CLI handle downstream consumption.
 
 ## How to consume the daily digest
 
@@ -33,7 +33,7 @@ See full reference in [docs/superpowers/specs/2026-04-26-daily-ai-aggregator-des
 3. Copy [`.env.example`](/.env.example) to `.env`, fill in keys (`APIFY_RELAY_URL`, or direct `APIFY_TOKEN_TWITTER` / `APIFY_TOKEN_THREADS`)
 4. Verify: `uv run python -m social_info --smoke`
 5. Push to GitHub ([scripts/run-daily.sh](/scripts/run-daily.sh) commits and pushes daily `state.db` and `reports/`)
-6. Load the local LaunchAgent (`com.gggodlin.social-info-daily`) so [scripts/run-daily.sh](/scripts/run-daily.sh) runs daily at 06:00 Asia/Taipei automatically
+6. Load the local LaunchAgent (`com.gggodlin.morning-tui-factory`) to include [scripts/run-daily.sh](/scripts/run-daily.sh) in the 04:00 Asia/Taipei daily-topic run.
 
 ## Local commands
 

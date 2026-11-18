@@ -198,12 +198,12 @@ discriminative=True（有具體 trigger + 反向排除）：
 
 # 不要重複現役 regex hook 已抓的
 
-現役 `~/.claude/hooks/skill-description-gate.sh` 已抓硬閘（< 40 char / > 600 char / 完全無 use-when keyword / 完全無 do-not-use keyword）。本 channel 補的是「regex 看 keyword 通過、但 LLM 看實質不到位」的 subtle case：
+現役 `~/.claude/hooks/skill-description-gate.sh` 的硬性閘只適用於 description 缺失或 `<40 chars`，不可豁免。`>600 chars`、缺觸發語式（Use when…）或缺反向排除（Do not use for…）是可由 marker 豁免的軟性建議。本 channel 補的是「regex 看 keyword 通過、但 LLM 看實質不到位」的 subtle case：
 - 寫了「Use when」但場景抽象 / 沒列 user 真會打的詞
 - 動詞層次太高、user message 比對不到
 - 排除段寫了但不具體（例：「不適合 X」未說清楚 X 是什麼）
 
-對「regex 已能擋」的明顯失敗（純 capability 描述、< 40 char、沒任何 trigger keyword）—— LLM 看到還是要列、但 reason 註明「regex hook 也能抓到」、不算 LLM 補的新洞察。
+對「regex 已能抓」的明顯缺漏（例如 `<40 chars` 或未豁免且缺觸發詞）—— LLM 看到還是要列，但 reason 註明「regex hook 也能抓到」，不算 LLM 補的新洞察。
 
 # Discriminative fail 段格式
 

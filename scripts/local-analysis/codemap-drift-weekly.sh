@@ -30,7 +30,7 @@ PROMPT=$(cat <<'EOF'
 - ❌ 不要 ls-style exhaustive listing（變「ls 的 markdown 版」）
 - 派 subagent 跑 rescan 時 prompt 內 explicit 要求「順手抓 alias / 結構異常」副產物
 
-**具體執行 command**：`/refresh-codemaps`（akocommerce 專屬、`~/.claude/commands/refresh-codemaps.md`、按上述規範派 5 個 subagent 並行 refresh + 寫 commit msg 模板）。對非 akocommerce 的 project（如 cc-i18n-proxy）目前無對應 command、user 自行決定要不要手動 rescan 或 fork 一份 command。
+**具體執行方式**：對需要 rescan 的專案，建議依上述規範手動派 subagent。
 
 1. 掃 /Users/linhancheng/Desktop/projects/* 和 /Users/linhancheng/Desktop/work/* 找含 docs/CODEMAPS/ 目錄的 project。**排除 /Users/linhancheng/Desktop/work/akocommerce**（使用者 2026-08-18 已離開 akohub，2026-09-15 拍板不再追它的 codemap drift；報告只寫一行「akocommerce 依拍板排除」、不算 commit、不建議 rescan）
 2. 對每個有 codemap 的 project（用 absolute path，因 launchd 環境可能影響 ~/Desktop 存取）：
@@ -48,7 +48,7 @@ PROMPT=$(cat <<'EOF'
 - 列出找到的 project 路徑
 
 ## Drift 明顯（建議 rescan）
-- <project path>: 自上次 codemap update <N> 天 / <X> commits / 主要動到 <files>；建議派 subagent 做 entry-file rescan + alias finding + cross-file trace（具體目標：補新增的 entry 路徑、抓本次積壓的結構/alias 異常、為新模組畫 cross-file trace）。**akocommerce 跑 `/refresh-codemaps` command 一次到位**；其他 project 目前無對應 command、手動派 subagent 或 fork。
+- <project path>: 自上次 codemap update <N> 天 / <X> commits / 主要動到 <files>，建議派 subagent 做 entry-file rescan + alias finding + cross-file trace（具體目標：補新增的 entry 路徑、抓本次積壓的結構/alias 異常、為新模組畫 cross-file trace）。
 
 ## 輕微 drift（觀察）
 ## 無 drift / 最近已 update

@@ -1,13 +1,13 @@
 #!/bin/bash
 # free-pool-daily.sh — /daily-local workflow 的 free-pool channel（2026-09-21 建）。
 #
-# kind: 'shell'——零 LLM。偵測 free / free-smart 模型池各腿的三層死法：
+# kind: 'shell'——零 LLM。偵測 free、free-smart、glm53-pool、mimopro-pool 各腿的三層死法：
 #   過程沒開（gateway / port）／認證・額度死（402、401/403、429）／腿在 gateway 上解析不到。
 # 拓樸（2026-10-15 改）：Magpie 當天正式接管號池（證據 ~/.magpie-machine/evidence/
 #   formal-pool-cutover-20261015.json、formal-retired-services-20261015.json、
 #   formal-cpa-retirement-20261015.json），litellm-proxy(:8000)、cline2api(:3457)、CPA、
 #   Agent2API trial 同日退役，原本對它們的 port／帳號池／ngrok 探測因此全拿掉；
-#   腿清單改讀 Magpie providers.json 內 free／free-smart 兩個 group 的 members 聯集
+#   腿清單讀 Magpie providers.json 內 free、free-smart、glm53-pool、mimopro-pool 的 members 聯集
 #   （動態讀檔，新腿自動納入、provider 標 off 的跳過），經 Magpie gateway 各打一發 hello。
 #   - agentrouter :8002 仍探：4 個 legacy provider（agentrouter-glm／astra 與 -smart 版）還以它為後端，
 #     cutover 證據對這塊寫 HOLD（Prepared not applied）。gateway 看不到 :8002 本身死活、只看到 hello 逾時，
@@ -129,7 +129,7 @@ for gid in ("free", "free-smart", "glm53-pool", "mimopro-pool"):
         if m not in members:
             members.append(m)
 if not members:
-    print("HELLO_FAIL\tD\t[hello] providers.json 內 free／free-smart group 沒有任何 member——腿清單為空，全池 hello 證據未取得（fail-loud）")
+    print("HELLO_FAIL\tD\t[hello] providers.json 內 free、free-smart、glm53-pool、mimopro-pool 都沒有任何 member——腿清單為空，全池 hello 證據未取得（fail-loud）")
     sys.exit(0)
 try:
     with urllib.request.urlopen(base + "/models", timeout=10) as r:
