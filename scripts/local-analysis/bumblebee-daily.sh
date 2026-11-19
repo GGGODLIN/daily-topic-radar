@@ -40,8 +40,10 @@ CATALOG_PIN="d75359246a6be8a6a8fcaca089ef2dabcf5d75fe"
 PREV_HEAD="$(git -C "$CATALOG_REPO" rev-parse HEAD)"
 NEW_HEAD="$PREV_HEAD"
 UPSTREAM_HEAD=""
-if git -C "$CATALOG_REPO" fetch --quiet origin main && \
-   git -C "$CATALOG_REPO" reset --hard --quiet "$CATALOG_PIN"; then
+if git -C "$CATALOG_REPO" fetch --quiet origin main; then
+  if [ "$PREV_HEAD" != "$CATALOG_PIN" ] || [ -n "$(git -C "$CATALOG_REPO" status --porcelain)" ]; then
+    git -C "$CATALOG_REPO" checkout --detach --force --quiet "$CATALOG_PIN"
+  fi
   NEW_HEAD="$(git -C "$CATALOG_REPO" rev-parse HEAD)"
   UPSTREAM_HEAD="$(git -C "$CATALOG_REPO" rev-parse --short origin/main)"
   if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
