@@ -164,7 +164,7 @@ digest 階段展開原文（解讀 / 摘要 / 引用）時**按來源分流**。
   - **靜默失效偵測（同日補上）**：`__main__.py` 計算 `empty = [r for r in results if r.ok and r.items_count() == 0]` 傳進 `render_file`，raw md header 會多出 `sources_empty: N` 與 `> empty (HTTP ok but 0 items parsed…)` 區塊。另 `classify_error` 把 **429 從 `persistent_error` 改判 `transient`**（節流可重試，原分類等於「重試也沒用」）。
 - Threads `threads_keyword` Apify actor 計費不受 `maxItemsPerKeyword` 限制（估約 US$94/月），目前停用（見 `sources.yml`）
 - HN 抓 front_page link + 每則 story 的 top 5 comments（Firebase API，2026-05-11 之後）；不抓巢狀回覆
-- X 只抓 KOL handle、不抓 reply / quote tweet / search query
+- X 目前透過 Apify Advanced Search 送 `from:<handle>`，會一併抓取作者發出的回覆（不抓別人的回覆、引用或關鍵字搜尋；受限每帳號每日 10 筆，留意回覆是否擠佔主貼文名額）
 - **⚠️ pipeline hang bug（2026-06-05 事故、未根治）**：06:00 launchd run `python -m social_info` **卡死 6 小時零進展**（CPU 累積僅 1.24s）、raw md 沒產出、`state.db` 停在前一天。手動 kill + 08:59 重跑：10 秒產出 107KB raw md，但**重跑也卡在「寫完 raw md 後退出」階段**（同源 hang）、再 kill 一次。兩次卡點不同（fetch 階段 vs exit 階段）但同病根。**timeout 不是缺失**（`pipeline.py` 有 `HTTP_TIMEOUT=httpx.Timeout(30.0, connect=10.0)` 全局 + 各 fetcher override），推測根因是**某 fetcher 內有 sync blocking call（HTML/lxml parse 等）block 整個 asyncio event loop → httpx timeout timer 不觸發**，或 exit 階段 httpx client / 背景 task 沒乾淨收尾。**止血**：`scripts/run-daily.sh` 已加 hard-timeout 看門狗（3300s、每 30s 輪詢、超時 `pkill -f social_info` 砍 process tree + log，不阻 commit 已產出資料）。**根治待辦**：reproduce + 對每個 fetcher 加 logging 找出卡哪個 source，或把 sync parse 丟 `asyncio.to_thread` / 給 `asyncio.gather` 包 `asyncio.wait_for` 整體上限 + 確保 client 收尾。
 
 對應 memory `feedback_digest_signal_coverage.md`：digest 缺社群討論層、要 surface 為 fetcher gap 不要默默 ignore。
