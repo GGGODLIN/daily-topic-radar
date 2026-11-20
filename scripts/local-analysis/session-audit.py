@@ -526,22 +526,29 @@ def bare_key_secret(value):
 
 
 PLACEHOLDER_RE = re.compile(r"^(?:\$|<|\[REDACTED|\*{3}|x{3,}$|your[-_])", re.IGNORECASE)
+# 型別標註必須整段完全匹配，避免 `DB_PASSWORD=set-Q7w...` 或 `DB_PASS=Any!123` 因開頭撞型別名而漏遮。
 TYPE_ANNOTATION_RE = re.compile(
-  r"^(?:(?:str|int|float|bool|bytes|dict|list|tuple|set|object|None|Any)\b"
-  r"|(?:Optional|Union|Literal|Sequence|Mapping|Dict|List|Tuple)\[)"
+  r"^(?:str|int|float|bool|bytes|dict|list|tuple|set|object|None|Any"
+  r"|(?:Optional|Union|Literal|Sequence|Mapping|Dict|List|Tuple)\[[^\]]+\])\)*$"
 )
 ZERO_UUID_RE = re.compile(r"^0{8}-0{4}-0{4}-0{4}-0{12}$")
+# 只收已出現真實誤遮的表達式前綴關鍵字，且須在呼叫端確認同行後方緊接表達式（裸 `DB_PASS=new`／`DB_PASS=await` 仍照遮）。
+EXPR_PREFIX_KEYWORDS = frozenset({"await", "new"})
+EXPR_FOLLOWUP_RE = re.compile(r"[ \t]+(?=[A-Za-z_$\(\[\{`'\"])")
 
 
-def non_literal_assignment_value(raw_val):
-  # 右邊是 shell 展開、型別標註、函式呼叫、SSH remote 或全零測試 UUID 時不是憑證；遮掉只會讓副本看不出原本做了什麼。
-  # 引號包住的值照遮，因為那才是字面值。
+def non_literal_assignment_value(raw_val, sep="", following=""):
+  # 右邊是 shell 展開、冒號型別標註、函式呼叫、後方帶表達式的 await/new、SSH remote 或全零測試 UUID 時不是憑證；
+  # 遮掉只會讓副本看不出原本做了什麼。引號包住的值與行尾裸關鍵字照遮，因為那可能是字面憑證。
   value = raw_val.strip()
   if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
     return bool(ZERO_UUID_RE.match(value[1:-1]))
+  is_colon_type = ":" in sep and bool(TYPE_ANNOTATION_RE.match(value))
+  is_expr_prefix = value in EXPR_PREFIX_KEYWORDS and bool(EXPR_FOLLOWUP_RE.match(following))
   return bool(
     PLACEHOLDER_RE.match(value)
-    or TYPE_ANNOTATION_RE.match(value)
+    or is_colon_type
+    or is_expr_prefix
     or "(" in value
     or value.startswith("git@")
     or ZERO_UUID_RE.match(value)
@@ -641,7 +648,8 @@ def redact_text(value):
   # 不截斷、不壓空白；既有 sanitize_excerpt 會留 600 字，不能拿來做全量分析。
   def replace_assignment(match):
     key_name, sep, raw_val = match.group(1), match.group(2), match.group(3)
-    if not sensitive_key(key_name) or non_literal_assignment_value(raw_val):
+    following = match.string[match.end():]
+    if not sensitive_key(key_name) or non_literal_assignment_value(raw_val, sep=sep, following=following):
       # 引號字串與 shell 展開不往裡找：`${TOKEN:-unset}` 的冒號不是賦值。
       if raw_val[:1] in "\"'$":
         return match.group(0)

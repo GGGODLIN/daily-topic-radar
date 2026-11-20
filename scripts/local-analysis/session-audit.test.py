@@ -3030,11 +3030,24 @@ class SessionAuditCliTest(unittest.TestCase):
       "def refresh(access_token: Optional[str] = None):",
       "if page_token:\n    resp = fetch(page_token)",
       "token = os.environ.get('GH_TOKEN')",
+      "const token = await getAccessToken();",
+      "const token=await getAccessToken();",
+      "let secret = new SecretBox();",
       "remote_token: git@github.com:GGGODLIN/claude-config.git",
       'api_key = "00000000-0000-0000-0000-000000000000"',
     ]
     for text in kept:
       self.assertEqual(mod.redact_text(text), text, "non-secret assignment value was masked")
+    for bare_secret, expected in [
+      ('api_key = "await"', "api_key=[REDACTED]"),
+      ("DB_PASS=new", "DB_PASS=[REDACTED]"),
+      ("DB_PASS=await;", "DB_PASS=[REDACTED];"),
+      ("api_key=void", "api_key=[REDACTED]"),
+      ("DB_PASS=None", "DB_PASS=[REDACTED]"),
+      ("DB_PASSWORD=set-Q7w9x2m4k8p1", "DB_PASSWORD=[REDACTED]"),
+      ("DB_PASS=Any!secret123", "DB_PASS=[REDACTED]"),
+    ]:
+      self.assertEqual(mod.redact_text(bare_secret), expected, f"bare secret leaked: {bare_secret}")
 
     # No vendor prefix, so only the assignment rule can catch it.
     unknown_secret = "Synth" + "Q7w" * 8
