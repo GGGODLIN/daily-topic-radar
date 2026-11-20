@@ -2282,6 +2282,32 @@ class EventEvidenceCLI(unittest.TestCase):
     with self.assertRaises(retro.Invalid):
       retro.taxonomy_mapping_by_key(chain["taxonomy_input"]["groups"], [{"key": "G001", "target": "N1"}])
 
+  def test_strip_read_prefix_preserves_tab_indentation_for_verify_part_edit_replay(self):
+    spec = importlib.util.spec_from_file_location("session_retro_strip_test", SCRIPT)
+    retro = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(retro)
+    self.assertEqual(retro.strip_read_prefix('2\t  "session": "cross-session",'), '  "session": "cross-session",')
+    self.assertEqual(retro.strip_read_prefix('10\t      "observation": "ok"'), '      "observation": "ok"')
+    self.assertEqual(retro.strip_read_prefix('2→   "session": "cross-session",'), '  "session": "cross-session",')
+    with tempfile.TemporaryDirectory() as tmp:
+      run = Path(tmp) / "run"
+      report_path = run / "reports" / "verify-current-p05.json"
+      old_obj = {"session": "cross-session", "unit": "verify-current-p05", "status": "complete", "findings": [{"pattern_id": "P29", "verdict": "CONFIRMED"}]}
+      new_obj = {"session": "cross-session", "unit": "verify-current-p05", "status": "complete", "findings": [{"pattern_id": "P29", "verdict": "REFUTED"}]}
+      old_text = json.dumps(old_obj, indent=2)
+      report_path.parent.mkdir(parents=True, exist_ok=True)
+      report_path.write_text(json.dumps(new_obj, indent=2), encoding="utf-8")
+      read_text = "\n".join(f"{i}\t{line}" for i, line in enumerate(old_text.split("\n"), 1))
+      agent = {"path": str(run / "agent.jsonl"), "operations": [
+        {"name": "Read", "input": {"file_path": str(report_path)}, "text": read_text},
+        {"name": "Edit", "input": {"file_path": str(report_path), "old_string": '      "verdict": "CONFIRMED"', "new_string": '      "verdict": "REFUTED"', "replace_all": False}, "text": "ok"},
+      ]}
+      item = {"session": "cross-session", "unit": "verify-current-p05", "report_path": str(report_path)}
+      picked, target, loaded = retro.report_writer([agent], item)
+      self.assertEqual(picked["path"], agent["path"])
+      self.assertEqual(target, report_path.resolve())
+      self.assertEqual(loaded, new_obj)
+
 
 if __name__ == "__main__":
   unittest.main(verbosity=2)

@@ -924,7 +924,8 @@ def operation_path(operation):
 
 
 def strip_read_prefix(line):
-  match = re.match(r"^\s*\d+(?:\t|[→│|]) ?(.*)$", line)
+  # Tab is the exact Read(cat -n) delimiter and must not eat leading indentation spaces on the line.
+  match = re.match(r"^\s*\d+(?:\t|[→│|] ?)(.*)$", line)
   return match.group(1) if match else None
 
 
