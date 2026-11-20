@@ -20,7 +20,8 @@ keys="$fixture/keys.env"
 relay_url='http://127.0.0.1:8317'
 relay_token='fixture-relay-token'
 models="$fixture/gpt-models.env"
-luna='fixture-luna(max)[1m]'
+primary='group/gemini-flash:high'
+sol='fixture-sol(high)[1m]'
 checks=0
 failures=0
 
@@ -168,14 +169,14 @@ run_case() {
   local label="$1" vendor="$2" base="$3"
   local capture="$fixture/$label.capture" out="$fixture/$label.out" log="$fixture/$label.log"
   env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$out" RECAP_LOG_DIR="$log" RECAP_DATE=2026-09-08 RECAP_WINDOW_END='2026-10-21T10:00:00+05:30' RECAP_CAPTURE_FILE="$capture" EXPECTED_RELAY_TOKEN="$relay_token" CC_VENDOR="$vendor" ANTHROPIC_BASE_URL="$base" ANTHROPIC_AUTH_TOKEN='fixture-parent-token' ANTHROPIC_API_KEY='fixture-parent-api-key' bash "$script"
-  assert_line "$capture" "model=$luna"
+  assert_line "$capture" "model=$primary"
   assert_line "$capture" 'cc_vendor=headless-channel'
   assert_line "$capture" "base_url=$relay_url"
   assert_line "$capture" 'auth_matches_fixture=yes'
   assert_line "$capture" 'api_key_set='
-  assert_line "$capture" "anthropic_model=$luna"
-  assert_line "$capture" "opus=$luna"
-  assert_line "$capture" "subagent=$luna"
+  assert_line "$capture" "anthropic_model=$primary"
+  assert_line "$capture" "opus=$primary"
+  assert_line "$capture" "subagent=$primary"
   assert_line "$capture" 'go_available=yes'
   assert_line "$out/2026-09-08-recap.md" '# Daily Recap fixture'
   assert_window_prompt "$capture"
@@ -582,6 +583,60 @@ assert_log_has "$upstream_log/local-analysis-recap-2026-09-08.log" 'upstream fai
 assert_log_has "$upstream_log/local-analysis-recap-2026-09-08.log" 'upstream exit 9'
 ((++checks))
 [[ ! -s "$upstream_out/2026-09-08-recap.md" ]] || { print -ru2 -- 'upstream failure left a report'; ((++failures)); }
+
+# <details><summary> 合法摺疊清單不可被誤判為 compaction summary
+DETAILS_REPORT='# Daily Recap fixture
+
+3 session / 2 commit / 1 個新 memory / 跨 2 個 repo
+
+## 2026-09-08
+
+### 含摺疊清單的匿名主題
+<details>
+<summary>110 個 session</summary>
+`a.jsonl`, `b.jsonl`
+</details>'
+run_stream_case details-summary "" "$(assistant_event "$DETAILS_REPORT")" "$closing_result"
+assert_status details-summary "$STREAM_STATUS" 0
+assert_file_has "$STREAM_OUT" '<summary>110 個 session</summary>'
+
+# 主模型失敗時自動備援 GPT_SOL(high)[1m]，並記錄切換與呼叫順序
+fallback_fake="$fixture/claude-fallback"
+cat > "$fallback_fake" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+model=''
+while (($#)); do
+  case "$1" in
+    --model) model="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' "$model" >> "$RECAP_MODELS_LOG"
+if [[ "$model" == "group/gemini-flash:high" ]]; then
+  printf 'primary transient failure\n' >&2
+  exit 1
+fi
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"# Daily Recap fallback\n\n3 session / 2 commit / 1 個新 memory / 跨 2 個 repo\n\n## 2026-09-08\n\n### 備援模型產出\n確認由 Sol 備援完成。"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'
+EOF
+chmod +x "$fallback_fake"
+fb_out="$fixture/fb.out"
+fb_log="$fixture/fb.log"
+fb_models="$fixture/fb.models"
+mkdir -p "$fb_out" "$fb_log"
+set +e
+env -i HOME="$HOME" PATH="$PATH" RECAP_PROJECTS_ROOT="$projects" RECAP_CLAUDE_BIN="$fallback_fake" RECAP_KEYS_FILE="$keys" RECAP_GPT_MODELS_FILE="$models" RECAP_OUT_DIR="$fb_out" RECAP_LOG_DIR="$fb_log" RECAP_DATE=2026-09-08 RECAP_MODELS_LOG="$fb_models" CC_VENDOR=gpt ANTHROPIC_BASE_URL='https://parent.invalid/gpt' bash "$script" >/dev/null 2>"$fixture/fb.err"
+fb_status=$?
+set -e
+assert_status fallback-sol "$fb_status" 0
+assert_file_has "$fb_out/2026-09-08-recap.md" '# Daily Recap fallback'
+assert_log_has "$fb_log/local-analysis-recap-2026-09-08.log" "falling back to $sol"
+((++checks))
+if [[ "$(tr '\n' ',' < "$fb_models")" != "$primary,$sol," ]]; then
+  print -ru2 -- "fallback model call sequence unexpected: $(cat "$fb_models")"
+  ((++failures))
+fi
 
 print -r -- "recap-model-route: checks=$checks failures=$failures"
 ((failures == 0))
