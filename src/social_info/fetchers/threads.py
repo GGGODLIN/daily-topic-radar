@@ -6,11 +6,11 @@ Three modes:
 - user:    skeleton only, disabled until handles provided
 """
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import httpx
 
-from social_info._time import utcnow
+from social_info._time import parse_iso_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -41,21 +41,26 @@ async def _search_one(
         params["search_mode"] = search_mode
     resp = await http.get(f"{API_BASE}/keyword_search", params=params, timeout=30.0)
     resp.raise_for_status()
-    return resp.json().get("data", [])
+    payload = resp.json()
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    return [p for p in data if isinstance(p, dict)]
 
 
 def _post_to_item(
     post: dict, source_tier: int, language: str, source_handle: str
 ) -> Item:
-    text = (post.get("text") or "").strip()
-    url = post.get("permalink") or f"https://www.threads.net/post/{post.get('id')}"
-    try:
-        posted_at = datetime.strptime(
-            post["timestamp"], "%Y-%m-%dT%H:%M:%S%z"
-        ).replace(tzinfo=None)
-    except (KeyError, ValueError):
-        posted_at = utcnow()
-    username = post.get("username") or ""
+    if not isinstance(post, dict):
+        post = {}
+    raw_text = post.get("text")
+    text = raw_text.strip() if isinstance(raw_text, str) else ""
+    url = str(post.get("permalink") or f"https://www.threads.net/post/{post.get('id')}")
+    now = utcnow()
+    posted_at = parse_iso_utc(post.get("timestamp"), now)
+    username = str(post.get("username") or "")
     return Item(
         title=text[:120] + ("…" if len(text) > 120 else ""),
         url=url,
@@ -64,7 +69,7 @@ def _post_to_item(
         source_handle=source_handle or (f"@{username}" if username else ""),
         source_tier=source_tier,
         posted_at=posted_at,
-        fetched_at=utcnow(),
+        fetched_at=now,
         author=username,
         excerpt=text[:200],
         language=language,

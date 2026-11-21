@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from social_info._time import parse_iso_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.db import TAIPEI, Database
 from social_info.fetchers.base import Item
@@ -53,17 +54,29 @@ def _path(params: dict[str, Any], key: str, default: str) -> Path:
 
 def _load_config(path: Path) -> tuple[dict[str, Any], list[str]]:
     notes: list[str] = []
+    raw: dict[str, Any] = {}
     if not path.exists():
         notes.append(f"config missing: {path}")
-        raw: dict[str, Any] = {}
     else:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            notes.append(f"config unreadable ({type(exc).__name__}): {path}")
+        else:
+            if isinstance(loaded, dict):
+                raw = loaded
+            else:
+                notes.append(f"config invalid (expected object): {path}")
+    breakout_raw = raw.get("breakout")
+    sitemaps_raw = raw.get("sitemaps")
+    stop_words_raw = raw.get("stop_words")
+    x_accounts_raw = raw.get("x_accounts")
     cfg = {
         "lang": raw.get("lang") or "en",
-        "sitemaps": raw.get("sitemaps") or {},
-        "breakout": {**_BREAKOUT, **(raw.get("breakout") or {})},
-        "stop_words": list(raw.get("stop_words") or []),
-        "x_accounts": raw.get("x_accounts") or {"labs": [], "bloggers": []},
+        "sitemaps": sitemaps_raw if isinstance(sitemaps_raw, dict) else {},
+        "breakout": {**_BREAKOUT, **(breakout_raw if isinstance(breakout_raw, dict) else {})},
+        "stop_words": list(stop_words_raw) if isinstance(stop_words_raw, list) else [],
+        "x_accounts": x_accounts_raw if isinstance(x_accounts_raw, dict) else {"labs": [], "bloggers": []},
     }
     return cfg, notes
 
@@ -462,15 +475,18 @@ def collect(source: SourceConfig, date: str | None = None, *, now: datetime | No
     cache_path = report_dir / f"{label}.json"
     cached = _read_cache(cache_path)
     same_day_cfg = bool(cached) and cached.get("date") == label and cached.get("config") == identity
-    cached_health = (cached or {}).get("health") or {}
+    raw_cached_health = (cached or {}).get("health")
+    cached_health = raw_cached_health if isinstance(raw_cached_health, dict) else {}
+    raw_cached_blocks = (cached or {}).get("blocks")
+    cached_blocks = raw_cached_blocks if isinstance(raw_cached_blocks, dict) else {}
     remote_healthy = all(
         bool((cached_health.get(k) or {}).get("ok")) for k in ("hf", "github", "sitemap")
     )
     reused = same_day_cfg and remote_healthy
     if reused:
-        blocks = dict(cached.get("blocks") or {})
+        blocks = dict(cached_blocks)
     else:
-        prior_blocks = (cached.get("blocks") or {}) if cached and cached.get("date") == label else {}
+        prior_blocks = cached_blocks if cached and cached.get("date") == label else {}
         healthy_kinds = (
             {k for k in ("hf", "github", "sitemap") if (cached_health.get(k) or {}).get("ok")}
             if same_day_cfg
@@ -490,7 +506,8 @@ def collect(source: SourceConfig, date: str | None = None, *, now: datetime | No
     except Exception as exc:
         x_block, x_notes = {"error": f"{type(exc).__name__}: {exc}", "terms": []}, []
     notes.extend(x_notes)
-    blocks["x"] = _merge_x((cached or {}).get("blocks", {}).get("x") if cached and cached.get("date") == label else None, x_block)
+    prior_x = cached_blocks.get("x") if cached and cached.get("date") == label else None
+    blocks["x"] = _merge_x(prior_x if isinstance(prior_x, dict) else None, x_block)
     observed_on = (cached.get("observed_on") if reused else None) or _taipei_day(moment)
     captured_at = (cached.get("captured_at") if reused else None) or moment.isoformat()
     health = {kind: _health_of(kind, block) for kind, block in blocks.items()}
@@ -514,9 +531,11 @@ def collect(source: SourceConfig, date: str | None = None, *, now: datetime | No
 
 
 def to_items(report: dict[str, Any], tier: int = 2) -> list[Item]:
-    fetched = _naive(_aware(report["captured_at"]))
+    fetched = parse_iso_utc(report.get("captured_at"), utcnow())
     items: list[Item] = []
     for row in report.get("raw_items") or []:
+        if not isinstance(row, dict):
+            continue
         # Unfetched sitemap URLs stay in sitemaps/*.json.gz and {date}.json;
         # turning thousands of bare URL slugs into Items bloats state.db toward
         # GitHub's 100 MB push limit without carrying page content.
@@ -526,9 +545,7 @@ def to_items(report: dict[str, Any], tier: int = 2) -> list[Item]:
             continue
         if not row.get("url"):
             continue
-        posted = fetched
-        if row.get("created_at"):
-            posted = _naive(_aware(row["created_at"]))
+        posted = parse_iso_utc(row.get("created_at"), fetched)
         handle = {
             "hf": f"hf:{row.get('category') or 'models'}",
             "github": "github",

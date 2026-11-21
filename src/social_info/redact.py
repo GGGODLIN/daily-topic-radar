@@ -34,10 +34,15 @@ _KINDS: tuple[tuple[str, str], ...] = (
 )
 
 # sk-… keeps hyphen in look-around so ordinary hyphenated slugs (e.g. "non-sk-…") do not
-# match inside prose; distinct vendor prefixes allow adjacent hyphens (e.g. "user-ghp_…").
+# match inside prose; vendor-prefixed sk-proj-/sk-ant- tokens and distinct vendor prefixes
+# still match after a hyphen (e.g. "tag-sk-proj-…", "user-ghp_…").
 def _wrap_kind(kind: str, pattern: str) -> str:
     if kind == "sk":
-        return rf"(?<![A-Za-z0-9_-])(?P<{kind}>{pattern})(?![A-Za-z0-9_-])"
+        return (
+            rf"(?P<{kind}>(?:(?<![A-Za-z0-9_-]){pattern}"
+            r"|(?<![A-Za-z0-9_])sk-(?:proj|ant|svcacct|admin)-(?=[A-Za-z0-9_-]*[A-Z0-9])[A-Za-z0-9_-]{20,}))"
+            r"(?![A-Za-z0-9_-])"
+        )
     return rf"(?<![A-Za-z0-9_])(?P<{kind}>{pattern})(?![A-Za-z0-9_])"
 
 
@@ -55,11 +60,23 @@ def redact_text(text: str) -> str:
     return _TOKEN_RE.sub(_replacement, text)
 
 
+def _redact_value(value: Any, *, skip_keys: frozenset[str] = frozenset()) -> Any:
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, dict):
+        return _redact_mapping_values(value, skip_keys=skip_keys)
+    if isinstance(value, list):
+        return [_redact_value(elem, skip_keys=skip_keys) for elem in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_value(elem, skip_keys=skip_keys) for elem in value)
+    return value
+
+
 def _redact_mapping_values(
     mapping: dict[str, Any], *, skip_keys: frozenset[str] = frozenset()
 ) -> dict[str, Any]:
     return {
-        key: redact_text(value) if isinstance(value, str) and key not in skip_keys else value
+        key: value if key in skip_keys else _redact_value(value, skip_keys=skip_keys)
         for key, value in mapping.items()
     }
 

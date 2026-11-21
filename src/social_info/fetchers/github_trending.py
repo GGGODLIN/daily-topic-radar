@@ -1,5 +1,6 @@
 """GitHub Trending HTML scraper."""
 import asyncio
+import math
 import sys
 
 import httpx
@@ -25,8 +26,11 @@ def _parse_stars(text: str) -> int:
         return 0
     if text.endswith("k"):
         try:
-            return int(float(text[:-1]) * 1000)
-        except ValueError:
+            val = float(text[:-1])
+            if not math.isfinite(val):
+                return 0
+            return int(val * 1000)
+        except (ValueError, OverflowError):
             return 0
     try:
         return int(text)

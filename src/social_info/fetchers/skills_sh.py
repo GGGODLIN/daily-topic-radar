@@ -22,8 +22,11 @@ def _parse_compact_count(value: str) -> int:
     multiplier = _MULTIPLIERS.get(suffix, 1)
     number = cleaned[:-1] if multiplier != 1 else cleaned
     try:
-        return int(Decimal(number) * multiplier)
-    except (InvalidOperation, ValueError) as exc:
+        dec = Decimal(number)
+        if not dec.is_finite():
+            raise ValueError(f"non-finite compact count: {value!r}")
+        return int(dec * multiplier)
+    except (InvalidOperation, ValueError, OverflowError) as exc:
         raise ValueError(f"invalid compact count: {value!r}") from exc
 
 

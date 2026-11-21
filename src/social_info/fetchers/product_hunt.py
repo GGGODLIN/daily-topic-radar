@@ -3,11 +3,10 @@
 Reads PRODUCT_HUNT_TOKEN from the environment and sends it as a Bearer header.
 """
 import os
-from datetime import datetime
 
 import httpx
 
-from social_info._time import utcnow
+from social_info._time import parse_iso_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -49,22 +48,41 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     )
     resp.raise_for_status()
     data = resp.json()
-    edges = data.get("data", {}).get("posts", {}).get("edges", [])
+    if not isinstance(data, dict):
+        return []
+    root = data.get("data")
+    posts = root.get("posts") if isinstance(root, dict) else None
+    edges = posts.get("edges") if isinstance(posts, dict) else None
+    if not isinstance(edges, list):
+        return []
 
     items: list[Item] = []
     now = utcnow()
     for edge in edges:
-        n = edge.get("node", {})
-        if not n:
+        if not isinstance(edge, dict):
             continue
-        title = f"{n['name']} — {n.get('tagline', '')}".strip(" —")
-        url = n["url"]
+        n = edge.get("node")
+        if not isinstance(n, dict) or not n:
+            continue
+        name = n.get("name")
+        url = n.get("url")
+        if not isinstance(name, str) or not name or not isinstance(url, str) or not url:
+            continue
+        tagline = n.get("tagline") or ""
+        if not isinstance(tagline, str):
+            tagline = str(tagline)
+        title = f"{name} — {tagline}".strip(" —")
+        posted_at = parse_iso_utc(n.get("createdAt"), now)
+        user = n.get("user")
+        author = str(user.get("name") or "") if isinstance(user, dict) else ""
         try:
-            posted_at = datetime.fromisoformat(
-                n["createdAt"].replace("Z", "+00:00")
-            ).replace(tzinfo=None)
-        except (KeyError, ValueError):
-            posted_at = now
+            votes = int(n.get("votesCount") or 0)
+        except (TypeError, ValueError, OverflowError):
+            votes = 0
+        try:
+            comments = int(n.get("commentsCount") or 0)
+        except (TypeError, ValueError, OverflowError):
+            comments = 0
         items.append(Item(
             title=title,
             url=url,
@@ -74,17 +92,17 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             source_tier=source.tier,
             posted_at=posted_at,
             fetched_at=now,
-            author=(n.get("user") or {}).get("name", ""),
-            excerpt=n.get("tagline", "")[:200],
+            author=author,
+            excerpt=tagline[:200],
             language="en",
             metadata={
-                "id": n.get("id", ""),
-                "created_at": n.get("createdAt", ""),
+                "id": str(n.get("id") or ""),
+                "created_at": str(n.get("createdAt") or ""),
                 "content_kind": "tagline",
             },
             engagement={
-                "votes": int(n.get("votesCount") or 0),
-                "comments": int(n.get("commentsCount") or 0),
+                "votes": votes,
+                "comments": comments,
             },
         ))
     return items

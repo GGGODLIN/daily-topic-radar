@@ -1,9 +1,7 @@
 """HuggingFace Hub trending models / spaces fetcher."""
-from datetime import datetime
-
 import httpx
 
-from social_info._time import utcnow
+from social_info._time import parse_iso_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -19,26 +17,36 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
         timeout=30.0,
     )
     resp.raise_for_status()
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        return []
+    if not isinstance(data, list):
+        return []
 
     items: list[Item] = []
     now = utcnow()
     for entry in data:
+        if not isinstance(entry, dict):
+            continue
         repo_id = entry.get("id") or entry.get("modelId") or ""
-        if not repo_id:
+        if not isinstance(repo_id, str) or not repo_id:
             continue
         full_url = f"https://huggingface.co/{repo_id}"
         title = repo_id
-        try:
-            posted_at = datetime.fromisoformat(
-                entry["lastModified"].replace("Z", "+00:00")
-            ).replace(tzinfo=None)
-        except (KeyError, ValueError):
-            posted_at = now
+        posted_at = parse_iso_utc(entry.get("lastModified"), now)
         created = entry.get("createdAt") or entry.get("created_at")
         metadata = {"id": repo_id, "category": category}
         if created:
             metadata["created_at"] = created
+        try:
+            likes = int(entry.get("likes") or 0)
+        except (TypeError, ValueError, OverflowError):
+            likes = 0
+        try:
+            downloads = int(entry.get("downloads") or 0)
+        except (TypeError, ValueError, OverflowError):
+            downloads = 0
         items.append(Item(
             title=title,
             url=full_url,
@@ -49,11 +57,11 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             posted_at=posted_at,
             fetched_at=now,
             author=repo_id.split("/")[0] if "/" in repo_id else "",
-            excerpt=entry.get("pipeline_tag", "") or "",
+            excerpt=str(entry.get("pipeline_tag") or ""),
             language="en",
             engagement={
-                "likes": int(entry.get("likes") or 0),
-                "downloads": int(entry.get("downloads") or 0),
+                "likes": likes,
+                "downloads": downloads,
             },
             metadata={**metadata, "content_kind": "model_id"},
         ))

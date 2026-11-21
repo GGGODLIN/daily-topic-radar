@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 import feedparser
 from bs4 import BeautifulSoup, NavigableString
 
-from social_info._time import utcnow
+from social_info._time import struct_time_to_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -117,7 +117,10 @@ def _render_html(node, parts: list[str], code_blocks: list[str]) -> None:
 
 def _restore_code_blocks(text: str, code_blocks: list[str]) -> str:
     def restore(match: re.Match[str]) -> str:
-        code = code_blocks[int(match.group(1))]
+        idx = int(match.group(1))
+        if idx < 0 or idx >= len(code_blocks):
+            return match.group(0)
+        code = code_blocks[idx]
         if code.endswith("\n"):
             code = code[:-1]
         return f"```\n{code}\n```"
@@ -137,6 +140,14 @@ def _strip_html(markup: str) -> str:
     return _restore_code_blocks(text, code_blocks)
 
 
+def _decode_output(raw: bytes | str | None) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw
+
+
 def _fetch_page_text(page: int) -> str:
     """Sync curl. Kept off the event loop via asyncio.to_thread."""
     url = f"{FEED_URL}?{urlencode({'page': page, 'per_page': PAGE_SIZE})}"
@@ -154,20 +165,23 @@ def _fetch_page_text(page: int) -> str:
                 url,
             ],
             capture_output=True,
-            text=True,
             timeout=REQUEST_TIMEOUT_SECONDS + 5,
         )
     except subprocess.TimeoutExpired as exc:
         raise LinuxDoFetchError(f"curl timed out on page {page}") from exc
+    except UnicodeDecodeError as exc:
+        raise LinuxDoFetchError(f"curl decode error on page {page}: {exc}") from exc
+    stdout_text = _decode_output(result.stdout)
+    stderr_text = _decode_output(result.stderr)
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = (stderr_text or stdout_text).strip()
         raise LinuxDoFetchError(f"curl failed on page {page}: {detail[:300]}")
     # -w appends the code with no newline. A marker keeps a body that itself
     # ends in a status-shaped line from being read as the HTTP code.
     marker = "\n__SOCIAL_INFO_HTTP__"
-    if marker not in result.stdout:
+    if marker not in stdout_text:
         raise LinuxDoFetchError(f"linux.do page {page} had no HTTP status")
-    body, _, status_text = result.stdout.rpartition(marker)
+    body, _, status_text = stdout_text.rpartition(marker)
     try:
         status = int(status_text.strip())
     except ValueError:
@@ -186,7 +200,12 @@ def _entry_posted_at(entry, page: int, index: int) -> datetime:
         raise LinuxDoFetchError(
             f"linux.do page {page} entry {index} has no pubDate"
         )
-    return datetime(*parsed[:6])
+    dt = struct_time_to_utc(parsed, None)
+    if dt is None:
+        raise LinuxDoFetchError(
+            f"linux.do page {page} entry {index} has invalid pubDate"
+        )
+    return dt
 
 
 def _parse_page(body: str, source: SourceConfig, now: datetime, page: int) -> tuple[list[Item], int]:

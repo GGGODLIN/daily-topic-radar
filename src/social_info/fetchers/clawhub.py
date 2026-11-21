@@ -1,9 +1,10 @@
 """ClawHub (OpenClaw skill registry) public API fetcher."""
+import math
 from datetime import datetime
 
 import httpx
 
-from social_info._time import utcfromtimestamp, utcnow
+from social_info._time import safe_utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -15,28 +16,35 @@ USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 
 
 def _epoch_ms_to_dt(value: object, fallback: datetime) -> datetime:
-    if not isinstance(value, (int, float)) or value <= 0:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
         return fallback
+    return safe_utcfromtimestamp(value / 1000, fallback)
+
+
+def _safe_int(value: object) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
     try:
-        return utcfromtimestamp(value / 1000)
-    except (OverflowError, OSError, ValueError):
-        return fallback
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _to_item(entry: dict, rank: int, tier: int, now: datetime) -> Item | None:
     slug = entry.get("slug")
-    if not slug:
+    if not isinstance(slug, str) or not slug:
         return None
-    title = entry.get("displayName") or slug
+    title = str(entry.get("displayName") or slug)
     url = f"{BASE_URL}/skills/{slug}"
-    stats = entry.get("stats") or {}
+    raw_stats = entry.get("stats")
+    stats = raw_stats if isinstance(raw_stats, dict) else {}
     engagement = {
         "rank": rank,
-        "downloads": int(stats.get("downloads") or 0),
-        "installs": int(stats.get("installs") or 0),
-        "stars": int(stats.get("stars") or 0),
-        "comments": int(stats.get("comments") or 0),
-        "versions": int(stats.get("versions") or 0),
+        "downloads": _safe_int(stats.get("downloads")),
+        "installs": _safe_int(stats.get("installs")),
+        "stars": _safe_int(stats.get("stars")),
+        "comments": _safe_int(stats.get("comments")),
+        "versions": _safe_int(stats.get("versions")),
     }
     return Item(
         title=title,
@@ -79,17 +87,21 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
         )
         resp.raise_for_status()
         payload = resp.json()
-        entries = payload.get("items") or payload.get("skills") or []
-        if not entries:
+        if not isinstance(payload, dict):
+            break
+        entries = payload.get("items") or payload.get("skills")
+        if not isinstance(entries, list) or not entries:
             break
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             item = _to_item(entry, len(items) + 1, source.tier, now)
             if item is not None:
                 items.append(item)
             if len(items) >= limit:
                 break
         next_cursor = payload.get("nextCursor")
-        if not next_cursor or next_cursor in seen_cursors:
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
             break
         seen_cursors.add(next_cursor)
         cursor = next_cursor

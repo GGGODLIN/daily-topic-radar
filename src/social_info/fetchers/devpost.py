@@ -41,7 +41,8 @@ def _to_item(
     if not title or not url:
         return None
 
-    prizes_counts = entry.get("prizes_counts") or {}
+    raw_prizes = entry.get("prizes_counts")
+    prizes_counts = raw_prizes if isinstance(raw_prizes, dict) else {}
     cash_count = int(prizes_counts.get("cash") or 0)
     other_count = int(prizes_counts.get("other") or 0)
     cash_ok = cash_count >= min_cash_prizes
@@ -210,8 +211,10 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
         timeout=30.0,
     )
     resp.raise_for_status()
-    payload = resp.json() or {}
-    entries = payload.get("hackathons") or []
+    payload = resp.json()
+    entries = payload.get("hackathons") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        entries = []
 
     items: list[Item] = []
     for entry in entries:

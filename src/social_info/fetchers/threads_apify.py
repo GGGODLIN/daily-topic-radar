@@ -5,7 +5,7 @@ Replaces the Meta Threads API path (Dev-mode keyword_search dead-end).
 """
 import httpx
 
-from social_info._time import utcfromtimestamp, utcnow
+from social_info._time import safe_utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.fetchers.relay import apify_post_url
@@ -40,20 +40,23 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     )
     resp.raise_for_status()
     data = resp.json()
+    if not isinstance(data, list):
+        return []
 
     items: list[Item] = []
     now = utcnow()
     for post in data:
-        text = (post.get("text") or "").strip()
-        url = post.get("url") or ""
+        if not isinstance(post, dict):
+            continue
+        raw_text = post.get("text")
+        text = raw_text.strip() if isinstance(raw_text, str) else ""
+        raw_url = post.get("url")
+        url = raw_url if isinstance(raw_url, str) else ""
         if not text or not url:
             continue
-        author = post.get("author") or ""
+        author = str(post.get("author") or "")
         ts = post.get("created_at")
-        try:
-            posted_at = utcfromtimestamp(int(ts)) if ts else now
-        except (TypeError, ValueError):
-            posted_at = now
+        posted_at = safe_utcfromtimestamp(ts, now) if ts else now
         items.append(Item(
             title=text[:120] + ("…" if len(text) > 120 else ""),
             url=url,
@@ -63,9 +66,9 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             source_tier=source.tier,
             posted_at=posted_at,
             fetched_at=now,
-            author=post.get("author_name") or author,
+            author=str(post.get("author_name") or author),
             excerpt=text[:200],
-            language=post.get("lang") or language,
+            language=str(post.get("lang") or language),
             content=text,
             metadata={"content_kind": "post_text"},
             engagement={

@@ -1,9 +1,10 @@
 """Tencent SkillHub (skillhub.cn) public API fetcher — China-region skill activity."""
+import math
 from datetime import datetime
 
 import httpx
 
-from social_info._time import utcfromtimestamp, utcnow
+from social_info._time import safe_utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -16,17 +17,23 @@ USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 
 
 def _epoch_ms_to_dt(value: object, fallback: datetime) -> datetime:
-    if not isinstance(value, (int, float)) or value <= 0:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
         return fallback
+    return safe_utcfromtimestamp(value / 1000, fallback)
+
+
+def _safe_int(value: object) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
     try:
-        return utcfromtimestamp(value / 1000)
-    except (OverflowError, OSError, ValueError):
-        return fallback
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _skill_url(entry: dict, slug: str) -> str:
-    namespace = entry.get("namespace") or {}
-    handle = namespace.get("handle")
+    namespace = entry.get("namespace")
+    handle = namespace.get("handle") if isinstance(namespace, dict) else None
     if handle:
         return f"{SITE_URL}/{handle}/{slug}"
     return f"{SITE_URL}/skills/{slug}"
@@ -34,21 +41,21 @@ def _skill_url(entry: dict, slug: str) -> str:
 
 def _to_item(entry: dict, rank: int, tier: int, language: str, now: datetime) -> Item | None:
     slug = entry.get("slug")
-    if not slug:
+    if not isinstance(slug, str) or not slug:
         return None
-    title = entry.get("name") or slug
+    title = str(entry.get("name") or slug)
     url = _skill_url(entry, slug)
     engagement = {
         "rank": rank,
-        "downloads": int(entry.get("downloads") or 0),
-        "installs": int(entry.get("installs") or 0),
-        "stars": int(entry.get("stars") or 0),
+        "downloads": _safe_int(entry.get("downloads")),
+        "installs": _safe_int(entry.get("installs")),
+        "stars": _safe_int(entry.get("stars")),
     }
     excerpt = entry.get("description_zh") or entry.get("description") or ""
     upstream = entry.get("upstream_url")
     also = (
         [{"source": "upstream", "source_handle": str(entry.get("source") or ""), "url": upstream}]
-        if upstream
+        if isinstance(upstream, str) and upstream
         else []
     )
     return Item(
@@ -93,17 +100,26 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
         )
         resp.raise_for_status()
         payload = resp.json()
+        if not isinstance(payload, dict):
+            break
         if payload.get("code") != 0:
             raise ValueError(f"skillhub_cn: API returned code {payload.get('code')}")
-        entries = (payload.get("data") or {}).get("skills") or []
-        if not entries:
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            break
+        entries = data.get("skills")
+        if not isinstance(entries, list) or not entries:
             break
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             item = _to_item(entry, len(items) + 1, source.tier, language, now)
             if item is not None:
                 items.append(item)
             if len(items) >= limit:
                 break
+        if len(entries) < PAGE_SIZE:
+            break
         page += 1
 
     return items

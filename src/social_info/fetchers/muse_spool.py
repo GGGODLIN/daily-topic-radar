@@ -8,12 +8,12 @@ runs in between is harmless: dedup skips rows it has already seen.
 """
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
 
-from social_info._time import utcnow
+from social_info._time import parse_iso_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -26,21 +26,28 @@ class MuseSpoolStale(RuntimeError):
     pass
 
 
-def _parse_time(value: str) -> datetime:
+def _parse_time(value: object, fallback: datetime | None = None) -> datetime:
     # social_info stores naive UTC everywhere (see _time.utcnow); an aware value
     # here would break the age arithmetic against utcnow().
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo:
-        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
-    return parsed
+    return parse_iso_utc(value, fallback if fallback is not None else utcnow())
 
 
 def items_from_spool(spool: dict, source: SourceConfig, now: datetime) -> list[Item]:
+    if not isinstance(spool, dict):
+        return []
     items = []
-    for record in spool.get("items") or []:
+    raw_items = spool.get("items")
+    if not isinstance(raw_items, list):
+        return []
+    for record in raw_items:
+        if not isinstance(record, dict):
+            continue
         url = record.get("url") or ""
-        text = (record.get("text") or "").strip()
-        if not url or not text:
+        if not isinstance(url, str) or not url:
+            continue
+        raw_text = record.get("text")
+        text = raw_text.strip() if isinstance(raw_text, str) else ""
+        if not text:
             continue
         handle = _HANDLE_RE.search(url)
         items.append(Item(
@@ -50,7 +57,7 @@ def items_from_spool(spool: dict, source: SourceConfig, now: datetime) -> list[I
             source="threads",
             source_handle=handle.group(1) if handle else "",
             source_tier=source.tier,
-            posted_at=_parse_time(record["ts"]) if record.get("ts") else now,
+            posted_at=_parse_time(record.get("ts"), now),
             fetched_at=now,
             excerpt=text[:200],
             language="zh" if _CJK_RE.search(text) else (source.language or "en"),
@@ -66,8 +73,10 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     if not path.exists():
         return []
     spool = json.loads(path.read_text())
+    if not isinstance(spool, dict):
+        return []
     now = utcnow()
-    age = now - _parse_time(spool["collected_at"])
+    age = now - _parse_time(spool.get("collected_at"), now)
     # Raising (instead of returning []) sends a Muse job that quietly stopped
     # producing into KNOWN_ISSUES like any other failing source.
     if age > timedelta(hours=float(source.params.get("max_age_hours", 110))):

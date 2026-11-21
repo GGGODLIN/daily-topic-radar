@@ -11,6 +11,9 @@ COMMENT_TRUNCATE_CHARS = 300
 _SKILLS_SH_BOARD_ORDER = {"trending": 0, "hot": 1}
 _SKILL_REGISTRY_SOURCES = frozenset({"skills_sh", "skillhub_cn", "clawhub"})
 _NON_SCORE_ENGAGEMENT_KEYS = frozenset({"rank", "versions"})
+_SAFE_URL_SCHEMES = frozenset({"http", "https"})
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
 
 PLATFORM_GROUP_ORDER = [
     ("x", "X / Twitter"),
@@ -53,14 +56,15 @@ def _group_key_for_source(source: str, source_handle: str, language: str) -> str
             return "wechat"
         return "zh_cn"
     if source == "rss":
-        if any(k in source_handle for k in ("anthropic", "openai", "google", "mistral", "xai")):
+        handle = source_handle or ""
+        if any(k in handle for k in ("anthropic", "openai", "google", "mistral", "xai")):
             return "rss_lab"
         return "rss_media"
     return source
 
 
 def _skills_sh_sort_key(item: Item) -> tuple[int, int]:
-    board = item.source_handle.partition(":")[0]
+    board = (item.source_handle or "").partition(":")[0]
     return (
         _SKILLS_SH_BOARD_ORDER.get(board, len(_SKILLS_SH_BOARD_ORDER)),
         item.engagement.get("rank", 2**31),
@@ -75,24 +79,52 @@ def _engagement_score(item: Item) -> int | float:
     )
 
 
-def _one_line(text: str) -> str:
-    return " ".join(html.unescape(text or "").split())
+def _sanitize_text(text: str | None) -> str:
+    if not text:
+        return ""
+    return text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _one_line(text: str | None) -> str:
+    return " ".join(html.unescape(_sanitize_text(text)).split())
+
+
+def _escape_link_text(text: str) -> str:
+    escaped = re.sub(r"\\(?=$|[\[\]\\])", r"\\\\", text)
+    return escaped.replace("[", "\\[").replace("]", "\\]")
+
+
+def _safe_markdown_url(url: str | None) -> str | None:
+    cleaned = _CONTROL_CHARS_RE.sub("", url or "").strip()
+    if not cleaned:
+        return None
+    scheme_match = _SCHEME_RE.match(cleaned)
+    if not scheme_match or scheme_match.group(1).lower() not in _SAFE_URL_SCHEMES:
+        return None
+    return cleaned.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
 
 
 def render_item(item: Item, is_resurface: bool = False) -> str:
     lines = []
     prefix = "🔁 " if is_resurface else ""
-    lines.append(f"### {prefix}[{_one_line(item.title)}]({item.url})")
+    title_text = _escape_link_text(_one_line(item.title))
+    safe_url = _safe_markdown_url(item.url)
+    if safe_url:
+        lines.append(f"### {prefix}[{title_text}]({safe_url})")
+    else:
+        lines.append(f"### {prefix}{title_text}")
     lines.append("")
 
+    source_handle = _sanitize_text(item.source_handle)
+    author = _sanitize_text(item.author)
     meta_parts = [
-        f"`{item.source}:{item.source_handle}`",
+        f"`{item.source}:{source_handle}`",
         f"T{item.source_tier}",
         item.posted_at.strftime("%Y-%m-%d %H:%M UTC"),
         item.language,
     ]
-    if item.author and item.author != item.source_handle.lstrip("@"):
-        meta_parts.append(f"by {item.author}")
+    if author and author != source_handle.lstrip("@"):
+        meta_parts.append(f"by {author}")
     if item.engagement.get("likes"):
         meta_parts.append(f"♥ {item.engagement['likes']}")
     if item.engagement.get("comments"):
@@ -112,14 +144,15 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
     lines.append(" · ".join(meta_parts))
     lines.append("")
 
-    if item.excerpt:
+    clean_excerpt = _sanitize_text(item.excerpt)
+    if clean_excerpt:
         # Other sources stay one collapsed line. LINUX DO keeps the first post's
         # paragraphs and code indent; a single replace("\n") would flatten both.
         if item.source == "linuxdo":
-            for excerpt_line in item.excerpt.strip("\n").split("\n"):
+            for excerpt_line in clean_excerpt.strip("\n").split("\n"):
                 lines.append(f"> {excerpt_line}".rstrip())
         else:
-            lines.append(f"> {_one_line(item.excerpt)}")
+            lines.append(f"> {_one_line(clean_excerpt)}")
         lines.append("")
 
     lines.extend(_content_lines(item))
@@ -127,17 +160,17 @@ def render_item(item: Item, is_resurface: bool = False) -> str:
     if item.comments:
         lines.append("> 💬 Top comments:")
         for c in item.comments:
-            text = c.get("text", "").replace("\n", " ").strip()
+            text = _sanitize_text(c.get("text", "")).replace("\n", " ").strip()
             if len(text) > COMMENT_TRUNCATE_CHARS:
                 text = text[:COMMENT_TRUNCATE_CHARS] + "…"
-            author = c.get("author", "?")
-            lines.append(f"> - **@{author}**: {text}")
+            c_author = _sanitize_text(c.get("author", "?")) or "?"
+            lines.append(f"> - **@{c_author}**: {text}")
         lines.append("")
 
     if item.also_appeared_in:
         seen = "; ".join(
-            f"{a['source']}:{a['source_handle']}"
-            + (f" ({a['metrics']})" if a.get("metrics") else "")
+            f"{a['source']}:{_sanitize_text(a.get('source_handle'))}"
+            + (f" ({_sanitize_text(a.get('metrics'))})" if a.get("metrics") else "")
             for a in item.also_appeared_in
         )
         lines.append(f"_also seen at: {seen}_")
@@ -158,10 +191,12 @@ def _content_lines(item: Item) -> list[str]:
     # titles and RSS summaries stay in the excerpt and are not labelled full text.
     if kind not in {"post_text", "feed_content"}:
         return []
-    if not item.content or item.content == item.excerpt:
+    clean_content = _sanitize_text(item.content)
+    clean_excerpt = _sanitize_text(item.excerpt)
+    if not clean_content or clean_content == clean_excerpt:
         return []
     lines = ["> 來源提供的正文:"]
-    for content_line in item.content.strip("\n").split("\n"):
+    for content_line in clean_content.strip("\n").split("\n"):
         lines.append(f"> {content_line}".rstrip())
     lines.append("")
     return lines
@@ -246,14 +281,18 @@ def render_file(
 
 
 def splice_radar_section(markdown: str, radar_markdown: str) -> str:
-    """Replace only the radar markers. Text outside them, including diagnostics, stays."""
+    """Replace only the last radar marker block. Text outside it, including diagnostics, stays."""
     clean_radar = redact_text(radar_markdown.rstrip("\n"))
     block = f"{RADAR_START}\n{clean_radar}\n{RADAR_END}\n"
-    pattern = re.compile(
-        re.escape(RADAR_START) + r".*?" + re.escape(RADAR_END) + r"\n?",
-        re.DOTALL,
+    matches = list(
+        re.finditer(
+            re.escape(RADAR_START) + r".*?" + re.escape(RADAR_END) + r"\n?",
+            markdown,
+            re.DOTALL,
+        )
     )
-    if pattern.search(markdown):
-        return pattern.sub(lambda _match: block, markdown, count=1)
+    if matches:
+        last = matches[-1]
+        return markdown[: last.start()] + block + markdown[last.end() :]
     suffix = "" if markdown.endswith("\n") else "\n"
     return markdown + suffix + "\n" + block

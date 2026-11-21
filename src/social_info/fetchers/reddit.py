@@ -18,7 +18,6 @@ the pipeline runs every source concurrently, so requests are serialised through
 a module-level lock with a minimum gap, plus one long backoff retry on 429.
 """
 import asyncio
-import calendar
 import html
 import re
 import time
@@ -26,7 +25,7 @@ import time
 import feedparser
 import httpx
 
-from social_info._time import utcfromtimestamp, utcnow
+from social_info._time import struct_time_to_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -102,7 +101,9 @@ def _entry_posted_at(entry, fallback):
     for key in ("published_parsed", "updated_parsed"):
         parsed = entry.get(key)
         if parsed:
-            return utcfromtimestamp(calendar.timegm(parsed))
+            dt = struct_time_to_utc(parsed, None)
+            if dt is not None:
+                return dt
     return fallback
 
 

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
-from social_info._time import utcnow
+from social_info._time import parse_iso_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -66,20 +66,32 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
             data = await asyncio.to_thread(_gh_search, query, per_query_limit)
             succeeded += 1
 
-            for repo in data.get("items", []):
-                full_name = repo["full_name"]
-                url = repo["html_url"]
+            raw_items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(raw_items, list):
+                continue
+            for repo in raw_items:
+                if not isinstance(repo, dict):
+                    continue
+                full_name = repo.get("full_name")
+                url = repo.get("html_url")
+                if not isinstance(full_name, str) or not full_name or not isinstance(url, str) or not url:
+                    continue
                 if url in seen_urls:
                     continue
                 seen_urls.add(url)
 
-                desc = repo.get("description") or ""
-                pushed_at = datetime.fromisoformat(
-                    repo["pushed_at"].replace("Z", "+00:00")
-                ).replace(tzinfo=None)
+                desc = str(repo.get("description") or "")
+                pushed_at = parse_iso_utc(repo.get("pushed_at"), now)
                 metadata = {"id": full_name}
                 if repo.get("created_at"):
                     metadata["created_at"] = repo["created_at"]
+                owner = repo.get("owner")
+                owner_login = owner.get("login") if isinstance(owner, dict) else None
+                author = str(owner_login or full_name.split("/")[0])
+                try:
+                    stars = int(repo.get("stargazers_count") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    stars = 0
 
                 items.append(Item(
                     title=full_name,
@@ -90,10 +102,10 @@ async def fetch(source: SourceConfig, http=None) -> list[Item]:
                     source_tier=source.tier,
                     posted_at=pushed_at,
                     fetched_at=now,
-                    author=repo.get("owner", {}).get("login", full_name.split("/")[0]),
+                    author=author,
                     excerpt=desc[:200],
                     language="en",
-                    engagement={"stars": repo.get("stargazers_count", 0)},
+                    engagement={"stars": stars},
                     metadata={**metadata, "content_kind": "description"},
                 ))
         except Exception as e:

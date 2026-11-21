@@ -3,7 +3,7 @@ import re
 
 import httpx
 
-from social_info._time import utcfromtimestamp, utcnow
+from social_info._time import safe_utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -30,6 +30,15 @@ def _matches_any_keyword(text: str, keywords: list[str]) -> bool:
     return any(k.lower() in lower for k in keywords)
 
 
+def _safe_int(value: object) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     node = (source.params.get("node") or "hot").strip()
     limit = source.params.get("limit", 20)
@@ -52,34 +61,39 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     items: list[Item] = []
     now = utcnow()
     for topic in data[:limit]:
-        title = topic.get("title") or ""
+        if not isinstance(topic, dict):
+            continue
+        raw_title = topic.get("title") or ""
+        title = raw_title if isinstance(raw_title, str) else str(raw_title)
         topic_id = topic.get("id") or 0
-        url = topic.get("url") or f"https://www.v2ex.com/t/{topic_id}"
+        raw_url = topic.get("url")
+        url = raw_url if isinstance(raw_url, str) and raw_url else f"https://www.v2ex.com/t/{topic_id}"
         if not title:
             continue
-        content = topic.get("content") or ""
+        raw_content = topic.get("content") or ""
+        content = raw_content if isinstance(raw_content, str) else str(raw_content)
         if not _matches_any_keyword(f"{title} {content}", keywords):
             continue
-        node_obj = topic.get("node") or {}
-        member = topic.get("member") or {}
-        try:
-            created_ts = int(topic.get("created") or 0)
-        except (TypeError, ValueError):
-            created_ts = 0
-        posted_at = utcfromtimestamp(created_ts) if created_ts else now
+        raw_node = topic.get("node")
+        node_obj = raw_node if isinstance(raw_node, dict) else {}
+        raw_member = topic.get("member")
+        member = raw_member if isinstance(raw_member, dict) else {}
+        created_ts = topic.get("created")
+        posted_at = safe_utcfromtimestamp(created_ts, now) if created_ts else now
+        source_handle = str(node_obj.get("name") or node)
         items.append(Item(
             title=title,
             url=url,
             canonical_url=canonical_url(url),
             source="v2ex",
-            source_handle=node_obj.get("name", node),
+            source_handle=source_handle,
             source_tier=source.tier,
             posted_at=posted_at,
             fetched_at=now,
-            author=member.get("username", ""),
+            author=str(member.get("username") or ""),
             excerpt=_clean(content),
             language="zh-CN",
-            engagement={"comments": int(topic.get("replies") or 0)},
+            engagement={"comments": _safe_int(topic.get("replies"))},
             metadata={
                 "id": str(topic_id),
                 "created_at": str(topic.get("created") or ""),

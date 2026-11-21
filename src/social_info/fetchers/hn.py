@@ -2,11 +2,11 @@
 import asyncio
 import html
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import httpx
 
-from social_info._time import utcfromtimestamp, utcnow
+from social_info._time import parse_iso_utc, safe_utcfromtimestamp, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -39,24 +39,22 @@ async def _fetch_one_comment(http: httpx.AsyncClient, comment_id: int) -> dict |
     try:
         resp = await http.get(FIREBASE_URL.format(id=comment_id), timeout=15.0)
         resp.raise_for_status()
-        data = resp.json() or {}
+        data = resp.json()
     except Exception:
+        return None
+    if not isinstance(data, dict):
         return None
     if data.get("deleted") or data.get("dead"):
         return None
-    by = data.get("by") or ""
-    text = _clean_comment_text(data.get("text") or "")
+    raw_by = data.get("by") or ""
+    by = raw_by if isinstance(raw_by, str) else str(raw_by)
+    raw_text = data.get("text")
+    text = _clean_comment_text(raw_text if isinstance(raw_text, str) else "")
     if not by or not text:
         return None
-    try:
-        ts_int = int(data.get("time")) if data.get("time") else None
-    except (TypeError, ValueError):
-        ts_int = None
-    posted_at = (
-        utcfromtimestamp(ts_int).replace(microsecond=0).isoformat()
-        if ts_int
-        else ""
-    )
+    ts = data.get("time")
+    dt = safe_utcfromtimestamp(ts, None) if ts else None
+    posted_at = dt.replace(microsecond=0).isoformat() if dt is not None else ""
     return {"author": by, "text": text, "posted_at": posted_at}
 
 
@@ -66,10 +64,15 @@ async def _fetch_comments_for_story(
     try:
         resp = await http.get(FIREBASE_URL.format(id=story_id), timeout=15.0)
         resp.raise_for_status()
-        story = resp.json() or {}
+        story = resp.json()
     except Exception:
         return []
-    kids = (story.get("kids") or [])[:MAX_COMMENTS]
+    if not isinstance(story, dict):
+        return []
+    raw_kids = story.get("kids")
+    if not isinstance(raw_kids, list):
+        return []
+    kids = raw_kids[:MAX_COMMENTS]
     if not kids:
         return []
     fetched = await asyncio.gather(*[_fetch_one_comment(http, k) for k in kids])
@@ -92,23 +95,29 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     )
     resp.raise_for_status()
     data = resp.json()
+    if not isinstance(data, dict):
+        return []
+    hits = data.get("hits")
+    if not isinstance(hits, list):
+        return []
 
     items: list[Item] = []
     now = utcnow()
-    for hit in data.get("hits", []):
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
         title = hit.get("title") or ""
-        story_id = hit.get("objectID") or ""
+        if not isinstance(title, str):
+            title = str(title)
+        story_id = str(hit.get("objectID") or "")
         url = hit.get("url") or f"https://news.ycombinator.com/item?id={story_id}"
+        if not isinstance(url, str):
+            url = str(url)
         if not title or not url:
             continue
         if not _matches_any_keyword(title, keywords):
             continue
-        try:
-            posted_at = datetime.fromisoformat(
-                hit["created_at"].replace("Z", "+00:00")
-            ).replace(tzinfo=None)
-        except (KeyError, ValueError):
-            posted_at = now
+        posted_at = parse_iso_utc(hit.get("created_at"), now)
         comments = (
             await _fetch_comments_for_story(http, story_id) if story_id else []
         )
@@ -121,12 +130,12 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             source_tier=source.tier,
             posted_at=posted_at,
             fetched_at=now,
-            author=hit.get("author") or "",
+            author=str(hit.get("author") or ""),
             excerpt="",
             language="en",
             metadata={
                 "id": story_id,
-                "created_at": hit.get("created_at") or "",
+                "created_at": str(hit.get("created_at") or ""),
                 "content_kind": "title",
             },
             engagement={

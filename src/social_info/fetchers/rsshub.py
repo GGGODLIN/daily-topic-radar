@@ -2,13 +2,11 @@
 import html
 import os
 import re
-from datetime import datetime
-from time import mktime
 
 import feedparser
 import httpx
 
-from social_info._time import utcnow
+from social_info._time import struct_time_to_utc, utcnow
 from social_info.config import SourceConfig
 from social_info.fetchers.base import Item
 from social_info.url_utils import canonical_url
@@ -35,17 +33,18 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     items: list[Item] = []
     now = utcnow()
     for entry in parsed.entries[:limit]:
-        title = html.unescape(entry.get("title", "")).strip()
-        link = entry.get("link", "").strip()
+        raw_title = entry.get("title")
+        title = html.unescape(raw_title).strip() if isinstance(raw_title, str) else ""
+        raw_link = entry.get("link")
+        link = raw_link.strip() if isinstance(raw_link, str) else ""
         if not title or not link:
             continue
-        if entry.get("published_parsed"):
-            posted_at = datetime.fromtimestamp(mktime(entry.published_parsed))
-        elif entry.get("updated_parsed"):
-            posted_at = datetime.fromtimestamp(mktime(entry.updated_parsed))
-        else:
-            posted_at = now
+        posted_at = struct_time_to_utc(entry.get("published_parsed"), None)
+        if posted_at is None:
+            posted_at = struct_time_to_utc(entry.get("updated_parsed"), now)
         raw_excerpt = entry.get("summary") or entry.get("description") or ""
+        if not isinstance(raw_excerpt, str):
+            raw_excerpt = str(raw_excerpt)
         excerpt = _WS_RE.sub(" ", html.unescape(_TAG_RE.sub("", raw_excerpt))).strip()[:200]
         items.append(Item(
             title=title,
@@ -56,7 +55,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
             source_tier=source.tier,
             posted_at=posted_at,
             fetched_at=now,
-            author=entry.get("author", "") or "",
+            author=str(entry.get("author") or ""),
             excerpt=excerpt,
             language=source.language,
             engagement={},
