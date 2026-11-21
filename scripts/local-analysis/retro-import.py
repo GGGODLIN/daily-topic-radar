@@ -120,37 +120,64 @@ def readable_title(record):
   reject("pattern has no readable title: " + str(record.get("id")))
 
 
-def issue_binding(pattern_id, record, issue_map):
+def issue_binding(pattern_id, record, issue_map, store_issues=None, limitations=None):
+  explicit = pattern_id in issue_map
   mapped = issue_map.get(pattern_id)
   if mapped is None and isinstance(record.get("matched_issue_id"), str) and record["matched_issue_id"].strip():
     matched_id = record["matched_issue_id"].strip()
-    matched_title = record.get("matched_issue_title")
-    mapped = (
-      {"id": matched_id, "title": matched_title.strip()}
-      if isinstance(matched_title, str) and matched_title.strip()
-      else matched_id
-    )
+    if store_issues is not None and matched_id not in store_issues:
+      if limitations is not None:
+        limitations.append(f"unverified matched_issue_id ignored: {pattern_id} -> {matched_id}")
+    elif store_issues is not None and matched_id in store_issues:
+      existing = store_issues[matched_id]
+      mapped = {"id": matched_id, "title": existing["title"], "related_to": existing["related_to"]}
+    else:
+      matched_title = record.get("matched_issue_title")
+      mapped = (
+        {"id": matched_id, "title": matched_title.strip()}
+        if isinstance(matched_title, str) and matched_title.strip()
+        else matched_id
+      )
+  related_to = None
   if isinstance(mapped, str):
-    issue_id = mapped
-    title = readable_title(record)
+    issue_id = mapped.strip()
+    require(bool(issue_id), "issue-map id is missing: " + pattern_id)
+    if store_issues is not None and issue_id in store_issues:
+      title = store_issues[issue_id]["title"]
+      related_to = store_issues[issue_id]["related_to"]
+    else:
+      title = readable_title(record)
   elif isinstance(mapped, dict):
     require(
       isinstance(mapped.get("id"), str) and mapped["id"].strip(),
       "issue-map id is missing: " + pattern_id,
     )
-    require(
-      isinstance(mapped.get("title"), str),
-      "issue-map title is missing: " + pattern_id,
-    )
-    issue_id = mapped["id"]
-    title = mapped["title"]
+    issue_id = mapped["id"].strip()
+    if explicit and store_issues is not None and issue_id in store_issues:
+      canonical = store_issues[issue_id]
+      if isinstance(mapped.get("title"), str) and mapped["title"].strip():
+        require(
+          mapped["title"] == canonical["title"],
+          f"issue-map title mismatches store for {issue_id}",
+        )
+      title = canonical["title"]
+      related_to = canonical["related_to"]
+    else:
+      require(
+        isinstance(mapped.get("title"), str),
+        "issue-map title is missing: " + pattern_id,
+      )
+      title = mapped["title"]
+      if "related_to" in mapped:
+        require(isinstance(mapped["related_to"], list), "issue-map related_to must be a list: " + pattern_id)
+        related_to = mapped["related_to"]
   elif mapped is None:
     issue_id = None
     title = readable_title(record)
   else:
     reject("issue-map value must be an id or {id, title}: " + pattern_id)
   require(isinstance(title, str) and title.strip(), "issue title must be a string: " + pattern_id)
-  return issue_id, title
+  return issue_id, title, related_to
 
 
 def review_files(run):
@@ -314,7 +341,7 @@ def run_identity(run, plan, plan_path):
   return run_id, cutoff, plan_path
 
 
-def build_packet(run, issue_map):
+def build_packet(run, issue_map, store_issues=None):
   run = os.path.realpath(run)
   require(os.path.isdir(run) and not os.path.islink(run), "run is not a directory: " + run)
   cross_path = select_cross(run)
@@ -330,14 +357,23 @@ def build_packet(run, issue_map):
   for role, record in pattern_records(cross):
     pattern_id = record["id"]
     line, quote = locate_id(lines, pattern_id)
-    mapped_id, title = issue_binding(pattern_id, record, issue_map)
+    mapped_id, title, related_to = issue_binding(
+      pattern_id, record, issue_map, store_issues=store_issues, limitations=limitations
+    )
     issue_id = mapped_id if mapped_id is not None else "imported:" + run_id + ":" + pattern_id
+    issue_entry = {"id": issue_id, "title": title}
+    if related_to:
+      issue_entry["related_to"] = related_to
     previous = seen_issues.get(issue_id)
     if previous is None:
-      seen_issues[issue_id] = title
-      issues.append({"id": issue_id, "title": title})
+      seen_issues[issue_id] = issue_entry
+      issues.append(issue_entry)
     else:
-      require(previous == title, "same issue id has different titles: " + issue_id)
+      require(previous["title"] == title, "same issue id has different titles: " + issue_id)
+      require(
+        previous.get("related_to", []) == (related_to or []),
+        "same issue id has different related_to: " + issue_id,
+      )
     reviews, copied_reviews, review_limits = review_hits(reviews_available, pattern_id)
     limitations.extend(review_limits)
     raw_reviews = {"role": role, "record_status": record.get("status"), "reviews": copied_reviews}
@@ -464,6 +500,34 @@ def load_issue_map(path):
   return value
 
 
+def load_store_issues(store_arg):
+  if store_arg is None:
+    return None
+  require(not os.path.islink(store_arg), "store path cannot be a symlink: " + store_arg)
+  records_path = os.path.join(store_arg, "records.jsonl") if os.path.isdir(store_arg) else store_arg
+  if not os.path.lexists(records_path):
+    require(os.path.isdir(store_arg), "missing store records: " + records_path)
+    return {}
+  require(os.path.isfile(records_path) and not os.path.islink(records_path), "invalid store records: " + records_path)
+  issues = {}
+  for number, line in enumerate(text_lines(records_path), 1):
+    if not line.strip():
+      continue
+    try:
+      row = json.loads(line)
+    except json.JSONDecodeError as error:
+      reject("damaged store line " + str(number))
+      raise error
+    if not isinstance(row, dict) or row.get("type") != "issue":
+      continue
+    issue_id = row.get("issue_id")
+    title = row.get("title")
+    related_to = row.get("related_to") or []
+    require(isinstance(issue_id, str) and issue_id.strip() and isinstance(title, str), "damaged store issue at line " + str(number))
+    issues[issue_id] = {"id": issue_id, "title": title, "related_to": list(related_to)}
+  return issues
+
+
 def write_packet(packet, out):
   require(not os.path.lexists(out), "refusing to overwrite: " + out)
   parent = os.path.dirname(os.path.realpath(out))
@@ -481,9 +545,10 @@ def main(argv):
   parser.add_argument("--run", required=True)
   parser.add_argument("--out", required=True)
   parser.add_argument("--issue-map")
+  parser.add_argument("--store", help="Optional retro-store directory or records.jsonl to verify matched_issue_id and sync canonical issue fields")
   args = parser.parse_args(argv)
   try:
-    packet = build_packet(args.run, load_issue_map(args.issue_map))
+    packet = build_packet(args.run, load_issue_map(args.issue_map), store_issues=load_store_issues(args.store))
     write_packet(packet, args.out)
   except (Reject, OSError, ValueError, TypeError) as error:
     print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), file=sys.stderr)

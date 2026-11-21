@@ -453,6 +453,48 @@ class ImportCLI(unittest.TestCase):
     self.assertEqual({row["observation_id"] for row in observations if "event_time" in row}, {"toolu_K|change-1"})
     self.assertEqual([row["outcome"] for row in observations if "event_time" not in row], ["unreviewed"])
 
+  def test_store_flag_syncs_existing_issue_metadata_and_ignores_unverified_matched_issue_id(self):
+    store = self.root / "store-sync"
+    seed = self.root / "seed-packet.json"
+    dump(seed, {
+      "schema_version": 1,
+      "run": {"id": "seed", "source": "fixture", "status": "partial", "cutoff": CUTOFF},
+      "issues": [
+        {"id": "sibling-issue", "title": "sibling"},
+        {"id": "existing-issue", "title": "canonical store title", "related_to": ["sibling-issue"]},
+      ],
+    })
+    self.store("--store", store, "ingest", "--packet", seed, "--apply")
+    cross = modern_cross()
+    # P1 uses inline matched_issue_id with wrong model title; S1 uses unverified matched_issue_id.
+    cross["patterns"][0]["matched_issue_id"] = "existing-issue"
+    cross["patterns"][0]["matched_issue_title"] = "drifted model title"
+    cross["secondary_patterns"][0]["matched_issue_id"] = "hallucinated-issue-99"
+    run = self.run_dir("store-checked", cross, "plan.json", reviews=False)
+    out = self.root / "store-checked-packet.json"
+    summary = self.cli("--run", run, "--out", out, "--store", store)
+    packet = json.loads(out.read_text(encoding="utf-8"))
+    self.assertEqual(
+      packet["issues"][0],
+      {"id": "existing-issue", "title": "canonical store title", "related_to": ["sibling-issue"]},
+    )
+    self.assertEqual(packet["discoveries"][0]["issue_id"], "existing-issue")
+    self.assertEqual(packet["discoveries"][1]["issue_id"], "imported:store-checked:S1")
+    self.assertIn("unverified matched_issue_id ignored: S1 -> hallucinated-issue-99", summary["limitations"])
+    # Ingest into store succeeds with zero conflicting entry id error.
+    ingest_res = self.store("--store", store, "ingest", "--packet", out, "--apply")
+    self.assertGreaterEqual(ingest_res["appended"], 1)
+    # String-only --issue-map also inherits canonical title + related_to from --store.
+    map_file = self.root / "str-map.json"
+    dump(map_file, {"P1": "existing-issue"})
+    out2 = self.root / "str-mapped-packet.json"
+    self.cli("--run", run, "--out", out2, "--issue-map", map_file, "--store", store)
+    packet2 = json.loads(out2.read_text(encoding="utf-8"))
+    self.assertEqual(
+      packet2["issues"][0],
+      {"id": "existing-issue", "title": "canonical store title", "related_to": ["sibling-issue"]},
+    )
+
   def store(self, *args):
     result = subprocess.run(
       [sys.executable, "-I", str(Path(__file__).with_name("retro-store.py")), *[str(arg) for arg in args]],
