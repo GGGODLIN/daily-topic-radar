@@ -33,13 +33,13 @@ if [ -n "${VPN_PRECHECK_FAKE_ORG:-}" ]; then
 else
   resp=$(curl -s --max-time 12 --connect-timeout 8 https://ipinfo.io/json 2>/dev/null)
   [ -z "$resp" ] && { echo "UNKNOWN: ipinfo 無回應（無網路或逾時）— 放行"; exit 20; }
-  org=$(printf '%s' "$resp" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("org",""))' 2>/dev/null)
-  ip=$(printf '%s' "$resp" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("ip",""))' 2>/dev/null)
-  loc=$(printf '%s' "$resp" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("city","?")+", "+d.get("country","?"))' 2>/dev/null)
+  org=$(printf '%s' "$resp" | /usr/bin/python3 -I -c 'import json,sys; d=json.load(sys.stdin); print((d.get("org") or "") if isinstance(d, dict) else "")' 2>/dev/null)
+  ip=$(printf '%s' "$resp" | /usr/bin/python3 -I -c 'import json,sys; d=json.load(sys.stdin); print((d.get("ip") or "") if isinstance(d, dict) else "")' 2>/dev/null)
+  loc=$(printf '%s' "$resp" | /usr/bin/python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(((d.get("city") or "?") + ", " + (d.get("country") or "?")) if isinstance(d, dict) else "?, ?")' 2>/dev/null)
   [ -z "$org" ] && { echo "UNKNOWN: ipinfo 回應無 org 欄位 — 放行"; exit 20; }
 fi
 
-if printf '%s' "$org" | grep -qiE "$CLOUD_ASN_PATTERN"; then
+if /usr/bin/python3 -I -c 'import re,sys; sys.exit(0 if re.search(rf"\b(?:{sys.argv[1]})\b", sys.argv[2], re.I) else 1)' "$CLOUD_ASN_PATTERN" "$org"; then
   echo "CLOUD: 出口是雲端 ASN — ip=$ip loc=$loc org=$org iface=${exit_iface:-?}"
   exit 10
 fi

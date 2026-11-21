@@ -24,12 +24,12 @@ if [ -z "$URL" ]; then
   exit 1
 fi
 
-TMPDIR_LOCAL=$(mktemp -d)
+TMPDIR_LOCAL=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
 trap 'rc=$?; rm -rf "$TMPDIR_LOCAL"; exit $rc' EXIT
 
-yt-dlp --ignore-errors --no-update --skip-download --write-subs --write-auto-sub \
+yt-dlp --ignore-errors --no-update --no-playlist --skip-download --write-subs --write-auto-sub \
   --sub-langs "en.*,en" --socket-timeout 20 \
-  --sub-format vtt -o "$TMPDIR_LOCAL/sub.%(ext)s" "$URL" >"$TMPDIR_LOCAL/log" 2>&1
+  --sub-format vtt -o "$TMPDIR_LOCAL/sub.%(ext)s" -- "$URL" >"$TMPDIR_LOCAL/log" 2>&1
 yt_rc=$?
 
 shopt -s nullglob
@@ -65,20 +65,32 @@ def priority(path: str) -> tuple[int, str]:
     return (1, name)
 
 
+_VTT_TIMING_RE = re.compile(
+    r"^(?:\d{1,}:)?\d{2}:\d{2}\.\d{3}\s+-->\s+(?:\d{1,}:)?\d{2}:\d{2}\.\d{3}(?:[ \t].*)?$"
+)
+_VTT_META_BLOCK_RE = re.compile(r"^(?:WEBVTT|NOTE|STYLE|REGION)(?:$|[ \t])")
+
+
 def extract_cues(path: str) -> list[str]:
     raw = open(path, encoding="utf-8", errors="replace").read()
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
     out: list[str] = []
-    for line in raw.split("\n"):
-        line = line.strip()
-        if not line or "-->" in line:
+    for block in re.split(r"\n[ \t]*\n", normalized):
+        lines = [ln.strip() for ln in block.split("\n") if ln.strip()]
+        if not lines:
             continue
-        if line.startswith(("WEBVTT", "Kind:", "Language:", "NOTE")):
+        if _VTT_META_BLOCK_RE.match(lines[0]):
             continue
-        if re.fullmatch(r"\d+", line):
+        if _VTT_TIMING_RE.match(lines[0]):
+            payload_lines = lines[1:]
+        elif len(lines) >= 2 and _VTT_TIMING_RE.match(lines[1]):
+            payload_lines = lines[2:]
+        else:
             continue
-        line = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
-        if line and (not out or out[-1] != line):
-            out.append(line)
+        for line in payload_lines:
+            cleaned = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
+            if cleaned and (not out or out[-1] != cleaned):
+                out.append(cleaned)
     return out
 
 

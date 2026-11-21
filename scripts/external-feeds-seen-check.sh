@@ -52,43 +52,75 @@ import re
 import sys
 
 si, target_date, blogs_path = sys.argv[1], sys.argv[2], sys.argv[3]
-data = json.load(open(blogs_path, encoding="utf-8"))
-blogs = data.get("blogs") or []
-urls = sorted({str(b.get("url") or "").strip() for b in blogs if b.get("url")})
+try:
+    with open(blogs_path, encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, UnicodeDecodeError, ValueError) as exc:
+    print(f"BLOGS_SEEN_CHECK=UNAVAILABLE reason=blogs feed read/parse failed: {exc}")
+    raise SystemExit(0)
+
+if not isinstance(data, dict):
+    print("BLOGS_SEEN_CHECK=UNAVAILABLE reason=blogs feed root is not a JSON object")
+    raise SystemExit(0)
+
+blogs = data.get("blogs")
+if blogs is None:
+    blogs = []
+elif not isinstance(blogs, list):
+    print("BLOGS_SEEN_CHECK=UNAVAILABLE reason=blogs field is not a list")
+    raise SystemExit(0)
+
+urls = sorted({
+    str(b.get("url")).strip()
+    for b in blogs
+    if isinstance(b, dict) and b.get("url") is not None and str(b.get("url")).strip()
+})
 if not urls:
     print("BLOGS_SEEN_CHECK=OK note=blogs feed has 0 items, nothing to check")
     raise SystemExit(0)
 
 pub_by_url = {}
 for b in blogs:
-    u = str(b.get("url") or "").strip()
+    if not isinstance(b, dict):
+        continue
+    raw_u = b.get("url")
+    u = str(raw_u).strip() if raw_u is not None else ""
     if u and u not in pub_by_url:
-        pub_by_url[u] = str(b.get("publishedAt") or "null")
+        pub_at = b.get("publishedAt")
+        pub_by_url[u] = str(pub_at) if pub_at is not None else "null"
 
 date_re = re.compile(r"(\d{4}-\d{2}-\d{2})")
-raw_files = []
-for p in sorted(glob.glob(os.path.join(si, "reports", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md"))):
-    base = os.path.basename(p)
-    m = date_re.search(base)
-    if m and m.group(1) <= target_date:
-        raw_files.append((base, open(p, encoding="utf-8", errors="replace").read()))
+try:
+    raw_files = []
+    for p in sorted(glob.glob(os.path.join(si, "reports", "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md"))):
+        base = os.path.basename(p)
+        m = date_re.search(base)
+        if m and m.group(1) <= target_date:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                raw_files.append((base, fh.read()))
 
-digest_texts = []
-for p in sorted(glob.glob(os.path.join(si, "reports", "digest-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].html"))):
-    m = date_re.search(os.path.basename(p))
-    if m and m.group(1) < target_date:
-        digest_texts.append(open(p, encoding="utf-8", errors="replace").read())
+    digest_texts = []
+    for p in sorted(glob.glob(os.path.join(si, "reports", "digest-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].html"))):
+        m = date_re.search(os.path.basename(p))
+        if m and m.group(1) < target_date:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                digest_texts.append(fh.read())
 
-feed_texts = []
-for p in sorted(glob.glob(os.path.join(si, "reports", "external-feeds", "follow-builders-blogs-*.json"))):
-    m = date_re.search(os.path.basename(p))
-    if m and m.group(1) < target_date:
-        feed_texts.append(open(p, encoding="utf-8", errors="replace").read())
+    feed_texts = []
+    for p in sorted(glob.glob(os.path.join(si, "reports", "external-feeds", "follow-builders-blogs-*.json"))):
+        m = date_re.search(os.path.basename(p))
+        if m and m.group(1) < target_date:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                feed_texts.append(fh.read())
+except OSError as exc:
+    print(f"BLOGS_SEEN_CHECK=UNAVAILABLE reason=history read failed: {exc}")
+    raise SystemExit(0)
 
 for u in urls:
-    hits = [name for name, txt in raw_files if u in txt]
-    dg = sum(1 for txt in digest_texts if u in txt)
-    fd = sum(1 for txt in feed_texts if u in txt)
+    pat = re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(u) + r"(?!(?:/[A-Za-z0-9_~.-]|[A-Za-z0-9_-]))")
+    hits = [name for name, txt in raw_files if pat.search(txt)]
+    dg = sum(1 for txt in digest_texts if pat.search(txt))
+    fd = sum(1 for txt in feed_texts if pat.search(txt))
     verdict = "GENUINE_GAP" if (not hits and dg == 0) else "ALREADY_SEEN"
     main_str = ",".join(hits) if hits else "NONE"
     print(
@@ -116,21 +148,59 @@ except ImportError:
     print('X_HANDLE_OVERLAP=UNAVAILABLE reason=pyyaml not importable')
     raise SystemExit(0)
 
-with open(sources_path, encoding="utf-8") as fh:
-    conf = yaml.safe_load(fh) or {}
+try:
+    with open(sources_path, encoding="utf-8") as fh:
+        conf = yaml.safe_load(fh)
+except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+    print(f'X_HANDLE_OVERLAP=UNAVAILABLE reason=sources.yml read/parse failed: {exc}')
+    raise SystemExit(0)
+
+if conf is None:
+    conf = {}
+if not isinstance(conf, dict):
+    print('X_HANDLE_OVERLAP=UNAVAILABLE reason=sources.yml root is not a mapping')
+    raise SystemExit(0)
+
+sources_list = conf.get('sources')
+if sources_list is None:
+    sources_list = []
+elif not isinstance(sources_list, list):
+    print('X_HANDLE_OVERLAP=UNAVAILABLE reason=sources.yml sources is not a list')
+    raise SystemExit(0)
+
 pipeline = {
-    str(h).lower()
-    for s in (conf.get('sources') or [])
+    str(h).strip().lower()
+    for s in sources_list
     if isinstance(s, dict) and s.get('type') == 'twitter' and s.get('enabled')
-    for h in (s.get('handles') or [])
+    for h in (s.get('handles') if isinstance(s.get('handles'), list) else [])
+    if h is not None and str(h).strip()
 }
+
 try:
     with open(feed_path, encoding="utf-8") as fh:
-        feed = json.load(fh) or {}
-except ValueError:
-    print('X_HANDLE_OVERLAP=UNAVAILABLE reason=x feed json parse failed')
+        feed = json.load(fh)
+except (OSError, UnicodeDecodeError, ValueError) as exc:
+    print(f'X_HANDLE_OVERLAP=UNAVAILABLE reason=x feed read/parse failed: {exc}')
     raise SystemExit(0)
-feed_handles = {str(a.get('handle', '')).lower() for a in (feed.get('x') or []) if isinstance(a, dict) and a.get('handle')}
+
+if feed is None:
+    feed = {}
+if not isinstance(feed, dict):
+    print('X_HANDLE_OVERLAP=UNAVAILABLE reason=x feed root is not a JSON object')
+    raise SystemExit(0)
+
+x_list = feed.get('x')
+if x_list is None:
+    x_list = []
+elif not isinstance(x_list, list):
+    print('X_HANDLE_OVERLAP=UNAVAILABLE reason=x field is not a list')
+    raise SystemExit(0)
+
+feed_handles = {
+    str(a.get('handle')).strip().lower()
+    for a in x_list
+    if isinstance(a, dict) and a.get('handle') is not None and str(a.get('handle')).strip()
+}
 overlap = sorted(feed_handles & pipeline)
 fresh = sorted(feed_handles - pipeline)
 print('pipeline_enabled_handles=%d' % len(pipeline))

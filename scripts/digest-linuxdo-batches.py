@@ -42,6 +42,17 @@ class BatchError(Exception):
     """Caller-facing failure. The message is the whole explanation."""
 
 
+def _split_lines_lf(text: str) -> list[str]:
+    """Split only on LF so U+2028/U+2029/VT/FF/bare CR inside posts cannot forge headings."""
+    if not text:
+        return []
+    lines = text.split("\n")
+    out = [line + "\n" for line in lines[:-1]]
+    if lines[-1]:
+        out.append(lines[-1])
+    return out
+
+
 def _section_span(text: str) -> tuple[int, int] | None:
     """Span of the LINUX DO body, heading excluded, ending at the next section.
 
@@ -49,20 +60,24 @@ def _section_span(text: str) -> tuple[int, int] | None:
     start with the marker, so a mention inside an entry stays put.
     """
     offset = 0
-    for line in text.splitlines(keepends=True):
-        if line.startswith(f"## {SECTION_TITLE}\n") or line.startswith(
+    for line in _split_lines_lf(text):
+        stripped_line = line.rstrip("\r\n")
+        if stripped_line == f"## {SECTION_TITLE}" or stripped_line.startswith(
             f"## {SECTION_TITLE} "
         ):
-            # splitlines(keepends) keeps one trailing newline, but the
-            # daily file leaves a blank line before the first entry.
+            # Keep one trailing newline on the heading, and skip the blank
+            # separator line (LF or CRLF) before the first entry if present.
             body_start = offset + len(line)
-            if body_start < len(text) and text[body_start] == "\n":
+            if text[body_start:].startswith("\r\n"):
+                body_start += 2
+            elif body_start < len(text) and text[body_start] == "\n":
                 body_start += 1
             rest = text[body_start:]
             body_end = len(text)
             cursor = 0
-            for later in rest.splitlines(keepends=True):
-                if (later.startswith("## ") and not later.startswith("###")) or later.startswith(
+            for later in _split_lines_lf(rest):
+                later_stripped = later.rstrip("\r\n")
+                if (later_stripped.startswith("## ") and not later_stripped.startswith("###")) or later_stripped.startswith(
                     "<!-- topic-radar:start -->"
                 ):
                     # End on the line boundary. Subtracting one would eat the
@@ -85,7 +100,7 @@ def _entry_blocks(section: str, section_line: int) -> list[dict]:
     offset = 0
     line_no = section_line
     current: dict | None = None
-    for line in section.splitlines(keepends=True):
+    for line in _split_lines_lf(section):
         if line.startswith("### "):
             if current is not None:
                 current["text"] = section[current["start"] : offset]
@@ -113,14 +128,48 @@ def _entry_blocks(section: str, section_line: int) -> list[dict]:
     return entries
 
 
+def _unescape_heading_title(raw: str) -> str:
+    return re.sub(r"\\([\[\]\\])", r"\1", raw)
+
+
 def _heading_identity(line: str) -> tuple[str, str]:
     # render_item prefixes a resurfaced item with "🔁 ". The marker is not
     # part of the title; leaving it on makes the link unparseable and the
     # topic url comes out empty.
     body = line[4:].strip().removeprefix("🔁 ").strip()
-    if body.startswith("[") and "](" in body and body.endswith(")"):
-        title, _, rest = body[1:].rpartition("](")
-        return title, rest[:-1]
+    if body.startswith("["):
+        bracket_depth = 0
+        close_bracket = -1
+        i = 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "\\" and i + 1 < len(body):
+                i += 2
+                continue
+            if ch == "[":
+                bracket_depth += 1
+            elif ch == "]":
+                bracket_depth -= 1
+                if bracket_depth == 0:
+                    close_bracket = i
+                    break
+            i += 1
+        if close_bracket != -1 and body[close_bracket + 1 : close_bracket + 2] == "(":
+            paren_depth = 0
+            for j in range(close_bracket + 1, len(body)):
+                ch = body[j]
+                if ch == "(":
+                    paren_depth += 1
+                elif ch == ")":
+                    paren_depth -= 1
+                    if paren_depth == 0:
+                        return (
+                            _unescape_heading_title(body[1:close_bracket]),
+                            body[close_bracket + 2 : j],
+                        )
+        if "](" in body and body.endswith(")"):
+            title, _, rest = body[1:].rpartition("](")
+            return _unescape_heading_title(title), rest[:-1]
     return body, ""
 
 
@@ -527,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
             on_disk = json.loads((args.out / "manifest.json").read_text(encoding="utf-8"))
             template = args.reader_template.read_text(encoding="utf-8")
             _write_same(args.workflow_script, _render_workflow_script(template, on_disk))
-    except BatchError as exc:
+    except (BatchError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok": False, "err": str(exc)}, ensure_ascii=False))
         return 1
     except OSError as exc:

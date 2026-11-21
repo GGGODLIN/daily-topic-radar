@@ -67,23 +67,56 @@ ALERTEOF
 
   # hard-timeout 看門狗（2026-06-05 事故：aggregator 卡死 6h 零進展、無人察覺）。
   # 正常 10s–4min 完成；linux.do source budget 3000s，runner hard cap 3300s。
-  # timeout → 砍 process tree（pkill -f social_info，底線 marker 不誤殺本 wrapper
-  # 的 social-info 連字號路徑）+ log，不阻後續 commit 已產出 raw md。
+  # timeout → 只遞迴砍本次 $AGG_PID 對應的 process tree + log，不阻後續 commit 已產出 raw md。
   # 注意：這是止血。根因（某 fetcher sync blocking call block event loop / exit 階段不收尾）待 reproduce 深修。
+  collect_tree() {
+    local pid="$1" child
+    for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+      collect_tree "$child"
+    done
+    printf '%s\n' "$pid"
+  }
+
   "$UV_BIN" run python -m social_info &
   AGG_PID=$!
-  # watchdog 每 30s 檢查 aggregator 是否還活著：正常完成 → 自然退出（不殘留長 sleep）；
-  # 110 輪 = 3300s 後仍活 → 砍 process tree。timeout 精度 ±30s，防 6h hang 足夠。
-  ( for _ in $(seq 1 110); do
-      sleep 30
+  # watchdog 每 30s 檢查 aggregator 是否還活著：正常完成時由 trap 立即清理 sleep 子程序，不留孤兒；
+  # 110 輪 = 3300s 後仍活 → 先快照整棵 $AGG_PID 子樹 PID、送 TERM，5s 後對所有存活 PID 送 KILL
+  # （即使父程序先死導致子程序被 reparent 到 PID 1，仍會被 KILL 收乾淨）。
+  (
+    SLEEP_PID=""
+    trap '[ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null || true; exit 0' TERM INT
+    for _ in $(seq 1 110); do
+      sleep 30 &
+      SLEEP_PID=$!
+      wait "$SLEEP_PID" 2>/dev/null || true
+      SLEEP_PID=""
       kill -0 "$AGG_PID" 2>/dev/null || exit 0
     done
     if kill -0 "$AGG_PID" 2>/dev/null; then
+      # 進入強制清理期時忽略主 shell 的 TERM，避免 $AGG_PID 先退出觸發主 shell 砍掉 watchdog 導致殘留子程序漏 KILL
+      trap '' TERM
       echo "=== ⚠️ TIMEOUT: aggregator 超過 3300s 未結束，強制砍 process tree ==="
-      kill -TERM "$AGG_PID" 2>/dev/null || true
-      sleep 5
-      pkill -KILL -f "social_info" 2>/dev/null || true
-    fi ) &
+      TREE_PIDS=$(collect_tree "$AGG_PID")
+      for p in $TREE_PIDS; do
+        kill -TERM "$p" 2>/dev/null || true
+      done
+      for _ in 1 2 3 4 5; do
+        any_alive=0
+        for p in $TREE_PIDS; do
+          if kill -0 "$p" 2>/dev/null; then
+            any_alive=1
+            break
+          fi
+        done
+        [ "$any_alive" -eq 0 ] && break
+        sleep 1
+      done
+      EXTRA_PIDS=$(collect_tree "$AGG_PID" 2>/dev/null || true)
+      for p in $TREE_PIDS $EXTRA_PIDS; do
+        kill -KILL "$p" 2>/dev/null || true
+      done
+    fi
+  ) &
   AGG_WD_PID=$!
   AGG_RC=0
   wait "$AGG_PID" || AGG_RC=$?

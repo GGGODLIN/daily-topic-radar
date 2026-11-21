@@ -32,34 +32,107 @@ if [ ! -f "$RAW_MD_PATH" ]; then
   exit 2
 fi
 
-if ! grep -qi '<!doctype html>' "$HTML_PATH" || ! grep -q '<style>' "$HTML_PATH" || ! grep -q '</style>' "$HTML_PATH"; then
+if ! grep -qi -- '<!doctype html>' "$HTML_PATH" || ! grep -qiE -- '<style([[:space:]][^>]*)?>' "$HTML_PATH" || ! grep -qi -- '</style>' "$HTML_PATH"; then
   echo "❌ Contract 1 FAIL: missing <!DOCTYPE html> or <style>...</style> block in $HTML_PATH" >&2
   exit 1
 fi
 
-if ! grep -qi '<meta[^>]*name="viewport"' "$HTML_PATH"; then
+if ! grep -qiE -- '<meta[^>]*name=["'\'']viewport["'\'']' "$HTML_PATH"; then
   echo "❌ Contract 1b FAIL: missing <meta name=\"viewport\"> in $HTML_PATH (breaks @media mobile layout)" >&2
   exit 1
 fi
 
 if ! python3 -I - "$HTML_PATH" <<'PY'
-import re, sys
+import html.parser, re, sys
+
 txt = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-subs = re.findall(r'class="sub">([^<]*(?:<code>[^<]*</code>[^<]*)*)', txt)
-ok = any(("｜" in s and re.search(r"共\s*[\d,]+\s*items", s)) for s in subs)
+
+VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img",
+    "input", "link", "meta", "param", "source", "track", "wbr",
+})
+
+
+class SubCollector(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.active_bufs = []
+        self.subs = []
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        cls_val = ""
+        for k, v in attrs:
+            if k.lower() == "class" and v:
+                cls_val = v
+                break
+        buf = [] if "sub" in cls_val.split() else None
+        if buf is not None:
+            self.active_bufs.append(buf)
+        if t not in VOID_TAGS:
+            self.stack.append((t, buf))
+        elif buf is not None:
+            self.active_bufs.pop()
+
+    def handle_data(self, data):
+        for buf in self.active_bufs:
+            buf.append(data)
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == t:
+                while len(self.stack) > i:
+                    _, buf = self.stack.pop()
+                    if buf is not None:
+                        self.active_bufs.remove(buf)
+                        self.subs.append("".join(buf))
+                break
+
+    def close(self):
+        while self.stack:
+            _, buf = self.stack.pop()
+            if buf is not None:
+                self.active_bufs.remove(buf)
+                self.subs.append("".join(buf))
+        super().close()
+
+
+sc = SubCollector()
+sc.feed(txt)
+sc.close()
+ok = any(("｜" in s and re.search(r"共\s*[\d,]+\s*items", s)) for s in sc.subs)
 if not ok:
     print('❌ Contract 2 FAIL: missing class="sub" summary with "｜...共 N items" (required so H3 sum check does not silently skip)', file=sys.stderr)
     sys.exit(1)
 
-style_blocks = re.findall(r"<style>(.*?)</style>", txt, re.S | re.I)
+style_blocks = re.findall(r"<style\b[^>]*>(.*?)</style>", txt, re.S | re.I)
 for blk in style_blocks:
-    for rule in re.findall(r"([^{}]+)\{([^{}]+)\}", blk):
-        sel, body = rule[0].strip(), rule[1]
-        if re.search(r"(^|[\s,])(\.wrap|table)(\s|,|$|:)", sel) and re.search(r"overflow\s*:\s*hidden\b", body, re.I):
+    blk_clean = re.sub(r"/\*.*?\*/", "", blk, flags=re.S)
+    for sel, body in re.findall(r"([^{}]+)\{([^{}]+)\}", blk_clean):
+        sel = sel.strip()
+        has_target = (
+            re.search(r"(?<!\\)\.wrap(?![A-Za-z0-9_-])", sel)
+            or re.search(r"(?<![.#A-Za-z0-9_-])table(?![A-Za-z0-9_-])", sel, re.I)
+        )
+        if has_target and re.search(r"(?:^|[;\s])overflow(?:-x)?\s*:\s*hidden\b", body, re.I):
             print(f"❌ Contract 4 FAIL: selector '{sel}' sets overflow: hidden, which clips wide tables", file=sys.stderr)
             sys.exit(1)
 
-import html.parser
+_STRIP_C3_RE = re.compile(
+    r"<!--.*?-->|<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>",
+    re.S | re.I,
+)
+cleaned_c3 = _STRIP_C3_RE.sub(
+    lambda m: "\n" * m.group(0).count("\n") if "\n" in m.group(0) else " ",
+    txt,
+)
+for ln, line in enumerate(cleaned_c3.split("\n"), 1):
+    if re.search(r"</tr\s*>.*<tr(?:\s|>|$)|</li\s*>.*<li(?:\s|>|$)", line, re.I):
+        print(f"{ln}:{line}", file=sys.stderr)
+        print(f"❌ Contract 3 FAIL: multiple <tr> or <li> elements on the same line in {sys.argv[1]}", file=sys.stderr)
+        sys.exit(1)
 
 class HygieneParser(html.parser.HTMLParser):
     SKIP = frozenset({"style", "script", "code", "pre", "textarea"})
@@ -119,11 +192,6 @@ hp.feed(txt)
 hp.close()
 PY
 then
-  exit 1
-fi
-
-if command grep -nE '</tr>.*<tr>|</li>.*<li>' "$HTML_PATH" >&2; then
-  echo "❌ Contract 3 FAIL: multiple <tr> or <li> elements on the same line in $HTML_PATH" >&2
   exit 1
 fi
 
