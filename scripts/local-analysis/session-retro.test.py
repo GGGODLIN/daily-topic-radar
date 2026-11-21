@@ -2616,6 +2616,143 @@ class EventEvidenceCLI(unittest.TestCase):
     self.assertEqual(len(output3.get("rejected", [])), 1)
     self.assertEqual(len(output3["rejected"][0]["source_finding_ids"]), 4)
 
+  def test_cross_low_harm_partition_pbt_with_independent_oracle_and_calibration(self):
+    import random
+    spec = importlib.util.spec_from_file_location("session_retro_pbt_test", SCRIPT)
+    retro = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(retro)
+
+    def independent_oracle(sources_by_id, cross_report):
+      """Independent pure-function oracle over Shape 2 conservation/partition invariants P1..P4."""
+      p1_partition = True
+      p2_no_red_line = True
+      p3_no_unknown = True
+      p4_positive_evidence = True
+
+      def unresolved_sess_count(refs):
+        sess = set()
+        for r in refs:
+          s = sources_by_id.get(r)
+          if s and s.get("status") != "resolved":
+            ev = s.get("evidence")
+            ev_list = [ev] if isinstance(ev, dict) else (ev if isinstance(ev, list) else [])
+            for e in ev_list:
+              if isinstance(e, dict) and isinstance(e.get("session"), str):
+                sess.add(e["session"])
+        return len(sess)
+
+      # P1: No unresolved >=4-session root cause leaked into secondary_patterns or rejected
+      for sec in cross_report.get("secondary_patterns") or []:
+        if unresolved_sess_count(sec.get("source_finding_ids") or []) >= 4:
+          p1_partition = False
+      rejected = cross_report.get("rejected")
+      if rejected is not None:
+        if not isinstance(rejected, list):
+          p1_partition = False
+        else:
+          for rej in rejected:
+            if not isinstance(rej, dict) or not isinstance(rej.get("source_finding_ids"), list):
+              p1_partition = False
+            elif any(not isinstance(r, str) for r in rej["source_finding_ids"]):
+              p1_partition = False
+            elif unresolved_sess_count(rej["source_finding_ids"]) >= 4:
+              p1_partition = False
+
+      # P2, P3, P4 on every low_harm_deferred entry
+      for entry in cross_report.get("low_harm_deferred") or []:
+        crit = entry.get("downgrade_criterion")
+        ev_text = entry.get("positive_no_harm_evidence")
+        if not (isinstance(crit, str) and crit in {"N1", "N2", "N3", "N4"} and isinstance(ev_text, str) and ev_text.strip()):
+          p4_positive_evidence = False
+        for r in entry.get("source_finding_ids") or []:
+          fact = (sources_by_id.get(r) or {}).get("outcome_fact", "__MISSING__")
+          if fact == "red_line":
+            p2_no_red_line = False
+          elif fact != "harmless":
+            p3_no_unknown = False
+
+      return {"P1": p1_partition, "P2": p2_no_red_line, "P3": p3_no_unknown, "P4": p4_positive_evidence}
+
+    # Role 3 — Per-invariant independent oracle calibration (each Pi individually turns False on targeted bad state)
+    base_sources = {
+      f"s{i}-F1": {"status": "unresolved", "outcome_fact": "harmless", "evidence": [{"session": f"s{i}"}]}
+      for i in range(1, 5)
+    }
+    base_refs = list(base_sources.keys())
+    cal_p1 = independent_oracle(base_sources, {"secondary_patterns": [{"source_finding_ids": base_refs}], "low_harm_deferred": []})
+    self.assertFalse(cal_p1["P1"])
+    self.assertTrue(cal_p1["P2"] and cal_p1["P3"] and cal_p1["P4"])
+
+    s_p2 = {**base_sources, "s4-F1": {"status": "unresolved", "outcome_fact": "red_line", "evidence": [{"session": "s4"}]}}
+    cal_p2 = independent_oracle(s_p2, {"secondary_patterns": [], "low_harm_deferred": [{"source_finding_ids": base_refs, "downgrade_criterion": "N1", "positive_no_harm_evidence": "ok"}]})
+    self.assertFalse(cal_p2["P2"])
+    self.assertTrue(cal_p2["P1"] and cal_p2["P3"] and cal_p2["P4"])
+
+    s_p3 = {**base_sources, "s4-F1": {"status": "unresolved", "outcome_fact": "unknown", "evidence": [{"session": "s4"}]}}
+    cal_p3 = independent_oracle(s_p3, {"secondary_patterns": [], "low_harm_deferred": [{"source_finding_ids": base_refs, "downgrade_criterion": "N1", "positive_no_harm_evidence": "ok"}]})
+    self.assertFalse(cal_p3["P3"])
+    self.assertTrue(cal_p3["P1"] and cal_p3["P2"] and cal_p3["P4"])
+
+    cal_p4 = independent_oracle(base_sources, {"secondary_patterns": [], "low_harm_deferred": [{"source_finding_ids": base_refs, "downgrade_criterion": "H1", "positive_no_harm_evidence": "ok"}]})
+    self.assertFalse(cal_p4["P4"])
+    self.assertTrue(cal_p4["P1"] and cal_p4["P2"] and cal_p4["P3"])
+
+    # Role 2 — Safety property guardian over 250 randomized valid-domain cases
+    rng = random.Random(20261121)
+    accepted_count = 0
+    rejected_count = 0
+    for trial in range(250):
+      n = rng.randint(1, 6)
+      sources = {}
+      refs = []
+      for i in range(1, n + 1):
+        rid = f"s{i}-u01-F1"
+        fact = rng.choice(["harmless", "harmless", "harmless", "red_line", "unknown", "__OMIT__"])
+        status = rng.choice(["unresolved", "unresolved", "unresolved", "resolved"])
+        rec = {"id": rid, "status": status, "evidence": [{"session": f"sess-{i}", "source_line": 10, "quote": f"q{i}"}]}
+        if fact != "__OMIT__":
+          rec["outcome_fact"] = fact
+        sources[rid] = rec
+        refs.append(rid)
+      placement = rng.choice(["patterns", "low_harm_deferred", "secondary_patterns", "rejected"])
+      crit = rng.choice(["N1", "N2", "N3", "N4", "H1", "", ["N1"]])
+      ev_text = rng.choice(["Blocked by lock.", "Zero impact verified.", "   ", ""])
+      cross = {"patterns": [], "secondary_patterns": [], "low_harm_deferred": []}
+      if placement == "patterns":
+        cross["patterns"] = [{"id": "P1", "source_finding_ids": refs}]
+      elif placement == "low_harm_deferred":
+        cross["low_harm_deferred"] = [{"id": "L1", "source_finding_ids": refs, "downgrade_criterion": crit, "positive_no_harm_evidence": ev_text}]
+      elif placement == "secondary_patterns":
+        cross["secondary_patterns"] = [{"id": "S1", "source_finding_ids": refs}]
+      else:
+        cross["rejected"] = [{"id": "R1", "source_finding_ids": refs}]
+      oracle = independent_oracle(sources, cross)
+      oracle_ok = all(oracle.values())
+      sut_ok = True
+      try:
+        retro.check_cross_low_harm_triage(cross, sources, "source_record_ids", {})
+      except retro.Invalid:
+        sut_ok = False
+      if sut_ok:
+        accepted_count += 1
+      else:
+        rejected_count += 1
+      self.assertEqual(sut_ok, oracle_ok, f"trial={trial} placement={placement} oracle={oracle} cross={cross}")
+    self.assertGreater(accepted_count, 0)
+    self.assertGreater(rejected_count, 0)
+
+    # Role 3 — Concrete pinned counterexample replay (from blind probe unhashable list criterion)
+    pinned_sources = {
+      "s1-u01-F1": {"id": "s1-u01-F1", "status": "unresolved", "outcome_fact": "harmless", "evidence": [{"session": "s1"}]}
+    }
+    pinned_cross = {
+      "patterns": [], "secondary_patterns": [],
+      "low_harm_deferred": [{"id": "L1", "source_finding_ids": ["s1-u01-F1"], "downgrade_criterion": ["N1"], "positive_no_harm_evidence": "ok"}],
+    }
+    self.assertFalse(independent_oracle(pinned_sources, pinned_cross)["P4"])
+    with self.assertRaises(retro.Invalid):
+      retro.check_cross_low_harm_triage(pinned_cross, pinned_sources, "source_record_ids", {})
+
 
 if __name__ == "__main__":
   unittest.main(verbosity=2)

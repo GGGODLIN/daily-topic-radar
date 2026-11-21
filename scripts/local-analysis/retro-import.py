@@ -87,7 +87,13 @@ def pattern_records(cross):
   else:
     reject("cross has neither secondary_patterns nor secondary_findings")
   secondary = list_field(cross, secondary_key)
-  records = [("primary", item) for item in patterns] + [("secondary", item) for item in secondary]
+  deferred = cross.get("low_harm_deferred", [])
+  require(isinstance(deferred, list), "low_harm_deferred must be a list")
+  records = (
+    [("primary", item) for item in patterns]
+    + [("secondary", item) for item in secondary]
+    + [("low_harm_deferred", item) for item in deferred]
+  )
   seen = set()
   for _role, record in records:
     require(isinstance(record, dict), "pattern must be an object")
@@ -256,7 +262,7 @@ def dispositions(cross):
     require(verdict in counts, "unknown disposition verdict: " + verdict)
     counts[verdict] += 1
   referenced = set()
-  for key in ("patterns", "secondary_patterns", "secondary_findings"):
+  for key in ("patterns", "secondary_patterns", "secondary_findings", "low_harm_deferred"):
     for record in cross.get(key) or []:
       if isinstance(record, dict):
         for item_id in record.get("source_finding_ids") or []:
@@ -377,6 +383,9 @@ def build_packet(run, issue_map, store_issues=None):
     reviews, copied_reviews, review_limits = review_hits(reviews_available, pattern_id)
     limitations.extend(review_limits)
     raw_reviews = {"role": role, "record_status": record.get("status"), "reviews": copied_reviews}
+    if role == "low_harm_deferred":
+      raw_reviews["downgrade_criterion"] = record.get("downgrade_criterion")
+      raw_reviews["positive_no_harm_evidence"] = record.get("positive_no_harm_evidence")
     discoveries.append(
       {
         "id": run_id + ":" + pattern_id,

@@ -495,6 +495,37 @@ class ImportCLI(unittest.TestCase):
       {"id": "existing-issue", "title": "canonical store title", "related_to": ["sibling-issue"]},
     )
 
+  def test_low_harm_deferred_imports_as_pending_discovery_and_replays_idempotently(self):
+    cross = modern_cross()
+    cross["low_harm_deferred"] = [{
+      "id": "L1",
+      "downgrade_criterion": "N1",
+      "positive_no_harm_evidence": "All 4 attempts blocked by existing safety lock with zero leak.",
+      "source_sessions": ["sess-a", "sess-b", "sess-c", "sess-d"],
+      "source_finding_ids": ["s03-u01-F1"],
+      "observation": "Blocked sensitive-file attempts",
+      "impact": "none",
+      "evidence": [],
+      "counterevidence": "",
+    }]
+    cross["dispositions"].append({"id": "s03-u01-F1", "verdict": "kept", "reason": "deferred low harm"})
+    run = self.run_dir("deferred-run", cross, "plan.json", reviews=False)
+    out = self.root / "deferred-packet.json"
+    summary = self.cli("--run", run, "--out", out)
+    self.assertEqual(summary["dispositions"]["unrepresented_ids"], [])
+    packet = json.loads(out.read_text(encoding="utf-8"))
+    deferred_disc = [d for d in packet["discoveries"] if d["id"] == "deferred-run:L1"]
+    self.assertEqual(len(deferred_disc), 1)
+    self.assertEqual(deferred_disc[0]["verification"], "pending")
+    self.assertEqual(deferred_disc[0]["raw_reviews"]["role"], "low_harm_deferred")
+    self.assertEqual(deferred_disc[0]["raw_reviews"]["downgrade_criterion"], "N1")
+    self.assertEqual(deferred_disc[0]["raw"]["source_sessions"], ["sess-a", "sess-b", "sess-c", "sess-d"])
+    store = self.root / "deferred-store"
+    first = self.store("--store", store, "ingest", "--packet", out, "--apply")
+    self.assertGreaterEqual(first["appended"], 1)
+    second = self.store("--store", store, "ingest", "--packet", out, "--apply")
+    self.assertEqual(second["appended"], 0)
+
   def store(self, *args):
     result = subprocess.run(
       [sys.executable, "-I", str(Path(__file__).with_name("retro-store.py")), *[str(arg) for arg in args]],
