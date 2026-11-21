@@ -2308,6 +2308,314 @@ class EventEvidenceCLI(unittest.TestCase):
       self.assertEqual(target, report_path.resolve())
       self.assertEqual(loaded, new_obj)
 
+  def test_cross_low_harm_triage_anti_swallow_validator(self):
+    spec = importlib.util.spec_from_file_location("session_retro_low_harm_test", SCRIPT)
+    retro = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(retro)
+
+    def make_fixture(tmp_dir, member_facts, cross_override=None):
+      root = Path(tmp_dir)
+      canonical = {}
+      input_paths = []
+      records_meta = []
+      for idx, fact in enumerate(member_facts, 1):
+        sess = f"sess-{idx}"
+        quote = f"observed attempt {idx}"
+        canonical[sess] = [{"source_line": 10, "text": f"[line=10] {quote}", "event_time": "2026-11-21T00:00:00Z", "scope": "window"}]
+        finding = {
+          "id": f"s0{idx}-u01-F1",
+          "category": "discipline",
+          "observation": f"obs {idx}",
+          "impact": "blocked",
+          "status": "unresolved",
+          "evidence": [{"session": sess, "source_line": 10, "quote": quote}],
+          "counterevidence": "",
+          "cause_hypothesis": "hyp",
+          "environment_change_candidate": "cand",
+          "needs_current_check": True,
+        }
+        if fact != "__OMIT__":
+          finding["outcome_fact"] = fact
+        report = {
+          "session": sess,
+          "unit": f"s0{idx}-u01",
+          "status": "complete",
+          "findings": [finding],
+          "tracking_observations": [],
+          "limitations": [],
+        }
+        p = root / "validated" / f"s0{idx}-u01.json"
+        dump(p, report)
+        input_paths.append(str(p))
+        records_meta.append((finding["id"], sess, quote))
+
+      refs = [m[0] for m in records_meta]
+      sessions = [m[1] for m in records_meta]
+      ev = [{"session": m[1], "source_line": 10, "quote": m[2]} for m in records_meta]
+      cross = {
+        "session": "cross-session",
+        "unit": "cross-session",
+        "status": "complete",
+        "patterns": [],
+        "secondary_patterns": [],
+        "low_harm_deferred": [{
+          "id": "L1",
+          "downgrade_criterion": "N1",
+          "positive_no_harm_evidence": "All 4 attempts intercepted by existing safety lock with zero leak.",
+          "source_sessions": sessions,
+          "source_finding_ids": refs,
+          "observation": "blocked attempts",
+          "impact": "none",
+          "evidence": ev,
+          "counterevidence": "",
+        }],
+        "dispositions": [{"id": rid, "verdict": "merged", "reason": "same root"} for rid in refs],
+        "tracking_observations": [],
+        "tracking_dispositions": [],
+        "limitations": [],
+      }
+      if cross_override:
+        cross_override(cross, refs, sessions, ev)
+      item = {"session": "cross-session", "unit": "cross-session", "input_reports": input_paths}
+      return cross, item, canonical
+
+    # 1. Valid N1 deferral (6 harmless blocked attempts) passes
+    with tempfile.TemporaryDirectory() as tmp:
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 6)
+      norm = retro.check_report(cross, item, "cross", canonical)
+      self.assertEqual(len(norm["low_harm_deferred"]), 1)
+      self.assertEqual(norm["low_harm_deferred"][0]["downgrade_criterion"], "N1")
+
+    # 2. Valid N4 deferral (4 harmless minor-friction attempts) passes
+    with tempfile.TemporaryDirectory() as tmp:
+      def use_n4(cross, *_):
+        cross["low_harm_deferred"][0]["downgrade_criterion"] = "N4"
+        cross["low_harm_deferred"][0]["positive_no_harm_evidence"] = "False-positive cost exceeds minor retry friction."
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, use_n4)
+      norm = retro.check_report(cross, item, "cross", canonical)
+      self.assertEqual(norm["low_harm_deferred"][0]["downgrade_criterion"], "N4")
+
+    # 3. Any single red_line member (even non-first) blocks low_harm_deferred
+    with tempfile.TemporaryDirectory() as tmp:
+      cross, item, canonical = make_fixture(tmp, ["harmless", "harmless", "harmless", "red_line"])
+      with self.assertRaisesRegex(retro.Invalid, "low_harm_deferred"):
+        retro.check_report(cross, item, "cross", canonical)
+
+    # 4. Any single unknown, missing (legacy), null, or malformed outcome_fact blocks low_harm_deferred
+    for bad_fact in ("unknown", "__OMIT__", None, "minor_friction", 123):
+      with tempfile.TemporaryDirectory() as tmp:
+        cross, item, canonical = make_fixture(tmp, ["harmless", "harmless", "harmless", bad_fact])
+        with self.assertRaisesRegex(retro.Invalid, "low_harm_deferred", msg=f"bad_fact={bad_fact!r}"):
+          retro.check_report(cross, item, "cross", canonical)
+
+    # 5. Missing/invalid/unhashable downgrade_criterion or empty/whitespace positive_no_harm_evidence is rejected
+    for mut in (
+      lambda c, *_: c["low_harm_deferred"][0].update({"downgrade_criterion": "H1"}),
+      lambda c, *_: c["low_harm_deferred"][0].update({"downgrade_criterion": ["N1"]}),
+      lambda c, *_: c["low_harm_deferred"][0].update({"downgrade_criterion": {"code": "N1"}}),
+      lambda c, *_: c["low_harm_deferred"][0].pop("downgrade_criterion"),
+      lambda c, *_: c["low_harm_deferred"][0].update({"positive_no_harm_evidence": "   "}),
+    ):
+      with tempfile.TemporaryDirectory() as tmp:
+        cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, mut)
+        with self.assertRaisesRegex(retro.Invalid, "low_harm_deferred"):
+          retro.check_report(cross, item, "cross", canonical)
+
+    # 6. Silent drop of >=4-session unresolved root cause into secondary_patterns is rejected
+    with tempfile.TemporaryDirectory() as tmp:
+      def hide_in_secondary(cross, refs, sessions, ev):
+        cross["low_harm_deferred"] = []
+        cross["secondary_patterns"] = [{
+          "id": "S1",
+          "source_sessions": sessions,
+          "source_finding_ids": refs,
+          "observation": "hidden high-freq root",
+          "impact": "none",
+          "evidence": ev,
+          "counterevidence": "",
+        }]
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, hide_in_secondary)
+      with self.assertRaisesRegex(retro.Invalid, "secondary_patterns"):
+        retro.check_report(cross, item, "cross", canonical)
+
+    # 7. Silent drop of >=4-session unresolved root cause into rejected list is rejected
+    with tempfile.TemporaryDirectory() as tmp:
+      def hide_in_rejected(cross, refs, sessions, ev):
+        cross["low_harm_deferred"] = []
+        cross["dispositions"] = [{"id": rid, "verdict": "rejected", "reason": "minor"} for rid in refs]
+        cross["rejected"] = [{"source_finding_ids": refs, "reason": "minor"}]
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, hide_in_rejected)
+      with self.assertRaisesRegex(retro.Invalid, "rejected"):
+        retro.check_report(cross, item, "cross", canonical)
+
+    # 8. Unhashable / malformed entries in rejected and dispositions raise Invalid (never uncaught TypeError)
+    with tempfile.TemporaryDirectory() as tmp:
+      def bad_rejected_ref(cross, refs, sessions, ev):
+        cross["low_harm_deferred"] = []
+        cross["dispositions"] = [{"id": rid, "verdict": "rejected", "reason": "minor"} for rid in refs]
+        cross["rejected"] = [{"source_finding_ids": [[refs[0]]], "reason": "minor"}]
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, bad_rejected_ref)
+      with self.assertRaisesRegex(retro.Invalid, "rejected"):
+        retro.check_report(cross, item, "cross", canonical)
+
+    with tempfile.TemporaryDirectory() as tmp:
+      def bad_rejected_type(cross, refs, sessions, ev):
+        cross["low_harm_deferred"] = []
+        cross["dispositions"] = [{"id": rid, "verdict": "rejected", "reason": "minor"} for rid in refs]
+        cross["rejected"] = {"unexpected": "dict"}
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, bad_rejected_type)
+      with self.assertRaisesRegex(retro.Invalid, "rejected must be an array"):
+        retro.check_report(cross, item, "cross", canonical)
+
+    with tempfile.TemporaryDirectory() as tmp:
+      def bad_disp_unhashable(cross, refs, sessions, ev):
+        cross["dispositions"][0]["id"] = [refs[0]]
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, bad_disp_unhashable)
+      with self.assertRaisesRegex(retro.Invalid, "unknown source id"):
+        retro.check_report(cross, item, "cross", canonical)
+
+    # 9. Legacy single-session reports missing outcome_fact pass when placed in patterns (non-regression)
+    with tempfile.TemporaryDirectory() as tmp:
+      def legacy_in_patterns(cross, refs, sessions, ev):
+        cross["low_harm_deferred"] = []
+        cross["patterns"] = [{
+          "id": "P1",
+          "source_sessions": sessions,
+          "source_finding_ids": refs,
+          "observation": "legacy finding",
+          "impact": "unknown",
+          "evidence": ev,
+          "counterevidence": "",
+        }]
+      cross, item, canonical = make_fixture(tmp, ["__OMIT__"] * 4, legacy_in_patterns)
+      norm = retro.check_report(cross, item, "cross", canonical)
+      self.assertEqual(len(norm["patterns"]), 1)
+
+    # 10. 4 resolved single-session records in rejected pass (non-regression)
+    with tempfile.TemporaryDirectory() as tmp:
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4)
+      for p in item["input_reports"]:
+        d = json.loads(Path(p).read_text(encoding="utf-8"))
+        d["findings"][0]["status"] = "resolved"
+        Path(p).write_text(json.dumps(d), encoding="utf-8")
+      cross["low_harm_deferred"] = []
+      cross["dispositions"] = [{"id": r["id"], "verdict": "rejected", "reason": "resolved"} for r in cross["dispositions"]]
+      cross["rejected"] = [{"source_finding_ids": [r["id"] for r in cross["dispositions"]], "reason": "resolved"}]
+      norm = retro.check_report(cross, item, "cross", canonical)
+      self.assertEqual(len(norm["patterns"]), 0)
+
+    # 11. Cross-run open issue union (2 current + 2 historical = 4) rejected in secondary_patterns
+    with tempfile.TemporaryDirectory() as tmp:
+      def union_in_secondary(cross, refs, sessions, ev):
+        cross["low_harm_deferred"] = []
+        cross["secondary_patterns"] = [{
+          "id": "S1",
+          "matched_issue_id": "issue-open-1",
+          "source_sessions": sessions,
+          "source_finding_ids": refs,
+          "observation": "cross-run root",
+          "impact": "none",
+          "evidence": ev,
+          "counterevidence": "",
+        }]
+      cross, item, canonical = make_fixture(tmp, ["harmless", "harmless"], union_in_secondary)
+      dump(Path(tmp) / "tracking-context.json", {
+        "issues": [{"id": "issue-open-1", "title": "old", "decision": None, "source_sessions": ["old-s1", "old-s2"]}]
+      })
+      with self.assertRaisesRegex(retro.Invalid, "secondary_patterns"):
+        retro.check_report(cross, item, "cross", canonical)
+
+    # 12. session-merge blocks laundering red_line/unknown into harmless
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      canonical = {"s1": [{"source_line": 10, "text": "[line=10] shard quote", "event_time": "2026-11-21T00:00:00Z", "scope": "window"}]}
+      shard_path = root / "validated" / "s1-u01.json"
+      dump(shard_path, {
+        "session": "s1", "unit": "s1-u01", "status": "complete",
+        "findings": [{
+          "id": "s1-u01-F1", "status": "unresolved", "outcome_fact": "red_line",
+          "evidence": [{"session": "s1", "source_line": 10, "quote": "shard quote"}],
+        }],
+        "tracking_observations": [], "limitations": [],
+      })
+      merge_report = {
+        "session": "s1", "unit": "s1-merge", "status": "complete",
+        "patterns": [{
+          "id": "s1-merge-P1", "source_finding_ids": ["s1-u01-F1"], "outcome_fact": "harmless",
+          "evidence": [{"session": "s1", "source_line": 10, "quote": "shard quote"}],
+        }],
+        "dispositions": [{"source_finding_id": "s1-u01-F1", "disposition": "kept", "reason": "merged"}],
+        "tracking_observations": [], "limitations": [],
+      }
+      merge_item = {"session": "s1", "unit": "s1-merge", "input_reports": [str(shard_path)]}
+      with self.assertRaisesRegex(retro.Invalid, "session-merge cannot mark outcome_fact harmless"):
+        retro.check_report(merge_report, merge_item, "session-merge", canonical)
+
+    # 13. Single-dict evidence shape is still counted for >=4 session threshold
+    with tempfile.TemporaryDirectory() as tmp:
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4)
+      for p in item["input_reports"]:
+        d = json.loads(Path(p).read_text(encoding="utf-8"))
+        d["findings"][0]["evidence"] = d["findings"][0]["evidence"][0]
+        Path(p).write_text(json.dumps(d), encoding="utf-8")
+      cross["low_harm_deferred"] = []
+      cross["secondary_patterns"] = [{
+        "id": "S1",
+        "source_sessions": [f"sess-{i}" for i in range(1, 5)],
+        "source_finding_ids": [f"s0{i}-u01-F1" for i in range(1, 5)],
+        "observation": "single dict evidence hidden",
+        "impact": "none",
+        "evidence": [{"session": f"sess-{i}", "source_line": 10, "quote": f"observed attempt {i}"} for i in range(1, 5)],
+        "counterevidence": "",
+      }]
+      with self.assertRaisesRegex(retro.Invalid, "secondary_patterns"):
+        retro.check_report(cross, item, "cross", canonical)
+
+  def test_composition_output_preserves_low_harm_deferred_parity(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, _run, manifest, _plan = fixture.composition_fixture()
+    chain = retro.composition_manifest_chain(manifest)
+    chain["source_records"] = [
+      {"id": f"source-{i}", "status": "unresolved", "outcome_fact": "harmless",
+       "evidence": [{"session": f"s{i}", "source_line": 1, "quote": f"q{i}"}]}
+      for i in range(1, 5)
+    ]
+    chain["partial"] = {
+      "patterns": [], "secondary_patterns": [],
+      "low_harm_deferred": [{
+        "id": "L1", "source_finding_ids": ["source-1", "source-2", "source-3", "source-4"],
+        "observation": "existing deferred", "downgrade_criterion": "N1",
+        "positive_no_harm_evidence": "All 4 blocked by safety lock.",
+      }],
+      "dispositions": [{"id": f"source-{i}", "verdict": "merged", "reason": "kept"} for i in range(1, 5)],
+    }
+    chain["remaining"] = {"pending_prior_rejections": []}
+    chain["taxonomy_input"] = {"groups": []}
+    chain["taxonomy"] = {"mapping": [], "definitions": []}
+    chain["decisions"] = []
+    chain["transfer"] = {"tracking_observations": [], "tracking_dispositions": []}
+    output = retro.composition_output(chain)
+    self.assertEqual(len(output["patterns"]), 0)
+    self.assertEqual(len(output["low_harm_deferred"]), 1)
+    self.assertEqual(output["low_harm_deferred"][0]["id"], "L1")
+    # If any member is red_line, composition promotes to patterns and strips stale downgrade metadata
+    chain["source_records"][3]["outcome_fact"] = "red_line"
+    output2 = retro.composition_output(chain)
+    self.assertEqual(len(output2["patterns"]), 1)
+    self.assertEqual(len(output2["low_harm_deferred"]), 0)
+    self.assertNotIn("downgrade_criterion", output2["patterns"][0])
+    self.assertNotIn("positive_no_harm_evidence", output2["patterns"][0])
+    # If decision rejects a >=4-session pending candidate, output records it in rejected so check_report catches it
+    chain["partial"] = {"patterns": [], "secondary_patterns": [], "low_harm_deferred": [], "dispositions": []}
+    chain["decisions"] = [{"artifact": {"unit": "cross-decide-01"},
+      "input": {"candidates": [{"id": "c1", "pending_source_ids": [f"source-{i}" for i in range(1, 5)]}]},
+      "report": {"decisions": [{"id": "c1", "verdict": "rejected", "reason": "minor"}]}}]
+    output3 = retro.composition_output(chain)
+    self.assertEqual(len(output3.get("rejected", [])), 1)
+    self.assertEqual(len(output3["rejected"][0]["source_finding_ids"]), 4)
+
 
 if __name__ == "__main__":
   unittest.main(verbosity=2)

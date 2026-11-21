@@ -1261,7 +1261,7 @@ def composition_batch_report(artifact, source_reports, run, plan, canonical, cac
     composition_require_reads([supplement_result["writer_agent"]], supplement_paths + ([supplement_report] if supplement_report else []), label + " supplement")
     extra = supplement_result["report"]
     require(extra.get("status") == "complete", label + " supplement is not complete")
-    for key in ("patterns", "secondary_patterns", "dispositions"):
+    for key in ("patterns", "secondary_patterns", "low_harm_deferred", "dispositions"):
       combined.setdefault(key, [])
       combined[key].extend(copy.deepcopy(extra.get(key, [])))
     combined["supplement_limitations"] = extra.get("limitations", [])
@@ -1348,7 +1348,7 @@ def composition_manifest_chain(manifest_path):
   for artifact, batch in zip(analyst, batches):
     normalized = batch["normalized"]
     expected_batches.append({"unit": artifact["unit"],
-                             "patterns": normalized.get("patterns", []) + normalized.get("secondary_patterns", []),
+                             "patterns": normalized.get("patterns", []) + normalized.get("secondary_patterns", []) + normalized.get("low_harm_deferred", []),
                              "dispositions": normalized["dispositions"],
                              "limitations": batch["base"].get("limitations", [])})
   require(synthesis.get("batches") == expected_batches, "synthesis packet differs from report-writer outputs")
@@ -1469,9 +1469,10 @@ def composition_output(chain):
   source_ids = list(source_records)
   old_patterns = partial.get("patterns", [])
   old_secondary = partial.get("secondary_patterns", [])
-  groups = {entry["id"]: copy.deepcopy(entry) for entry in old_patterns + old_secondary}
+  old_deferred = partial.get("low_harm_deferred", [])
+  groups = {entry["id"]: copy.deepcopy(entry) for entry in old_patterns + old_secondary + old_deferred}
   refs = {}
-  for group in old_patterns + old_secondary:
+  for group in old_patterns + old_secondary + old_deferred:
     refs.setdefault(group["id"], set()).update(group["source_finding_ids"])
   mapping_by_key = taxonomy_mapping_by_key(chain["taxonomy_input"]["groups"], chain["taxonomy"]["mapping"])
   labels = {(group["unit"], group["target"]): mapping_by_key[group["key"]]["target"]
@@ -1479,12 +1480,14 @@ def composition_output(chain):
   for definition in chain["taxonomy"]["definitions"]:
     groups[definition["target"]] = copy.deepcopy(definition)
   decisions = {entry["id"]: copy.deepcopy(entry) for entry in partial.get("dispositions", [])}
+  rejected_groups = []
   for decision in chain["decisions"]:
     by_id = {candidate["id"]: candidate for candidate in decision["input"]["candidates"]}
     for row in decision["report"]["decisions"]:
       candidate = by_id[row["id"]]
       ids = candidate["pending_source_ids"]
       if row["verdict"] == "rejected":
+        rejected_groups.append({"id": row["id"], "source_finding_ids": list(ids), "reason": row["reason"]})
         for record_id in ids:
           decisions[record_id] = {"id": record_id, "verdict": "rejected", "reason": row["reason"]}
       else:
@@ -1502,7 +1505,7 @@ def composition_output(chain):
       decisions[record_id] = {"id": record_id, "verdict": "merged",
                               "reason": "同一來源仍有已保留候選；部分候選拒絕不刪除其餘獨立問題。"}
   issues = {issue["id"]: issue for issue in load(chain["run"] / "tracking-context.json").get("issues", [])}
-  patterns, secondary = [], []
+  patterns, secondary, low_harm_deferred = [], [], []
   for target, ids in refs.items():
     base = copy.deepcopy(groups[target])
     source = [source_records[record_id] for record_id in sorted(ids)]
@@ -1515,39 +1518,58 @@ def composition_output(chain):
     matched = issues.get(base.get("matched_issue_id"))
     matched = matched if matched and not matched.get("decision") else None
     historical = matched.get("source_sessions", []) if matched else []
-    eligible = target.startswith("P") or len(set(sessions) | set(historical)) >= 4
+    reaches_threshold = target.startswith("P") or target.startswith("L") or len(set(sessions) | set(historical)) >= 4
+    all_harmless = bool(source) and all(record.get("outcome_fact") == "harmless" for record in source)
+    has_valid_defer = (
+      target.startswith("L")
+      and isinstance(base.get("downgrade_criterion"), str)
+      and base.get("downgrade_criterion") in VALID_DOWNGRADE_CRITERIA
+      and isinstance(base.get("positive_no_harm_evidence"), str)
+      and bool(base["positive_no_harm_evidence"].strip())
+      and all_harmless
+    )
     base.update({"source_finding_ids": sorted(ids), "source_sessions": sessions, "evidence": evidence,
                  "counterevidence": [{"source_record_id": record["id"], "value": record["counterevidence"]}
                                       for record in source if record.get("counterevidence")],
                  "impact": base.get("impact", "範圍與實際影響仍待查核；原始來源反證與限制逐筆保留。"),
-                 "needs_current_check": True})
+                 "needs_current_check": not has_valid_defer})
     if matched:
       base["matched_issue_title"] = matched["title"]
     else:
       base["matched_issue_id"] = None
       base["matched_issue_title"] = None
     base.pop("target", None)
-    if eligible:
+    if reaches_threshold and has_valid_defer:
+      base["id"] = f"L{len(low_harm_deferred) + 1}"
+      low_harm_deferred.append(base)
+    elif reaches_threshold:
+      base.pop("downgrade_criterion", None)
+      base.pop("positive_no_harm_evidence", None)
       base["id"] = f"P{len(patterns) + 1}"
       patterns.append(base)
     else:
+      base.pop("downgrade_criterion", None)
+      base.pop("positive_no_harm_evidence", None)
       base["id"] = f"S{len(secondary) + 1}"
       secondary.append(base)
-  return {"session": "cross-session", "unit": "cross-session", "status": "complete",
-          "coverage": copy.deepcopy(partial.get("coverage", {"source_records": len(source_ids)})),
-          "patterns": patterns, "secondary_patterns": secondary,
-          "dispositions": [decisions[record_id] for record_id in source_ids],
-          "tracking_observations": copy.deepcopy(chain["transfer"]["tracking_observations"]),
-          "tracking_dispositions": copy.deepcopy(chain["transfer"]["tracking_dispositions"]),
-          "limitations": ["本檔由固定 composition manifest 以真實 agent Write/Edit 軌跡與封閉組裝規則重建；原 partial report 保留未覆寫。",
-                          f"本次機械驗收覆蓋 {len(source_ids)} 筆 source records 與 {len(chain['transfer']['tracking_observations'])} 筆 tracking observations；只證來源鏈與結構完整，不宣稱語意正確。",
-                          "semantic decision、taxonomy 與 current-state 判斷仍須由 verify-source / verify-current 驗收。"],
-          "assembly_provenance": {"kind": "deterministic-cross-composition", "manifest_path": str(chain["manifest_path"]),
-                                  "partial_report": str(chain["partial_path"]),
-                                  "source_record_count": len(source_ids),
-                                  "tracking_observation_count": len(chain["transfer"]["tracking_observations"]),
-                                  "writer_artifacts": chain["writer_artifacts"],
-                                  "tracking_policy": "source observations copied without model-written events; event identity is re-derived by add_event_evidence"}}
+  output = {"session": "cross-session", "unit": "cross-session", "status": "complete",
+            "coverage": copy.deepcopy(partial.get("coverage", {"source_records": len(source_ids)})),
+            "patterns": patterns, "secondary_patterns": secondary, "low_harm_deferred": low_harm_deferred,
+            "dispositions": [decisions[record_id] for record_id in source_ids],
+            "tracking_observations": copy.deepcopy(chain["transfer"]["tracking_observations"]),
+            "tracking_dispositions": copy.deepcopy(chain["transfer"]["tracking_dispositions"]),
+            "limitations": ["本檔由固定 composition manifest 以真實 agent Write/Edit 軌跡與封閉組裝規則重建；原 partial report 保留未覆寫。",
+                            f"本次機械驗收覆蓋 {len(source_ids)} 筆 source records 與 {len(chain['transfer']['tracking_observations'])} 筆 tracking observations；只證來源鏈與結構完整，不宣稱語意正確。",
+                            "semantic decision、taxonomy 與 current-state 判斷仍須由 verify-source / verify-current 驗收。"],
+            "assembly_provenance": {"kind": "deterministic-cross-composition", "manifest_path": str(chain["manifest_path"]),
+                                    "partial_report": str(chain["partial_path"]),
+                                    "source_record_count": len(source_ids),
+                                    "tracking_observation_count": len(chain["transfer"]["tracking_observations"]),
+                                    "writer_artifacts": chain["writer_artifacts"],
+                                    "tracking_policy": "source observations copied without model-written events; event identity is re-derived by add_event_evidence"}}
+  if rejected_groups:
+    output["rejected"] = rejected_groups
+  return output
 
 
 def composition_check(manifest_path, write=False, expected_output=None):
@@ -1574,6 +1596,7 @@ def composition_check(manifest_path, write=False, expected_output=None):
                   "output_report": str(output_path), "validated_path": str(validated_path),
                   "counts": {"source_records": len(chain["source_ids"]), "patterns": len(normalized["patterns"]),
                              "secondary_patterns": len(normalized["secondary_patterns"]),
+                             "low_harm_deferred": len(normalized.get("low_harm_deferred", [])),
                              "dispositions": len(normalized["dispositions"]),
                              "tracking_observations": len(normalized["tracking_observations"]),
                              "tracking_dispositions": len(normalized["tracking_dispositions"])}}
@@ -1581,6 +1604,7 @@ def composition_check(manifest_path, write=False, expected_output=None):
   return {"pass": True, "manifest_path": str(chain["manifest_path"]), "output_report": str(output_path),
           "validated_path": str(validated_path), "counts": {"source_records": len(chain["source_ids"]),
           "patterns": len(normalized["patterns"]), "secondary_patterns": len(normalized["secondary_patterns"]),
+          "low_harm_deferred": len(normalized.get("low_harm_deferred", [])),
           "dispositions": len(normalized["dispositions"]), "tracking_observations": len(normalized["tracking_observations"]),
           "tracking_dispositions": len(normalized["tracking_dispositions"])}, "check_only": not write}
 
@@ -1787,12 +1811,97 @@ def evidence_list(record):
 
 def report_records(report):
   result = []
-  for key in ("findings", "patterns", "secondary_patterns"):
+  for key in ("findings", "patterns", "secondary_patterns", "low_harm_deferred"):
     values = report.get(key, [])
     require(isinstance(values, list), key + " must be an array")
     require(all(isinstance(value, dict) for value in values), key + " contains a nonobject")
     result.extend(values)
   return result
+
+
+VALID_DOWNGRADE_CRITERIA = {"N1", "N2", "N3", "N4"}
+
+
+def _unresolved_session_ids(refs, by_id, label, require_known):
+  sessions = set()
+  for ref in refs:
+    require(isinstance(ref, str), f"{label} source_finding_ids must contain string ids")
+    if require_known:
+      require(ref in by_id, f"{label} contains invalid source id")
+    src = by_id.get(ref)
+    if not src or src.get("status") == "resolved":
+      continue
+    raw_ev = src.get("evidence")
+    ev_items = [raw_ev] if isinstance(raw_ev, dict) else raw_ev if isinstance(raw_ev, list) else []
+    for ev in ev_items:
+      if isinstance(ev, dict) and isinstance(ev.get("session"), str):
+        sessions.add(ev["session"])
+  return sessions
+
+
+def _historical_open_sessions(item):
+  inputs = item.get("input_reports") or []
+  if not inputs:
+    return {}
+  ctx_path = Path(inputs[0]).resolve().parent.parent / "tracking-context.json"
+  if not ctx_path.is_file():
+    return {}
+  data = load(ctx_path)
+  require(isinstance(data, dict), "tracking-context.json must be an object")
+  issues = data.get("issues")
+  require(issues is None or isinstance(issues, list), "tracking-context.json issues must be an array")
+  result = {}
+  for issue in issues or []:
+    if isinstance(issue, dict) and isinstance(issue.get("id"), str) and not issue.get("decision"):
+      hist = [s for s in (issue.get("source_sessions") or []) if isinstance(s, str)]
+      result[issue["id"]] = set(hist)
+  return result
+
+
+def _entry_refs(entry, refs_key):
+  val = entry.get(refs_key)
+  return val if val is not None else entry.get("source_finding_ids")
+
+
+def _check_low_harm_deferred_entry(entry, by_id, refs_key):
+  require(isinstance(entry, dict), "low_harm_deferred contains a nonobject")
+  criterion = entry.get("downgrade_criterion")
+  evidence = entry.get("positive_no_harm_evidence")
+  valid_meta = isinstance(criterion, str) and criterion in VALID_DOWNGRADE_CRITERIA
+  valid_ev = isinstance(evidence, str) and bool(evidence.strip())
+  require(valid_meta and valid_ev, "low_harm_deferred entry requires valid downgrade_criterion (N1-N4) and non-empty positive_no_harm_evidence")
+  for ref in _entry_refs(entry, refs_key) or []:
+    require(isinstance(ref, str) and ref in by_id, "low_harm_deferred contains invalid source id")
+    outcome = by_id[ref].get("outcome_fact")
+    require(outcome == "harmless", f"low_harm_deferred cannot include non-harmless outcome_fact ({outcome!r}) on {ref}")
+
+
+def _union_sessions(entry, sessions, open_issues):
+  matched_id = entry.get("matched_issue_id")
+  if isinstance(matched_id, str) and matched_id in open_issues:
+    return sessions | open_issues[matched_id]
+  return sessions
+
+
+def check_cross_low_harm_triage(report, by_id, refs_key, item):
+  deferred = report.get("low_harm_deferred", [])
+  require(isinstance(deferred, list), "low_harm_deferred must be an array")
+  for entry in deferred:
+    _check_low_harm_deferred_entry(entry, by_id, refs_key)
+  open_issues = _historical_open_sessions(item)
+  for entry in report.get("secondary_patterns", []):
+    refs = _entry_refs(entry, refs_key) or []
+    sessions = _union_sessions(entry, _unresolved_session_ids(refs, by_id, "secondary_patterns", require_known=True), open_issues)
+    require(len(sessions) < 4, "unresolved root cause reaching >=4 unique sessions cannot be placed in secondary_patterns")
+  if "rejected" in report and report["rejected"] is not None:
+    rejected = report["rejected"]
+    require(isinstance(rejected, list), "rejected must be an array")
+    for entry in rejected:
+      require(isinstance(entry, dict), "rejected contains a nonobject")
+      refs = _entry_refs(entry, refs_key)
+      require(isinstance(refs, list), "rejected entry requires source_finding_ids array")
+      sessions = _union_sessions(entry, _unresolved_session_ids(refs, by_id, "rejected", require_known=False), open_issues)
+      require(len(sessions) < 4, "unresolved root cause reaching >=4 unique sessions cannot be silently dropped into rejected")
 
 
 def check_dispositions(report, item, stage):
@@ -1825,7 +1934,7 @@ def check_dispositions(report, item, stage):
     require(isinstance(entry, dict), "invalid disposition")
     key = entry.get(disposition_key, entry.get("id"))
     decision = entry.get("disposition", entry.get("verdict"))
-    require(key in expected, "disposition references unknown source id")
+    require(isinstance(key, str) and key in expected, "disposition references unknown source id")
     require(decision in {"kept", "merged", "rejected"}, "invalid disposition decision")
     require(isinstance(entry.get("reason"), str) and bool(entry["reason"].strip()), "disposition reason required")
     actual.append(key)
@@ -1834,14 +1943,21 @@ def check_dispositions(report, item, stage):
   require(len(actual) == len(expected) and set(actual) == expected, "missing or duplicate disposition")
   cited = set()
   for record in report_records(report):
-    refs = record.get(refs_key, record.get("source_finding_ids"))
+    refs = _entry_refs(record, refs_key)
     require(isinstance(refs, list) and bool(refs), "output record requires source ids")
-    require(all(key in expected for key in refs), "output record has invented source id")
+    require(all(isinstance(key, str) and key in expected for key in refs), "output record has invented source id")
     require(all(key in retained for key in refs), "output cites a rejected source record")
     if any(by_id[key].get("counterevidence") for key in refs):
       require(bool(record.get("counterevidence")), "output record dropped source counterevidence")
+    if stage == "session-merge" and record.get("outcome_fact") == "harmless":
+      require(
+        all(by_id[key].get("outcome_fact") == "harmless" for key in refs),
+        "session-merge cannot mark outcome_fact harmless when any source finding is not harmless",
+      )
     cited.update(refs)
   require(retained <= cited, "kept/merged source not cited by any output")
+  if stage == "cross":
+    check_cross_low_harm_triage(report, by_id, refs_key, item)
 
 
 def accounting_inputs(item):
@@ -2023,7 +2139,7 @@ def check_report(report, item, stage, canonical):
   normalized = copy.deepcopy(report)
   all_records = report_records(normalized)
   ids = [r.get("id") for r in all_records]
-  require(all(isinstance(key, str) and (key.startswith(item["unit"] + "-") or key.startswith(item["unit"] + ":") or (stage == "cross" and re.fullmatch(r"P\d+|S\d+", key))) for key in ids), "record id must have full unit prefix")
+  require(all(isinstance(key, str) and (key.startswith(item["unit"] + "-") or key.startswith(item["unit"] + ":") or (stage == "cross" and re.fullmatch(r"P\d+|S\d+|L\d+", key))) for key in ids), "record id must have full unit prefix")
   require(len(ids) == len(set(ids)), "duplicate output record ids")
   if stage == "reading":
     normalize_record_evidence(all_records, item, canonical)
