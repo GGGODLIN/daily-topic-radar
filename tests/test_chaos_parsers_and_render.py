@@ -855,3 +855,18 @@ def test_render_item_escapes_trailing_backslash_and_encodes_open_paren_in_url():
         "### [trailing\\\\](https://en.wikipedia.org/wiki/Python_%28programming_language%29)"
     )
 
+
+def test_twitter_non_string_text_and_non_dict_rows_guarded():
+    from social_info.fetchers import twitter
+
+    now = datetime(2026, 11, 21, 0, 0, 0)
+    rows = [
+        "not-a-dict",
+        {"id": "1", "text": ["list-not-str"], "username": "u"},
+        {"id": "2", "text": "valid tweet", "full_text": 123, "username": "u"},
+    ]
+    items = twitter._to_items(rows, _src("x", "twitter"), now)
+    assert len(items) == 1
+    assert items[0].title == "valid tweet"
+
+

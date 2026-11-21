@@ -87,8 +87,12 @@ def _to_items(data: list, source: SourceConfig, now: datetime) -> list[Item]:
         # 新 actor 不帶 type=tweet。mock / 缺 id 或 username 仍丟，其餘留下。
         if not isinstance(tw, dict) or tw.get("type") == "mock_tweet":
             continue
-        text = (tw.get("text") or "").strip()
-        full_text = (tw.get("full_text") or text).strip()
+        raw_text = tw.get("text")
+        if not isinstance(raw_text, str):
+            continue
+        text = raw_text.strip()
+        raw_full_text = tw.get("full_text")
+        full_text = (raw_full_text.strip() if isinstance(raw_full_text, str) else "") or text
         tweet_url = _tweet_url(tw)
         if not text or not tweet_url:
             continue
@@ -123,7 +127,10 @@ async def _post(
 ) -> list:
     resp = await http.post(url, params=params, json=payload, timeout=180.0)
     resp.raise_for_status()
-    return resp.json()
+    rows = resp.json()
+    if not isinstance(rows, list):
+        raise ValueError("X response is not a list")
+    return rows
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
