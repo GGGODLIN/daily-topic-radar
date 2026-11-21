@@ -1,5 +1,7 @@
 """SQLite layer for items + fetch_runs."""
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -53,10 +55,55 @@ CREATE INDEX IF NOT EXISTS idx_fetch_runs_started ON fetch_runs(started_at);
 class Database:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.conn = sqlite3.connect(str(self.path))
+        self.conn = sqlite3.connect(str(self.path), timeout=30.0)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout = 30000")
+        self._tx_depth = 0
+        self._savepoint_seq = 0
+
+    def __enter__(self) -> "Database":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
+    def _maybe_commit(self) -> None:
+        if self._tx_depth == 0:
+            self.conn.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        outermost = self._tx_depth == 0 and not self.conn.in_transaction
+        sp_name: str | None = None
+        if outermost:
+            self.conn.execute("BEGIN IMMEDIATE")
+        else:
+            self._savepoint_seq += 1
+            sp_name = f"sp_{self._savepoint_seq}"
+            self.conn.execute(f"SAVEPOINT {sp_name}")
+        self._tx_depth += 1
+        try:
+            yield
+        except BaseException:
+            self._tx_depth -= 1
+            if outermost:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+            elif sp_name is not None:
+                self.conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+                self.conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+            raise
+        else:
+            self._tx_depth -= 1
+            if outermost:
+                if self.conn.in_transaction:
+                    self.conn.commit()
+            elif sp_name is not None:
+                self.conn.execute(f"RELEASE SAVEPOINT {sp_name}")
 
     def init_schema(self) -> None:
+        if self._tx_depth > 0:
+            raise RuntimeError("init_schema() cannot be called inside an active transaction")
         self.conn.executescript(SCHEMA)
         existing_cols = {
             row["name"]
@@ -105,14 +152,14 @@ class Database:
             f"INSERT OR IGNORE INTO items ({cols}) VALUES ({placeholders})",
             tuple(row.values()),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def update_also_appeared_in(self, item_id: str, also_appeared_in_json: str) -> None:
         self.conn.execute(
             "UPDATE items SET also_appeared_in = ? WHERE id = ?",
             (redact_text(also_appeared_in_json), item_id),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def update_last_surfaced_at(self, item_ids: list[str]) -> None:
         if not item_ids:
@@ -122,7 +169,7 @@ class Database:
             "UPDATE items SET last_surfaced_at = ? WHERE id = ?",
             [(now, item_id) for item_id in item_ids],
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     def get_items_by_ids(self, item_ids: list[str]) -> list[dict[str, Any]]:
         if not item_ids:
@@ -161,7 +208,7 @@ class Database:
                 net_new,
             ),
         )
-        self.conn.commit()
+        self._maybe_commit()
 
     @staticmethod
     def _utc_range_for_date(date: str) -> tuple[str, str]:
@@ -313,6 +360,8 @@ class Database:
         needed when re-rendering the current or recent day's raw report; older
         rows only need dedup keys and a short excerpt for 30-day resurface.
         """
+        if self._tx_depth > 0:
+            raise RuntimeError("compact() cannot be called inside an active transaction")
         ref = now or utcnow()
         retain_cutoff = (ref - timedelta(days=retain_days)).isoformat()
         full_cutoff = (ref - timedelta(days=full_excerpt_days)).isoformat()

@@ -155,10 +155,17 @@ class ObservationPool:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        self.conn = sqlite3.connect(str(self.path), timeout=30.0)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout = 30000")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+
+    def __enter__(self) -> ObservationPool:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
 
     def close(self) -> None:
         self.conn.close()

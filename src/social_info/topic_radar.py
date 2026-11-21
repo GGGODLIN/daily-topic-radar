@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-from datetime import datetime
+import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +47,9 @@ def default_config() -> dict[str, Any]:
 def load_radar_config(path: Path) -> dict[str, Any]:
     cfg = default_config()
     if path.exists():
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        cfg.update(loaded)
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            cfg.update(loaded)
     extra = cfg.get("stop_words") or []
     if extra:
         terms.add_stop(list(extra))
@@ -95,14 +98,21 @@ def _text_for(row: dict[str, Any]) -> str:
     return f"{row['title']} {body}"
 
 
+def _parse_naive_utc(raw: str) -> datetime:
+    dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
+    return dt
+
+
 def _created(row: dict[str, Any]) -> datetime | None:
     meta = json.loads(row.get("metadata_json") or "{}")
     raw = meta.get("created_at")
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
+        return _parse_naive_utc(str(raw))
+    except (ValueError, TypeError):
         return None
 
 
@@ -131,21 +141,54 @@ def _names_for(row: dict[str, Any]) -> tuple[set[str], set[str]]:
     return terms.names(text), strong
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 class RadarHistory:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.data = {"terms": {}, "leads": []}
+        self.data: dict[str, Any] = {"terms": {}, "leads": []}
         if self.path.exists():
-            self.data = json.loads(self.path.read_text(encoding="utf-8"))
-            self.data.setdefault("terms", {})
-            self.data.setdefault("leads", [])
+            try:
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, ValueError):
+                loaded = None
+            if isinstance(loaded, dict):
+                terms_map = loaded.get("terms")
+                leads_list = loaded.get("leads")
+                self.data = {
+                    "terms": terms_map if isinstance(terms_map, dict) else {},
+                    "leads": leads_list if isinstance(leads_list, list) else [],
+                }
 
     def seen_before(self, term: str, date: str) -> bool:
         first = self.data["terms"].get(term)
         return bool(first) and first < date
 
     def remember(self, term: str, date: str, lead: dict[str, Any] | None) -> None:
-        self.data["terms"].setdefault(term, date)
+        existing_date = self.data["terms"].get(term)
+        if not existing_date or date < existing_date:
+            self.data["terms"][term] = date
         if lead is None:
             return
         self.data["leads"] = [
@@ -154,12 +197,21 @@ class RadarHistory:
         ]
         self.data["leads"].append(lead)
 
+    def replace_date_leads(self, date: str, leads: list[dict[str, Any]]) -> None:
+        self.data["leads"] = [
+            row for row in self.data["leads"]
+            if row.get("date") != date
+        ]
+        self.data["leads"].extend(leads)
+
     def leads_on(self, date: str) -> list[dict[str, Any]]:
         return [row for row in self.data["leads"] if row["date"] == date]
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(
+            self.path,
+            json.dumps(self.data, ensure_ascii=False, indent=2),
+        )
 
 
 def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, date: str) -> dict[str, Any]:
@@ -274,7 +326,7 @@ def analyze(pool: ObservationPool, cfg: dict[str, Any], history: RadarHistory, d
         leads.append(lead)
     top_n = int(cfg.get("top") or 25)
     if not baseline_only:
-        leads = list(history.leads_on(date))
+        history.replace_date_leads(date, leads)
     leads.sort(key=lambda row: (-len(row["sources"]), -row["likes"], row["term"]))
     leads = merge_leads_by_url(leads)[:top_n]
     history.save()
@@ -351,7 +403,7 @@ def _github_breakout(
     for row in rows:
         created = _created(row)
         if created is not None:
-            fetched = datetime.fromisoformat(row["fetched_at"])
+            fetched = _parse_naive_utc(row["fetched_at"])
             if (fetched - created).total_seconds() <= window_days * 86400:
                 return True
         previous = pool.history_before(row["canonical_url"], row["fetched_at"])
@@ -388,7 +440,7 @@ def _github_note(pool: ObservationPool, rows: list[dict[str, Any]]) -> list[dict
         if created is None:
             note["age_days"] = None
         else:
-            fetched = datetime.fromisoformat(row["fetched_at"])
+            fetched = _parse_naive_utc(row["fetched_at"])
             note["age_days"] = round(max((fetched - created).total_seconds() / 86400, 0), 1)
         previous = pool.history_before(row["canonical_url"], row["fetched_at"])
         if previous:
@@ -499,8 +551,8 @@ def write_radar_reports(report: dict[str, Any], out_dir: Path) -> tuple[Path, Pa
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / f"{report['date']}.json"
     md_path = out_dir / f"{report['date']}.md"
-    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_radar_markdown(report), encoding="utf-8")
+    _atomic_write_text(json_path, json.dumps(report, ensure_ascii=False, indent=2))
+    _atomic_write_text(md_path, render_radar_markdown(report))
     return json_path, md_path
 
 

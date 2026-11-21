@@ -1,7 +1,9 @@
 """End-to-end orchestration: load config -> fetch all -> dedup -> render."""
 import asyncio
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +14,7 @@ import httpx
 from social_info._time import utcnow
 from social_info.config import Config, SourceConfig
 from social_info.db import Database
-from social_info.dedup import Deduper, compute_item_id, compute_title_hash
+from social_info.dedup import Deduper, compute_title_hash, item_identity
 from social_info.fetchers import (
     clawhub,
     devpost,
@@ -65,6 +67,8 @@ def classify_error(exc: BaseException) -> str:
     if isinstance(
         exc,
         (
+            TimeoutError,
+            httpx.TimeoutException,
             httpx.ReadTimeout,
             httpx.ConnectTimeout,
             httpx.WriteTimeout,
@@ -91,7 +95,7 @@ def classify_error(exc: BaseException) -> str:
             )
         ):
             return "persistent_error"
-        if code >= 500 or code == 429:
+        if code >= 500 or code in (408, 425, 429):
             return "transient"
         if code in (401, 403):
             return "user_action_required"
@@ -100,7 +104,10 @@ def classify_error(exc: BaseException) -> str:
 
 
 def annotate_net_new(
-    results: list["FetchResult"], new_items: list["Item"]
+    results: list["FetchResult"],
+    new_items: list["Item"],
+    *,
+    partial_capable_ids: set[str] | frozenset[str] | None = None,
 ) -> None:
     """Set FetchResult.net_new = how many of a source's fetched items survived
     dedup into the report. Ok results that fetched items but contributed 0
@@ -108,8 +115,9 @@ def annotate_net_new(
     fetch. Failed results keep net_new=None.
     """
     survivors = {id(it) for it in new_items}
+    allowed_partial = {"linuxdo"} if partial_capable_ids is None else partial_capable_ids
     for r in results:
-        if not r.ok and not (r.source_id == "linuxdo" and r.items):
+        if not r.ok and not (r.source_id in allowed_partial and r.items):
             continue
         r.net_new = sum(1 for it in r.items if id(it) in survivors)
 
@@ -247,41 +255,46 @@ async def run_pipeline(
             if pool is not None and not dry_run:
                 pool.record_result(source, result)
 
+    partial_capable_ids = {s.id for s in enabled if s.type == "linuxdo"}
     all_items: list[Item] = []
     for r in results:
         # A failed source is normally dropped whole. LinuxDO's incomplete window
         # is the exception: its result carries only pages already validated, and
         # ok stays false so the report still says the day is not complete.
-        if not r.ok and not (r.source_id == "linuxdo" and r.items):
+        if not r.ok and not (r.source_id in partial_capable_ids and r.items):
             continue
         items = r.items[:limit_per_source] if limit_per_source else r.items
         all_items.extend(items)
 
     deduper = Deduper(db, resurface_days=resurface_days, dry_run=dry_run)
-    dedup_result = deduper.process(all_items)
-    new_items = dedup_result.new_items
-    annotate_net_new(results, new_items)
-
-    if not dry_run:
-        for r in results:
-            db.log_fetch_run(
-                source=r.source_id,
-                started_at=r.started_at,
-                ended_at=r.ended_at or r.started_at,
-                status="ok" if r.ok else "failed",
-                items_fetched=r.items_count(),
-                error=r.error,
-                error_class=r.error_class,
-                attempts=r.attempts,
-                net_new=r.net_new,
-            )
-        for it in new_items:
-            row = it.to_db_row(
-                item_id=compute_item_id(it.canonical_url),
-                title_hash=compute_title_hash(it.title),
-            )
-            row["last_surfaced_at"] = it.fetched_at.isoformat()
-            db.insert_item(row)
+    if dry_run:
+        dedup_result = deduper.process(all_items)
+        new_items = dedup_result.new_items
+        annotate_net_new(results, new_items, partial_capable_ids=partial_capable_ids)
+    else:
+        with db.transaction():
+            dedup_result = deduper.process(all_items)
+            new_items = dedup_result.new_items
+            annotate_net_new(results, new_items, partial_capable_ids=partial_capable_ids)
+            for r in results:
+                db.log_fetch_run(
+                    source=r.source_id,
+                    started_at=r.started_at,
+                    ended_at=r.ended_at or r.started_at,
+                    status="ok" if r.ok else "failed",
+                    items_fetched=r.items_count(),
+                    error=r.error,
+                    error_class=r.error_class,
+                    attempts=r.attempts,
+                    net_new=r.net_new,
+                )
+            for it in new_items:
+                row = it.to_db_row(
+                    item_id=item_identity(it),
+                    title_hash=compute_title_hash(it.title),
+                )
+                row["last_surfaced_at"] = it.fetched_at.isoformat()
+                db.insert_item(row)
 
     return new_items, results, dedup_result.resurface_ids
 
@@ -387,6 +400,29 @@ def hydrate_item_content(items: list[Item], pool: ObservationPool | None, date: 
         item.metadata = {**item.metadata, "content_kind": kind}
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 def write_report(
     new_items: list[Item],
     failures: list[FetchResult],
@@ -410,5 +446,5 @@ def write_report(
         radar_markdown=radar_markdown,
     )
     out_path = out_dir / f"{date}.md"
-    out_path.write_text(md, encoding="utf-8")
+    _atomic_write_text(out_path, md)
     return out_path

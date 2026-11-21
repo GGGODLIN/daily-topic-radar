@@ -7,6 +7,8 @@ Two tiers:
 """
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -93,17 +95,19 @@ def render(issues: list[dict[str, Any]], generated_at: datetime) -> str:
 
     STABLE_THRESHOLD = 7
     for issue in issues:
-        if issue.get("consecutive_fail_runs", 0) >= STABLE_THRESHOLD:
-            stable.append(issue)
-            continue
         klass = issue.get("last_error_class") or "transient"
         if klass == "user_action_required":
             user_action.append(issue)
+            continue
+        if issue.get("consecutive_fail_runs", 0) >= STABLE_THRESHOLD:
+            stable.append(issue)
         elif klass == "persistent_error":
             persistent.append(issue)
         else:
             transient.append(issue)
 
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=UTC)
     parts: list[str] = [HEADER_TMPL.format(ts=generated_at.astimezone(TAIPEI).strftime("%Y-%m-%d %H:%M"))]
 
     if not issues:
@@ -134,6 +138,26 @@ def render(issues: list[dict[str, Any]], generated_at: datetime) -> str:
 
 
 def write(issues: list[dict[str, Any]], out_dir: Path, generated_at: datetime) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "KNOWN_ISSUES.md"
-    out_path.write_text(render(issues, generated_at), encoding="utf-8")
+    content = render(issues, generated_at)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=out_dir,
+            prefix=f".{out_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, out_path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
     return out_path

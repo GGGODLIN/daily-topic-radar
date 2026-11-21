@@ -4,7 +4,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from social_info._time import utcnow
 from social_info.db import Database
@@ -96,6 +96,13 @@ def compute_item_id(canonical_url: str) -> str:
     return hashlib.sha1(canonical_url.encode("utf-8")).hexdigest()
 
 
+def item_identity(item: Item) -> str:
+    if item.canonical_url and item.canonical_url.strip():
+        return compute_item_id(item.canonical_url)
+    fallback = f"{item.source}\0{item.title}\0{item.url}"
+    return hashlib.sha1(fallback.encode("utf-8")).hexdigest()
+
+
 def compute_title_hash(title: str) -> str:
     return hashlib.sha1(normalize_title(title).encode("utf-8")).hexdigest()
 
@@ -136,7 +143,7 @@ class Deduper:
         threshold = utcnow() - timedelta(days=self.resurface_days)
 
         for item in items:
-            item_id = compute_item_id(item.canonical_url)
+            item_id = item_identity(item)
             norm_title = normalize_title(item.title)
             can_l2 = len(norm_title) >= _MIN_L2_TITLE_LEN
             title_hash = compute_title_hash(item.title)
@@ -191,6 +198,44 @@ class Deduper:
                     resurfaced_in_batch.add(item_id)
                 continue
 
+            if can_l2 and title_hash in seen_title_hashes_in_batch:
+                prior = seen_title_hashes_in_batch[title_hash]
+                if item.source_tier < prior.source_tier:
+                    result.new_items.remove(prior)
+                    item.also_appeared_in, _ = _merge_appearances(
+                        item.also_appeared_in,
+                        [
+                            {
+                                "source": prior.source,
+                                "source_handle": prior.source_handle,
+                                "url": prior.url,
+                                "metrics": _metrics_summary(prior.engagement),
+                            },
+                            *prior.also_appeared_in,
+                        ],
+                        owner_source=item.source,
+                        owner_url=item.canonical_url,
+                    )
+                    result.new_items.append(item)
+                    seen_title_hashes_in_batch[title_hash] = item
+                    for key, holder in list(seen_ids_in_batch.items()):
+                        if holder is prior:
+                            seen_ids_in_batch[key] = item
+                    seen_ids_in_batch[item_id] = item
+                else:
+                    prior.also_appeared_in, _ = _merge_appearances(
+                        prior.also_appeared_in,
+                        [{
+                            "source": item.source,
+                            "source_handle": item.source_handle,
+                            "url": item.url,
+                            "metrics": _metrics_summary(item.engagement),
+                        }],
+                        owner_source=prior.source,
+                        owner_url=prior.canonical_url,
+                    )
+                continue
+
             existing = self.db.find_by_title_hash(title_hash) if can_l2 else None
             if existing is not None:
                 existing_last = self._parse_dt(existing.get("last_surfaced_at"))
@@ -215,8 +260,9 @@ class Deduper:
                     result.new_items.append(item)
                     seen_ids_in_batch[item_id] = item
                     seen_title_hashes_in_batch[title_hash] = item
-                    if is_stale:
+                    if is_stale and existing["id"] not in resurfaced_in_batch:
                         result.resurface_ids.append(existing["id"])
+                        resurfaced_in_batch.add(existing["id"])
                 else:
                     appeared, changed = _merge_appearances(
                         prior_appeared,
@@ -231,43 +277,9 @@ class Deduper:
                     )
                     if changed and not self.dry_run:
                         self.db.update_also_appeared_in(existing["id"], json.dumps(appeared))
-                    if is_stale:
+                    if is_stale and existing["id"] not in resurfaced_in_batch:
                         result.resurface_ids.append(existing["id"])
-                continue
-
-            if can_l2 and title_hash in seen_title_hashes_in_batch:
-                prior = seen_title_hashes_in_batch[title_hash]
-                if item.source_tier < prior.source_tier:
-                    result.new_items.remove(prior)
-                    item.also_appeared_in, _ = _merge_appearances(
-                        item.also_appeared_in,
-                        [
-                            {
-                                "source": prior.source,
-                                "source_handle": prior.source_handle,
-                                "url": prior.url,
-                                "metrics": _metrics_summary(prior.engagement),
-                            },
-                            *prior.also_appeared_in,
-                        ],
-                        owner_source=item.source,
-                        owner_url=item.canonical_url,
-                    )
-                    result.new_items.append(item)
-                    seen_title_hashes_in_batch[title_hash] = item
-                    seen_ids_in_batch[item_id] = item
-                else:
-                    prior.also_appeared_in, _ = _merge_appearances(
-                        prior.also_appeared_in,
-                        [{
-                            "source": item.source,
-                            "source_handle": item.source_handle,
-                            "url": item.url,
-                            "metrics": _metrics_summary(item.engagement),
-                        }],
-                        owner_source=prior.source,
-                        owner_url=prior.canonical_url,
-                    )
+                        resurfaced_in_batch.add(existing["id"])
                 continue
 
             result.new_items.append(item)
@@ -291,6 +303,9 @@ class Deduper:
         if not s:
             return None
         try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(UTC).replace(tzinfo=None)
+            return dt
         except (ValueError, TypeError):
             return None

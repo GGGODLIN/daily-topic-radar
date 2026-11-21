@@ -102,161 +102,159 @@ def _free_radar_markdown(config, date: str) -> str:
             continue
         report_path = Path(source.params.get("report_dir", "reports/new-term-radar")) / f"{date}.json"
         if report_path.exists():
-            rendered = render_free_radar_report(json.loads(report_path.read_text(encoding="utf-8")))
+            try:
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+                rendered = render_free_radar_report(payload)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                continue
             sections.append(redact_text(rendered))
     return "\n\n".join(sections)
 
 
 def _run_radar(args: argparse.Namespace, db: Database, date: str, raw_path: Path) -> Path:
-    pool = ObservationPool(args.pool)
-    if args.seed_pool:
-        pool.seed_from_database(db, date, load_config(args.config))
-    history = RadarHistory(args.pool.parent / "topic-radar.json")
-    report = analyze(pool, load_radar_config(args.radar_config), history, date)
-    write_radar_reports(report, args.reports / "topic-radar")
-    radar_md = render_radar_markdown(report)
-    free_md = _free_radar_markdown(load_config(args.config), date)
-    if free_md:
-        radar_md += "\n\n" + free_md
-    if raw_path.exists():
-        raw_path.write_text(
-            splice_radar_section(raw_path.read_text(encoding="utf-8"), radar_md),
-            encoding="utf-8",
-        )
-    else:
-        rows = db.items_for_date(date)
-        items = [_row_to_item(row) for row in rows]
-        hydrate_item_content(items, pool, date)
-        resurface = resolve_resurface_items(db, db.resurfaced_item_ids_for_date(date))
-        hydrate_item_content(resurface, pool, date)
-        stale, empty = resolve_stale_and_empty(db, date, [])
-        write_report(
-            items, [], args.reports, date, datetime.now(TAIPEI),
-            stale=stale, resurface_items=resurface, empty=empty,
-            radar_markdown=radar_md,
-        )
-    pool.close()
+    with ObservationPool(args.pool) as pool:
+        if args.seed_pool:
+            pool.seed_from_database(db, date, load_config(args.config))
+        history = RadarHistory(args.pool.parent / "topic-radar.json")
+        report = analyze(pool, load_radar_config(args.radar_config), history, date)
+        write_radar_reports(report, args.reports / "topic-radar")
+        radar_md = render_radar_markdown(report)
+        free_md = _free_radar_markdown(load_config(args.config), date)
+        if free_md:
+            radar_md += "\n\n" + free_md
+        if raw_path.exists():
+            raw_path.write_text(
+                splice_radar_section(raw_path.read_text(encoding="utf-8"), radar_md),
+                encoding="utf-8",
+            )
+        else:
+            rows = db.items_for_date(date)
+            items = [_row_to_item(row) for row in rows]
+            hydrate_item_content(items, pool, date)
+            resurface = resolve_resurface_items(db, db.resurfaced_item_ids_for_date(date))
+            hydrate_item_content(resurface, pool, date)
+            stale, empty = resolve_stale_and_empty(db, date, [])
+            write_report(
+                items, [], args.reports, date, datetime.now(TAIPEI),
+                stale=stale, resurface_items=resurface, empty=empty,
+                radar_markdown=radar_md,
+            )
     return raw_path
 
 
 async def _main() -> int:
     args = _parse_args()
     if args.analyze_pool:
-        db = Database(args.db)
-        db.init_schema()
-        date = args.date or datetime.now(TAIPEI).strftime("%Y-%m-%d")
-        out = _run_radar(args, db, date, args.reports / f"{date}.md")
-        print(f"Analyzed pool into {out}")
-        db.close()
-        return 0
+        with Database(args.db) as db:
+            db.init_schema()
+            date = args.date or datetime.now(TAIPEI).strftime("%Y-%m-%d")
+            out = _run_radar(args, db, date, args.reports / f"{date}.md")
+            print(f"Analyzed pool into {out}")
+            return 0
     config = load_config(args.config)
     db = Database(args.db)
-    db.init_schema()
+    pool: ObservationPool | None = None
+    try:
+        db.init_schema()
 
-    only_sources = [s.strip() for s in args.source.split(",")] if args.source else None
-    if args.retry_failures:
-        enabled_ids = {s.id for s in config.enabled_sources()}
-        retry_targets = [s for s in db.last_failed_sources() if s in enabled_ids]
-        if not retry_targets:
-            print("No sources to retry — every enabled source's last run was successful.")
-            db.close()
-            return 0
-        only_sources = retry_targets
-        print(f"Retrying {len(retry_targets)} failed source(s): {', '.join(retry_targets)}")
-    limit_per_source = 3 if args.smoke else None
-    dry_run = args.dry_run or args.smoke
-    if dry_run and any(
-        source.type == "new_term_radar" and (only_sources is None or source.id in only_sources)
-        for source in config.enabled_sources()
-    ):
-        print("Skipped free_radar in dry-run/smoke: its comparison snapshots must not be updated.")
+        only_sources = [s.strip() for s in args.source.split(",")] if args.source else None
+        if args.retry_failures:
+            enabled_ids = {s.id for s in config.enabled_sources()}
+            retry_targets = [s for s in db.last_failed_sources() if s in enabled_ids]
+            if not retry_targets:
+                print("No sources to retry — every enabled source's last run was successful.")
+                return 0
+            only_sources = retry_targets
+            print(f"Retrying {len(retry_targets)} failed source(s): {', '.join(retry_targets)}")
+        limit_per_source = 3 if args.smoke else None
+        dry_run = args.dry_run or args.smoke
+        if dry_run and any(
+            source.type == "new_term_radar" and (only_sources is None or source.id in only_sources)
+            for source in config.enabled_sources()
+        ):
+            print("Skipped free_radar in dry-run/smoke: its comparison snapshots must not be updated.")
 
-    pool = None if dry_run else ObservationPool(args.pool)
-    new_items, results, resurface_ids = await run_pipeline(
-        config,
-        db,
-        only_sources=only_sources,
-        dry_run=dry_run,
-        limit_per_source=limit_per_source,
-        pool=pool,
-        target_date=args.date,
-    )
-    failures = [r for r in results if not r.ok]
-
-    if args.smoke:
-        print("--- SMOKE RUN ---")
-        print(
-            f"Sources requested: {len(results)}, "
-            f"succeeded: {len(results) - len(failures)}"
+        pool = None if dry_run else ObservationPool(args.pool)
+        new_items, results, resurface_ids = await run_pipeline(
+            config,
+            db,
+            only_sources=only_sources,
+            dry_run=dry_run,
+            limit_per_source=limit_per_source,
+            pool=pool,
+            target_date=args.date,
         )
-        for it in new_items[:30]:
-            print(render_item(it))
-        for f in failures:
-            print(f"FAILED: {f.source_id}: {f.error}")
-        db.close()
+        failures = [r for r in results if not r.ok]
+
+        if args.smoke:
+            print("--- SMOKE RUN ---")
+            print(
+                f"Sources requested: {len(results)}, "
+                f"succeeded: {len(results) - len(failures)}"
+            )
+            for it in new_items[:30]:
+                print(render_item(it))
+            for f in failures:
+                print(f"FAILED: {f.source_id}: {f.error}")
+            return 0
+
+        if dry_run:
+            print(f"DRY-RUN: {len(new_items)} new items, {len(failures)} failures")
+            return 0
+
+        now_tw = datetime.now(TAIPEI)
+        date = args.date or now_tw.strftime("%Y-%m-%d")
+        rows = db.items_for_date(date)
+        all_items_today = [_row_to_item(r) for r in rows]
+        # Rendering reads the whole day back out of the db rather than from this run's
+        # results, so re-rendering a date is idempotent regardless of which sources the
+        # run touched. --retry-failures only re-fetches the failed sources; deriving
+        # these three from run scope made the second render of a day drop every 🔁
+        # entry and both diagnostic blocks. failures stays run-scoped on purpose: a
+        # source that just succeeded on retry is genuinely no longer failing.
+        #
+        # Both sides are merged rather than swapped: the db recomputation covers what a
+        # partial re-run no longer sees, and this run's own ids cover the first render
+        # of the day (last_surfaced_at is only stamped further down) and --date
+        # backfills (where the db side keys off wall-clock time and finds nothing).
+        resurface_items = resolve_resurface_items(
+            db, sorted(set(resurface_ids) | set(db.resurfaced_item_ids_for_date(date)))
+        )
+        stale, empty = resolve_stale_and_empty(db, date, results)
+        hydrate_item_content(all_items_today, pool, date)
+        hydrate_item_content(resurface_items, pool, date)
+        radar_md = None
+        if pool is not None:
+            history = RadarHistory(args.pool.parent / "topic-radar.json")
+            report = analyze(pool, load_radar_config(args.radar_config), history, date)
+            write_radar_reports(report, args.reports / "topic-radar")
+            radar_md = render_radar_markdown(report)
+            free_md = _free_radar_markdown(config, date)
+            if free_md:
+                radar_md += "\n\n" + free_md
+        out = write_report(
+            all_items_today, failures, args.reports, date, now_tw,
+            stale=stale, resurface_items=resurface_items, empty=empty,
+            radar_markdown=radar_md,
+        )
+        db.update_last_surfaced_at(resurface_ids)
+
+        enabled_ids = {s.id for s in config.enabled_sources()}
+        issues = [i for i in db.current_known_issues() if i["source"] in enabled_ids]
+        issues_path = known_issues.write(issues, Path("."), now_tw)
+        db.compact()
+
+        print(
+            f"Wrote {out} ({len(all_items_today)} items rendered, "
+            f"{len(new_items)} new this run, {len(resurface_items)} resurfaced, "
+            f"{len(failures)} failures)"
+        )
+        print(f"Wrote {issues_path} ({len(issues)} known issue(s))")
+        return 0
+    finally:
         if pool is not None:
             pool.close()
-        return 0
-
-    if dry_run:
-        print(f"DRY-RUN: {len(new_items)} new items, {len(failures)} failures")
         db.close()
-        if pool is not None:
-            pool.close()
-        return 0
-
-    now_tw = datetime.now(TAIPEI)
-    date = args.date or now_tw.strftime("%Y-%m-%d")
-    rows = db.items_for_date(date)
-    all_items_today = [_row_to_item(r) for r in rows]
-    # Rendering reads the whole day back out of the db rather than from this run's
-    # results, so re-rendering a date is idempotent regardless of which sources the
-    # run touched. --retry-failures only re-fetches the failed sources; deriving
-    # these three from run scope made the second render of a day drop every 🔁
-    # entry and both diagnostic blocks. failures stays run-scoped on purpose: a
-    # source that just succeeded on retry is genuinely no longer failing.
-    #
-    # Both sides are merged rather than swapped: the db recomputation covers what a
-    # partial re-run no longer sees, and this run's own ids cover the first render
-    # of the day (last_surfaced_at is only stamped further down) and --date
-    # backfills (where the db side keys off wall-clock time and finds nothing).
-    resurface_items = resolve_resurface_items(
-        db, sorted(set(resurface_ids) | set(db.resurfaced_item_ids_for_date(date)))
-    )
-    stale, empty = resolve_stale_and_empty(db, date, results)
-    hydrate_item_content(all_items_today, pool, date)
-    hydrate_item_content(resurface_items, pool, date)
-    radar_md = None
-    if pool is not None:
-        history = RadarHistory(args.pool.parent / "topic-radar.json")
-        report = analyze(pool, load_radar_config(args.radar_config), history, date)
-        write_radar_reports(report, args.reports / "topic-radar")
-        radar_md = render_radar_markdown(report)
-        free_md = _free_radar_markdown(config, date)
-        if free_md:
-            radar_md += "\n\n" + free_md
-    out = write_report(
-        all_items_today, failures, args.reports, date, now_tw,
-        stale=stale, resurface_items=resurface_items, empty=empty,
-        radar_markdown=radar_md,
-    )
-    db.update_last_surfaced_at(resurface_ids)
-
-    enabled_ids = {s.id for s in config.enabled_sources()}
-    issues = [i for i in db.current_known_issues() if i["source"] in enabled_ids]
-    issues_path = known_issues.write(issues, Path("."), now_tw)
-    db.compact()
-
-    print(
-        f"Wrote {out} ({len(all_items_today)} items rendered, "
-        f"{len(new_items)} new this run, {len(resurface_items)} resurfaced, "
-        f"{len(failures)} failures)"
-    )
-    print(f"Wrote {issues_path} ({len(issues)} known issue(s))")
-    db.close()
-    if pool is not None:
-        pool.close()
-    return 0
 
 
 def main() -> None:

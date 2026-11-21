@@ -32,11 +32,27 @@ def load_config(path: Path) -> Config:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
-    defaults = raw.get("defaults", {})
-    raw_sources = raw.get("sources", [])
+    if raw is None:
+        return Config(defaults={}, sources=[])
+    if not isinstance(raw, dict):
+        raise ValueError(f"config root must be a mapping, got {type(raw).__name__}")
+
+    defaults = raw.get("defaults")
+    if defaults is None:
+        defaults = {}
+    elif not isinstance(defaults, dict):
+        raise ValueError(f"config 'defaults' must be a mapping, got {type(defaults).__name__}")
+
+    raw_sources = raw.get("sources")
+    if raw_sources is None:
+        raw_sources = []
+    elif not isinstance(raw_sources, list):
+        raise ValueError(f"config 'sources' must be a list, got {type(raw_sources).__name__}")
 
     sources: list[SourceConfig] = []
     for entry in raw_sources:
+        if not isinstance(entry, dict):
+            raise ValueError(f"source entry must be a mapping, got {entry!r}")
         if "id" not in entry or "type" not in entry:
             raise ValueError(f"source entry missing id/type: {entry!r}")
         params = {k: v for k, v in entry.items() if k not in _TOP_LEVEL_KEYS}
