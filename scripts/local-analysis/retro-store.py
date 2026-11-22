@@ -258,12 +258,12 @@ def entry(kind, entry_id, body):
 
 def load_entries(handle):
   handle.seek(0)
-  raw = handle.read()
-  if isinstance(raw, bytes):
-    try:
+  try:
+    raw = handle.read()
+    if isinstance(raw, bytes):
       raw = raw.decode("utf-8")
-    except UnicodeError as error:
-      raise Invalid("store contains non-utf8 bytes") from error
+  except UnicodeError as error:
+    raise Invalid("store contains non-utf8 bytes") from error
   rows = []
   for number, line in enumerate(split_lines(raw), 1):
     if not line.strip():
@@ -300,13 +300,12 @@ def append_rows(handle, rows):
 
 
 def raw_endswith_newline(handle):
-  position = handle.tell()
-  if position == 0:
+  handle.flush()
+  fd = handle.fileno()
+  size = os.fstat(fd).st_size
+  if size == 0:
     return True
-  handle.seek(position - 1)
-  last = handle.read(1)
-  handle.seek(position)
-  return last == "\n"
+  return os.pread(fd, 1, size - 1) == b"\n"
 
 
 def plan_append(existing, proposed):
@@ -404,7 +403,11 @@ def open_store(path, create):
       "store must be a real directory",
     )
   elif create:
-    os.makedirs(path, mode=0o700)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    require(
+      not os.path.islink(path) and stat.S_ISDIR(os.lstat(path).st_mode),
+      "store must be a real directory",
+    )
   else:
     raise Invalid("store does not exist: " + path)
   if os.path.isdir(path) and not os.path.islink(path):
@@ -442,7 +445,7 @@ def locked(path, create=False):
 
 def packet_entries(packet):
   require(isinstance(packet, dict), "packet must be an object")
-  require(packet.get("schema_version") == 1, "unsupported packet schema")
+  require(type(packet.get("schema_version")) is int and packet.get("schema_version") == 1, "unsupported packet schema")
   run = packet.get("run")
   require(isinstance(run, dict), "run is required")
   run_id = ident(run.get("id"), "run.id")
@@ -463,13 +466,14 @@ def packet_entries(packet):
     issue = ident(item.get("id"), "issue.id")
     require(issue not in known, "duplicate issue id in packet: " + issue)
     known.add(issue)
+    related = item.get("related_to", [])
+    require(isinstance(related, list), "related_to must be a list")
+    require("title" in item, "issue.title is required")
     body = {
       "issue_id": issue,
       "title": text(item.get("title", ""), "issue.title"),
-      "related_to": [ident(x, "related_to") for x in item.get("related_to", [])],
+      "related_to": [ident(x, "related_to") for x in related],
     }
-    require(isinstance(item.get("related_to", []), list), "related_to must be a list")
-    require("title" in item, "issue.title is required")
     rows.append(entry("issue", "issue:" + issue, body))
   for item in discoveries:
     require(isinstance(item, dict), "discovery must be an object")
@@ -508,8 +512,9 @@ def packet_entries(packet):
       require(points, "confirmed event needs anchors")
       require(reviews, "confirmed event needs review_sources")
     require(isinstance(item.get("scope"), str), "event.scope is required")
-    links = [ident(x, "event.issue_ids") for x in item.get("issue_ids", [])]
-    require(isinstance(item.get("issue_ids"), list) and links, "event.issue_ids is required")
+    raw_links = item.get("issue_ids")
+    require(isinstance(raw_links, list) and raw_links, "event.issue_ids is required")
+    links = [ident(x, "event.issue_ids") for x in raw_links]
     unknown = [x for x in links if x not in known]
     require(not unknown, "unknown issue reference: " + ",".join(unknown))
     body = {
@@ -988,8 +993,9 @@ def ingest(store, packet_path, apply):
   if not apply and not os.path.lexists(
     os.path.join(os.path.abspath(os.path.expanduser(store)), RECORDS)
   ):
+    fresh, skipped = plan_append([], proposed)
     extra, tally = plan_observations([], observation_bodies([], run_id, proposals))
-    return summary(proposed + extra, 0, tally)
+    return summary(fresh + extra, len(skipped) + tally["replayed"] + tally["legacy"]["replayed"], tally)
   with locked(store, create=apply) as (_folder, handle):
     existing = load_entries(handle)
     fresh, skipped = plan_append(existing, proposed)
@@ -1007,8 +1013,11 @@ def read_regular(path):
     handle = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
   except OSError as error:
     raise Invalid("cannot read packet") from error
-  with os.fdopen(handle, "r", encoding="utf-8") as stream:
-    return stream.read()
+  try:
+    with os.fdopen(handle, "r", encoding="utf-8") as stream:
+      return stream.read()
+  except UnicodeError as error:
+    raise Invalid("packet is not utf-8") from error
 
 
 def decision_entry(issue, action, source, note, *, uuid=None):
@@ -1704,6 +1713,14 @@ def make_hook_pending(rows, audit_state, rules_repo):
       unchecked.append({"rule": rule, "change_id": item["change_id"], "reason": result.get("reason", "rule-not-found")})
     elif result.get("status") == "not_analyzed":
       unchecked.append({"rule": rule, "change_id": item["change_id"], "reason": "not-analyzed"})
+    elif (
+      type(result.get("violating_sessions")) is not int
+      or not isinstance(result.get("violations"), list)
+      or "coverage" not in result
+      or not all(isinstance(v, dict) and isinstance(v.get("session_id"), str) and isinstance(v.get("event_time"), str)
+                 for v in result["violations"])
+    ):
+      unchecked.append({"rule": rule, "change_id": item["change_id"], "reason": "malformed-audit-result"})
     elif result["violating_sessions"] >= MAKE_HOOK_THRESHOLD:
       newest = {}
       for entry in result["violations"]:
@@ -1889,15 +1906,18 @@ def list_issues(
 def kind_from_path(path):
   """(kind, name) the file's location implies, in session-retro's vocabulary; (None, None) when it says nothing."""
   parts = Path(path).parts
+  if not parts:
+    return None, None
   base, folders = parts[-1], parts[:-1]
-  if base == "SKILL.md" and "skills" in folders:
+  if base == "SKILL.md" and "skills" in folders and folders[-1] != "skills":
     return "skill", folders[-1]
   # 最近的目錄優先：skills/x/scripts/run.sh 是 script，不是 skill。
   for folder in reversed(folders):
     if folder == "rules" and base.endswith(".md"):
       return "rule", None
     if folder == "commands" and base.endswith(".md"):
-      return "command", base[: -len(".md")]
+      stem = base[: -len(".md")]
+      return ("command", stem) if stem else (None, None)
     if folder == "hooks":
       return "hook", None
     if folder == "scripts":

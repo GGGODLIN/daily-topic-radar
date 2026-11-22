@@ -4,10 +4,12 @@ HTTP server that returns pre-written replies and keeps every request it received
 synthetic, de-identified fixture; the replay tool and session-retro (event evidence) are the real ones.
 The hand-off to retro-judge is checked by the shape of judge-input.json only."""
 
+import importlib.util
 import json
 import math
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -912,6 +914,235 @@ class JudgeHandoff(ReplayCase):
     self.assertNotIn("verdict", document)
     written = sorted(str(p.relative_to(self.out)) for p in self.out.rglob("*") if p.is_file())
     self.assertEqual(written, ["run-1/judge-input.json", "run-1/run.json"])
+
+
+class BoundaryAndMutationGuards(ReplayCase):
+  def start_raw_relay(self, script_fn):
+    """Raw TCP server for truncated HTTP responses; script_fn(idx) returns raw bytes."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    port = srv.getsockname()[1]
+    stop = threading.Event()
+    calls = []
+
+    def serve():
+      srv.settimeout(0.2)
+      while not stop.is_set():
+        try:
+          conn, _ = srv.accept()
+        except socket.timeout:
+          continue
+        except OSError:
+          break
+        try:
+          conn.settimeout(1.0)
+          buf = b""
+          while b"\r\n\r\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+              break
+            buf += chunk
+          hdr, _, rest = buf.partition(b"\r\n\r\n")
+          cl = 0
+          for ln in hdr.split(b"\r\n"):
+            if ln.lower().startswith(b"content-length:"):
+              cl = int(ln.split(b":", 1)[1].strip())
+          while len(rest) < cl:
+            chunk = conn.recv(4096)
+            if not chunk:
+              break
+            rest += chunk
+          idx = len(calls)
+          calls.append(rest)
+          conn.sendall(script_fn(idx, rest))
+          conn.shutdown(socket.SHUT_WR)
+          time.sleep(0.02)
+        except OSError:
+          pass
+        finally:
+          conn.close()
+      srv.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    self.addCleanup(stop.set)
+    return f"http://127.0.0.1:{port}", calls
+
+  def test_exit_codes_for_cannot_replay_unfaithful_and_model_unavailable(self):
+    # Explicit exit code contract check (kills M-R12).
+    relay = self.relay()
+    r_cannot, _ = self.replay(self.spec(relay, session=self.root / "missing.jsonl"), run_id="ec-10")
+    self.assertEqual(r_cannot.returncode, 10)
+    relay_unf = self.relay(lambda i, b, o: (200, answer(COMPLIANT), 0))
+    r_unf, _ = self.replay(self.spec(relay_unf), run_id="ec-11")
+    self.assertEqual(r_unf.returncode, 11)
+    missing = {"type": "error", "error": {"type": "not_found_error", "message": "model: relay/fixture-model:high"}}
+    relay_unavail = self.relay(lambda i, b, o: (404, missing, 0))
+    r_unavail, _ = self.replay(self.spec(relay_unavail), run_id="ec-12")
+    self.assertEqual(r_unavail.returncode, 12)
+
+  def test_truncated_http_408_retry_and_malformed_usage_handling(self):
+    # Truncated HTTP (IncompleteRead) is retried as transient without Traceback (R-BUG-1).
+    def raw_script(idx, _raw):
+      if idx < 4:
+        return b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{\"content\":"
+      body = json.dumps(answer(VIOLATING)).encode("utf-8")
+      return f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body
+
+    origin, calls = self.start_raw_relay(raw_script)
+    spec_path = self.spec(self.relay())
+    spec_path = self.mutated(spec_path, lambda b: b["route"].update(relay=origin))
+    res, payload = self.replay(spec_path, run_id="trunc-1")
+    self.assertEqual(res.returncode, 13, res.stdout + res.stderr)
+    self.assertNotIn("Traceback", res.stderr)
+    self.assertEqual(payload["status"], "incomplete")
+    self.assertEqual(len(calls), 4)
+
+    # HTTP 408 is retried as transient (kills M-R09), and malformed usage marks usage_complete=False (R-BUG-4).
+    def reply_408_and_bad_usage(index, body, owner):
+      if index == 0:
+        return error_reply(408)
+      status, ans, delay = FakeRelay.by_version(index, body, owner)
+      if index == 1:
+        ans = {**ans, "usage": {"input_tokens": 100, "output_tokens": 30, "cache_read_input_tokens": "bad"}}
+      return status, ans, delay
+
+    relay = self.relay(reply_408_and_bad_usage)
+    res2, payload2 = self.replay(self.spec(relay), run_id="http-408")
+    self.assertEqual(payload2.get("status"), "complete", res2.stdout + res2.stderr)
+    self.assertEqual([t["status"] for t in self.record("http-408")["attempts"][0]["tries"]], [408, 200])
+    self.assertFalse(self.record("http-408")["actual"]["usage_complete"])
+
+  def test_no_progress_supplement_state_machine_caps_at_one_retry_per_stalled_reply(self):
+    # Kills M-R06 (must supplement once) and M-R07 (must NOT supplement a second time if retry stalls).
+    silent = {"content": [{"type": "text", "text": "ok"}], "usage": USAGE}
+
+    # Case 1: swapped arm stalls once on its first call, then progresses -> 11 ok attempts on swapped arm (10 progressed).
+    swapped_seen = {"n": 0}
+
+    def stall_once(index, body, owner):
+      if version_in(body) == "old":
+        swapped_seen["n"] += 1
+        if swapped_seen["n"] == 1:
+          return 200, silent, 0
+      return FakeRelay.by_version(index, body, owner)
+
+    relay1 = self.relay(stall_once)
+    res1, payload1 = self.replay(self.spec(relay1), run_id="stall-once")
+    self.assertEqual(payload1.get("status"), "complete", res1.stdout + res1.stderr)
+    swapped_ok = [a for a in self.record("stall-once")["attempts"] if a["arm"] == "swapped" and a["outcome"] == "ok"]
+    self.assertEqual(len(swapped_ok), 11)
+    self.assertEqual(sum(1 for a in swapped_ok if a["progressed"]), 10)
+
+    # Case 2: swapped arm stalls on call 1 AND on its supplement call 11 -> stops at 11 ok (9 progressed), no 12th call.
+    swapped_seen2 = {"n": 0}
+
+    def stall_supplement_too(index, body, owner):
+      if version_in(body) == "old":
+        swapped_seen2["n"] += 1
+        if swapped_seen2["n"] in (1, 11):
+          return 200, silent, 0
+      return FakeRelay.by_version(index, body, owner)
+
+    relay2 = self.relay(stall_supplement_too)
+    res2, payload2 = self.replay(self.spec(relay2), run_id="stall-twice")
+    self.assertEqual(payload2.get("status"), "complete", res2.stdout + res2.stderr)
+    swapped_ok2 = [a for a in self.record("stall-twice")["attempts"] if a["arm"] == "swapped" and a["outcome"] == "ok"]
+    self.assertEqual(len(swapped_ok2), 11)
+    self.assertEqual(sum(1 for a in swapped_ok2 if a["progressed"]), 9)
+
+  def test_balanced_arm_scheduling_after_precheck(self):
+    # Kills M-R08: after 5 precheck calls on original, swapped must catch up before original runs #6.
+    relay, _ = self.complete_run(run_id="balanced-1")
+    arms_order = [a["arm"] for a in self.record("balanced-1")["attempts"]]
+    self.assertEqual(arms_order[:5], ["original"] * 5)
+    self.assertEqual(arms_order[5:10], ["swapped"] * 5)
+    # After 10 calls (5 each), both arms alternate within a spread of at most 1.
+    self.assertEqual(arms_order[10], "original")
+    self.assertEqual(arms_order[11], "swapped")
+
+  def test_duplicate_paragraph_removed_deferred_tool_version_disagreement_and_cycle(self):
+    # M-R02: duplicate target paragraph in rule file -> cannot_replay (exit 10).
+    rows_dup = session_rows("new")
+    rows_dup[0]["attachment"]["files"][1]["content"] = NEW_TEXT + "\n\n" + NEW_TEXT + "\n"
+    relay = self.relay()
+    r_dup, p_dup = self.replay(self.spec(relay, session=self.write_session(rows_dup, name="dup.jsonl")), run_id="dup-1")
+    self.assertEqual(r_dup.returncode, 10)
+    self.assertEqual(p_dup["status"], "cannot_replay")
+    self.assertIn("2 times", p_dup["reason"])
+
+    # M-R03: deferred_tools_delta removedNames actually strips the tool from rebuilt request.
+    rows_rem = session_rows("new")
+    rows_rem.insert(6, {
+      "type": "attachment", "uuid": "u6b", "parentUuid": "u6",
+      "timestamp": "2026-11-02T00:01:50Z", "sessionId": "fixture-session",
+      "attachment": {"type": "deferred_tools_delta", "removedNames": ["DeferredTool"]},
+    })
+    rows_rem[7]["parentUuid"] = "u6b"
+    sess_rem = self.write_session(rows_rem, name="rem.jsonl")
+    relay_rem = self.relay()
+    sp_rem = self.mutated(self.spec(relay_rem, session=sess_rem), lambda b: b["event"].update(response_line=EVENT_LINE + 1))
+    r_rem, p_rem = self.replay(sp_rem, run_id="rem-1")
+    self.assertEqual(p_rem.get("status"), "complete", r_rem.stdout + r_rem.stderr)
+    self.assertEqual({t["name"] for t in relay_rem.requests[0]["body"]["tools"]}, {"Bash"})
+    diffs = {d["id"]: d for d in self.record("rem-1")["differences"]}
+    self.assertEqual(diffs["tools_assembled"]["removed"], ["DeferredTool"])
+
+    # M-R04: event_evidence says not_loaded (effective_time > LOAD_TIME) while instructions carry NEW_TEXT -> cannot_replay.
+    r_dis, p_dis = self.replay(self.spec(self.relay(), effective="2026-11-02T00:03:00Z"), run_id="disagree-1")
+    self.assertEqual(r_dis.returncode, 10)
+    self.assertEqual(p_dis["status"], "cannot_replay")
+    self.assertIn("disagree", p_dis["reason"])
+
+    # R-BUG-3: cyclic parentUuid -> cannot_replay (exit 10), never infinite loop.
+    rows_cyc = session_rows("new")
+    rows_cyc[0]["parentUuid"] = rows_cyc[1]["uuid"]
+    r_cyc, p_cyc = self.replay(self.spec(self.relay(), session=self.write_session(rows_cyc, name="cyc.jsonl")), run_id="cyc-1")
+    self.assertEqual(r_cyc.returncode, 10)
+    self.assertEqual(p_cyc["status"], "cannot_replay")
+    self.assertIn("cycle", p_cyc["reason"])
+
+  def test_estimate_cap_threshold_exact_equality_empty_key_bad_scheme_and_cli_bounds(self):
+    # M-R05: per_call == cap_threshold must NOT apply cap multiplier (strict >).
+    relay = self.relay()
+    _, est_base = self.replay(self.spec(relay), approve=False, run_id="est-base")
+    exact_tokens = est_base["estimate"]["input_tokens_per_call"]
+    _, est_eq = self.replay(self.spec(relay), "--cap-threshold", exact_tokens, "--cap-multiplier", 2, approve=False, run_id="est-eq")
+    self.assertEqual(est_eq["estimate"]["prices"]["cap_multiplier_applied"], 1.0)
+    _, est_gt = self.replay(self.spec(relay), "--cap-threshold", exact_tokens - 1, "--cap-multiplier", 2, approve=False, run_id="est-gt")
+    self.assertEqual(est_gt["estimate"]["prices"]["cap_multiplier_applied"], 2.0)
+
+    # R-BUG-2: empty relay key rejected with exit 2.
+    r_empty_key, _ = self.replay(self.spec(relay), run_id="empty-key", env={KEY_ENV: ""})
+    self.assertEqual(r_empty_key.returncode, 2)
+    self.assertIn("not set or empty", r_empty_key.stderr)
+
+    # R-BUG-5: file:// relay rejected, --runs 0/-1 rejected, --chars-per-token 0 rejected, array run.json rejected.
+    sp_file = self.mutated(self.spec(relay), lambda b: b["route"].update(relay="file:///etc/passwd"))
+    r_file, _ = self.replay(sp_file, run_id="bad-scheme")
+    self.assertEqual(r_file.returncode, 2)
+
+    r_runs0, _ = self.replay(self.spec(relay, purpose="side_effect"), "--runs", 0, run_id="runs-0")
+    self.assertEqual(r_runs0.returncode, 2)
+
+    r_cpt0, _ = self.replay(self.spec(relay), "--chars-per-token", 0, approve=False, run_id="cpt-0")
+    self.assertEqual(r_cpt0.returncode, 2)
+
+    bad_dir = self.out / "bad-resume"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "run.json").write_text("[]", encoding="utf-8")
+    r_badrec, _ = self.run_cli("run", "--spec", self.spec(relay), "--out-dir", self.out, "--resume", bad_dir, "--approve")
+    self.assertEqual(r_badrec.returncode, 2)
+
+    # R-BUG-3: save_json leaves no .tmp behind on failure.
+    mod_spec = importlib.util.spec_from_file_location("retro_replay_mod", SCRIPT)
+    rmod = importlib.util.module_from_spec(mod_spec)
+    mod_spec.loader.exec_module(rmod)
+    target = self.root / "atomic-clean" / "run.json"
+    with self.assertRaises(TypeError):
+      rmod.save_json(target, {"bad": object()})
+    self.assertFalse(target.with_name(target.name + ".tmp").exists())
 
 
 if __name__ == "__main__":

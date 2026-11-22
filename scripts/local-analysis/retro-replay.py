@@ -14,6 +14,7 @@ for a transient error that do not count as an attempt.
 
 import argparse
 import copy
+import http.client
 import importlib.util
 import json
 import math
@@ -99,9 +100,20 @@ def load_judge():
 
 def save_json(path, value):
   path.parent.mkdir(parents=True, exist_ok=True)
+  rendered = json.dumps(value, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
   temp = path.with_name(path.name + ".tmp")
-  temp.write_text(json.dumps(value, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-  os.replace(temp, path)
+  try:
+    with open(temp, "w", encoding="utf-8") as handle:
+      handle.write(rendered)
+      handle.flush()
+      os.fsync(handle.fileno())
+    os.replace(temp, path)
+  except BaseException:
+    try:
+      temp.unlink()
+    except OSError:
+      pass
+    raise
 
 
 # ---- 輸入檢查 ---------------------------------------------------------------------------
@@ -140,6 +152,9 @@ def origin_of(url):
 def endpoint_for(spec, override):
   route = spec["route"]
   endpoint = override or route["relay"].rstrip("/") + route.get("path", "/v1/messages")
+  parsed = urlsplit(endpoint)
+  if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+    raise Usage("endpoint must be an http or https URL: " + str(endpoint))
   # 走中轉站的模型一定走原本那個中轉站；換成別的來源就是把請求轉送到其他服務。
   if origin_of(endpoint) != origin_of(route["relay"]):
     raise Usage("endpoint is outside the session relay " + route["relay"] + "; the replay must use the same relay")
@@ -164,10 +179,13 @@ def read_rows(path):
 
 def chain_to_root(entries, start_uuid):
   by_uuid = {row["uuid"]: (number, row) for number, row in entries if row.get("uuid")}
-  out, uuid = [], start_uuid
+  out, uuid, visited = [], start_uuid, set()
   while uuid:
+    if uuid in visited:
+      raise CannotReplay("the conversation chain has a cycle at " + str(uuid))
     if uuid not in by_uuid:
       raise CannotReplay("the conversation chain is broken: parent " + str(uuid) + " is not in the session file")
+    visited.add(uuid)
     number, row = by_uuid[uuid]
     out.append((number, row))
     uuid = row.get("parentUuid")
@@ -545,12 +563,17 @@ def post(endpoint, key, payload, timeout):
     with urllib.request.build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
       status, raw = response.status, response.read()
   except urllib.error.HTTPError as caught:
-    status, raw = caught.code, caught.read()
+    status = caught.code
+    try:
+      raw = caught.read()
+    except (http.client.HTTPException, OSError):
+      raw = b""
   except (socket.timeout, TimeoutError):
     error = "timeout"
-  except OSError as caught:
+  except (http.client.HTTPException, OSError) as caught:
     error = "connection error: " + type(caught).__name__
   secs = round(time.monotonic() - started, 2)
+  mask = (lambda text: text.replace(key, "[key]")) if key else (lambda text: text)
   parsed = None
   if status:
     try:
@@ -559,8 +582,8 @@ def post(endpoint, key, payload, timeout):
       parsed = None
     if status != 200:
       # 先完整解碼並遮罩再截短；先截短的話，跨在截斷點上的金鑰會留下前半段。
-      error = raw.decode("utf-8", "replace").replace(key, "[key]")[:300]
-  return {"status": status, "secs": secs, "payload": parsed, "error": error.replace(key, "[key]") if error else None}
+      error = mask(raw.decode("utf-8", "replace"))[:300]
+  return {"status": status, "secs": secs, "payload": parsed, "error": mask(error) if error else None}
 
 
 def is_error_envelope(payload):
@@ -609,15 +632,26 @@ def attempt_once(endpoint, key, body, args):
 def usage_of(payload):
   usage = payload.get("usage")
   keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
-  if not isinstance(usage, dict) or not all(isinstance(usage.get(k), int) for k in ("input_tokens", "output_tokens")):
+  if not isinstance(usage, dict):
     return None
-  return {k: usage.get(k) or 0 for k in keys}
+  out = {}
+  for key in keys:
+    value = usage.get(key)
+    if value is None and key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+      out[key] = 0
+      continue
+    if type(value) is not int or value < 0:
+      return None
+    out[key] = value
+  return out
 
 
 def keep_blocks(blocks):
   kept, omitted = [], {}
   for block in blocks:
-    if isinstance(block, dict) and block.get("type") in ("text", "tool_use"):
+    if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+      kept.append(block)
+    elif isinstance(block, dict) and block.get("type") == "tool_use":
       kept.append(block)
     elif isinstance(block, dict):
       omitted[str(block.get("type"))] = omitted.get(str(block.get("type")), 0) + 1
@@ -747,9 +781,12 @@ def compose_judge_input(record, side_records):
 
 def load_record(path):
   try:
-    return json.loads((Path(path) / "run.json").read_text(encoding="utf-8"))
+    loaded = json.loads((Path(path) / "run.json").read_text(encoding="utf-8"))
   except (OSError, ValueError) as error:
     raise Usage("not a run directory: " + str(path)) from error
+  if not isinstance(loaded, dict):
+    raise Usage("run.json is not a JSON object: " + str(path))
+  return loaded
 
 
 def resume_mismatches(record, spec, endpoint, predicate, size):
@@ -803,6 +840,10 @@ def run_command(args):
   purpose = spec.get("purpose", "primary")
   if args.runs is not None and purpose != "side_effect":
     raise Usage("--runs only applies to a side-effect run; the primary run uses the frozen counts")
+  if args.runs is not None and args.runs < 1:
+    raise Usage("--runs must be a positive integer")
+  if args.chars_per_token <= 0 or args.max_tokens < 1 or args.timeout <= 0:
+    raise Usage("--chars-per-token, --max-tokens, and --timeout must be positive")
   endpoint = endpoint_for(spec, args.endpoint)
   judge = load_judge()
   predicate = judge_method(judge, spec, args)
@@ -879,8 +920,8 @@ def run_command(args):
           + "）。未核准，不呼叫模型；確認後加 --approve 重跑。", file=sys.stderr)
     return {"ok": True, "command": "run", "status": "awaiting_approval", "called_model": False, "estimate": shown,
             "run_dir": None, "reason": None, "next_layer": None, "differences": describe_differences(ctx["report"], ctx["facts"])}
-  if spec["route"]["key_env"] not in os.environ:
-    raise Usage("the relay key variable " + spec["route"]["key_env"] + " is not set")
+  if not os.environ.get(spec["route"]["key_env"], "").strip():
+    raise Usage("the relay key variable " + spec["route"]["key_env"] + " is not set or empty")
   record["status"] = "running"
   record.pop("result", None)
   record["estimate"] = shown

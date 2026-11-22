@@ -9,6 +9,7 @@ record format. A failed model call produces no verdict at all.
 """
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -90,11 +91,15 @@ def emit(payload):
 
 
 def tool_uses(blocks):
-  return [b for b in blocks if b.get("type") == "tool_use"]
+  return [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
 
 
 def reply_text(blocks):
-  return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+  return "".join(
+    b.get("text", "")
+    for b in blocks
+    if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+  )
 
 
 def progressed(blocks):
@@ -105,10 +110,13 @@ def present(blocks):
   """What the model sees: the actions and words, never ids, group names or reasoning."""
   parts = []
   for block in blocks:
-    if block.get("type") == "text" and block.get("text"):
+    if not isinstance(block, dict):
+      continue
+    if block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"]:
       parts.append("[text]\n" + block["text"])
     elif block.get("type") == "tool_use":
-      detail = json.dumps(block.get("input") or {}, ensure_ascii=False, sort_keys=True)
+      raw_input = block.get("input")
+      detail = json.dumps(raw_input if isinstance(raw_input, dict) else {}, ensure_ascii=False, sort_keys=True)
       parts.append("[tool_use " + str(block.get("name")) + "]\n" + detail)
   return "\n\n".join(parts) or "(empty response)"
 
@@ -119,7 +127,7 @@ def present(blocks):
 def root_search(command):
   # 每一段都要看：只看第一個相關片段，後面沒排除的搜尋會被前面的排除蓋掉。
   seen = []
-  for segment in re.split(r"\|\||&&|;|\n", command):
+  for segment in re.split(r"\|\||&&|;|\||\n", command):
     found = SEARCH.search(segment)
     if not found:
       continue
@@ -184,7 +192,9 @@ def judge_by_predicate(name, blocks):
   for block in tool_uses(blocks):
     if block.get("name") != spec["tool"]:
       continue
-    outcome, extra = spec["judge"](str((block.get("input") or {}).get(spec["field"], "")))
+    raw_input = block.get("input")
+    field_val = raw_input.get(spec["field"], "") if isinstance(raw_input, dict) else ""
+    outcome, extra = spec["judge"](str(field_val))
     notes.extend(extra)
     if outcome:
       seen.append(outcome)
@@ -231,7 +241,7 @@ def call_model(config, condition, blocks):
   )
   try:
     with urllib.request.build_opener(RefuseRedirect).open(request, timeout=config["timeout"]) as response:
-      raw = response.read().decode("utf-8")
+      raw_bytes = response.read()
   except urllib.error.HTTPError as error:
     raise ModelFailure("http_error", "model endpoint answered HTTP " + str(error.code)) from error
   except (socket.timeout, TimeoutError) as error:
@@ -240,17 +250,23 @@ def call_model(config, condition, blocks):
     if isinstance(error.reason, (socket.timeout, TimeoutError)):
       raise ModelFailure("timeout", "model call timed out") from error
     raise ModelFailure("connection_error", "cannot reach the model endpoint") from error
-  except OSError as error:
+  except (http.client.HTTPException, OSError) as error:
     raise ModelFailure("connection_error", "cannot reach the model endpoint") from error
   try:
+    raw = raw_bytes.decode("utf-8")
     content = json.loads(raw).get("content")
-  except (ValueError, AttributeError) as error:
+  except (UnicodeDecodeError, ValueError, AttributeError) as error:
     raise ModelFailure("unparseable", "model response is not JSON") from error
   if not isinstance(content, list):
     raise ModelFailure("unparseable", "model response has no content list")
-  return parse_answer(
-    "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
-  )
+  chunks = []
+  for block in content:
+    if isinstance(block, dict) and block.get("type") == "text":
+      value = block.get("text")
+      if not isinstance(value, str):
+        raise ModelFailure("unparseable", "model text block has non-string text")
+      chunks.append(value)
+  return parse_answer("".join(chunks))
 
 
 # ---- 判定規則 ---------------------------------------------------------------------------
@@ -307,7 +323,8 @@ def action_keys(blocks):
     if name != "Bash":
       keys.add(name)
       continue
-    command = str((block.get("input") or {}).get("command", ""))
+    raw_input = block.get("input")
+    command = str(raw_input.get("command", "") if isinstance(raw_input, dict) else "")
     for segment in re.split(r"\|\||&&|;|\||\n", command):
       words = [w for w in segment.split() if not re.match(r"^\w+=\S*$", w) and w != "command"]
       if words:
@@ -346,6 +363,8 @@ def load_input(path):
     "evidence": dict,
   }
   level = spec.get("level")
+  if type(level) is not int:
+    die("level must be 1, 2, 3 or 4")
   if level in (2, 3):
     required.update({"condition": str, "runs": dict})
   elif level == 1:
@@ -355,7 +374,7 @@ def load_input(path):
   else:
     die("level must be 1, 2, 3 or 4")
   for key, kind in required.items():
-    if not isinstance(spec.get(key), kind):
+    if not isinstance(spec.get(key), kind) or (kind is int and isinstance(spec.get(key), bool)):
       die(key + " is missing or has the wrong type")
   pairs = []
   if level in (2, 3):
@@ -387,11 +406,30 @@ def load_input(path):
       pairs += [("side_effects." + side, extra.get(side)) for side in ("old", "new")]
   for label, runs in pairs:
     if not isinstance(runs, list) or not all(
-      isinstance(run, dict) and isinstance(run.get("content"), list) for run in runs
+      isinstance(run, dict)
+      and isinstance(run.get("content"), list)
+      and all(
+        isinstance(block, dict)
+        and (block.get("type") != "text" or isinstance(block.get("text", ""), str))
+        and (block.get("type") != "tool_use" or block.get("input") is None or isinstance(block.get("input"), dict))
+        for block in run["content"]
+      )
+      for run in runs
     ):
       die(label + " must be a list of runs with a content list")
-  if level == 1 and not all(isinstance(spec["tests"].get(k), int) for k in ("cases", "failed")):
-    die("tests.cases and tests.failed must be integers")
+  if level == 1:
+    tests = spec["tests"]
+    cases_val, failed_val = tests.get("cases"), tests.get("failed")
+    old_failed_val = tests.get("old_failed")
+    if (
+      type(cases_val) is not int
+      or type(failed_val) is not int
+      or cases_val < 0
+      or failed_val < 0
+      or failed_val > cases_val
+      or (old_failed_val is not None and (type(old_failed_val) is not int or old_failed_val < 0))
+    ):
+      die("tests.cases and tests.failed must be valid non-negative integers with failed <= cases")
   if level == 4 and not all(isinstance(event, dict) for event in spec["events"]):
     die("events must be a list of objects")
   return spec
@@ -446,6 +484,7 @@ def judge(spec, config):
     out["side_effects"] = "checked" if checked else "unchecked"
     if checked and side["false_positives"] > 0:
       out["extra_actions"] = [{"action": "hook:false_positive", "old_runs": 0, "new_runs": side["false_positives"]}]
+      out["evidence_scope"] = None
       verdict, reason = "harmful", "hook trigger sample contains false-positive blocks"
   else:
     # 任一邊沒有回應就不是檢查過，不能標 checked。

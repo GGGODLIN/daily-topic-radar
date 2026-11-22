@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """CLI seam tests for the retro accumulation store. Fixtures are independent of expected rows."""
 
+import concurrent.futures
+import importlib.util
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -2514,6 +2517,290 @@ class StoreCLI(unittest.TestCase):
     )
     self.assertIn("already bound to imported:run-1:P1", piggyback["error"])
     self.assertEqual(sum(row["type"] == "decision" for row in self.rows()), 1)
+
+  # ---- 邊界防爆、並發初始化與突變盲點回歸 ---------------------------------------------------
+
+  def load_store_module(self):
+    spec = importlib.util.spec_from_file_location("retro_store_mod", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+  def test_utf8_eof_append_and_invalid_utf8_in_store_or_packet_fail_cleanly(self):
+    # S-BUG-1: raw_endswith_newline must not seek inside multibyte UTF-8 on TextIOWrapper.
+    mod = self.load_store_module()
+    cjk_file = self.new("cjk-tail.jsonl")
+    cjk_file.write_text("中文結尾無換行", encoding="utf-8")
+    with open(cjk_file, "r+", encoding="utf-8") as handle:
+      handle.seek(0, os.SEEK_END)
+      self.assertFalse(mod.raw_endswith_newline(handle))
+      mod.append_rows(handle, [{"id": "issue:1", "type": "issue", "issue_id": "1", "title": "繁中"}])
+    lines = cjk_file.read_text(encoding="utf-8").split("\n")
+    self.assertEqual(lines[0], "中文結尾無換行")
+    self.assertEqual(json.loads(lines[1])["title"], "繁中")
+
+    # S-BUG-2: invalid UTF-8 in records.jsonl or packet.json must exit 2 with JSON error (no Traceback).
+    bad_store = self.root / "bad-utf8-store"
+    bad_store.mkdir()
+    (bad_store / "records.jsonl").write_bytes(b'\xff\xfe{"id":"x","type":"issue"}\n')
+    res_store = subprocess.run(
+      [sys.executable, "-I", str(SCRIPT), "--store", str(bad_store), "list"],
+      text=True, capture_output=True,
+    )
+    self.assertEqual(res_store.returncode, 2, res_store.stderr)
+    self.assertNotIn("Traceback", res_store.stderr)
+    self.assertIn("non-utf8", json.loads(res_store.stderr)["error"])
+
+    bad_pkt = self.new("bad-utf8.json")
+    bad_pkt.write_bytes(b"\xff\xfe{}")
+    res_pkt = subprocess.run(
+      [sys.executable, "-I", str(SCRIPT), "--store", str(self.root / "s-bad-pkt"), "ingest", "--packet", str(bad_pkt)],
+      text=True, capture_output=True,
+    )
+    self.assertEqual(res_pkt.returncode, 2, res_pkt.stderr)
+    self.assertNotIn("Traceback", res_pkt.stderr)
+    self.assertIn("utf-8", json.loads(res_pkt.stderr)["error"])
+
+  def test_packet_type_bounds_fresh_dry_run_conflict_and_concurrent_init(self):
+    # S-BUG-3: non-list related_to / event.issue_ids, bool schema_version, and line=0 anchor (kills M-S01).
+    bad_packets = [
+      {
+        "schema_version": True,
+        "run": {"id": "r1", "source": "f", "status": "complete", "cutoff": WHEN},
+        "issues": [], "discoveries": [], "events": [],
+      },
+      {
+        "schema_version": 1,
+        "run": {"id": "r1", "source": "f", "status": "complete", "cutoff": WHEN},
+        "issues": [{"id": "i1", "title": "t", "related_to": 123}],
+        "discoveries": [], "events": [],
+      },
+      {
+        "schema_version": 1,
+        "run": {"id": "r1", "source": "f", "status": "complete", "cutoff": WHEN},
+        "issues": [{"id": "i1", "title": "t", "related_to": []}],
+        "discoveries": [],
+        "events": [{"id": "e1", "session": "s1", "event_at": WHEN, "verification": "uncertain",
+                    "anchors": [], "review_sources": [], "scope": "s1", "issue_ids": None}],
+      },
+      {
+        "schema_version": 1,
+        "run": {"id": "r1", "source": "f", "status": "complete", "cutoff": WHEN},
+        "issues": [{"id": "i1", "title": "t", "related_to": []}],
+        "discoveries": [{"id": "d1", "issue_id": "i1", "source": {"path": str(self.lines("x")), "line": 0, "quote": "x"},
+                         "verification": "pending", "review_sources": [], "scope": "s1"}],
+        "events": [],
+      },
+    ]
+    for idx, body in enumerate(bad_packets):
+      with self.subTest(case=idx):
+        p = self.new(f"bad-pkt-{idx}.json")
+        dump(p, body)
+        res = subprocess.run(
+          [sys.executable, "-I", str(SCRIPT), "--store", str(self.root / f"bad-s-{idx}"), "ingest", "--packet", str(p)],
+          text=True, capture_output=True,
+        )
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertNotIn("Traceback", res.stderr)
+        if idx == 3:
+          self.assertIn("positive integer", json.loads(res.stderr)["error"])
+
+    # S-BUG-4: fresh store dry-run ingest must catch conflicting duplicate discovery id inside one packet.
+    note = self.lines("first line\nsecond line")
+    dup_pkt = self.new("dup-disc.json")
+    dump(dup_pkt, {
+      "schema_version": 1,
+      "run": {"id": "r-dup", "source": "f", "status": "complete", "cutoff": WHEN},
+      "issues": [{"id": "i1", "title": "t", "related_to": []}],
+      "discoveries": [
+        {"id": "d1", "issue_id": "i1", "source": {"path": str(note), "line": 1, "quote": "first line"},
+         "verification": "pending", "review_sources": [], "scope": "s1"},
+        {"id": "d1", "issue_id": "i1", "source": {"path": str(note), "line": 2, "quote": "second line"},
+         "verification": "pending", "review_sources": [], "scope": "s1"},
+      ],
+      "events": [],
+    })
+    err = self.cli("--store", self.root / "fresh-dup-store", "ingest", "--packet", dup_pkt, code=2)
+    self.assertIn("conflicting entry id", err["error"])
+
+    # S-BUG-5: concurrent first-time initialization of a brand-new store directory succeeds cleanly.
+    conc_store = self.root / "concurrent-store"
+    pkts = []
+    for k in range(4):
+      p = self.new(f"conc-{k}.json")
+      dump(p, {
+        "schema_version": 1,
+        "run": {"id": f"r-conc-{k}", "source": "f", "status": "complete", "cutoff": WHEN},
+        "issues": [{"id": f"i-conc-{k}", "title": f"title {k}", "related_to": []}],
+        "discoveries": [], "events": [],
+      })
+      pkts.append(p)
+
+    def run_one(pkt_path):
+      return subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), "--store", str(conc_store), "ingest", "--packet", str(pkt_path), "--apply"],
+        text=True, capture_output=True,
+      )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+      results = list(pool.map(run_one, pkts))
+    for res in results:
+      self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+    listed = self.cli("--store", conc_store, "list")
+    self.assertEqual(len(listed["issues"]), 4)
+
+  def test_event_supplement_immutability_and_exact_timestamp_boundaries(self):
+    # Kills M-S02 (session immutable) and M-S03 (event_at immutable).
+    note = self.lines("anchor line")
+    rev = self.lines("review line")
+    base_pkt = self.new("ev-base.json")
+    dump(base_pkt, {
+      "schema_version": 1,
+      "run": {"id": "r-ev-1", "source": "f", "status": "complete", "cutoff": WHEN},
+      "issues": [{"id": "i1", "title": "t", "related_to": []}],
+      "discoveries": [],
+      "events": [{
+        "id": "ep-1", "session": "s1", "event_at": WHEN,
+        "anchors": [{"path": str(note), "line": 1, "quote": "anchor line"}],
+        "verification": "confirmed",
+        "review_sources": [{"path": str(rev), "line": 1, "quote": "review line"}],
+        "scope": "s1", "issue_ids": ["i1"],
+      }],
+    })
+    self.cli("ingest", "--packet", base_pkt, "--apply")
+
+    for field, val, msg in (("session", "s2", "event session cannot change"), ("event_at", LATER, "event time cannot change")):
+      with self.subTest(field=field):
+        mut_pkt = self.new(f"ev-mut-{field}.json")
+        body = json.loads(base_pkt.read_text(encoding="utf-8"))
+        body["run"]["id"] = "r-ev-" + field
+        body["events"][0][field] = val
+        dump(mut_pkt, body)
+        err = self.cli("ingest", "--packet", mut_pkt, "--apply", code=2)
+        self.assertIn(msg, err["error"])
+
+    # Kills M-S04 (event_time == effective_at is valid, not invalid), M-S05 (event_before_effective mismatch -> unchecked),
+    # M-S06 (observe at == effective_at allowed), M-S07 (recurrence at == verdict.at does NOT set needs_rejudge),
+    # and M-S08 (proposal decided_at == verdict.at counts).
+    self.cli("decide", "--issue", "i1", "--action", "approve", "--source", self.human("approve i1", uuid="u-ev"),
+             "--line", 1, "--quote", "approve i1", "--apply")
+    cond = self.lines("cond line")
+    self.cli("change", "--issue", "i1", "--id", "c-eq", "--effective-at", WHEN,
+             "--source", cond, "--line", 1, "--quote", "cond line", "--condition", "kept", "--apply")
+
+    # M-S06: observe at == effective_at must succeed.
+    obs_src = self.lines("same second obs")
+    done_obs = self.cli("observe", "--issue", "i1", "--id", "obs-eq", "--change", "c-eq",
+                        "--outcome", "opportunity_met", "--at", WHEN,
+                        "--source", obs_src, "--line", 1, "--quote", "same second obs", "--apply")
+    self.assertEqual(done_obs["appended"], 1)
+
+    # M-S04 & M-S05 via packet observation_proposals ingest:
+    obs_pkt = self.new("obs-bounds.json")
+    dump(obs_pkt, {
+      "schema_version": 1,
+      "run": {"id": "r-obs-bounds", "source": "f", "status": "complete", "cutoff": LATER},
+      "issues": [], "discoveries": [], "events": [],
+      "observation_proposals": [
+        {
+          "issue_id": "i1", "change_id": "c-eq", "outcome": "recurrence", "covered": "yes",
+          "evidence": [{"session": "s1", "source_line": 1, "quote": "q-eq", "role": "action"}],
+          "events": [{
+            "observation_key": "k-eq|c-eq", "event_key": "k-eq", "change_id": "c-eq",
+            "event_time": WHEN, "loaded": "loaded", "basis": "effective_time",
+          }],
+        },
+        {
+          "issue_id": "i1", "change_id": "c-eq", "outcome": "recurrence", "covered": "no",
+          "evidence": [{"session": "s1", "source_line": 2, "quote": "q-mismatch", "role": "action"}],
+          "events": [{
+            "observation_key": "k-mis|c-eq", "event_key": "k-mis", "change_id": "c-eq",
+            "event_time": LATER, "loaded": "not_loaded", "basis": "event_before_effective",
+            "reason": "packet claimed before effective",
+          }],
+        },
+      ],
+    })
+    self.cli("ingest", "--packet", obs_pkt, "--apply")
+    latest_obs = {r["observation_id"]: r for r in self.cli("list", "--issue", "i1")["issues"][0]["records"]["observation_latest"]}
+    self.assertEqual(latest_obs["k-eq|c-eq"]["outcome"], "recurrence")
+    self.assertEqual(latest_obs["k-mis|c-eq"]["outcome"], "unchecked")
+
+    # M-S07: verdict at LATER, recurrence at LATER (exact equality) -> needs_rejudge must be False.
+    v_src = self.lines("verdict src")
+    self.cli("verdict", "--change", "c-eq", "--verdict", "harmful", "--level", 2, "--model", "m", "--route", "r",
+             "--runs", 10, "--old-recurrences", 6, "--new-recurrences", 2, "--source", v_src, "--line", 1,
+             "--quote", "verdict src", "--by", "main", "--side-effects", "checked", "--at", LATER, "--apply")
+    rec_same = self.lines("same second recurrence")
+    self.cli("observe", "--issue", "i1", "--id", "obs-same-v", "--change", "c-eq",
+             "--outcome", "recurrence", "--at", LATER,
+             "--source", rec_same, "--line", 1, "--quote", "same second recurrence", "--apply")
+    view = self.cli("list", "--issue", "i1")["issues"][0]["changes"][0]
+    self.assertFalse(view["needs_rejudge"])
+
+    # M-S08: proposal decided_at == verdict.at (LATER) stands and removes retract from open_proposals.
+    human_same = self.human("reject retract at same sec", timestamp=LATER, uuid="u-same-sec")
+    self.cli("proposal", "--kind", "retract", "--decision", "rejected", "--change", "c-eq",
+             "--source", human_same, "--line", 1, "--quote", "reject retract at same sec", "--apply")
+    harmful_item = next(x for x in self.cli("list", "--summary")["pending_decisions"]["harmful"] if x["change_id"] == "c-eq")
+    self.assertEqual(harmful_item["open_proposals"], ["modify"])
+
+  def test_kind_from_path_edges_and_make_hook_pending_boundaries(self):
+    mod = self.load_store_module()
+    # S-BUG-6: empty path, bare skills/SKILL.md, commands/.md, and nearest-dir priority.
+    self.assertEqual(mod.kind_from_path(""), (None, None))
+    self.assertEqual(mod.kind_from_path("."), (None, None))
+    self.assertEqual(mod.kind_from_path("skills/SKILL.md"), (None, None))
+    self.assertEqual(mod.kind_from_path("/a/commands/.md"), (None, None))
+    self.assertEqual(mod.kind_from_path("/a/skills/demo/SKILL.md"), ("skill", "demo"))
+    self.assertEqual(mod.kind_from_path("/a/skills/demo/scripts/run.sh"), ("script", None))
+
+    rule_path = "/fake/rules/common/x.md"
+    rule_quote = "always exclude huge dirs"
+    rows = [
+      {"id": "change:c1", "type": "change", "change_id": "c1", "issue_id": "i1", "effective_at": WHEN},
+      {"id": "backfill:c1:1", "type": "backfill", "change_id": "c1", "issue_id": "i1",
+       "kind": "always_on_rule", "source": {"path": rule_path, "line": 1, "quote": rule_quote}},
+    ]
+    # M-S09: missing audit_state degrades cleanly to audit-state-not-given.
+    no_audit = mod.make_hook_pending(rows, None, None)
+    self.assertEqual(no_audit["make_hook"], [])
+    self.assertEqual(no_audit["make_hook_unchecked"], [{"reason": "audit-state-not-given"}])
+
+    # S-BUG-7: malformed audit_query dict degrades cleanly instead of KeyError.
+    orig_aq = mod.audit_query
+    self.addCleanup(setattr, mod, "audit_query", orig_aq)
+    mod.audit_query = lambda *a, **kw: {"found": True, "status": "ok"}
+    malformed = mod.make_hook_pending(rows, "/fake/state", None)
+    self.assertEqual(malformed["make_hook"], [])
+    self.assertEqual(malformed["make_hook_unchecked"][0]["reason"], "malformed-audit-result")
+
+    # M-S11: violating_sessions == 3 (exact threshold) triggers make_hook proposal.
+    seen_since = []
+
+    def fake_audit(_state, _repo, _item, since):
+      seen_since.append(since)
+      return {
+        "found": True, "status": "ok", "violating_sessions": 3, "coverage": {"sessions": 10},
+        "violations": [
+          {"session_id": f"s{i}", "event_time": f"2026-10-21T0{i}:00:00Z"} for i in range(1, 4)
+        ],
+      }
+
+    mod.audit_query = fake_audit
+    hit = mod.make_hook_pending(rows, "/fake/state", None)
+    self.assertEqual(len(hit["make_hook"]), 1)
+    self.assertEqual(hit["make_hook"][0]["violating_sessions"], 3)
+    self.assertEqual(seen_since[-1], WHEN)
+
+    # M-S10: prior rejection resets since to decided_at (> effective_at).
+    rows_with_refusal = rows + [{
+      "id": "proposal-decision:u1:make_hook:rule", "type": "proposal_decision",
+      "proposal": "make_hook", "target_key": "rule:" + rule_path + "|" + rule_quote,
+      "decision": "rejected", "decided_at": LATER,
+    }]
+    mod.make_hook_pending(rows_with_refusal, "/fake/state", None)
+    self.assertEqual(seen_since[-1], LATER)
 
 
 if __name__ == "__main__":

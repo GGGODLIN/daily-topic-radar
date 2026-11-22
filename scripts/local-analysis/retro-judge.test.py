@@ -4,10 +4,12 @@ local HTTP server that returns pre-written replies; the judge and the retro-stor
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -758,6 +760,153 @@ class JudgeCLI(unittest.TestCase):
     refused = self.judge(bad_quote, apply=True, code=2)
     self.assertIn("quote is not on the source line", refused["error"])
     self.assertEqual(self.rows(), [])
+
+  # ---- 邊界防爆與突變盲點回歸 ---------------------------------------------------------------
+
+  def start_raw_http(self, raw_bytes):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    port = srv.getsockname()[1]
+    stop = threading.Event()
+
+    def serve():
+      srv.settimeout(0.2)
+      while not stop.is_set():
+        try:
+          conn, _ = srv.accept()
+        except socket.timeout:
+          continue
+        except OSError:
+          break
+        try:
+          conn.settimeout(1.0)
+          buf = b""
+          while b"\r\n\r\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+              break
+            buf += chunk
+          hdr, _, rest = buf.partition(b"\r\n\r\n")
+          cl = 0
+          for ln in hdr.split(b"\r\n"):
+            if ln.lower().startswith(b"content-length:"):
+              cl = int(ln.split(b":", 1)[1].strip())
+          while len(rest) < cl:
+            chunk = conn.recv(4096)
+            if not chunk:
+              break
+            rest += chunk
+          conn.sendall(raw_bytes)
+          conn.shutdown(socket.SHUT_WR)
+          time.sleep(0.02)
+        except OSError:
+          pass
+        finally:
+          conn.close()
+      srv.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    self.addCleanup(stop.set)
+    return f"http://127.0.0.1:{port}/v1/messages"
+
+  def test_bool_level_and_invalid_layer_one_test_counts_are_refused(self):
+    bad_specs = [
+      {**self.spec(level=1, tests={"cases": 1, "failed": 0}), "level": True},
+      self.spec(level=1, tests={"cases": True, "failed": False}),
+      self.spec(level=1, tests={"cases": -1, "failed": 0}),
+      self.spec(level=1, tests={"cases": 2, "failed": -1}),
+      self.spec(level=1, tests={"cases": 2, "failed": 5}),
+      self.spec(level=1, tests={"cases": 2, "failed": 0, "old_failed": True}),
+    ]
+    for bad in bad_specs:
+      with self.subTest(level=bad.get("level"), tests=bad.get("tests")):
+        err = self.judge(bad, apply=True, code=2)
+        self.assertFalse(err["ok"])
+    self.assertEqual(self.rows(), [])
+
+  def test_malformed_content_blocks_are_refused_without_traceback(self):
+    cases = [
+      [make_run("old-1", "not-a-dict")],
+      [make_run("old-1", {"type": "text", "text": 123})],
+      [make_run("old-1", {"type": "tool_use", "name": "Bash", "input": "not-a-dict"})],
+    ]
+    for bad_old in cases:
+      with self.subTest(bad_old=bad_old):
+        err = self.judge(self.spec(old=bad_old, new=group("new-run-", followed=10)), code=2)
+        self.assertIn("runs.old", err["error"])
+
+  def test_truncated_http_bad_utf8_and_null_text_fail_cleanly_with_exit_3(self):
+    spec = self.spec(
+      condition=MODEL_CONDITION,
+      old=group("old-run-", violated=6, followed=4, marked=True),
+      new=group("new-run-", violated=2, followed=8, marked=True),
+    )
+    bad_utf8 = b"\xff\xfe{\"content\":[]}"
+    null_text = json.dumps({"content": [{"type": "text", "text": None}]}).encode("utf-8")
+    cases = [
+      ("truncated", b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{\"content\":", "connection_error"),
+      ("bad_utf8", f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(bad_utf8)}\r\n\r\n".encode() + bad_utf8, "unparseable"),
+      ("null_text", f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(null_text)}\r\n\r\n".encode() + null_text, "unparseable"),
+    ]
+    for label, raw_bytes, expected_failure in cases:
+      with self.subTest(case=label):
+        url = self.start_raw_http(raw_bytes)
+        path = self.new("judge-raw.json")
+        path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        res = subprocess.run(
+          [sys.executable, "-I", str(SCRIPT), "--store", str(self.store), "--input", str(path),
+           "--endpoint", url, "--judge-model", "judge-x", "--apply"],
+          text=True, capture_output=True,
+        )
+        self.assertEqual(res.returncode, 3, res.stdout + res.stderr)
+        self.assertNotIn("Traceback", res.stderr)
+        err = json.loads(res.stderr)
+        self.assertEqual(err["failure"], expected_failure)
+    self.assertEqual(self.rows(), [])
+
+  def test_root_search_single_pipe_and_stale_index_manual_review_note(self):
+    piped = COMPLIANT + ' | grep -rn "needle" ~'
+    got = self.per_run_outcomes(PREDICATE, [piped])
+    self.assertEqual(got["old-run-0"], "violated")
+    # First index without in-code refresh must emit a manual-review note (kills M-J04).
+    runs = [make_run("old-run-0", {"type": "tool_use", "name": "mcp__lcu__js", "input": {"code": "await tab.click(5);"}})]
+    out = self.judge(self.spec(
+      condition="predicate:stale-element-index@gate-2026-11-06-v1",
+      old=runs,
+      new=group("new-run-", followed=10),
+    ))
+    entry = next(r for r in out["per_run"] if r["group"] == "old" and r["id"] == "old-run-0")
+    self.assertEqual(entry["outcome"], "followed")
+    self.assertTrue(any("manual review" in note for note in entry["notes"]), entry)
+
+  def test_side_effects_env_prefix_one_sided_empty_and_layer_one_boundaries(self):
+    # Env var prefix on the same command must not be flagged as an extra action (kills M-J10).
+    main = self.spec(old=group("old-run-", violated=6, followed=4), new=group("new-run-", followed=10))
+    env_side = {
+      "old": [make_run("o1", bash("ls /tmp"))],
+      "new": [make_run("n1", bash("FOO=bar ls /tmp"))],
+    }
+    res_env = self.judge({**main, "side_effects": env_side})
+    self.assertEqual((res_env["verdict"], res_env["side_effects"], res_env["extra_actions"]), ("effective", "checked", []))
+    # One-sided empty side_effects must remain unchecked and not override to harmful (kills M-J12).
+    one_sided = {"old": [], "new": [make_run("n1", bash("curl localhost"))]}
+    res_one = self.judge({**main, "side_effects": one_sided})
+    self.assertEqual((res_one["verdict"], res_one["side_effects"]), ("effective", "unchecked"))
+    # Layer 1 sampled == 1 boundary is accepted as checked (kills M-J11), and harmful clears evidence_scope (J-BUG-5).
+    audit_log = self.root / "hook-audit-one.jsonl"
+    audit_log.write_text('{"outcome":"allow"}\n', encoding="utf-8")
+    l1_one = self.judge(self.spec(
+      level=1, tests={"cases": 2, "failed": 0, "old_failed": 2},
+      side_effects={"audit_log": str(audit_log), "sampled": 1, "false_positives": 0},
+    ))
+    self.assertEqual((l1_one["verdict"], l1_one["side_effects"], l1_one["evidence_scope"]), ("effective", "checked", "known_inputs_only"))
+    l1_harm = self.judge(self.spec(
+      level=1, tests={"cases": 2, "failed": 0, "old_failed": 2},
+      side_effects={"audit_log": str(audit_log), "sampled": 1, "false_positives": 1},
+    ))
+    self.assertEqual((l1_harm["verdict"], l1_harm["side_effects"], l1_harm["evidence_scope"]), ("harmful", "checked", None))
 
 
 if __name__ == "__main__":

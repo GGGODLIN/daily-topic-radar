@@ -78,7 +78,12 @@ def new_dir(path):
 
 
 def records(path):
-  for number, line in enumerate(Path(path).read_text(encoding="utf-8").split("\n"), 1):
+  for number, encoded in enumerate(Path(path).read_bytes().split(b"\n"), 1):
+    try:
+      line = encoded.decode("utf-8")
+    except UnicodeDecodeError:
+      yield number, None, "invalid-utf8"
+      continue
     if not line.strip():
       continue
     try:
@@ -88,6 +93,11 @@ def records(path):
       yield number, None, str(error)
       continue
     yield number, row, None
+
+
+def row_message(row):
+  msg = row.get("message")
+  return msg if isinstance(msg, dict) else {}
 
 
 def queued(row):
@@ -114,7 +124,7 @@ SKIP_PREFIXES = ("[main]", "<task-notification>", "<system-reminder>", "<cross-s
 def forwarded_input(row):
   if row.get("isSidechain") or row.get("isMeta") or row.get("type") != "user":
     return False
-  text = content_text(row.get("message", {}).get("content", row.get("content", ""))).lstrip()
+  text = content_text(row_message(row).get("content", row.get("content", ""))).lstrip()
   return text.startswith(("[main]", "<cross-session-message"))
 
 
@@ -129,7 +139,7 @@ def human_input(row):
     return bool(text) and not text.startswith(SKIP_PREFIXES)
   if row.get("type") != "user":
     return False
-  text = content_text(row.get("message", {}).get("content", row.get("content", ""))).strip()
+  text = content_text(row_message(row).get("content", row.get("content", ""))).strip()
   if not text or text.startswith(SKIP_PREFIXES):
     return False
   return row.get("promptSource") == "typed" or (origin.get("kind") == "human" and text.startswith(("<command-name>", "<command-message>")))
@@ -139,7 +149,7 @@ def local_command_only_rows(rows):
   active_rows = [row for row in rows if active(row)]
   return bool(active_rows) and all(
     row.get("type") == "user" and not queued(row) and (
-      row.get("isMeta") is True or content_text(row.get("message", {}).get("content", row.get("content", ""))).lstrip().startswith(
+      row.get("isMeta") is True or content_text(row_message(row).get("content", row.get("content", ""))).lstrip().startswith(
         ("<local-command-caveat>", "<local-command-stdout>", "<command-name>", "<command-message>")
       )
     )
@@ -238,7 +248,7 @@ def visible_blocks(row, audit=None):
   if queued(row):
     prompt_text = content_text(row["attachment"].get("prompt", ""))
     blocks.append(("user-queued", audit.redact_text(prompt_text) if audit else prompt_text))
-  content = row.get("message", {}).get("content", row.get("content"))
+  content = row_message(row).get("content", row.get("content"))
   role = str(row.get("type", "unknown"))
   if isinstance(content, str):
     blocks.append((role, audit.redact_text(content) if audit else content))
@@ -292,7 +302,7 @@ def slice_page_chunks(text):
     start = 0
     while start < len(line):
       budget = MAX_PAGE_BYTES - cur_bytes if cur else MAX_PAGE_BYTES
-      if budget <= 0:
+      if cur and len(line[start:start + 1].encode("utf-8")) > budget:
         chunks.append("".join(cur))
         cur, cur_bytes, cur_lines = [], 0, 0
         budget = MAX_PAGE_BYTES
@@ -332,7 +342,7 @@ def build_visible_events(numbered_rows, start=None, include_forwarded=True, audi
   for line, stamp, obj in numbered_rows:
     blocks, media = visible_blocks(obj, audit)
     total_media += media
-    message_id = obj.get("message", {}).get("id")
+    message_id = row_message(obj).get("id")
     for index, (label, text) in enumerate(blocks):
       key = (message_id, label, index, text)
       if label.startswith("assistant") and message_id and key in seen:
@@ -412,7 +422,7 @@ def inventory(args):
     snapshot.write_text("\n".join(kept), encoding="utf-8")
     snapshot.chmod(0o600)
     inputs = [row for row in selected if human_input(row)]
-    slash_only = bool(inputs) and all(not queued(row) and content_text(row.get("message", {}).get("content", "")).lstrip().startswith(("<command-name>", "<command-message>")) for row in inputs)
+    slash_only = bool(inputs) and all(not queued(row) and content_text(row_message(row).get("content", "")).lstrip().startswith(("<command-name>", "<command-message>")) for row in inputs)
     project = next((row["cwd"] for row in reversed(selected) if human_input(row) and isinstance(row.get("cwd"), str)),
                    next((row["cwd"] for row in reversed(selected) if isinstance(row.get("cwd"), str)), str(source.parent)))
     if category == "human" or (category == "excluded" and reasons == ["forwarded"]):
@@ -545,7 +555,7 @@ def prepare(args):
         continue
       blocks, media = visible_blocks(obj, audit)
       total_media += media
-      message_id = obj.get("message", {}).get("id")
+      message_id = row_message(obj).get("id")
       for index, (label, text) in enumerate(blocks):
         key = (message_id, label, index, text)
         if label.startswith("assistant") and message_id and key in seen:
@@ -1515,7 +1525,8 @@ def composition_output(chain):
         if entry not in evidence:
           evidence.append(copy.deepcopy(entry))
     sessions = sorted({entry["session"] for entry in evidence})
-    matched = issues.get(base.get("matched_issue_id"))
+    matched_id = base.get("matched_issue_id")
+    matched = issues.get(matched_id) if isinstance(matched_id, str) else None
     matched = matched if matched and not matched.get("decision") else None
     historical = matched.get("source_sessions", []) if matched else []
     reaches_threshold = target.startswith("P") or target.startswith("L") or len(set(sessions) | set(historical)) >= 4
@@ -1860,7 +1871,16 @@ def _historical_open_sessions(item):
 
 def _entry_refs(entry, refs_key):
   val = entry.get(refs_key)
-  return val if val is not None else entry.get("source_finding_ids")
+  alt = entry.get("source_finding_ids") if refs_key != "source_finding_ids" else None
+  if isinstance(val, list) and isinstance(alt, list):
+    if not val:
+      return alt
+    if not alt:
+      return val
+    return list(dict.fromkeys([*val, *alt]))
+  if val is not None:
+    return val
+  return alt
 
 
 def _check_low_harm_deferred_entry(entry, by_id, refs_key):
@@ -1870,7 +1890,9 @@ def _check_low_harm_deferred_entry(entry, by_id, refs_key):
   valid_meta = isinstance(criterion, str) and criterion in VALID_DOWNGRADE_CRITERIA
   valid_ev = isinstance(evidence, str) and bool(evidence.strip())
   require(valid_meta and valid_ev, "low_harm_deferred entry requires valid downgrade_criterion (N1-N4) and non-empty positive_no_harm_evidence")
-  for ref in _entry_refs(entry, refs_key) or []:
+  refs = _entry_refs(entry, refs_key)
+  require(isinstance(refs, list), "low_harm_deferred entry requires source_finding_ids array")
+  for ref in refs:
     require(isinstance(ref, str) and ref in by_id, "low_harm_deferred contains invalid source id")
     outcome = by_id[ref].get("outcome_fact")
     require(outcome == "harmless", f"low_harm_deferred cannot include non-harmless outcome_fact ({outcome!r}) on {ref}")
@@ -1890,7 +1912,8 @@ def check_cross_low_harm_triage(report, by_id, refs_key, item):
     _check_low_harm_deferred_entry(entry, by_id, refs_key)
   open_issues = _historical_open_sessions(item)
   for entry in report.get("secondary_patterns", []):
-    refs = _entry_refs(entry, refs_key) or []
+    refs = _entry_refs(entry, refs_key)
+    require(isinstance(refs, list), "secondary_patterns entry requires source_finding_ids array")
     sessions = _union_sessions(entry, _unresolved_session_ids(refs, by_id, "secondary_patterns", require_known=True), open_issues)
     require(len(sessions) < 4, "unresolved root cause reaching >=4 unique sessions cannot be placed in secondary_patterns")
   if "rejected" in report and report["rejected"] is not None:
@@ -2052,9 +2075,13 @@ def check_tracking_accounting(report, item):
       elif len(sources) < 2:
         errors.append(f"nothing to merge: only one input observation reported it ({label(key)})")
       else:
-        listed = {(m.get("unit"), m.get("issue_id")) for m in entry.get("merged_from") or [] if isinstance(m, dict)}
-        if listed != sources:
+        raw_from = entry.get("merged_from")
+        if not isinstance(raw_from, list) or not all(isinstance(m, dict) for m in raw_from):
           errors.append(f"merged_from must list exactly the merged sources ({label(key)})")
+        else:
+          pairs = [(m.get("unit"), m.get("issue_id")) for m in raw_from]
+          if len(pairs) != len(set(pairs)) or set(pairs) != sources:
+            errors.append(f"merged_from must list exactly the merged sources ({label(key)})")
   # A whole run can owe hundreds of destinations; the first ones are enough to repair from and the rest are counted.
   shown = errors[:ACCOUNTING_ERROR_CAP * 2]
   require(not errors, "; ".join(shown + ([f"(+{len(errors) - len(shown)} more errors)"] if len(errors) > len(shown) else [])))
@@ -2075,6 +2102,7 @@ def verify_verdicts(report, item, canonical):
     evidence = evidence_list(verdict)
     normalized = []
     for entry in evidence:
+      require(isinstance(entry, dict), "critic evidence entry must be an object")
       if "source_line" in entry:
         normalized.append(normalize_evidence(entry, item, canonical))
       else:
@@ -2238,20 +2266,25 @@ def critic_read_errors(agent, item, report, canonical, plan, reuse=False):
           errors.append(f"critic source quote lacks its own successful Read evidence (pattern={verdict.get('pattern_id')}, session={evidence.get('session')}, source_line={evidence.get('source_line')}, quote={quote!r})")
     if (item["unit"] == "verify-current" or re.fullmatch(r"verify-current-p\d+", item["unit"])) and verdict["verdict"] != "UNCERTAIN":
       current = verdict.get("current_evidence", [])
-      if not current:
+      if not isinstance(current, list) or not current:
         errors.append(f"current-state verdict lacks current evidence (pattern={verdict.get('pattern_id')})")
+        continue
       run_root = Path(item["input_reports"][0]).resolve().parent.parent if item.get("input_reports") else None
       for evidence in current:
-        path = Path(evidence.get("path", "")).expanduser().resolve()
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("path"), str) or not evidence["path"].strip():
+          errors.append(f"current-state evidence lacks matching successful Read (pattern={verdict.get('pattern_id')}, path=invalid)")
+          continue
+        path = Path(evidence["path"]).expanduser().resolve()
         line = evidence.get("line")
+        valid_line = type(line) is int and line >= 1
         inside_run = run_root is not None and path.is_relative_to(run_root)
         if reuse:
-          ok = isinstance(line, int) and (line in read_lines(agent, path) if inside_run else line in transcript_read_lines(agent, path))
+          ok = valid_line and (line in read_lines(agent, path) if inside_run else line in transcript_read_lines(agent, path))
         elif inside_run:
-          ok = path.is_file() and isinstance(line, int) and line in read_lines(agent, path)
+          ok = path.is_file() and valid_line and line in read_lines(agent, path)
         else:
           # External workspace files can shift concurrently between the critic's Read and main's validate call.
-          ok = path.is_file() and isinstance(line, int) and line in transcript_read_lines(agent, path)
+          ok = path.is_file() and valid_line and line in transcript_read_lines(agent, path)
         if not ok:
           errors.append(f"current-state evidence lacks matching successful Read (pattern={verdict.get('pattern_id')}, path={path})")
   return errors
