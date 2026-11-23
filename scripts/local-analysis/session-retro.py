@@ -623,6 +623,10 @@ def prepare(args):
   # Quote-only repairs find and copy one sentence; on the 16 historical cases the program could not settle,
   # free swe-2 passed all 16 after re-validation, reading ranges only (2026-11-05 replay).
   models["repair"] = args.repair_model if args.repair_model is not None else DEFAULT_REPAIR_MODEL
+  # On the 11-22 inputs Astra's cross-synthesis linked scattered findings to open tracked issues (64 primary
+  # patterns vs Sol's 52/50, 12 of 14 Astra-only ones held up); taxonomy and decide showed no gain, so only
+  # this one seat gets its own override (2026-11-23 recipe-eval).
+  models["synthesis"] = args.synthesis_model if args.synthesis_model is not None else models["merge"]
   scope ="all" if not project_filter and not args.exclude_session else {"projects": sorted(project_filter), "excluded_sessions": args.exclude_session}
   plan = {"schema_version": 1, "run_id": out.name, "scope": scope, "window_start": iso(start), "cutoff": iso(cutoff),
           "depth": args.depth, "focus": args.focus, "models": models, "effort": args.effort or DEFAULT_EFFORTS["read"],
@@ -2911,6 +2915,7 @@ def parser():
     prep.add_argument("--" + stage + "-effort", choices=["low", "medium", "high", "xhigh", "max"] )
   prep.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=None)
   prep.add_argument("--repair-model")
+  prep.add_argument("--synthesis-model")
   for name in ("stage-args", "validate", "finish"):
     sub = commands.add_parser(name)
     sub.add_argument("--plan", required=True)

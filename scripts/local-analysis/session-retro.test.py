@@ -377,8 +377,9 @@ class RetroCLI(unittest.TestCase):
     self.assertTrue(plan["limits"]["thinking_omitted"])
     self.assertEqual(plan["page_count"], 2)
     self.assertEqual(plan["models"]["read"], result["models"]["read"])
+    # Without --synthesis-model the cross-synthesis seat stays on the merge model.
     self.assertEqual(plan["models"], {"read": "group/gemini-pro:medium", "merge": "group/gemini-pro:medium", "verify": "codex/gpt-9.9-sol:xhigh[1m]",
-                                      "repair": "devin-plugin/swe-2:high"})
+                                      "repair": "devin-plugin/swe-2:high", "synthesis": "group/gemini-pro:medium"})
     self.assertEqual(plan["efforts"], {"read": "medium", "merge": "medium", "verify": "xhigh"})
     self.assertEqual(plan["concurrency"], 2)
     self.assertIn("[line=1 timestamp=2026-10-20T01:00:00Z window user]", document)
@@ -393,11 +394,12 @@ class RetroCLI(unittest.TestCase):
     out = self.new("run")
     self.cli("prepare", "--inventory", inventory, "--out", out, "--window", "custom", "--start", OLD,
              "--project", self.projects / "work", "--depth", "window", "--read-model", "read-sol",
-             "--merge-model", "merge-sol", "--verify-model", "verify-sol", "--effort", "max", "--concurrency", "8")
+             "--merge-model", "merge-sol", "--verify-model", "verify-sol", "--synthesis-model", "synth-astra",
+             "--effort", "max", "--concurrency", "8")
     plan = json.loads((out / "plan.json").read_text())
     self.assertNotEqual(plan["scope"], "all")
     self.assertEqual(plan["models"], {"read": "read-sol", "merge": "merge-sol", "verify": "verify-sol",
-                                      "repair": "devin-plugin/swe-2:high"})
+                                      "repair": "devin-plugin/swe-2:high", "synthesis": "synth-astra"})
     self.assertEqual(plan["concurrency"], 8)
     self.assertTrue(plan["limits"]["narrow_coverage"])
     self.cli("prepare", "--inventory", inventory, "--out", self.new("bad"), "--window", "day", "--concurrency", "17", code=2)
