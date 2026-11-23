@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run/status 公共入口：非對稱雙軌（eco/quality）、前景讓路與 15 發/10m 限速、402 停腿及 P2/P3 屬性測試。"""
+"""run/status 公共入口：非對稱雙軌（eco/quality）、前景讓路與背景 Hydrogen 每十分鐘限速、402 停腿及 P2/P3 屬性測試。"""
 
 import importlib.util
 import json
