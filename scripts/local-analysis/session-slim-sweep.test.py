@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import fcntl
+import importlib.util
 import json
 import os
 import shutil
@@ -10,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().with_name("session-slim-sweep.py")
 OLD = time.time() - 3 * 3600
@@ -65,9 +68,19 @@ class SweepTest(unittest.TestCase):
   def tearDown(self):
     self.tmp.cleanup()
 
-  def cli(self, *args, stdin="", env=None):
+  def cli(self, *args, stdin="", env=None, timeout=60):
     return subprocess.run([sys.executable, str(SCRIPT), *args], input=stdin, text=True, capture_output=True,
-                          env=self.env if env is None else env, timeout=60, check=False)
+                          env=self.env if env is None else env, timeout=timeout, check=False)
+
+  def load_module(self, extra_env=None):
+    merged = dict(self.env)
+    if extra_env:
+      merged.update(extra_env)
+    spec = importlib.util.spec_from_file_location("session_slim_sweep_test_mod", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    with mock.patch.dict(os.environ, merged):
+      spec.loader.exec_module(module)
+    return module
 
   def session(self, name, idle=True, **kwargs):
     path = self.cc / "proj" / f"{name}.jsonl"
@@ -356,6 +369,387 @@ class SweepTest(unittest.TestCase):
     self.assertIn('"cc_cold": 0', proc.stdout)
     self.assertFalse(self.afsctool_calls.exists())
     self.assertEqual(already.stat().st_mtime_ns, cold_ns)
+
+  def test_symlinked_cc_root_session_key_and_dedup(self):
+    real_cc = self.root / "real_cc"
+    (real_cc / "proj").mkdir(parents=True)
+    link_cc = self.root / "link_cc"
+    link_cc.symlink_to(real_cc)
+
+    live_path = real_cc / "proj" / "live-sess.jsonl"
+    live_path.write_text(transcript("live-sess"))
+    settled = time.time() - 120
+    os.utime(live_path, (settled, settled))
+    self.running("live-sess", 101)
+
+    ended_path = real_cc / "proj" / "ended-sess.jsonl"
+    ended_path.write_text(transcript("ended-sess"))
+    os.utime(ended_path, (OLD, OLD))
+
+    cold_path = real_cc / "proj" / "cold-plain.jsonl"
+    cold_path.write_text(transcript("cold-plain", with_duplicates=False))
+    cold_ns = (int(time.time()) - 31 * 86400) * 10**9 + 123456789
+    os.utime(cold_path, ns=(cold_ns, cold_ns))
+
+    mod = self.load_module({"SESSION_SLIM_CC_ROOT": str(link_cc)})
+    with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+      self.assertTrue(mod.enqueue(json.dumps({"transcript_path": str(link_cc / "proj" / "live-sess.jsonl"), "session_id": "live-sess"}), state=self.state))
+      self.assertTrue(mod.enqueue(json.dumps({"transcript_path": str(link_cc / "proj" / "ended-sess.jsonl"), "session_id": "ended-sess"}), state=self.state))
+      self.assertEqual(mod.session_key(live_path.resolve()), "live-sess")
+      self.assertEqual(mod.cc_cold_candidates({}, set(), time.time(), exclude={cold_path.resolve()}), [])
+
+      live_size = live_path.stat().st_size
+      ended_size = ended_path.stat().st_size
+      res = mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+      self.assertEqual(res["cc"], 1)
+      self.assertEqual(res["cc_cold"], 1)
+      self.assertEqual(live_path.stat().st_size, live_size)
+      self.assertLess(ended_path.stat().st_size, ended_size)
+
+  def test_take_queue_recovers_orphaned_taking_and_requeues_on_lock_busy(self):
+    mod = self.load_module()
+    self.state.mkdir(parents=True, exist_ok=True)
+    settled = time.time() - 120
+
+    # (a) Orphaned queue.taking.jsonl without queue.jsonl is recovered
+    p_a = self.session("s2a", idle=False)
+    os.utime(p_a, (settled, settled))
+    orig_a = p_a.stat().st_size
+    (self.state / "queue.taking.jsonl").write_text(json.dumps({"path": str(p_a.resolve())}) + "\n")
+    with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+      res_a = mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+    self.assertEqual(res_a["cc"], 1)
+    self.assertLess(p_a.stat().st_size, orig_a)
+
+    # (b) Both queue.taking.jsonl and queue.jsonl are processed without overwriting
+    p_b1 = self.session("s2b-1", idle=False)
+    p_b2 = self.session("s2b-2", idle=False)
+    os.utime(p_b1, (settled, settled))
+    os.utime(p_b2, (settled, settled))
+    orig_b1, orig_b2 = p_b1.stat().st_size, p_b2.stat().st_size
+    (self.state / "queue.taking.jsonl").write_text(json.dumps({"path": str(p_b1.resolve())}) + "\n")
+    (self.state / "queue.jsonl").write_text(json.dumps({"path": str(p_b2.resolve())}) + "\n")
+    with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+      res_b = mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+    self.assertEqual(res_b["cc"], 2)
+    self.assertLess(p_b1.stat().st_size, orig_b1)
+    self.assertLess(p_b2.stat().st_size, orig_b2)
+
+    # (c) Exclusive flock on audit/run.lock skips and re-queues for next run
+    p_c = self.session("s2c", idle=False)
+    os.utime(p_c, (settled, settled))
+    orig_c = p_c.stat().st_size
+    (self.state / "queue.jsonl").write_text(json.dumps({"path": str(p_c.resolve())}) + "\n")
+    real_load_slim = mod.load_slim
+
+    def fast_slim():
+      s = real_load_slim()
+      s.LOCK_WAIT_SECONDS = 0
+      return s
+
+    lock_fh = open(self.audit / "run.lock", "a+")
+    try:
+      fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+      with mock.patch.object(mod, "load_slim", fast_slim), mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+        res_c1 = mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+      self.assertEqual(res_c1["cc"], 0)
+      self.assertEqual(p_c.stat().st_size, orig_c)
+      self.assertIn("session-audit lock busy", (self.state / "log.jsonl").read_text())
+    finally:
+      lock_fh.close()
+
+    with mock.patch.object(mod, "load_slim", fast_slim), mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+      res_c2 = mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+    self.assertEqual(res_c2["cc"], 1)
+    self.assertLess(p_c.stat().st_size, orig_c)
+
+  def test_sweep_lock_blocks_concurrent_run_and_save_seen_atomic_unique_tmp(self):
+    self.state.mkdir(parents=True, exist_ok=True)
+    ended = self.session("s3-ended")
+    orig = ended.stat().st_size
+    self.cli("enqueue", stdin=json.dumps({"transcript_path": str(ended), "session_id": "s3-ended"}))
+
+    lock_fh = open(self.state / "sweep.lock", "a+")
+    try:
+      fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+      proc = self.cli("run", timeout=5)
+    finally:
+      lock_fh.close()
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    self.assertEqual(json.loads(proc.stdout), {"skip": "sweep lock busy"})
+    self.assertEqual(ended.stat().st_size, orig)
+    self.assertEqual(len((self.state / "queue.jsonl").read_text().splitlines()), 1)
+
+    mod = self.load_module()
+    threads = 8
+    barrier = threading.Barrier(threads)
+    errors = []
+
+    def worker(tid):
+      try:
+        barrier.wait(timeout=5)
+        for j in range(20):
+          mod.save_seen(self.state, {"tid": tid, "iter": j})
+      except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
+
+    pool = [threading.Thread(target=worker, args=(i,)) for i in range(threads)]
+    for t in pool:
+      t.start()
+    for t in pool:
+      t.join(timeout=10)
+    self.assertEqual(errors, [])
+    seen_file = self.state / "seen.json"
+    self.assertIsInstance(json.loads(seen_file.read_text()), dict)
+    self.assertEqual(seen_file.stat().st_mode & 0o777, 0o600)
+
+  def test_live_unknown_during_queue_wait_fails_closed_for_cc_and_pi(self):
+    q_path = self.session("q-sess", idle=False)
+    settled = time.time() - 120
+    os.utime(q_path, (settled, settled))
+    ended_cc = self.session("s4-ended-cc")
+    cc_size = ended_cc.stat().st_size
+    ended_pi = self.pi_session("s4-ended-pi")
+
+    mod = self.load_module()
+    mod.QUEUE_WAIT_SECONDS = 0.2
+    self.state.mkdir(parents=True, exist_ok=True)
+    mod.enqueue(json.dumps({"transcript_path": str(q_path), "session_id": "q-sess"}), state=self.state)
+
+    calls = {"n": 0}
+
+    def fake_live():
+      calls["n"] += 1
+      if calls["n"] == 1:
+        return {"q-sess"}
+      raise mod.LiveUnknown("pid 999")
+
+    real_sleep = time.sleep
+    with mock.patch.object(mod, "live_sessions", fake_live), \
+         mock.patch.object(mod.time, "sleep", lambda s: real_sleep(min(s, 0.02))), \
+         mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+      res = mod.run(state=self.state, audit_state=self.audit, wait_queue=True)
+
+    self.assertIn("skip", res)
+    self.assertEqual(ended_cc.stat().st_size, cc_size)
+    self.assertEqual(ended_pi.stat().st_mtime, OLD)
+    self.assertFalse(self.afsctool_calls.exists())
+    queued_paths = [Path(json.loads(line)["path"]).resolve() for line in (self.state / "queue.jsonl").read_text().splitlines()]
+    self.assertIn(q_path.resolve(), queued_paths)
+
+  def test_multiple_transitioning_pids_and_stale_registry_wait(self):
+    # (a) Two transitioning pids whose registry files appear at 0.25s and 0.6s
+    c1 = subprocess.Popen(["/bin/cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    c2 = subprocess.Popen(["/bin/cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    ended_a = self.session("s5a-ended")
+    size_a = ended_a.stat().st_size
+    self.running("s5a-1", c1.pid, registry=False)
+    self.running("s5a-2", c2.pid, registry=False)
+    self.details.write_text(json.dumps([
+      [c1.pid, START, "/Users/x/.local/bin/claude --print hello"],
+      [c2.pid, START, "/Users/x/.local/bin/claude --print hello"],
+    ]))
+    t1 = threading.Timer(0.25, lambda: (self.registry / f"{c1.pid}.json").write_text(
+      json.dumps({"pid": c1.pid, "procStart": START, "sessionId": "s5a-1"})))
+    t2 = threading.Timer(0.6, lambda: (self.registry / f"{c2.pid}.json").write_text(
+      json.dumps({"pid": c2.pid, "procStart": START, "sessionId": "s5a-2"})))
+    t1.start()
+    t2.start()
+    try:
+      proc_a = self.cli("run")
+      self.assertEqual(proc_a.returncode, 0, proc_a.stderr)
+      self.assertIn('"cc": 1', proc_a.stdout)
+      self.assertLess(ended_a.stat().st_size, size_a)
+    finally:
+      t1.cancel()
+      t2.cancel()
+      t1.join()
+      t2.join()
+      for child in (c1, c2):
+        child.stdin.close()
+        child.wait(timeout=5)
+
+    # (b) Pre-existing stale mismatched registry file overwritten with valid procStart at 0.3s
+    self.procs.write_text("[]")
+    self.details.write_text("[]")
+    for old_reg in self.registry.glob("*.json"):
+      old_reg.unlink()
+
+    c3 = subprocess.Popen(["/bin/cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    ended_b = self.session("s5b-ended")
+    size_b = ended_b.stat().st_size
+    self.running("s5b-1", c3.pid, registry=False)
+    self.details.write_text(json.dumps([[c3.pid, START, "/Users/x/.local/bin/claude --print hello"]]))
+    (self.registry / f"{c3.pid}.json").write_text(
+      json.dumps({"pid": c3.pid, "procStart": "Thu Nov 12 01:00:00 2026", "sessionId": "s5b-1"}))
+    t3 = threading.Timer(0.3, lambda: (self.registry / f"{c3.pid}.json").write_text(
+      json.dumps({"pid": c3.pid, "procStart": START, "sessionId": "s5b-1"})))
+    t3.start()
+    try:
+      proc_b = self.cli("run")
+      self.assertEqual(proc_b.returncode, 0, proc_b.stderr)
+      self.assertIn('"cc": 1', proc_b.stdout)
+      self.assertLess(ended_b.stat().st_size, size_b)
+    finally:
+      t3.cancel()
+      t3.join()
+      c3.stdin.close()
+      c3.wait(timeout=5)
+
+  def test_malformed_json_types_and_empty_queue_path_do_not_crash(self):
+    self.assertEqual(self.cli("enqueue", stdin="null").returncode, 0)
+    self.assertEqual(self.cli("enqueue", stdin="[]").returncode, 0)
+
+    self.running("s6-live", 501, registry=False)
+    (self.registry / "501.json").write_text("null")
+    proc_b = self.cli("run")
+    self.assertEqual(proc_b.returncode, 0, proc_b.stderr)
+    self.assertIn("live sessions unknown", proc_b.stdout)
+
+    self.procs.write_text("[]")
+    (self.registry / "501.json").unlink()
+    self.state.mkdir(parents=True, exist_ok=True)
+    (self.state / "seen.json").write_text("[]")
+    ended = self.session("s6-ended")
+    orig = ended.stat().st_size
+    proc_c = self.cli("run")
+    self.assertEqual(proc_c.returncode, 0, proc_c.stderr)
+    self.assertIn('"cc": 1', proc_c.stdout)
+    self.assertLess(ended.stat().st_size, orig)
+
+    (self.state / "queue.jsonl").write_text('{"path": ""}\n')
+    proc_d = self.cli("run")
+    self.assertEqual(proc_d.returncode, 0, proc_d.stderr)
+
+  def test_symlink_log_and_fifo_transcript_do_not_crash_or_hang(self):
+    # (a) Symlinked state/log.jsonl does not crash or write outside
+    self.state.mkdir(parents=True, exist_ok=True)
+    outside_log = self.root / "outside_log.txt"
+    outside_log.write_text("keep\n")
+    (self.state / "log.jsonl").symlink_to(outside_log)
+    self.session("s7-ended")
+    proc_a = self.cli("run", timeout=5)
+    self.assertEqual(proc_a.returncode, 0, proc_a.stderr)
+    self.assertEqual(outside_log.read_text(), "keep\n")
+    (self.state / "log.jsonl").unlink()
+
+    # (b) FIFO and symlink inside CC_ROOT do not hang or modify outside target
+    proj = self.cc / "proj"
+    proj.mkdir(parents=True, exist_ok=True)
+    fifo_tx = proj / "fifo.jsonl"
+    os.mkfifo(fifo_tx)
+    os.utime(fifo_tx, (OLD, OLD))
+    outside_tx = self.root / "outside_tx.jsonl"
+    outside_tx.write_text(transcript("outside-tx"))
+    os.utime(outside_tx, (OLD, OLD))
+    orig_tx = outside_tx.stat().st_size
+    link_tx = proj / "link.jsonl"
+    link_tx.symlink_to(outside_tx)
+    mod = self.load_module()
+    self.assertFalse(mod.has_duplicates(link_tx))
+    proc_b = self.cli("run", timeout=5)
+    self.assertEqual(proc_b.returncode, 0, proc_b.stderr)
+    self.assertEqual(outside_tx.stat().st_size, orig_tx)
+    fifo_tx.unlink()
+    link_tx.unlink()
+
+    # (c) FIFO at state/queue.jsonl exits 0 without hanging
+    os.mkfifo(self.state / "queue.jsonl")
+    proc_c = self.cli("run", timeout=5)
+    self.assertEqual(proc_c.returncode, 0, proc_c.stderr)
+
+  def test_sqlite_error_and_afsctool_timeout_do_not_abort_batch(self):
+    (self.audit / "state.sqlite").write_bytes(b"not a sqlite db")
+    ended_cc = self.session("s8-cc")
+    cold_cc = self.session("s8-cold", idle=False, with_duplicates=False)
+    cold_ns = (int(time.time()) - 31 * 86400) * 10**9 + 123456789
+    os.utime(cold_cc, ns=(cold_ns, cold_ns))
+
+    proc = self.cli("run")
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    logs = [json.loads(line) for line in (self.state / "log.jsonl").read_text().splitlines()]
+    by_path = {Path(row["path"]).resolve(): row for row in logs if "path" in row}
+    self.assertIn("error", by_path[ended_cc.resolve()])
+    self.assertEqual(by_path[cold_cc.resolve()].get("kind"), "cc_cold")
+    self.assertNotIn("error", by_path[cold_cc.resolve()])
+    seen_paths = {Path(k).resolve() for k in json.loads((self.state / "seen.json").read_text())}
+    self.assertIn(cold_cc.resolve(), seen_paths)
+    self.assertNotIn(ended_cc.resolve(), seen_paths)
+
+    # (b) compress_one timeout and non-zero afsctool exit
+    mod = self.load_module()
+    slow_afsctool = self.root / "afsctool-slow"
+    slow_afsctool.write_text("#!/bin/sh\nsleep 2\n")
+    slow_afsctool.chmod(0o755)
+    cold_slow = self.session("s8-slow", idle=False, with_duplicates=False)
+    os.utime(cold_slow, ns=(cold_ns, cold_ns))
+    mod.COMPRESS_TIMEOUT_SECONDS = 0.2
+    res_timeout = mod.compress_one(cold_slow, str(slow_afsctool))
+    self.assertIn("error", res_timeout)
+
+    ended_cc.unlink()
+    cold_cc.unlink()
+    cold_slow.unlink()
+    (self.state / "seen.json").unlink()
+    (self.state / "log.jsonl").unlink()
+    (self.bin / "afsctool").write_text('#!/bin/sh\necho "compress failed" >&2\nexit 1\n')
+    (self.bin / "afsctool").chmod(0o755)
+    cold_fail = self.session("s8-fail", idle=False, with_duplicates=False)
+    os.utime(cold_fail, ns=(cold_ns, cold_ns))
+    with mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+      mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+    seen_after = {Path(k).resolve() for k in json.loads((self.state / "seen.json").read_text())}
+    self.assertNotIn(cold_fail.resolve(), seen_after)
+    fail_logs = [json.loads(line) for line in (self.state / "log.jsonl").read_text().splitlines()]
+    self.assertTrue(any(Path(r.get("path", "")).resolve() == cold_fail.resolve() and "error" in r for r in fail_logs))
+
+  def test_toctou_recheck_skips_reopened_or_modified_pi_and_cold_after_cc_lock(self):
+    self.session("s9-cc")
+    cold_file = self.session("s9-cold", idle=False, with_duplicates=False)
+    cold_ns = (int(time.time()) - 31 * 86400) * 10**9 + 123456789
+    os.utime(cold_file, ns=(cold_ns, cold_ns))
+    pi_file = self.pi_session("s9-pi")
+
+    mod = self.load_module()
+    real_load_slim = mod.load_slim
+
+    def mutating_load_slim():
+      s = real_load_slim()
+
+      def fake_slim_one(path, audit_state, audit):
+        with open(cold_file, "a") as fh:
+          fh.write('{"type":"user","message":{"content":"mutated"}}\n')
+        self.opened.write_text(json.dumps([str(pi_file), str(pi_file.resolve())]))
+        return {"path": str(path), "before": 100, "after": 50}
+
+      s.slim_one = fake_slim_one
+      return s
+
+    with mock.patch.object(mod, "load_slim", mutating_load_slim), mock.patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+      mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+
+    self.assertFalse(self.afsctool_calls.exists())
+
+  def test_sol_grafts_spaced_replay_dir_queue_and_unparseable_ps(self):
+    # Sol S07: spaced JSON colon in api-request marker is detected
+    mod = self.load_module()
+    spaced = self.root / "spaced.jsonl"
+    spaced.write_text('{"type" : "api-request", "body": "x"}\n')
+    self.assertTrue(mod.has_duplicates(spaced))
+
+    # Sol S14: queue.jsonl as directory yields controlled skip
+    self.state.mkdir(parents=True, exist_ok=True)
+    (self.state / "queue.jsonl").mkdir()
+    with mock.patch.object(mod, "_resolve_live_sessions", return_value=set()):
+      res = mod.run(state=self.state, audit_state=self.audit, wait_queue=False)
+    self.assertIn("queue unavailable", res.get("skip", ""))
+    (self.state / "queue.jsonl").rmdir()
+
+    # Sol S13: unparseable claude ps row raises LiveUnknown
+    fake_ps = mock.Mock(stdout="bad-row /usr/local/bin/claude\n")
+    with mock.patch.object(mod.subprocess, "run", return_value=fake_ps):
+      with self.assertRaises(mod.LiveUnknown):
+        mod.live_sessions()
 
 
 if __name__ == "__main__":

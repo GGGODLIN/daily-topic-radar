@@ -8,14 +8,20 @@ import datetime as dt
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
+from urllib.parse import quote
 
 MEMORY_ROOT = Path.home() / '.claude' / 'memory'
 CLAUDE_REPO = Path.home() / '.claude'
 PROJECTS_ROOT = Path.home() / '.claude' / 'projects'
-ORIGIN = re.compile(r'^\s*originSessionId:\s*([0-9a-f-]{36})\s*$', re.M)
+ORIGIN = re.compile(r'^[ \t]*originSessionId:[ \t]*(.*)$', re.M)
+SESSION_ID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', re.I)
+ORIGIN_FRONTMATTER = re.compile(r'\A---[ \t]*\r?\n(?:.*?\r?\n)?---[ \t]*(?:\r?\n|\Z)', re.S)
 INDEX_NAME = re.compile(r'(^|/)(_index_[^/]*|_INDEX|MEMORY|_orphan_registry)\.md$')
 # 寫入當下就錯的更正，用語通常帶「初版／寫錯／誤解」；純漂移多半只寫「已改／已退役」。
 CORRECTION = re.compile(r'更正|初版|寫錯|誤解|誤判|誤記|搞錯|是錯的|原本寫|原寫')
@@ -31,9 +37,11 @@ def note_paths(root=None):
     """archive/ 與點開頭資料夾刻意不收：那裡本來就是歷史，同 memory-conflict。"""
     root = root if root is not None else MEMORY_ROOT
     for path in sorted(root.rglob('*.md')):
+        if not path.is_file():
+            continue
         rel = path.relative_to(root).as_posix()
         parts = rel.split('/')
-        if parts[0] == 'archive' or any(p.startswith('.') for p in parts[:-1]):
+        if any(p == 'archive' or p.startswith('.') for p in parts[:-1]):
             continue
         if INDEX_NAME.search(rel):
             continue
@@ -41,17 +49,32 @@ def note_paths(root=None):
 
 
 def origin_of(text):
-    match = ORIGIN.search(text)
-    return match.group(1) if match else None
+    front = ORIGIN_FRONTMATTER.match(text)
+    fields = ORIGIN.findall(front.group()) if front else []
+    if len(fields) != 1:
+        return None
+    value = fields[0].strip()
+    if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+        value = value[1:-1].strip()
+    return value.lower() if SESSION_ID.fullmatch(value) else None
 
 
 def transcript_index(root=None):
     """session id → 主對話 jsonl；subagents/ 底下的不算來源對話。"""
     root = root if root is not None else PROJECTS_ROOT
-    index = {}
+    index, ambiguous = {}, set()
     for path in root.glob('*/*.jsonl'):
-        index.setdefault(path.stem, path)
-    return index
+        if not path.is_file():
+            continue
+        key = path.stem.lower()
+        if key in index:
+            try:
+                if index[key].resolve() != path.resolve():
+                    ambiguous.add(key)
+            except OSError:
+                ambiguous.add(key)
+        index.setdefault(key, path)
+    return {key: path for key, path in index.items() if key not in ambiguous}
 
 
 def first_version(rel_to_repo):
@@ -79,7 +102,9 @@ def _text_of(content):
         parts = []
         for block in content:
             if isinstance(block, dict) and block.get('type') == 'text':
-                parts.append(block.get('text', ''))
+                text = block.get('text')
+                if isinstance(text, str):
+                    parts.append(text)
             elif isinstance(block, str):
                 parts.append(block)
         return '\n'.join(parts)
@@ -104,8 +129,12 @@ def parse_transcript(path, note_name, which='first'):
                 row = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(row, dict):
+                continue
             kind = row.get('type')
-            msg = row.get('message') or {}
+            msg = row.get('message')
+            if not isinstance(msg, dict):
+                continue
             content = msg.get('content')
             if kind == 'user' and not row.get('isMeta'):
                 if isinstance(content, str):
@@ -120,18 +149,27 @@ def parse_transcript(path, note_name, which='first'):
                             text = _text_of(block.get('content'))
                             events.append({'line': lineno, 'role': 'tool_result', 'text': text})
                         elif block.get('type') == 'text':
-                            text = SYSTEM_BLOCK.sub('', block.get('text', '')).strip()
+                            raw_text = block.get('text')
+                            if not isinstance(raw_text, str):
+                                continue
+                            text = SYSTEM_BLOCK.sub('', raw_text).strip()
                             if text and not text.startswith(NOT_HUMAN):
                                 events.append({'line': lineno, 'role': 'user', 'text': text})
             elif kind == 'assistant' and isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
                         continue
-                    if block.get('type') == 'text' and block.get('text', '').strip():
-                        events.append({'line': lineno, 'role': 'assistant', 'text': block['text']})
+                    if block.get('type') == 'text':
+                        raw_text = block.get('text')
+                        if isinstance(raw_text, str) and raw_text.strip():
+                            events.append({'line': lineno, 'role': 'assistant', 'text': raw_text})
                     elif block.get('type') == 'tool_use':
-                        inp = block.get('input') or {}
-                        name = block.get('name', '')
+                        inp = block.get('input')
+                        if not isinstance(inp, dict):
+                            inp = {}
+                        name = block.get('name')
+                        if not isinstance(name, str):
+                            name = ''
                         target = str(inp.get('file_path') or inp.get('notebook_path') or '')
                         if name in WRITE_TOOLS and target.endswith('/' + note_name) and (
                                 write_line is None or which == 'last'):
@@ -141,7 +179,7 @@ def parse_transcript(path, note_name, which='first'):
     return events, write_line
 
 
-FRONTMATTER = re.compile(r'\A---\n.*?\n---\n', re.S)
+FRONTMATTER = re.compile(r'\A---[ \t]*\r?\n(?:.*?\r?\n)?---[ \t]*(?:\r?\n|\Z)', re.S)
 NUMBER = re.compile(r'\d+\.\d+|\d{2,}')
 YEARISH = re.compile(r'^(19|20)\d\d$')
 CODEISH = re.compile(r'`([^`\n]{3,60})`')
@@ -155,34 +193,40 @@ def anchors_of(note_text):
     return nums | codes
 
 
+def _anchor_segments_indexed(events, anchors, cap, top=8, min_hits=3, lookback=8):
+    if not anchors:
+        return []
+    scored = []
+    for idx, e in enumerate(events):
+        if e['role'] != 'tool_result':
+            continue
+        hits = sum(1 for a in anchors if a in e['text'])
+        if hits >= min_hits:
+            scored.append((hits, e['line'], idx, e))
+    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+    chosen, budget = [], cap
+    for _, line, hit_idx, hit in scored[:top]:
+        group = [(idx, e) for idx, e in enumerate(events)
+                 if e['role'] == 'tool_use' and line - lookback <= e['line'] < line]
+        group.append((hit_idx, hit))
+        texts = [(idx, e['line'], e['role'], _clip(e['text'], 2500 if e['role'] == 'tool_result' else 1500))
+                 for idx, e in group]
+        size = sum(len(t) for _, _, _, t in texts)
+        if size > budget:
+            continue
+        budget -= size
+        chosen.extend(texts)
+    return chosen
+
+
 def anchor_segments(events, anchors, cap, top=8, min_hits=3, lookback=8):
     """筆記裡的數字多半抄自某次工具輸出；找出命中最多的輸出，連同產生它的指令一起帶上。
 
     限制條件（例如只掃大檔）常寫在指令裡、離寫筆記很遠，近窗抽不到。
     不要改成依線索稀有度加權或把指令也納入計分：回測覆蓋率反而從 10/16 掉到 6～7/16。
     """
-    if not anchors:
-        return []
-    scored = []
-    for e in events:
-        if e['role'] != 'tool_result':
-            continue
-        hits = sum(1 for a in anchors if a in e['text'])
-        if hits >= min_hits:
-            scored.append((hits, e['line'], e))
-    scored.sort(key=lambda t: (-t[0], t[1]))
-    chosen, budget = [], cap
-    for _, line, hit in scored[:top]:
-        group = [e for e in events if e['role'] == 'tool_use' and line - lookback <= e['line'] < line]
-        group.append(hit)
-        texts = [(e['line'], e['role'], _clip(e['text'], 2500 if e['role'] == 'tool_result' else 1500))
-                 for e in group]
-        size = sum(len(t) for _, _, t in texts)
-        if size > budget:
-            continue
-        budget -= size
-        chosen.extend(texts)
-    return chosen
+    return [(ln, role, text) for _, ln, role, text in
+            _anchor_segments_indexed(events, anchors, cap, top=top, min_hits=min_hits, lookback=lookback)]
 
 
 def excerpt(events, write_line, mode, user_cap=12000, near_cap=12000, near_turns=3,
@@ -196,43 +240,49 @@ def excerpt(events, write_line, mode, user_cap=12000, near_cap=12000, near_turns
     """
     end = write_line or (events[-1]['line'] if events else 0)
     picked = {}
+
+    def add_pick(idx, line, role, text):
+        prev = picked.get(idx)
+        if prev is None or len(text) > len(prev[2]):
+            picked[idx] = (line, role, text)
+
     if mode in ('anchor', 'all'):
-        for item in anchor_segments(events, anchors_of(note_text), anchor_cap):
-            picked[item] = True
+        for idx, line, role, text in _anchor_segments_indexed(events, anchors_of(note_text), anchor_cap):
+            add_pick(idx, line, role, text)
     if mode in ('user', 'both', 'all'):
-        users = [e for e in events if e['role'] == 'user']
+        users = [(idx, e) for idx, e in enumerate(events) if e['role'] == 'user']
         # 超過上限時保留離寫入點最近的，因為改寫原意的那句通常就在寫之前或剛寫完。
-        users.sort(key=lambda e: abs(e['line'] - end))
+        users.sort(key=lambda item: (abs(item[1]['line'] - end), item[0]))
         budget = user_cap
-        for e in users:
+        for idx, e in users:
             text = _clip(e['text'], 2000)
             if len(text) > budget:
                 continue
             budget -= len(text)
-            picked[(e['line'], e['role'], text)] = True
+            add_pick(idx, e['line'], e['role'], text)
     if mode in ('near', 'both', 'all'):
-        before = [e for e in events if e['line'] <= end]
+        before = [(idx, e) for idx, e in enumerate(events) if e['line'] <= end]
         start_idx, seen = 0, 0
-        for idx in range(len(before) - 1, -1, -1):
-            if before[idx]['role'] == 'user':
+        for pos_idx in range(len(before) - 1, -1, -1):
+            if before[pos_idx][1]['role'] == 'user':
                 seen += 1
                 if seen == near_turns:
-                    start_idx = idx
+                    start_idx = pos_idx
                     break
         budget = near_cap
         window = before[start_idx:]
         # 從寫入點往回填，預算用完就停：離寫入點越近越相關。
         chosen = []
-        for e in reversed(window):
+        for idx, e in reversed(window):
             cap = 1500 if e['role'] == 'tool_result' else (800 if e['role'] == 'tool_use' else 2000)
             text = _clip(e['text'], cap)
             if len(text) > budget:
                 break
             budget -= len(text)
-            chosen.append((e['line'], e['role'], text))
-        for item in chosen:
-            picked[item] = True
-    return sorted(picked, key=lambda t: t[0])
+            chosen.append((idx, e['line'], e['role'], text))
+        for idx, line, role, text in chosen:
+            add_pick(idx, line, role, text)
+    return [picked[idx] for idx in sorted(picked, key=lambda i: (picked[i][0], i))]
 
 
 RELAY = 'http://127.0.0.1:8317/v1'
@@ -263,12 +313,20 @@ verdict 為 ok 或 unknown 時 issues 給空陣列。
 """
 
 
+def _fill_template(template, values):
+    pattern = re.compile('|'.join(re.escape(k) for k in values))
+    return pattern.sub(lambda m: values[m.group(0)], template)
+
+
 def render_excerpt(items):
     return '\n\n'.join(f'[L{line} {role}]\n{text}' for line, role, text in items)
 
 
 def build_prompt(note_text, items):
-    return JUDGE_PROMPT.replace('{note}', note_text.strip()).replace('{excerpt}', render_excerpt(items))
+    return _fill_template(JUDGE_PROMPT, {
+        '{note}': note_text.strip(),
+        '{excerpt}': render_excerpt(items),
+    })
 
 
 def relay_key():
@@ -302,22 +360,16 @@ def call_model(alias, prompt, key, timeout=600, max_tokens=16000):
 def first_json(content, accept):
     """模型偶爾會包 code fence 或前後加字；取第一個 accept() 成立的完整 JSON 物件。"""
     text = content.strip()
+    decoder = json.JSONDecoder()
     start = text.find('{')
     while start != -1:
-        depth = 0
-        for idx in range(start, len(text)):
-            if text[idx] == '{':
-                depth += 1
-            elif text[idx] == '}':
-                depth -= 1
-                if depth == 0:
-                    try:
-                        obj = json.loads(text[start:idx + 1])
-                    except json.JSONDecodeError:
-                        break
-                    if isinstance(obj, dict) and accept(obj):
-                        return obj
-                    break
+        try:
+            obj, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            start = text.find('{', start + 1)
+            continue
+        if isinstance(obj, dict) and accept(obj):
+            return obj
         start = text.find('{', start + 1)
     return None
 
@@ -357,10 +409,15 @@ def flagged_issues(recs):
     """合併各模型標出的問題。不告訴修正員是誰標的、幾個人標到，免得它看人數下判斷。"""
     issues = []
     for label in sorted(recs):
-        verdict = recs[label].get('verdict') or {}
-        if verdict.get('verdict') != 'mismatch':
+        verdict = recs[label].get('verdict')
+        if not isinstance(verdict, dict) or verdict.get('verdict') != 'mismatch':
             continue
-        for issue in verdict.get('issues') or []:
+        raw_issues = verdict.get('issues')
+        if not isinstance(raw_issues, list):
+            continue
+        for issue in raw_issues:
+            if not isinstance(issue, dict):
+                continue
             issues.append({'label': label, 'claim': str(issue.get('claim', '')),
                            'evidence_line': issue.get('evidence_line'), 'why': str(issue.get('why', ''))})
     return issues
@@ -372,9 +429,11 @@ def fix_excerpt(events, write_line, note_text, issues, cap=3000):
     have = {ln for ln, _, _ in items}
     wanted = set()
     for issue in issues:
+        if not isinstance(issue, dict):
+            continue
         try:
             wanted.add(int(issue['evidence_line']))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, KeyError):
             continue
     extra = [(e['line'], e['role'], _clip(e['text'], cap)) for e in events if e['line'] in wanted - have]
     return sorted(set(items) | set(extra), key=lambda t: t[0])
@@ -386,12 +445,15 @@ def build_fix_prompt(note_text, first_text, issues, items):
         first = f'\n=== 寫入當下的版本（與現行版本不同；只用來判斷哪些句子是後來才加的） ===\n{first_text.strip()}\n'
     listed = '\n'.join(f'[{idx}] 「{it["claim"]}」→ L{it["evidence_line"]}：{it["why"]}'
                        for idx, it in enumerate(issues, 1))
-    # excerpt 最後換：對話原文裡可能剛好出現 {note} 之類的字樣。
-    return (FIX_PROMPT.replace('{note}', note_text.strip()).replace('{first}', first)
-            .replace('{issues}', listed).replace('{excerpt}', render_excerpt(items)))
+    return _fill_template(FIX_PROMPT, {
+        '{note}': note_text.strip(),
+        '{first}': first,
+        '{issues}': listed,
+        '{excerpt}': render_excerpt(items),
+    })
 
 
-def _in_metadata(note_text, pos):
+def _in_metadata(note_text, pos, old='', new=''):
     """pos 落在 frontmatter、而且不是 description 那一行。
 
     originSessionId、name、metadata 這些欄位記的是筆記本身，不是對話裡的事實；
@@ -400,25 +462,47 @@ def _in_metadata(note_text, pos):
     front = FRONTMATTER.match(note_text)
     if not front or pos >= front.end():
         return False
+    if '\n' in old or '\r' in old or '\n' in new or '\r' in new:
+        return True
     line_start = note_text.rfind('\n', 0, pos) + 1
-    return not note_text[line_start:pos + 1].lstrip().startswith('description:')
+    line_end = note_text.find('\n', line_start)
+    if line_end == -1:
+        line_end = len(note_text)
+    if old and pos + len(old) > line_end:
+        return True
+    orig_line = note_text[line_start:line_end].rstrip('\r')
+    if not orig_line.lstrip().startswith('description:'):
+        return True
+    if old:
+        replaced_line = (note_text[line_start:pos] + new + note_text[pos + len(old):line_end]).rstrip('\r')
+        if not replaced_line.lstrip().startswith('description:'):
+            return True
+    return False
 
 
 def check_edits(note_text, edits):
     """old 要在現行筆記裡剛好出現一次才能機械套用；不合格的保留下來交人看，不丟掉。"""
+    if not isinstance(edits, list):
+        return []
     checked = []
     for edit in edits:
+        if not isinstance(edit, dict):
+            continue
         edit = dict(edit)
         if edit.get('action') == 'fix':
-            old, new = edit.get('old') or '', edit.get('new')
-            count = note_text.count(old) if old else 0
-            edit['valid'] = count == 1 and isinstance(new, str) and new != old
-            if not edit['valid']:
-                edit['invalid_reason'] = ('old 不在筆記裡' if count == 0 else
-                                          f'old 出現 {count} 次' if count > 1 else 'new 缺少或與 old 相同')
-            elif _in_metadata(note_text, note_text.index(old)):
+            old, new = edit.get('old'), edit.get('new')
+            if not isinstance(old, str) or not old or not isinstance(new, str):
                 edit['valid'] = False
-                edit['invalid_reason'] = 'frontmatter 只改 description，其他欄位不改'
+                edit['invalid_reason'] = 'old 或 new 格式不正確'
+            else:
+                count = note_text.count(old)
+                edit['valid'] = count == 1 and new != old
+                if not edit['valid']:
+                    edit['invalid_reason'] = ('old 不在筆記裡' if count == 0 else
+                                              f'old 出現 {count} 次' if count > 1 else 'new 缺少或與 old 相同')
+                elif _in_metadata(note_text, note_text.index(old), old, new):
+                    edit['valid'] = False
+                    edit['invalid_reason'] = 'frontmatter 只改 description，其他欄位不改'
         checked.append(edit)
     return checked
 
@@ -452,13 +536,20 @@ def scan_targets(transcripts):
             yield path.relative_to(MEMORY_ROOT).as_posix(), text, transcripts[origin], 'first'
 
 
+def _parse_ts(ts):
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return dt.datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return None
+
+
 def _ts_after(ts, since_epoch):
     if since_epoch <= 0 or not ts:
         return True
-    try:
-        return dt.datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp() > since_epoch
-    except ValueError:
-        return True
+    parsed = _parse_ts(ts)
+    return True if parsed is None else parsed > since_epoch
 
 
 def _scanned_note_keys(runs_root):
@@ -486,28 +577,43 @@ def recent_writers(since_epoch, root=None):
                 continue
         except OSError:
             continue
-        with open(path, encoding='utf-8', errors='replace') as fh:
-            for raw in fh:
-                if '/.claude/memory/' not in raw or '"tool_use"' not in raw:
-                    continue
-                try:
-                    row = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                ts = row.get('timestamp') or ''
-                if not _ts_after(ts, since_epoch):
-                    continue
-                for block in ((row.get('message') or {}).get('content') or []):
-                    if not isinstance(block, dict) or block.get('type') != 'tool_use':
+        try:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                for raw in fh:
+                    if '/.claude/memory/' not in raw or '"tool_use"' not in raw:
                         continue
-                    if block.get('name') not in WRITE_TOOLS:
+                    try:
+                        row = json.loads(raw)
+                    except json.JSONDecodeError:
                         continue
-                    target = str((block.get('input') or {}).get('file_path') or '')
-                    if '/.claude/memory/' in target:
-                        rel = target.split('/.claude/memory/', 1)[1]
-                        for k in {rel, Path(target).name}:
-                            if ts >= writers.get(k, ('', None))[0]:
-                                writers[k] = (ts, path)
+                    if not isinstance(row, dict):
+                        continue
+                    ts = row.get('timestamp')
+                    if not _ts_after(ts, since_epoch):
+                        continue
+                    ts_epoch = _parse_ts(ts)
+                    key_ts = ts_epoch if ts_epoch is not None else float('-inf')
+                    msg = row.get('message')
+                    if not isinstance(msg, dict):
+                        continue
+                    content = msg.get('content')
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if not isinstance(block, dict) or block.get('type') != 'tool_use':
+                            continue
+                        if block.get('name') not in WRITE_TOOLS:
+                            continue
+                        inp = block.get('input')
+                        if not isinstance(inp, dict):
+                            continue
+                        target = str(inp.get('file_path') or '')
+                        if '/.claude/memory/' in target:
+                            rel = os.path.normpath(target.split('/.claude/memory/', 1)[1]).replace(os.sep, '/')
+                            if key_ts >= writers.get(rel, (float('-inf'), None))[0]:
+                                writers[rel] = (key_ts, path)
+        except OSError:
+            continue
     return {k: path for k, (_, path) in writers.items()}
 
 
@@ -528,7 +634,7 @@ def changed_targets(since_epoch, transcripts, cap, runs_root=None):
     writers = recent_writers(since_epoch)
     targets, next_since = [], since_epoch
     for mtime, path in changed:
-        if len(targets) >= cap:
+        if len(targets) >= cap and mtime > next_since:
             break
         text = path.read_text(encoding='utf-8', errors='replace')
         rel = path.relative_to(MEMORY_ROOT).as_posix()
@@ -546,16 +652,26 @@ def changed_targets(since_epoch, transcripts, cap, runs_root=None):
 
 def gpt_quota():
     """讀 relay-status 的 GPT 週額度；讀不到回 (None, None)，呼叫端照常跑但不擋。"""
-    import datetime as dt
-    out = subprocess.run(['relay-status'], capture_output=True, text=True, check=False, timeout=120).stdout
+    try:
+        out = subprocess.run(['relay-status'], capture_output=True, text=True, check=False, timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
     match = GPT_QUOTA.search(out)
     if not match:
         return None, None
     pct, mon, day, hh, mm = (int(x) for x in match.groups())
     now = dt.datetime.now()
-    reset = dt.datetime(now.year, mon, day, hh, mm)
-    if reset < now - dt.timedelta(days=1):
-        reset = reset.replace(year=now.year + 1)
+    reset = None
+    for offset in range(5):
+        try:
+            candidate = dt.datetime(now.year + offset, mon, day, hh, mm)
+        except ValueError:
+            continue
+        if candidate >= now - dt.timedelta(days=1):
+            reset = candidate
+            break
+    if reset is None:
+        return None, None
     return pct, reset
 
 
@@ -585,13 +701,55 @@ class GptGuard:
             self.log('GPT 額度已重設，繼續')
 
 
+_APPEND_LOCK = threading.Lock()
+
+
+def _append_line(path, text):
+    path = Path(path)
+    with _APPEND_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write(text)
+
+
+def _atomic_write_text(path, text, preserve_stat=None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', dir=path.parent, prefix=f'.{path.name}.', suffix='.tmp',
+            encoding='utf-8', delete=False
+        ) as fh:
+            tmp_path = Path(fh.name)
+            fh.write(text)
+            fh.flush()
+        if preserve_stat is not None:
+            os.chmod(tmp_path, stat.S_IMODE(preserve_stat.st_mode))
+            os.utime(tmp_path, ns=(preserve_stat.st_atime_ns, preserve_stat.st_mtime_ns))
+        os.replace(tmp_path, path)
+    except BaseException:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
 def scan_one(rel, text, transcript, which, alias, label, run_dir, key, guard):
     out = run_dir / label / f'{note_key(rel)}.json'
     if out.exists():
         return 'skip'
     import time
     clean_text = strip_correction_lines(text)
-    events, write_line = parse_transcript(transcript, Path(rel).name, which)
+    try:
+        events, write_line = parse_transcript(transcript, Path(rel).name, which)
+    except OSError as exc:
+        _append_line(run_dir / 'failures.jsonl',
+                     json.dumps({'note': rel, 'label': label, 'error': f'{type(exc).__name__}: {exc}',
+                                 'raw': ''}, ensure_ascii=False) + '\n')
+        return 'fail'
     items = excerpt(events, write_line, 'all', note_text=clean_text)
     prompt = build_prompt(clean_text, items)
     record = None
@@ -607,14 +765,13 @@ def scan_one(rel, text, transcript, which, alias, label, run_dir, key, guard):
         if not error and record['verdict']:
             break
         time.sleep(30 * (attempt + 1))
-    out.parent.mkdir(parents=True, exist_ok=True)
     if not record['verdict']:
         # 失敗的不寫結果檔：續跑只跳過有結果的，限流或逾時的這條下一輪會自動重問。
-        with open(run_dir / 'failures.jsonl', 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps({'note': rel, 'label': label, 'error': record['error'],
+        _append_line(run_dir / 'failures.jsonl',
+                     json.dumps({'note': rel, 'label': label, 'error': record['error'],
                                  'raw': record['raw'][:300]}, ensure_ascii=False) + '\n')
         return 'fail'
-    out.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding='utf-8')
+    _atomic_write_text(out, json.dumps(record, ensure_ascii=False, indent=1))
     return 'ok'
 
 
@@ -626,45 +783,53 @@ def cmd_scan(args):
     log_path = run_dir / 'progress.log'
 
     def log(msg):
-        with open(log_path, 'a', encoding='utf-8') as fh:
-            fh.write(time.strftime('%m-%d %H:%M:%S ') + msg + '\n')
+        _append_line(log_path, time.strftime('%m-%d %H:%M:%S ') + msg + '\n')
 
     meta_path = run_dir / 'meta.json'
     meta = json.loads(meta_path.read_text(encoding='utf-8')) if meta_path.exists() else {}
     transcripts = transcript_index()
     if args.scope == 'all':
         targets = list(scan_targets(transcripts))
+        if args.limit:
+            targets = targets[:args.limit]
         # 起點用第一次開始掃描的時刻：掃描期間被改的筆記交給下一次增量；中斷後續跑不能把起點往後推。
-        meta.setdefault('next_since', meta.get('started_epoch', int(time.time())))
+        if meta.get('next_since') is None:
+            started = meta.get('started_epoch')
+            meta['next_since'] = started if started is not None else int(time.time())
     else:
         since = json.loads(Path(args.cursor).read_text(encoding='utf-8'))['since_epoch']
-        targets, next_since = changed_targets(since, transcripts, args.cap)
+        effective_cap = min(args.cap, args.limit) if args.limit else args.cap
+        targets, next_since = changed_targets(since, transcripts, effective_cap)
+        if args.limit and len(targets) > args.limit:
+            targets = targets[:args.limit]
+            next_since = max([since] + [(MEMORY_ROOT / rel).stat().st_mtime
+                                        for rel, *_ in targets if (MEMORY_ROOT / rel).exists()])
         meta.setdefault('prev_since', since)
         meta.setdefault('next_since', next_since)
         meta.setdefault('target_mtimes', {rel: (MEMORY_ROOT / rel).stat().st_mtime
                                           for rel, *_ in targets if (MEMORY_ROOT / rel).exists()})
     meta.update({'scope': args.scope, 'models': args.model, 'targets': len(targets)})
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
-    if args.limit:
-        targets = targets[:args.limit]
+    _atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False))
     key = relay_key()
     log(f'start: {len(targets)} notes, models {args.model}')
     pools, futures = [], []
-    for spec in args.model:
-        label, alias = spec.split('=', 1)
-        guard = GptGuard(args.gpt_guard, 20, log) if 'codex' in alias and args.gpt_guard > 0 else None
-        pool = cf.ThreadPoolExecutor(max_workers=args.workers)
-        pools.append(pool)
-        futures += [(label, pool.submit(scan_one, rel, text, tr, which, alias, label, run_dir, key, guard))
-                    for rel, text, tr, which in targets]
     counts = {}
-    for idx, (label, fut) in enumerate(futures, 1):
-        status = fut.result()
-        counts[(label, status)] = counts.get((label, status), 0) + 1
-        if idx % 50 == 0:
-            log(f'progress {idx}/{len(futures)} ' + json.dumps({f'{k[0]}:{k[1]}': v for k, v in counts.items()}))
-    for pool in pools:
-        pool.shutdown()
+    try:
+        for spec in args.model:
+            label, alias = spec.split('=', 1)
+            guard = GptGuard(args.gpt_guard, 20, log) if 'codex' in alias and args.gpt_guard > 0 else None
+            pool = cf.ThreadPoolExecutor(max_workers=args.workers)
+            pools.append(pool)
+            futures += [(label, pool.submit(scan_one, rel, text, tr, which, alias, label, run_dir, key, guard))
+                        for rel, text, tr, which in targets]
+        for idx, (label, fut) in enumerate(futures, 1):
+            status = fut.result()
+            counts[(label, status)] = counts.get((label, status), 0) + 1
+            if idx % 50 == 0:
+                log(f'progress {idx}/{len(futures)} ' + json.dumps({f'{k[0]}:{k[1]}': v for k, v in counts.items()}))
+    finally:
+        for pool in pools:
+            pool.shutdown(wait=True, cancel_futures=True)
     summary = {f'{k[0]}:{k[1]}': v for k, v in counts.items()}
     log('done ' + json.dumps(summary))
     print(json.dumps(summary))
@@ -675,17 +840,21 @@ def cmd_commit_cursor(args):
     run_dir = Path(args.run_dir)
     meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
     # 第一輪全量用的舊版 meta 只記 started_epoch。
-    since = meta.get('next_since', meta.get('started_epoch'))
+    since = meta.get('next_since')
+    if since is None:
+        since = meta.get('started_epoch')
     target_mtimes = meta.get('target_mtimes') or {}
     if target_mtimes:
         _, notes = load_scan(run_dir)
         unanswered = [mtime for rel, mtime in target_mtimes.items()
                       if not any(r.get('verdict') for r in notes.get(rel, {}).values())]
         if unanswered:
-            since = max(meta.get('prev_since', 0), min(unanswered) - 1e-6)
+            prev_since = meta.get('prev_since')
+            if prev_since is None:
+                prev_since = 0
+            since = max(prev_since, min(unanswered) - 1e-6)
     cursor = Path(args.cursor)
-    cursor.parent.mkdir(parents=True, exist_ok=True)
-    cursor.write_text(json.dumps({'since_epoch': since, 'from_run': str(args.run_dir)}), encoding='utf-8')
+    _atomic_write_text(cursor, json.dumps({'since_epoch': since, 'from_run': str(args.run_dir)}))
     print(json.dumps({'since_epoch': since}))
 
 
@@ -695,7 +864,12 @@ def load_scan(run_dir):
     notes = {}
     for label in labels:
         for path in (run_dir / label).glob('*.json'):
-            rec = json.loads(path.read_text(encoding='utf-8'))
+            try:
+                rec = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                continue
+            if not isinstance(rec, dict) or not isinstance(rec.get('note'), str):
+                continue
             notes.setdefault(rec['note'], {})[label] = rec
     return labels, notes
 
@@ -732,16 +906,26 @@ def cmd_report(args):
     labels, notes = load_scan(run_dir)
     flagged, failed = [], []
     for rel, recs in sorted(notes.items()):
-        if any((r.get('verdict') or {}).get('verdict') == 'mismatch' for r in recs.values()):
+        if any(isinstance(r.get('verdict'), dict) and r['verdict'].get('verdict') == 'mismatch'
+               for r in recs.values()):
             flagged.append((rel, recs))
-        if any(not r.get('verdict') for r in recs.values()):
-            failed.append((rel, [lab for lab, r in recs.items() if not r.get('verdict')]))
+        if any(not isinstance(r.get('verdict'), dict) for r in recs.values()):
+            failed.append((rel, [lab for lab, r in recs.items() if not isinstance(r.get('verdict'), dict)]))
     # 失敗的沒有結果檔，要從 failures.jsonl 補回來；之後重跑成功的就不算。
     fail_log = run_dir / 'failures.jsonl'
     if fail_log.exists():
         still = {}
         for line in fail_log.read_text(encoding='utf-8').splitlines():
-            row = json.loads(line)
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+            if not isinstance(row, dict) or 'note' not in row or 'label' not in row:
+                continue
+            if not isinstance(row['note'], str) or not isinstance(row['label'], str):
+                continue
             if row['label'] not in notes.get(row['note'], {}):
                 still.setdefault(row['note'], set()).add(row['label'])
         known = {rel for rel, _ in failed}
@@ -755,15 +939,22 @@ def cmd_report(args):
         lines += fix_steps(run_dir, args.date)
     lines += ['## 需要確認的筆記', '']
     for rel, recs in flagged:
-        lines.append(f'### [{rel}](file://{MEMORY_ROOT / rel})')
+        label_md = rel.replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
+        uri_path = quote(str(MEMORY_ROOT / rel), safe='/:')
+        lines.append(f'### [{label_md}](file://{uri_path})')
         transcript = next(iter(recs.values()))['transcript']
         lines.append(f'- 原對話：`{transcript}`')
         for label, rec in sorted(recs.items()):
-            verdict = rec.get('verdict') or {}
-            if verdict.get('verdict') != 'mismatch':
-                lines.append(f'- {label}：{verdict.get("verdict", "無回覆")}')
+            verdict = rec.get('verdict')
+            if not isinstance(verdict, dict) or verdict.get('verdict') != 'mismatch':
+                lines.append(f'- {label}：{verdict.get("verdict", "無回覆") if isinstance(verdict, dict) else "無回覆"}')
                 continue
-            for issue in verdict.get('issues', []):
+            raw_issues = verdict.get('issues')
+            if not isinstance(raw_issues, list):
+                continue
+            for issue in raw_issues:
+                if not isinstance(issue, dict):
+                    continue
                 lines.append(f'- {label}：「{issue.get("claim", "")}」→ L{issue.get("evidence_line", "?")}：{issue.get("why", "")}')
         lines.append('')
     if failed:
@@ -772,16 +963,16 @@ def cmd_report(args):
     out = Path(args.out)
     if args.silent_if_empty and not flagged and not failed:
         # 每日 channel 只有全文剛好是 __SILENT__ 才算沒事，多一個字都會被當成要處理的報告。
-        out.write_text('__SILENT__\n', encoding='utf-8')
+        _atomic_write_text(out, '__SILENT__\n')
     else:
-        out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        _atomic_write_text(out, '\n'.join(lines) + '\n')
     print(json.dumps({'notes': len(notes), 'flagged': len(flagged), 'failed': len(failed), 'out': str(out)}))
 
 
 def bucket_of(recs):
     """哪些模型標了它：全部模型都標＝both，否則 <label>-only。"""
     flagged = sorted(label for label, rec in recs.items()
-                     if (rec.get('verdict') or {}).get('verdict') == 'mismatch')
+                     if isinstance(rec.get('verdict'), dict) and rec['verdict'].get('verdict') == 'mismatch')
     if not flagged:
         return None
     return 'both' if len(recs) > 1 and len(flagged) == len(recs) else '+'.join(flagged) + '-only'
@@ -806,7 +997,13 @@ def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, 
     if out_path.exists():
         return 'skip'
     import time
-    events, found = parse_transcript(transcript, Path(note).name, which)
+    try:
+        events, found = parse_transcript(transcript, Path(note).name, which)
+    except OSError as exc:
+        _append_line(fail_log,
+                     json.dumps({'note': note, 'alias': alias, 'error': f'{type(exc).__name__}: {exc}', 'raw': ''},
+                                ensure_ascii=False) + '\n')
+        return 'fail'
     items = fix_excerpt(events, write_line or found, strip_correction_lines(note_text), issues)
     prompt = build_fix_prompt(note_text, first_text, issues, items)
     parsed = None
@@ -818,8 +1015,8 @@ def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, 
             break
         time.sleep(30 * (attempt + 1))
     if not parsed:
-        with open(fail_log, 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps({'note': note, 'alias': alias, 'error': error, 'raw': content[:300]},
+        _append_line(fail_log,
+                     json.dumps({'note': note, 'alias': alias, 'error': error, 'raw': content[:300]},
                                 ensure_ascii=False) + '\n')
         return 'fail'
     # 存下當時的筆記全文：套用前比對，筆記被別的 session 改過就不套，避免蓋掉別人的修改。
@@ -827,8 +1024,7 @@ def fix_one(note, note_text, first_text, issues, transcript, write_line, alias, 
               'seconds': round(time.time() - t0, 1), 'usage': usage, 'prompt_chars': len(prompt),
               'had_first_version': bool(first_text), 'issues': issues, 'note_text': note_text,
               'edits': check_edits(note_text, parsed['edits'])}
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding='utf-8')
+    _atomic_write_text(out_path, json.dumps(record, ensure_ascii=False, indent=1))
     return 'ok'
 
 
@@ -891,9 +1087,11 @@ def apply_edits(text, edits, date, transcript):
     applied, skipped = [], []
     source = str(transcript).replace(str(Path.home()), '~')
     for edit in edits:
-        if edit.get('action') != 'fix' or not edit.get('valid'):
+        if not isinstance(edit, dict) or edit.get('action') != 'fix' or not edit.get('valid'):
             continue
-        old, new = edit['old'], edit['new']
+        old, new = edit.get('old'), edit.get('new')
+        if not isinstance(old, str) or not old or not isinstance(new, str):
+            continue
         if text.count(old) != 1:
             skipped.append({**edit, 'skip_reason': '套用前面幾處後，old 已不存在或不唯一'})
             continue
@@ -903,7 +1101,10 @@ def apply_edits(text, edits, date, transcript):
                                       transcript=source, line=edit.get('evidence_line', '?'))
         front = FRONTMATTER.match(text)
         if front and pos < front.end():
-            text = text[:front.end()] + line + '\n\n' + text[front.end():].lstrip('\n')
+            prefix = text[:front.end()]
+            if not prefix.endswith('\n'):
+                prefix += '\n'
+            text = prefix + line + '\n\n' + text[front.end():].lstrip('\r\n')
         else:
             end = text.find('\n\n', pos + len(new))
             text = text.rstrip('\n') + '\n\n' + line + '\n' if end == -1 else text[:end] + '\n\n' + line + text[end:]
@@ -917,10 +1118,17 @@ def agreed_fixes(edits, others):
     Terra 單獨標出的筆記只靠 Sol 修，抽 20 處改錯 3 處（兩個 GPT 家族一起讀錯）；
     加上別家模型都同意才改，同一份樣本沒有改錯。
     """
+    if not isinstance(edits, list):
+        return []
+
     def fixes(other):
-        return {e.get('issue') for e in other if e.get('action') == 'fix'}
+        if not isinstance(other, list):
+            return set()
+        return {e.get('issue') for e in other if isinstance(e, dict) and e.get('action') == 'fix'}
+
     agreed = set.intersection(*(fixes(o) for o in others)) if others else None
-    return [e for e in edits if e.get('action') != 'fix' or agreed is None or e.get('issue') in agreed]
+    return [e for e in edits
+            if isinstance(e, dict) and (e.get('action') != 'fix' or agreed is None or e.get('issue') in agreed)]
 
 
 def cmd_apply(args):
@@ -929,7 +1137,15 @@ def cmd_apply(args):
     log_path = fix_dir.parent / ('apply-preview.jsonl' if args.dry_run else 'applied.jsonl')
     stats = {}
     for path in sorted(fix_dir.glob('*.json')):
-        rec = json.loads(path.read_text(encoding='utf-8'))
+        try:
+            rec = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            stats['corrupt_fix'] = stats.get('corrupt_fix', 0) + 1
+            continue
+        if (not isinstance(rec, dict) or not isinstance(rec.get('note'), str)
+                or not isinstance(rec.get('edits'), list)):
+            stats['corrupt_fix'] = stats.get('corrupt_fix', 0) + 1
+            continue
         if wanted is not None and rec['note'] not in wanted:
             continue
         if args.agree_with:
@@ -938,29 +1154,44 @@ def cmd_apply(args):
             if not all(p.exists() for p in other_paths):
                 stats['no_agreement'] = stats.get('no_agreement', 0) + 1
                 continue
-            rec['edits'] = agreed_fixes(rec['edits'], [json.loads(p.read_text(encoding='utf-8'))['edits']
-                                                       for p in other_paths])
+            other_edits = []
+            corrupt_other = False
+            for p in other_paths:
+                try:
+                    other_rec = json.loads(p.read_text(encoding='utf-8'))
+                except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                    corrupt_other = True
+                    break
+                if not isinstance(other_rec, dict) or not isinstance(other_rec.get('edits'), list):
+                    corrupt_other = True
+                    break
+                other_edits.append(other_rec['edits'])
+            if corrupt_other:
+                stats['no_agreement'] = stats.get('no_agreement', 0) + 1
+                continue
+            rec['edits'] = agreed_fixes(rec['edits'], other_edits)
         target = MEMORY_ROOT / rec['note']
+        if target.is_symlink() or target.is_dir() or not target.resolve().is_relative_to(MEMORY_ROOT.resolve()):
+            stats['invalid_target'] = stats.get('invalid_target', 0) + 1
+            continue
         current = target.read_text(encoding='utf-8') if target.exists() else None
-        if current != rec['note_text']:
+        if current != rec.get('note_text'):
             # 提案之後筆記被改過（含已經套用過）：不套，留給下一輪增量重查。
             stats['changed_since_proposal'] = stats.get('changed_since_proposal', 0) + 1
             continue
         # 套用前用現行規則重驗：規則收緊後，先前產生的提案也要過新的檢查。
         new_text, applied, skipped = apply_edits(current, check_edits(current, rec['edits']), args.date,
-                                                 rec['transcript'])
+                                                 rec.get('transcript', ''))
         if not applied:
             stats['nothing_to_apply'] = stats.get('nothing_to_apply', 0) + 1
             continue
         if args.dry_run:
             preview = fix_dir.parent / 'preview' / path.name.replace('.json', '.md')
-            preview.parent.mkdir(parents=True, exist_ok=True)
-            preview.write_text(new_text, encoding='utf-8')
+            _atomic_write_text(preview, new_text)
         else:
             st = target.stat()
-            target.write_text(new_text, encoding='utf-8')
             # 保留原 mtime：避免 apply 自己的寫回把剛修完的筆記排回下一輪增量隊尾製造回音。
-            os.utime(target, (st.st_atime, st.st_mtime))
+            _atomic_write_text(target, new_text, preserve_stat=st)
         stats['notes'] = stats.get('notes', 0) + 1
         stats['edits'] = stats.get('edits', 0) + len(applied)
         stats['skipped_edits'] = stats.get('skipped_edits', 0) + len(skipped)
@@ -973,22 +1204,23 @@ def cmd_apply(args):
 def cmd_candidates(args):
     transcripts = transcript_index()
     count = 0
-    with open(args.out, 'w', encoding='utf-8') as fh:
-        for path in note_paths():
-            text = path.read_text(encoding='utf-8', errors='replace')
-            hits = [ln.strip()[:400] for ln in text.splitlines() if CORRECTION.search(ln)]
-            if not hits:
-                continue
-            origin = origin_of(text)
-            if not origin or origin not in transcripts:
-                continue
-            rel = path.relative_to(MEMORY_ROOT).as_posix()
-            commit, date = first_version(f'memory/{rel}')
-            fh.write(json.dumps({
-                'note': rel, 'origin': origin, 'transcript': str(transcripts[origin]),
-                'first_commit': commit, 'first_date': date, 'correction_lines': hits,
-            }, ensure_ascii=False) + '\n')
-            count += 1
+    out_lines = []
+    for path in note_paths():
+        text = path.read_text(encoding='utf-8', errors='replace')
+        hits = [ln.strip()[:400] for ln in text.splitlines() if CORRECTION.search(ln)]
+        if not hits:
+            continue
+        origin = origin_of(text)
+        if not origin or origin not in transcripts:
+            continue
+        rel = path.relative_to(MEMORY_ROOT).as_posix()
+        commit, date = first_version(f'memory/{rel}')
+        out_lines.append(json.dumps({
+            'note': rel, 'origin': origin, 'transcript': str(transcripts[origin]),
+            'first_commit': commit, 'first_date': date, 'correction_lines': hits,
+        }, ensure_ascii=False) + '\n')
+        count += 1
+    _atomic_write_text(args.out, ''.join(out_lines))
     print(json.dumps({'candidates': count, 'out': args.out}))
 
 

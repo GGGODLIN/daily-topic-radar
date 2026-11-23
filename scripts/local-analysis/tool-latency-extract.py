@@ -50,7 +50,6 @@ SUBCOMMAND_TOOLS = {"git", "gh", "docker", "brew", "launchctl", "herdr", "hc", "
 SKIP_PROGRAMS = {"cd", "set", "export", "true", ":", "pushd", "popd"}
 # 常見的開場動作：後面還有別的程式就取後面那個，整串只有它們才用它們分組
 PREFIX_PROGRAMS = {"echo", "printf", "mkdir", "source", "."}
-STEP_SPLIT = re.compile(r"&&|\|\||;|\n")
 SHELL_KEYWORDS = {"for", "while", "until", "if", "case", "select", "do", "then", "else", "elif", "done", "fi", "esac", "{", "}"}
 # 沒有固定身分的分組：每次內容不同的即興腳本、多工具串接複合命令、迴圈、agent 自選長短的 sleep；留在總表但不參加變慢排名
 # （2026-11-10 回溯 4 個週二，這幾類佔滿前 3 名，把真正變慢的 closeout-provenance.py 擠出榜外）
@@ -69,18 +68,52 @@ SKIP_RESULT_RE = re.compile(
   r'(?:^Unreviewed\b|"status"\s*:\s*"skip"|\bskip\s+empty-diff\b|^__SILENT__\s*$)',
   re.M,
 )
-HEREDOC_START = re.compile(r"<<-?\s*(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_][A-Za-z0-9_]*))")
+HEREDOC_START = re.compile(r"(?<!<)<<(?!<)-?\s*(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_][A-Za-z0-9_]*))")
 
 
 def strip_heredocs(command):
   lines = command.splitlines()
   out, i = [], 0
+  in_single = False
+  in_double = False
   while i < len(lines):
     line = lines[i]
-    m = HEREDOC_START.search(line)
-    out.append(HEREDOC_START.sub("", line) if m else line)
-    if m:
-      delim = m.group(1) or m.group(2) or m.group(3)
+    delims = []
+    parts = []
+    pos = 0
+    j = 0
+    escaped = False
+    n = len(line)
+    while j < n:
+      ch = line[j]
+      if escaped:
+        escaped = False
+        j += 1
+        continue
+      if not in_single and ch == "\\":
+        escaped = True
+        j += 1
+        continue
+      if not in_double and ch == "'":
+        in_single = not in_single
+        j += 1
+        continue
+      if not in_single and ch == '"':
+        in_double = not in_double
+        j += 1
+        continue
+      if not in_single and not in_double and line.startswith("<<", j):
+        m = HEREDOC_START.match(line, j)
+        if m:
+          parts.append(line[pos:m.start()])
+          pos = m.end()
+          delims.append(m.group(1) or m.group(2) or m.group(3))
+          j = m.end()
+          continue
+      j += 1
+    parts.append(line[pos:])
+    out.append("".join(parts))
+    for delim in delims:
       i += 1
       while i < len(lines) and lines[i].strip() != delim:
         i += 1
@@ -89,12 +122,13 @@ def strip_heredocs(command):
 
 
 def parse_ts(ts):
-  if not ts:
+  if not isinstance(ts, str) or not ts:
     return None
   try:
-    return dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    parsed = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
   except ValueError:
     return None
+  return parsed if parsed.tzinfo is not None else None
 
 
 def strip_substitutions(command):
@@ -154,13 +188,31 @@ def _program_key(tokens):
   if re.fullmatch(r"python3(?:\.\d+)?", prog):
     prog = "python3"
   if prog in INTERPRETERS:
+    if prog in ("bash", "sh", "zsh"):
+      inline_flags, has_module = {"c"}, False
+    elif prog in ("python", "python3"):
+      inline_flags, has_module = {"c"}, True
+    else:
+      inline_flags, has_module = {"e"}, False
     rest = tokens[1:]
-    while rest and rest[0].startswith("-") and rest[0] not in ("-", "-m", "-c", "-e"):
-      rest = rest[1:]
-    if not rest or rest[0] in ("-", "-c", "-e") or rest[0].startswith("<<"):
+    while rest:
+      tok = rest[0]
+      if tok == "-" or tok.startswith("<<"):
+        return f"{prog} (inline)"
+      if re.fullmatch(r"-[A-Za-z]+", tok):
+        last = tok[-1]
+        if last in inline_flags:
+          return f"{prog} (inline)"
+        if has_module and last == "m":
+          return f"{prog} -m {rest[1]}" if len(rest) > 1 else f"{prog} (inline)"
+        rest = rest[1:]
+        continue
+      if tok.startswith("-"):
+        rest = rest[1:]
+        continue
+      break
+    if not rest:
       return f"{prog} (inline)"
-    if rest[0] == "-m" and len(rest) > 1:
-      return f"{prog} -m {rest[1]}"
     script = os.path.basename(rest[0])
     qual = _script_qualifier(rest[1:])
     return f"{script} {qual}" if qual else script
@@ -180,9 +232,121 @@ def _program_key(tokens):
   return prog
 
 
+def _split_steps(command):
+  steps, buf = [], []
+  in_single = False
+  in_double = False
+  escaped = False
+  i, n = 0, len(command)
+  while i < n:
+    ch = command[i]
+    if escaped:
+      buf.append(ch)
+      escaped = False
+      i += 1
+      continue
+    if not in_single and ch == "\\":
+      buf.append(ch)
+      escaped = True
+      i += 1
+      continue
+    if not in_double and ch == "'":
+      in_single = not in_single
+      buf.append(ch)
+      i += 1
+      continue
+    if not in_single and ch == '"':
+      in_double = not in_double
+      buf.append(ch)
+      i += 1
+      continue
+    if not in_single and not in_double:
+      if command.startswith("&&", i) or command.startswith("||", i):
+        steps.append("".join(buf))
+        buf = []
+        i += 2
+        continue
+      if ch in (";", "\n"):
+        steps.append("".join(buf))
+        buf = []
+        i += 1
+        continue
+    buf.append(ch)
+    i += 1
+  steps.append("".join(buf))
+  return steps
+
+
+def _split_pipes(step):
+  parts, buf = [], []
+  in_single = False
+  in_double = False
+  escaped = False
+  i, n = 0, len(step)
+  while i < n:
+    ch = step[i]
+    if escaped:
+      buf.append(ch)
+      escaped = False
+      i += 1
+      continue
+    if not in_single and ch == "\\":
+      buf.append(ch)
+      escaped = True
+      i += 1
+      continue
+    if not in_double and ch == "'":
+      in_single = not in_single
+      buf.append(ch)
+      i += 1
+      continue
+    if not in_single and ch == '"':
+      in_double = not in_double
+      buf.append(ch)
+      i += 1
+      continue
+    if not in_single and not in_double:
+      if step.startswith("||", i):
+        buf.append("||")
+        i += 2
+        continue
+      if ch == "|":
+        parts.append("".join(buf))
+        buf = []
+        i += 1
+        continue
+    buf.append(ch)
+    i += 1
+  parts.append("".join(buf))
+  return parts
+
+
+def _strip_comment(step):
+  in_single = False
+  in_double = False
+  escaped = False
+  for i, ch in enumerate(step):
+    if escaped:
+      escaped = False
+      continue
+    if not in_single and ch == "\\":
+      escaped = True
+      continue
+    if not in_double and ch == "'":
+      in_single = not in_single
+      continue
+    if not in_single and ch == '"':
+      in_double = not in_double
+      continue
+    if not in_single and not in_double and ch == "#":
+      if i == 0 or step[i - 1].isspace():
+        return step[:i]
+  return step
+
+
 def _step_key(step):
   prefix = None
-  for pipe_part in step.split("|"):
+  for pipe_part in _split_pipes(_strip_comment(step)):
     pipe_part = pipe_part.strip().lstrip("(").rstrip(")").strip()
     if not pipe_part:
       continue
@@ -199,11 +363,12 @@ def _step_key(step):
 def group_key(tool, tool_input):
   if tool != "Bash":
     return tool
-  raw = strip_heredocs((tool_input or {}).get("command") or "")
+  cmd = tool_input.get("command") if isinstance(tool_input, dict) else ""
+  raw = strip_heredocs(cmd if isinstance(cmd, str) else "")
   command = strip_substitutions(raw.replace("\\\n", " "))
   step_keys, prefixes = [], []
-  for step in STEP_SPLIT.split(command):
-    step = step.strip().lstrip("(").rstrip(")").strip()
+  for step in _split_steps(command):
+    step = _strip_comment(step).strip().lstrip("(").rstrip(")").strip()
     if not step:
       continue
     key = _step_key(step)
@@ -225,16 +390,18 @@ def _result_text(content):
   if isinstance(content, str):
     return content[:400]
   if isinstance(content, list):
-    for item in content:
-      if isinstance(item, dict) and item.get("type") == "text":
-        return str(item.get("text") or "")[:400]
+    return "\n".join(
+      str(item.get("text") or "")[:400]
+      for item in content
+      if isinstance(item, dict) and item.get("type") == "text"
+    )
   return ""
 
 
 def scan_file(path):
   uses = {}
-  per_message = defaultdict(int)
-  results = {}
+  per_message = defaultdict(set)
+  results = defaultdict(list)
   skipped_or_errored = set()
   try:
     with open(path, encoding="utf-8", errors="replace") as handle:
@@ -245,73 +412,101 @@ def scan_file(path):
           obj = json.loads(line)
         except json.JSONDecodeError:
           continue
+        if not isinstance(obj, dict):
+          continue
         message = obj.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), list):
           continue
         ts = obj.get("timestamp")
         # CC 把同一則訊息的每個 content block 各寫一行、共用 message.id；沒有 id 的退回以行為單位
-        message_id = message.get("id") or f"line-{index}"
+        raw_mid = message.get("id")
+        if raw_mid is not None and not isinstance(raw_mid, str):
+          continue
+        message_id = raw_mid if raw_mid else f"line-{index}"
         for block in message["content"]:
           if not isinstance(block, dict):
             continue
-          if block.get("type") == "tool_use" and block.get("id"):
-            per_message[message_id] += 1
-            uses.setdefault(block["id"], (ts, block.get("name"), block.get("input") or {}, message_id))
-          elif block.get("type") == "tool_result" and block.get("tool_use_id"):
-            tid = block["tool_use_id"]
-            results.setdefault(tid, ts)
-            if block.get("is_error") or SKIP_RESULT_RE.search(_result_text(block.get("content"))):
-              skipped_or_errored.add(tid)
+          if block.get("type") == "tool_use":
+            tid = block.get("id")
+            if isinstance(tid, str) and tid:
+              per_message[message_id].add(tid)
+              uses.setdefault(tid, (ts, block.get("name"), block.get("input") or {}, message_id))
+          elif block.get("type") == "tool_result":
+            tid = block.get("tool_use_id")
+            if isinstance(tid, str) and tid:
+              parsed_res = parse_ts(ts)
+              if parsed_res is not None:
+                results[tid].append(parsed_res)
+              if block.get("is_error") or SKIP_RESULT_RE.search(_result_text(block.get("content"))):
+                skipped_or_errored.add(tid)
   except OSError:
     return []
   out = []
   for tool_id, (ts, name, tool_input, message_id) in uses.items():
-    if per_message[message_id] != 1 or name in EXCLUDED_TOOLS or tool_id in skipped_or_errored:
+    if not isinstance(name, str) or not name:
+      continue
+    if len(per_message[message_id]) != 1 or name in EXCLUDED_TOOLS or tool_id in skipped_or_errored:
       continue
     if name == "Bash" and isinstance(tool_input, dict) and tool_input.get("run_in_background"):
       continue
-    start, end = parse_ts(ts), parse_ts(results.get(tool_id))
-    if not start or not end:
+    start = parse_ts(ts)
+    if not start:
+      continue
+    end = min((stamp for stamp in results.get(tool_id, ()) if stamp >= start), default=None)
+    if end is None:
       continue
     seconds = (end - start).total_seconds()
-    if seconds < 0:
-      continue
     out.append((tool_id, start, min(seconds, CAP_SECONDS), group_key(name, tool_input)))
   return out
 
 
 def collect(projects, day):
-  local_tz = dt.datetime.now().astimezone().tzinfo
-  end = dt.datetime.combine(day, dt.time.min, tzinfo=local_tz)
-  mid = end - dt.timedelta(days=WINDOW_DAYS)
-  start = mid - dt.timedelta(days=WINDOW_DAYS)
+  dates = (day - dt.timedelta(days=2 * WINDOW_DAYS), day - dt.timedelta(days=WINDOW_DAYS), day)
+  start, mid, end = (dt.datetime.combine(d, dt.time.min).astimezone(dt.timezone.utc) for d in dates)
   windows = {"cur": defaultdict(list), "prev": defaultdict(list)}
   seen = set()
-  for path in projects.rglob("*.jsonl"):
-    if "/subagents/" in str(path):
-      continue
+  visited_dirs = set()
+  for dirpath, dirnames, filenames in os.walk(projects, followlinks=True):
     try:
-      if path.stat().st_mtime < start.timestamp():
-        continue
+      dir_stat = os.stat(dirpath)
     except OSError:
+      dirnames[:] = []
       continue
-    for tool_id, began, seconds, key in scan_file(path):
-      if tool_id in seen:
+    dir_id = (dir_stat.st_dev, dir_stat.st_ino)
+    if dir_id in visited_dirs:
+      dirnames[:] = []
+      continue
+    visited_dirs.add(dir_id)
+    dirnames[:] = sorted(d for d in dirnames if d != "subagents")
+    for filename in sorted(filenames):
+      if not filename.endswith(".jsonl"):
         continue
-      seen.add(tool_id)
-      if mid <= began < end:
-        windows["cur"][key].append(seconds)
-      elif start <= began < mid:
-        windows["prev"][key].append(seconds)
-  return windows, (start.date(), mid.date(), end.date())
+      path = Path(dirpath) / filename
+      try:
+        if path.stat().st_mtime < start.timestamp():
+          continue
+      except OSError:
+        continue
+      for tool_id, began, seconds, key in scan_file(path):
+        if tool_id in seen:
+          continue
+        seen.add(tool_id)
+        if mid <= began < end:
+          windows["cur"][key].append(seconds)
+        elif start <= began < mid:
+          windows["prev"][key].append(seconds)
+  return windows, dates
 
 
 def p90(values):
+  if not values:
+    return 0.0
   ordered = sorted(values)
-  return ordered[max(0, int(len(ordered) * 0.9) - 1)]
+  return ordered[(len(ordered) * 9 + 9) // 10 - 1]
 
 
 def slowdowns(windows):
+  eps = 1e-9
   found = []
   for key, cur in windows["cur"].items():
     if key in NO_IDENTITY or key.endswith("(inline)"):
@@ -320,13 +515,13 @@ def slowdowns(windows):
     if len(cur) < MIN_CALLS or len(prev) < MIN_CALLS:
       continue
     med_cur, med_prev = statistics.median(cur), statistics.median(prev)
-    if med_prev <= 0 or med_cur < med_prev * (1 + MIN_GROWTH) or med_cur - med_prev < MIN_DELTA_SECONDS:
+    if med_prev <= 0 or med_cur + eps < med_prev * (1 + MIN_GROWTH) or (med_cur - med_prev) + eps < MIN_DELTA_SECONDS:
       continue
     extra = (med_cur - med_prev) * len(cur)
-    if extra < MIN_EXTRA_SECONDS:
+    if extra + eps < MIN_EXTRA_SECONDS:
       continue
     found.append({"key": key, "extra": extra, "n": len(cur), "med_prev": med_prev, "med_cur": med_cur, "p90": p90(cur)})
-  found.sort(key=lambda row: -row["extra"])
+  found.sort(key=lambda row: (-row["extra"], row["key"]))
   return found[:TOP_N]
 
 
@@ -358,7 +553,10 @@ def render(windows, bounds):
     "| 分組 | 次數 | 總計 | 中位數 | p90 | 前週中位數 |",
     "|---|---|---|---|---|---|",
   ]
-  ranked = sorted(windows["cur"].items(), key=lambda kv: -sum(kv[1]))[:TOP_TABLE]
+  ranked = sorted(
+    ((key, values) for key, values in windows["cur"].items() if values),
+    key=lambda kv: (-sum(kv[1]), kv[0]),
+  )[:TOP_TABLE]
   for key, values in ranked:
     prev = windows["prev"].get(key)
     prev_med = fmt_seconds(statistics.median(prev)) if prev else "—"

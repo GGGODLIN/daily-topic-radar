@@ -36,6 +36,13 @@ def check(name, want, got):
     FAIL += 1
 
 
+def safe_call(fn, *args, **kwargs):
+  try:
+    return fn(*args, **kwargs)
+  except Exception as exc:
+    return ("EXC", type(exc).__name__)
+
+
 def ts(day, seconds):
   base = dt.datetime.fromisoformat(f"{day}T12:00:00+00:00") + dt.timedelta(seconds=seconds)
   return base.strftime("%Y-%m-%dT%H:%M:%S.") + f"{base.microsecond // 1000:03d}Z"
@@ -157,6 +164,204 @@ with tempfile.TemporaryDirectory() as tmp:
   write(projects / "proj" / "s3.jsonl", entries)
   windows, bounds = tlx.collect(projects, DAY)
   check("全部持平時輸出 __SILENT__", "__SILENT__", tlx.render(windows, bounds))
+
+print("(5) 回歸防護 T1–T13")
+# T1: parse_ts 非字串 / naive / 跨時區
+check("T1 parse_ts 非字串回 None", None, safe_call(tlx.parse_ts, 12345))
+check("T1 parse_ts naive 時間戳回 None", None, safe_call(tlx.parse_ts, "2026-11-05T12:00:00"))
+with tempfile.TemporaryDirectory() as tmp:
+  projects = Path(tmp) / "projects"
+  s_mix = projects / "proj" / "mix.jsonl"
+  mixed_entries = [
+    {"type": "assistant", "timestamp": "2026-11-05T12:00:00", "message": {"id": "m-mix", "content": [{"type": "tool_use", "id": "mix1", "name": "Bash", "input": {"command": "python3 /x/mix.py"}}]}},
+    {"type": "user", "timestamp": "2026-11-05T12:00:05Z", "message": {"content": [{"type": "tool_result", "tool_use_id": "mix1", "content": "ok"}]}},
+    {"type": "assistant", "timestamp": "2026-11-05T20:00:00+08:00", "message": {"id": "m-tz", "content": [{"type": "tool_use", "id": "tz1", "name": "Bash", "input": {"command": "python3 /x/tz.py"}}]}},
+    {"type": "user", "timestamp": "2026-11-05T12:00:05.000Z", "message": {"content": [{"type": "tool_result", "tool_use_id": "tz1", "content": "ok"}]}},
+  ]
+  write(s_mix, mixed_entries)
+  check(
+    "T1 混合 naive/aware 不潰並精確計算跨時區秒數",
+    {"tz.py": 5.0},
+    safe_call(lambda p: {k: s for _id, _st, s, k in tlx.scan_file(p)}, s_mix),
+  )
+
+  s_naive = projects / "proj" / "naive.jsonl"
+  naive_entries = [
+    {"type": "assistant", "timestamp": "2026-11-05T12:00:00", "message": {"id": "m-n1", "content": [{"type": "tool_use", "id": "n1", "name": "Bash", "input": {"command": "python3 /x/naive.py"}}]}},
+    {"type": "user", "timestamp": "2026-11-05T12:00:05", "message": {"content": [{"type": "tool_result", "tool_use_id": "n1", "content": "ok"}]}},
+  ] + call(CUR_DAY, 10, "aw1", 4, "python3 /x/aware.py")
+  write(s_naive, naive_entries)
+  s_mix.unlink()
+  check(
+    "T1 collect 遇 naive 時間戳不 TypeError 且保留有效資料",
+    {"aware.py": [4.0]},
+    safe_call(lambda d: dict(tlx.collect(d, DAY)[0]["cur"]), projects),
+  )
+
+# T2: 同一個 message.id 重複相同 tool_use id（streaming/resume 產物）仍算 solo
+with tempfile.TemporaryDirectory() as tmp:
+  s_dup = Path(tmp) / "dup.jsonl"
+  dup_entries = [
+    use_line(CUR_DAY, 10, "dup1", tool_input={"command": "python3 /x/dup.py"}, message_id="msg-dup"),
+    use_line(CUR_DAY, 10, "dup1", tool_input={"command": "python3 /x/dup.py"}, message_id="msg-dup"),
+    result_line(CUR_DAY, 14, "dup1"),
+  ]
+  write(s_dup, dup_entries)
+  got_dup = safe_call(lambda p: {k: s for _id, _st, s, k in tlx.scan_file(p)}, s_dup)
+  check("T2 同 message.id 重複同一個 tool_use id 仍計為 solo", 4.0, got_dup.get("dup.py") if isinstance(got_dup, dict) else got_dup)
+
+# T3: 畸形 JSONL 列與無效識別欄位不崩潰
+with tempfile.TemporaryDirectory() as tmp:
+  p_raw = Path(tmp) / "raw_bad.jsonl"
+  p_raw.write_text(
+    "\n".join([
+      "null",
+      '["tool_use"]',
+      "123",
+      json.dumps(call(CUR_DAY, 10, "ok1", 4, "python3 /x/valid.py")[0]),
+      json.dumps(call(CUR_DAY, 10, "ok1", 4, "python3 /x/valid.py")[1]),
+    ]) + "\n"
+  )
+  check("T3 非 dict JSONL 列（null/[]/123）不潰且保留有效呼叫", {"valid.py": 4.0}, safe_call(lambda p: {k: s for _id, _st, s, k in tlx.scan_file(p)}, p_raw))
+
+  p_mid = Path(tmp) / "bad_mid.jsonl"
+  bad_mid = [
+    {"type": "assistant", "timestamp": ts(CUR_DAY, 0), "message": {"id": {"k": 1}, "content": [{"type": "tool_use", "id": "bm1", "name": "Bash", "input": {"command": "python3 /x/bad.py"}}]}},
+    result_line(CUR_DAY, 2, "bm1"),
+  ] + call(CUR_DAY, 10, "ok2", 4, "python3 /x/valid.py")
+  write(p_mid, bad_mid)
+  check("T3 unhashable message.id 不潰且保留有效呼叫", {"valid.py": 4.0}, safe_call(lambda p: {k: s for _id, _st, s, k in tlx.scan_file(p)}, p_mid))
+
+  p_tid = Path(tmp) / "bad_tid.jsonl"
+  bad_tid = [
+    {"type": "assistant", "timestamp": ts(CUR_DAY, 0), "message": {"id": "m-bt1", "content": [{"type": "tool_use", "id": ["x"], "name": "Bash", "input": {"command": "python3 /x/bad.py"}}]}},
+  ] + call(CUR_DAY, 10, "ok3", 4, "python3 /x/valid.py")
+  write(p_tid, bad_tid)
+  check("T3 unhashable tool_use.id 不潰且保留有效呼叫", {"valid.py": 4.0}, safe_call(lambda p: {k: s for _id, _st, s, k in tlx.scan_file(p)}, p_tid))
+
+  p_rtid = Path(tmp) / "bad_rtid.jsonl"
+  bad_rtid = [
+    {"type": "user", "timestamp": ts(CUR_DAY, 5), "message": {"content": [{"type": "tool_result", "tool_use_id": {"x": 1}, "content": "x"}]}},
+  ] + call(CUR_DAY, 10, "ok4", 4, "python3 /x/valid.py")
+  write(p_rtid, bad_rtid)
+  check("T3 unhashable tool_result.tool_use_id 不潰且保留有效呼叫", {"valid.py": 4.0}, safe_call(lambda p: {k: s for _id, _st, s, k in tlx.scan_file(p)}, p_rtid))
+
+  projects = Path(tmp) / "projects"
+  name_entries = []
+  for i in range(12):
+    name_entries += [use_line(PREV_DAY, i * 10, f"np-{i}", name=None), result_line(PREV_DAY, i * 10 + 1, f"np-{i}")]
+    name_entries += [use_line(CUR_DAY, i * 10, f"nc-{i}", name=None), result_line(CUR_DAY, i * 10 + 5, f"nc-{i}")]
+    name_entries += [use_line(PREV_DAY, 200 + i * 10, f"ip-{i}", name=123), result_line(PREV_DAY, 200 + i * 10 + 1, f"ip-{i}")]
+    name_entries += [use_line(CUR_DAY, 200 + i * 10, f"ic-{i}", name=123), result_line(CUR_DAY, 200 + i * 10 + 5, f"ic-{i}")]
+    name_entries += call(PREV_DAY, 500 + i * 100, f"sp-{i}", 2, "python3 /x/slow.py")
+    name_entries += call(CUR_DAY, 500 + i * 100, f"sc-{i}", 8, "python3 /x/slow.py")
+  write(projects / "proj" / "bad_names.jsonl", name_entries)
+  check(
+    "T3 非字串 tool_use.name（None / 123）不讓 slowdowns 崩潰",
+    ["slow.py"],
+    safe_call(lambda d: [r["key"] for r in tlx.slowdowns(tlx.collect(d, DAY)[0])], projects),
+  )
+
+# T4: group_key 非 dict tool_input / 非字串 command
+check("T4 group_key 非 dict tool_input 回 bash (empty)", "bash (empty)", safe_call(tlx.group_key, "Bash", "not-a-dict"))
+check("T4 group_key 非字串 command 回 bash (empty)", "bash (empty)", safe_call(tlx.group_key, "Bash", {"command": 123}))
+
+# T5: here-string <<< 與引號內 <<EOF 不誤判成 heredoc
+check("T5 here-string <<< 不誤刪後續行", "(compound)", safe_call(tlx.group_key, "Bash", {"command": "cat <<< EOF\npython3 /x/foo.py"}))
+check("T5 引號內 <<EOF 不誤刪後續行", "foo.py", safe_call(tlx.group_key, "Bash", {"command": "echo '<<EOF'\npython3 /x/foo.py"}))
+
+# T6: 引號內 && ; | 不被當成命令分隔符
+check("T6 引號內 && ; | 不誤切成 (compound)", "git commit", safe_call(tlx.group_key, "Bash", {"command": 'git commit -m "fix: a && b; c | d"'}))
+
+# T7: 直譯器旗標解析（bash -e / 合併短旗標 -lc / -Ic / -Im）
+check("T7 bash -e 取實際腳本而非 inline", "deploy.sh", safe_call(tlx.group_key, "Bash", {"command": "bash -e /x/deploy.sh"}))
+check("T7 bash -lc 識別為 bash (inline)", "bash (inline)", safe_call(tlx.group_key, "Bash", {"command": "bash -lc 'echo hi'"}))
+check("T7 python3 -Ic 識別為 python3 (inline)", "python3 (inline)", safe_call(tlx.group_key, "Bash", {"command": "python3 -Ic 'print(1)'"}))
+check("T7 python3 -Im 取模組名", "python3 -m pytest", safe_call(tlx.group_key, "Bash", {"command": "python3 -Im pytest"}))
+
+# T8: shell 註解行與行尾註解不產生假步驟
+check("T8 整行註解與行尾註解不產生 (compound)", "foo.py", safe_call(tlx.group_key, "Bash", {"command": "# comment line\npython3 /x/foo.py # trailing comment"}))
+
+# T9: tool_result content 為多 block 清單時須掃全 block 判 skip
+with tempfile.TemporaryDirectory() as tmp:
+  s_skip = Path(tmp) / "multiblock_skip.jsonl"
+  skip_entries = [
+    use_line(CUR_DAY, 10, "sk1", tool_input={"command": "python3 /x/silent2.py"}),
+    {"type": "user", "timestamp": ts(CUR_DAY, 11), "message": {"content": [{"type": "tool_result", "tool_use_id": "sk1", "content": [{"type": "text", "text": "info"}, {"type": "text", "text": "__SILENT__"}]}]}},
+    use_line(CUR_DAY, 20, "sk2", tool_input={"command": "python3 /x/skip2.py"}),
+    {"type": "user", "timestamp": ts(CUR_DAY, 21), "message": {"content": [{"type": "tool_result", "tool_use_id": "sk2", "content": [{"type": "text", "text": "info"}, {"type": "text", "text": '{"status": "skip"}'}]}]}},
+  ]
+  write(s_skip, skip_entries)
+  got_skip = safe_call(lambda p: [k for _id, _st, _s, k in tlx.scan_file(p)], s_skip)
+  check("T9 多 block tool_result 含 __SILENT__ 或 status:skip 皆排除", [], got_skip)
+
+# T10: p90 空清單與小樣本 nearest-rank
+check("T10 p90 空清單回 0.0", 0.0, safe_call(tlx.p90, []))
+check("T10 p90([1, 2, 3]) 用 nearest-rank 回 3", 3, safe_call(tlx.p90, [1, 2, 3]))
+
+# T11: 邊界浮點誤差（0.7 - 0.2 = 0.49999999999999994 且 × 120 = 59.99999999999999）
+with tempfile.TemporaryDirectory() as tmp:
+  projects = Path(tmp) / "projects"
+  fp_entries = []
+  for i in range(120):
+    fp_entries += call(PREV_DAY, i * 10, f"fpp-{i}", 0.2, "python3 /x/fp.py")
+    fp_entries += call(CUR_DAY, i * 10, f"fpc-{i}", 0.7, "python3 /x/fp.py")
+  write(projects / "proj" / "fp.jsonl", fp_entries)
+  fp_win, fp_bounds = tlx.collect(projects, DAY)
+  check("T11 精確 +0.5s × 120 = 60.0s 邊界浮點誤差不漏報", ["fp.py"], [r["key"] for r in tlx.slowdowns(fp_win)])
+  check("T11 render 不回 __SILENT__", True, tlx.render(fp_win, fp_bounds) != "__SILENT__")
+
+# T12: symlinked 專案目錄須掃描；父層含 subagents 不誤殺，真正 subagents 仍排除
+with tempfile.TemporaryDirectory() as tmp:
+  real_proj = Path(tmp) / "real_proj"
+  write(real_proj / "s_sym.jsonl", call(CUR_DAY, 10, "sym1", 4, "python3 /x/sym.py"))
+  sym_projects = Path(tmp) / "projects_sym"
+  sym_projects.mkdir()
+  (sym_projects / "linked-proj").symlink_to(real_proj)
+  check("T12a symlinked 專案目錄有掃到", {"sym.py": [4.0]}, safe_call(lambda d: dict(tlx.collect(d, DAY)[0]["cur"]), sym_projects))
+
+  sub_parent_projects = Path(tmp) / "subagents" / "projects"
+  write(sub_parent_projects / "proj" / "main.jsonl", call(CUR_DAY, 10, "mp1", 4, "python3 /x/main.py"))
+  write(sub_parent_projects / "proj" / "s1" / "subagents" / "agent.jsonl", call(CUR_DAY, 20, "sa1", 4, "python3 /x/sub.py"))
+  check(
+    "T12b projects 父層名為 subagents 不誤殺主線，仍排除底層 subagents",
+    {"main.py": [4.0]},
+    safe_call(lambda d: dict(tlx.collect(d, DAY)[0]["cur"]), sub_parent_projects),
+  )
+
+# T13: 同 extra / 同總耗時平手時依 key 名稱決定性排序
+tie_windows = {
+  "cur": {"zebra.py": [8.0] * 12, "alpha.py": [8.0] * 12},
+  "prev": {"zebra.py": [1.0] * 12, "alpha.py": [1.0] * 12},
+}
+tie_bounds = (dt.date(2026, 10, 27), dt.date(2026, 11, 3), DAY)
+check("T13 slowdowns 平手依 key 決定性排序", ["alpha.py", "zebra.py"], [r["key"] for r in tlx.slowdowns(tie_windows)])
+tie_report = tlx.render(tie_windows, tie_bounds)
+check(
+  "T13 render 總表平手依 key 決定性排序",
+  True,
+  tie_report.index("| alpha.py |") < tie_report.index("| zebra.py |"),
+)
+
+# Sol T01: 較早無效回覆不遮蔽後續合法回覆
+with tempfile.TemporaryDirectory() as td:
+  p_t01 = Path(td) / "t01.jsonl"
+  rows_t01 = [
+    {"timestamp": "2026-11-08T10:00:05Z", "message": {"id": "m1", "content": [{"type": "tool_use", "id": "u1", "name": "Read", "input": {}}]}},
+    {"timestamp": "2026-11-08T10:00:01Z", "message": {"id": "r0", "content": [{"type": "tool_result", "tool_use_id": "u1", "content": "early-stale"}]}},
+    {"timestamp": "2026-11-08T10:00:09Z", "message": {"id": "r1", "content": [{"type": "tool_result", "tool_use_id": "u1", "content": "ok"}]}},
+  ]
+  p_t01.write_text("\n".join(json.dumps(r) for r in rows_t01) + "\n", encoding="utf-8")
+  out_t01 = tlx.scan_file(p_t01)
+  check("Sol T01 忽略早於 tool_use 的無效回覆、取最早合法回覆", [4.0], [r[2] for r in out_t01])
+
+# Sol T06: 有變慢項時空桶不讓 render 崩潰
+empty_bucket_windows = {
+  "cur": {"slow.py": [8.0] * 12, "empty.py": []},
+  "prev": {"slow.py": [1.0] * 12, "empty.py": [1.0] * 12},
+}
+empty_report = tlx.render(empty_bucket_windows, tie_bounds)
+check("Sol T06 有變慢項時空桶不破壞 render", True, "slow.py" in empty_report and "| empty.py |" not in empty_report)
 
 print(f"\n{PASS} PASS / {FAIL} FAIL")
 sys.exit(1 if FAIL else 0)
