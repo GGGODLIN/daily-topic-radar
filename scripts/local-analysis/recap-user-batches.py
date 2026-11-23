@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,10 +53,22 @@ def collect(root, start, end):
   messages = []
   invalid_records = 0
   missing_timestamps = 0
-  files = sorted(path for path in root.rglob('*.jsonl')
-                 if 'subagents' not in path.relative_to(root).parts)
+  skipped_missing_files = 0
+  files = []
+  for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d != 'subagents']
+    base = Path(dirpath)
+    for name in filenames:
+      if name.endswith('.jsonl'):
+        files.append(base / name)
+  files.sort()
   for path in files:
-    with path.open('rb') as source:
+    try:
+      source_ctx = path.open('rb')
+    except FileNotFoundError:
+      skipped_missing_files += 1
+      continue
+    with source_ctx as source:
       for line_number, line in enumerate(source, 1):
         if not line.strip():
           continue
@@ -83,6 +96,7 @@ def collect(root, start, end):
   return messages, {
     'files_enumerated': len(files), 'invalid_records': invalid_records,
     'human_messages_without_valid_timestamp': missing_timestamps,
+    'skipped_missing_files': skipped_missing_files,
   }
 
 

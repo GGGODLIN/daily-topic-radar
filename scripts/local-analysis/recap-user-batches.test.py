@@ -66,6 +66,20 @@ class RecapUserBatchesTest(unittest.TestCase):
       self.assertEqual(manifest['diagnostics']['invalid_records'], 2)
       self.assertEqual(manifest['diagnostics']['human_messages_without_valid_timestamp'], 1)
 
+  def test_skips_vanished_jsonl_files_without_failing(self):
+    with tempfile.TemporaryDirectory() as temp:
+      root = Path(temp) / 'projects'
+      root.mkdir()
+      (root / 'ok.jsonl').write_text(
+        json.dumps({'type': 'user', 'timestamp': '2026-10-24T12:00:00Z', 'message': {'content': '仍在的對話'}}) + '\n'
+      )
+      (root / 'vanished.jsonl').symlink_to(root / 'does-not-exist.jsonl')
+      run = subprocess.run([sys.executable, '-I', str(SCRIPT), '--root', str(root), '--start', '2026-10-24T00:00:00Z', '--end', '2026-10-25T00:00:00Z', '--out', str(Path(temp) / 'out')], capture_output=True, text=True)
+      self.assertEqual(run.returncode, 0, run.stderr)
+      manifest = json.loads(Path(run.stdout.strip()).read_text())
+      self.assertEqual(manifest['message_count'], 1)
+      self.assertEqual(manifest['diagnostics']['skipped_missing_files'], 1)
+
 
 if __name__ == '__main__':
   unittest.main()
