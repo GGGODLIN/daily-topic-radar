@@ -3347,6 +3347,27 @@ class SessionAuditCliTest(unittest.TestCase):
       'TOKEN="$(cli login --token="${API_TOKEN}")"',
     ):
       self.assertEqual(mod.redact_text(keep), keep, f"variable reference over-redacted: {keep}")
+    # 同日第 7 步追加：`$(...)` 外的命令列旗標原本一律不遮（單引號、雙引號、無引號都漏）。
+    for leak, secret in (
+      ("mysql-cli --password 'Zx9FakePassw0rdQ7' status", "Zx9FakePassw0rdQ7"),
+      ('mysql-cli --password "Zx9FakePassw0rdQ7" status', "Zx9FakePassw0rdQ7"),
+      ("fakecli --token=FakeTok3nValue12345678 get", "FakeTok3nValue12345678"),
+      ("vault login -token FakeTok3nValue12345678", "FakeTok3nValue12345678"),
+      ("cli --api-key sk-FakeKeyValue1234 run", "sk-FakeKeyValue1234"),
+    ):
+      self.assertNotIn(secret, mod.redact_text(leak), f"literal secret leaked: {leak}")
+    for keep in (
+      "cli --token $API_TOKEN get",
+      "cli --password-stdin < pw.txt",
+      "llm --token-count 5",
+      "cli --password <your-password>",
+      "cli --password - < pw.txt",
+      "cli --token --verbose",
+      "說明：`--token` 旗標要放最後",
+      "gcloud get gcp-secret name",
+      "cli --token [REDACTED]",
+    ):
+      self.assertEqual(mod.redact_text(keep), keep, f"non-secret flag over-redacted: {keep}")
 
 
 def analysis_with_media(media):
