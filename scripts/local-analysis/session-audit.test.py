@@ -2265,6 +2265,54 @@ class SessionAuditCliTest(unittest.TestCase):
     self.assertEqual([item["observation"] for item in report["candidates"]], ["kept-finding"])
     self.assertEqual(self.source_named(report, "s1.jsonl")["status"], "complete")
 
+  def test_tool_use_description_is_exempt_from_human_zh_rule_while_final_reply_still_flags(self):
+    commit_rules(
+      self.rules_repo,
+      {"CLAUDE.md": "# 全域設定\n\n## 語言偏好\n\n- 回應請使用繁體中文，背景任務通知喚醒後的進度回報與等待說明也一樣\n"},
+      "2026-09-02T00:00:00+00:00",
+    )
+    rows = (
+      user_line("請檢查設定", timestamp="2026-10-04T10:00:00.000Z")
+      + json.dumps({
+        "type": "assistant",
+        "sessionId": "s1",
+        "timestamp": "2026-10-04T10:00:01.000Z",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls", "description": "Check whether the turn-start event exposes the model"}},
+          ],
+        },
+      }, ensure_ascii=False) + "\n"
+      + json.dumps({
+        "type": "assistant",
+        "sessionId": "s1",
+        "timestamp": "2026-10-04T10:00:02.000Z",
+        "message": {
+          "role": "assistant",
+          "content": [{"type": "text", "text": "All tasks completed successfully without issues."}],
+        },
+      }, ensure_ascii=False) + "\n"
+    )
+    write_jsonl(self.projects / "work" / "s1.jsonl", rows)
+
+    def reply(body):
+      zh_label = label_for(body, "回應請使用繁體中文")
+      tags = [
+        {"rule": zh_label, "verdict": "violated", "source_line": 2, "quote": "Check whether the turn-start event exposes the model"},
+        {"rule": zh_label, "verdict": "violated", "source_line": 3, "quote": "All tasks completed successfully"},
+      ]
+      return analysis([], rule_tags=tags), 200
+
+    server = serve(reply)
+    self.addCleanup(stop, server)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    self.assertEqual(self.cli(["run", *self.flags(url)]).returncode, 0)
+    report = self.status(url)
+    self.assertEqual(report["rules"]["weekly_segments"], [{"week": "2026-W40", "segments": 1}])
+    quotes = [item["quote"] for item in report["rules"]["tags"]]
+    self.assertEqual(quotes, ["All tasks completed successfully"])
+
   def test_failed_segments_do_not_count_toward_weekly_coverage(self):
     stamp = {"now": "2026-10-05T10:00:00.000Z", "old": "2026-09-20T10:00:00.000Z"}
     for name, marker in (("ok-now", "OK_NOW"), ("ok-old", "OK_OLD"), ("http", "HTTP_FAIL"), ("badjson", "BAD_JSON"), ("trunc", "TRUNCATED")):
@@ -3035,6 +3083,12 @@ class SessionAuditCliTest(unittest.TestCase):
       "let secret = new SecretBox();",
       "remote_token: git@github.com:GGGODLIN/claude-config.git",
       'api_key = "00000000-0000-0000-0000-000000000000"',
+      "typeof row.pass === 'boolean'",
+      "cookies = [c for c in ctx2.cookies()]",
+      "typeof data.refresh_token === 'string'",
+      "typeof value.bot_token === 'string'",
+      "pub token: Option<String>,",
+      'if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then echo ok; fi',
     ]
     for text in kept:
       self.assertEqual(mod.redact_text(text), text, "non-secret assignment value was masked")
@@ -3064,6 +3118,217 @@ class SessionAuditCliTest(unittest.TestCase):
     # A value on the next line is out of the assignment rule's reach; a vendor prefix is still caught.
     vendor = "ghp_" + "A1b2" * 9
     self.assertFalse(vendor in mod.redact_text(f"secret_token:\n  {vendor}"), "vendor token on next line leaked")
+
+  def test_redaction_masks_positional_browser_secrets_sms_otp_mail_otp_and_ax_inline_keys(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_p1_p2_p3", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # P1: positional browser setValue passwords in signup/login context, while keeping non-secret setValue readable
+    pw1 = "Synth!E2b2026#Xy9z"
+    pw2 = "Synth!Ovh2026#Qw8r"
+    p1_obj = {
+      "name": "mcp__lcu__js",
+      "input": {
+        "title": "Submitting E2B email signup",
+        "code": (
+          'await tabE2B.setValue(11, "user@example.com");\n'
+          'await tabE2B.setValue(13, "Jane Doe");\n'
+          f'await tabE2B.setValue(16, "{pw1}");\n'
+          'await tabE2B.setValue(20, "https://example.com/callback");'
+        ),
+      },
+    }
+    p1_out = mod.redact_obj(p1_obj)
+    p1_code = p1_out["input"]["code"]
+    self.assertNotIn(pw1, p1_code, "P1 positional signup password leaked via redact_obj")
+    self.assertIn('setValue(16, "[REDACTED]")', p1_code)
+    self.assertIn('setValue(13, "Jane Doe")', p1_code, "non-secret name setValue was over-redacted")
+    self.assertIn('setValue(20, "https://example.com/callback")', p1_code, "URL setValue was over-redacted")
+
+    p1_text = f'await tabOVH.setValue(11, "[EMAIL]");\nawait tabOVH.setValue(14, "{pw2}");'
+    p1_text_out = mod.redact_text(p1_text)
+    self.assertNotIn(pw2, p1_text_out, "P1 positional password leaked via redact_text")
+    self.assertEqual(mod.redact_text(p1_text_out), p1_text_out, "P1 redaction must be idempotent")
+
+    # Positive control: non-auth setValue must stay intact
+    benign_set = 'await tabSearch.setValue(5, "hello-world-query");'
+    self.assertEqual(mod.redact_text(benign_set), benign_set)
+
+    # P2: SMS polling STATUS_OK:<digits>, OTP_CODE: <digits>, and follow-up browser typeText OTP
+    otp_sms = "739204"
+    p2_poll = f"[0s] STATUS_OK:{otp_sms}\nOTP_CODE: {otp_sms}"
+    p2_poll_out = mod.redact_text(p2_poll)
+    self.assertNotIn(otp_sms, p2_poll_out, "P2 SMS poll OTP leaked")
+    self.assertIn("STATUS_OK:[REDACTED]", p2_poll_out)
+    self.assertIn("OTP_CODE: [REDACTED]", p2_poll_out)
+    self.assertEqual(mod.redact_text(p2_poll_out), p2_poll_out, "P2 poll redaction must be idempotent")
+
+    p2_type_obj = {
+      "name": "mcp__lcu__js",
+      "input": {
+        "title": "Entering OTP verification code on example.com/login",
+        "code": f'await tabLogin.typeText(268, "{otp_sms}");\nawait tabLogin.typeText(270, "notes");',
+      },
+    }
+    p2_type_out = mod.redact_obj(p2_type_obj)["input"]["code"]
+    self.assertNotIn(otp_sms, p2_type_out, "P2 browser typeText OTP leaked")
+    self.assertIn('typeText(268, "[REDACTED]")', p2_type_out)
+    self.assertIn('typeText(270, "notes")', p2_type_out, "non-OTP typeText was over-redacted")
+
+    # Positive control: non-OTP numeric input outside auth/OTP context stays intact
+    benign_num = 'await tabCalc.typeText(12, "202601");'
+    self.assertEqual(mod.redact_text(benign_num), benign_num)
+
+    # P3a: email verification code prose shapes (code before verb, code after "when prompted:", code after "is ")
+    mail_code_1 = "482915"
+    mail_code_2 = "615830"
+    p3_mail = "\n".join([
+      f"FOUND: 1a1f46f5 {mail_code_1} is your verification code | Enter the following verification code when prompted: {mail_code_1}",
+      f"1a1f9640 | Nous Research | Your one-time code is {mail_code_2}. This code expires in 10 minutes.",
+    ])
+    p3_mail_out = mod.redact_text(p3_mail)
+    self.assertNotIn(mail_code_1, p3_mail_out, "P3 Cartesia-shape mail OTP leaked")
+    self.assertNotIn(mail_code_2, p3_mail_out, "P3 Nous-shape mail OTP leaked")
+    self.assertIn("[REDACTED] is your verification code", p3_mail_out)
+    self.assertIn("verification code when prompted: [REDACTED]", p3_mail_out)
+    self.assertIn("Your one-time code is [REDACTED].", p3_mail_out)
+    self.assertEqual(mod.redact_text(p3_mail_out), p3_mail_out, "P3 mail redaction must be idempotent")
+
+    # P3b: AX inline named secret text field (both bare and quoted, with trailing ID metadata, plus JSON-escaped)
+    ax_secret = "sk_car_SYNTHETIC9999999999999999999"
+    p3_ax = "\n".join([
+      "\t\t\t\t16 text CARTESIA_API_KEY",
+      f"\t\t\t\t17 text field CARTESIA_API_KEY, Value: {ax_secret}, ID: key",
+      '\t\t\t\t18 text field DISPLAY_NAME, Value: "My Demo Key", ID: name',
+    ])
+    p3_ax_out = mod.redact_text(p3_ax)
+    self.assertNotIn(ax_secret, p3_ax_out, "P3 AX inline API key leaked")
+    self.assertIn("17 text field CARTESIA_API_KEY, Value: [REDACTED], ID: key", p3_ax_out)
+    self.assertIn('18 text field DISPLAY_NAME, Value: "My Demo Key", ID: name', p3_ax_out, "non-secret AX field was over-redacted")
+    self.assertEqual(mod.redact_text(p3_ax_out), p3_ax_out, "P3 AX redaction must be idempotent")
+
+    # Also verify JSON-escaped tool_result text block shape (as seen in session-retro.py export)
+    p3_ax_json = json.dumps({"type": "tool_result", "content": [{"type": "text", "text": p3_ax}]}, ensure_ascii=False)
+    p3_ax_json_out = mod.redact_text(p3_ax_json)
+    self.assertNotIn(ax_secret, p3_ax_json_out, "P3 JSON-wrapped AX inline API key leaked")
+    self.assertIn("Value: [REDACTED], ID: key", p3_ax_json_out)
+
+    # 2026-11-21 Level-1 re-verification fixes: 1-arg typeText OTP, CJK phone copula (是/為), JP multiline OTP, CJK AX API Token, backtick all_pass=True
+    p2_one_arg = f"STATUS_OK:{otp_sms}\nOTP_CODE: {otp_sms}\nawait tab.typeText('{otp_sms}')"
+    p2_one_arg_out = mod.redact_text(p2_one_arg)
+    self.assertNotIn(otp_sms, p2_one_arg_out, "1-arg typeText OTP leaked in redact_text")
+    self.assertIn("typeText('[REDACTED]')", p2_one_arg_out)
+    p2_one_arg_obj = mod.redact_obj({"title": "Enter SMS verification code", "code": f"await tab.typeText('{otp_sms}')"})
+    self.assertNotIn(otp_sms, p2_one_arg_obj["code"], "1-arg typeText OTP leaked in redact_obj")
+    self.assertEqual(mod.redact_text("await tab.typeText('202601')"), "await tab.typeText('202601')")
+
+    cjk_phone = "0912345678"
+    self.assertEqual(mod.redact_text(f"我的手機號碼是 {cjk_phone}"), "我的手機號碼是 [PHONE]")
+    self.assertEqual(mod.redact_text(f"明示聯絡手機號碼為 {cjk_phone}"), "明示聯絡手機號碼為 [PHONE]")
+    jp_otp = "482913"
+    jp_out = mod.redact_text(f"認証コードを入力して続行してください:\n{jp_otp}")
+    self.assertNotIn(jp_otp, jp_out, "Japanese multiline OTP leaked")
+    self.assertIn("[REDACTED]", jp_out)
+
+    cjk_ax_tok = "tok_live_DemoSecretValue99887766"
+    cjk_ax_out = mod.redact_text(f"12 text 您的 API Token\n13 text {cjk_ax_tok}")
+    self.assertNotIn(cjk_ax_tok, cjk_ax_out, "CJK multiline AX API Token leaked")
+    self.assertIn("13 text [REDACTED]", cjk_ax_out)
+
+    backtick_pass = "quality_check exit0 `all_pass=True` hard-fail 全 PASS"
+    self.assertEqual(mod.redact_text(backtick_pass), backtick_pass, "backtick all_pass=True was over-redacted")
+    backtick_secret = "check `DB_PASS=True` and `DB_PASS=DemoSecret99`"
+    backtick_secret_out = mod.redact_text(backtick_secret)
+    self.assertEqual(backtick_secret_out, "check `DB_PASS=[REDACTED]` and `DB_PASS=[REDACTED]`")
+
+  def test_redaction_otp_keyword_window_show_once_rows_and_code_expression_values(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_otp_window", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    code = "482913"
+    # 2026-11-22 回顧：逐句型列舉漏掉的郵件驗證碼寫法（冒號、插字、中日文無空白），以及正文第二次出現的同一碼。
+    mail_cases = [
+      f"Your Devin login code - {code} || Enter this code in the original window to log in to Devin. {code} This code expires in 5",
+      f"您的驗證碼是{code}。此驗證碼將在 10 分鐘後過期。",
+      f"**Your one-time code for your account is {code}** — _Articul8_",
+      f"Your one-time code is: {code} This code expires in 10 minutes",
+      f"SNIPPET: Your one-time code for your account is {code} As requested, here is your one-time code to sign up: {code} If you did",
+      f"Your verification code is {code}.",
+    ]
+    for text in mail_cases:
+      out = mod.redact_text(text)
+      self.assertNotIn(code, out, f"mail OTP leaked: {text[:40]}")
+      self.assertEqual(mod.redact_text(out), out, "OTP redaction must be idempotent")
+    obj_out = json.dumps(mod.redact_obj({"type": "tool_result", "content": mail_cases[0]}), ensure_ascii=False)
+    self.assertNotIn(code, obj_out, "mail OTP leaked through redact_obj")
+    straddle = "驗證碼" + "x" * 50 + "**1234567890** group"
+    self.assertEqual(mod.redact_text(straddle), straddle, "a long number crossing the window edge must not be cut into a code")
+    for keep in ("verification code feature since v1.2026.5", "login code in /tmp/482913-x/file"):
+      self.assertEqual(mod.redact_text(keep), keep, "version numbers and paths after an OTP keyword must stay")
+
+    show_once_key = "ory_pat_KfwbQmXcPLRTzQaM7XP4BcRvoNVCaHB8XtRDp6sKjN3x.MFkoA59RqtJKLTV42GWHzbuT8bbtxKaV37HkFzVnL4"
+    show_once_out = mod.redact_text(f"\t\t\t\t\t94 text {show_once_key} Copy it now. You won’t see it again.\n\t\t\t\t\t95 button 已复制。")
+    self.assertNotIn(show_once_key[:20], show_once_out, "unlabeled show-once API key leaked")
+    self.assertIn("94 text [REDACTED] Copy it now.", show_once_out)
+    self.assertIn("95 button 已复制。", show_once_out)
+
+    # 程式碼值不是憑證；布林與 None 仍照遮（2026-11-21 拍板 DB_PASS=True 必遮）。
+    for keep in (
+      "resolve_secret = lambda ref: ref",
+      "token = args[idx]",
+      "eval 'BIVIA_API_KEY=\"$(tr -d \"\\r\\n\" < ~/.config/articul8/bivia-api-key)\"'",
+    ):
+      self.assertEqual(mod.redact_text(keep), keep, f"code expression over-redacted: {keep}")
+    self.assertEqual(mod.redact_text("in_token = False"), "in_token=[REDACTED]")
+    self.assertEqual(mod.redact_text("DB_PASS=None"), "DB_PASS=[REDACTED]")
+    self.assertEqual(mod.redact_text("PASSWORD=hunter2"), "PASSWORD=[REDACTED]")
+
+    # 2026-11-22 實作審查（Codex／Gemini）抓到的缺口。
+    for leak, secret in (
+      ("DB_PASS='$MySecret123!'", "MySecret123"),
+      ('PASSWORD="$argon2id$v=19$m=65536$abcdefgh"', "argon2id"),
+      ('TOKEN="$(cmd --password=RealPass123)"', "RealPass123"),
+      ('API_KEY="$a8f3k92x"', "a8f3k92x"),
+      ('TOKEN="$(cli login --password=\'RealPass123\')"', "RealPass123"),
+      ('TOKEN="$(cli login --token \'RealPass123\')"', "RealPass123"),
+      ("TOKEN=\"$(cli login --password=\\'RealPass123\\')\"", "RealPass123"),
+    ):
+      self.assertNotIn(secret, mod.redact_text(leak), f"literal secret leaked: {leak}")
+    for keep in (
+      'REGRESS_API_KEY="$CLIPROXY_KEY_ADMIN"',
+      'RELAY_TOKEN="$relay_token"',
+      'TOKEN="${GH_TOKEN}"',
+      'TOKEN="$serviceToken"',
+      '`client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])`',
+      'TOKEN="${BITBUCKET_API_TOKEN:-$(grep x ~/.zshrc | cut -d= -f2)}"',
+      'client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])',
+      "`token = args[idx]`",
+      'token = cfg["auth"]["token"]',
+    ):
+      self.assertEqual(mod.redact_text(keep), keep, f"code expression over-redacted: {keep}")
+    for text in (
+      f"Your Devin Login Code | Thu, 29 Oct 2026 Your code {code} expires",
+      f"Your one-time code is:{code}",
+      f"驗證碼#{code}",
+    ):
+      out = mod.redact_text(text)
+      self.assertNotIn(code, out, f"OTP leaked: {text}")
+      self.assertEqual(mod.redact_text(out), out, f"OTP redaction must be idempotent: {text}")
+    split_mail = mod.redact_obj({
+      "subject": f"Your Devin login code - {code}",
+      "body": "Enter this code in the original window." + "x" * 80 + f" {code} expires",
+    })
+    self.assertNotIn(code, json.dumps(split_mail, ensure_ascii=False), "OTP in a separate body field leaked")
+    prose = "Copy it now: see release-notes-2026-11-22-abcdefgh.md"
+    self.assertEqual(mod.redact_text(prose), prose, "show-once rule must stay on AX rows")
+    b64_out = mod.redact_text("\t\t94 text AbCd12+/EfGh34==IjKl56MnOp78 Copy it now.")
+    self.assertIn("94 text [REDACTED] Copy it now.", b64_out)
+    for row in (
+      "+ 94 text ory_pat_KfwbQmXcPLRTzQaM7XP4BcRvoNVCaHB8Xt Copy it now.",
+      "94 text /KfwbQmXcPLRTzQaM7XP4BcRvoNVCaHB8Xt+ab== Copy it now.",
+    ):
+      self.assertNotIn("KfwbQmXcPLRTzQaM7XP4", mod.redact_text(row), f"show-once key leaked: {row[:20]}")
 
 
 def analysis_with_media(media):
