@@ -17,6 +17,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -224,11 +225,25 @@ def parse_answer(text):
   return answer["outcome"], answer["progressed"]
 
 
+# 會先思考的判定模型（Gemini Pro 實測 270–512 token）思考也算在上限內，512 會截斷或回空白；對齊 session-audit 送同一 relay 的值。
+JUDGE_MAX_OUTPUT_TOKENS = 32768
+# 免費池 20 次判讀連發會撞每分鐘限流；只有 429 等一下重試，其他失敗照舊整份不產生判定。
+RATE_LIMIT_WAITS = (30, 60, 120, 240)
+
+
+def rate_limit_waits():
+  # 只給測試把等待歸零用。
+  raw = os.environ.get("RETRO_JUDGE_429_WAITS")
+  if raw is None:
+    return RATE_LIMIT_WAITS
+  return tuple(float(part) for part in raw.split(",") if part.strip())
+
+
 def call_model(config, condition, blocks):
   prompt = "重犯條件：\n" + condition + "\n\n待判回應：\n" + present(blocks)
   body = {
     "model": config["model"],
-    "max_tokens": 512,
+    "max_tokens": JUDGE_MAX_OUTPUT_TOKENS,
     "system": SYSTEM_PROMPT,
     "messages": [{"role": "user", "content": prompt}],
   }
@@ -236,22 +251,27 @@ def call_model(config, condition, blocks):
   key = os.environ.get("RETRO_JUDGE_API_KEY")
   if key:
     headers["authorization"] = "Bearer " + key
-  request = urllib.request.Request(
-    config["endpoint"], data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
-  )
-  try:
-    with urllib.request.build_opener(RefuseRedirect).open(request, timeout=config["timeout"]) as response:
-      raw_bytes = response.read()
-  except urllib.error.HTTPError as error:
-    raise ModelFailure("http_error", "model endpoint answered HTTP " + str(error.code)) from error
-  except (socket.timeout, TimeoutError) as error:
-    raise ModelFailure("timeout", "model call timed out") from error
-  except urllib.error.URLError as error:
-    if isinstance(error.reason, (socket.timeout, TimeoutError)):
+  data = json.dumps(body).encode("utf-8")
+  waits = list(rate_limit_waits())
+  while True:
+    request = urllib.request.Request(config["endpoint"], data=data, headers=headers, method="POST")
+    try:
+      with urllib.request.build_opener(RefuseRedirect).open(request, timeout=config["timeout"]) as response:
+        raw_bytes = response.read()
+      break
+    except urllib.error.HTTPError as error:
+      if error.code == 429 and waits:
+        time.sleep(waits.pop(0))
+        continue
+      raise ModelFailure("http_error", "model endpoint answered HTTP " + str(error.code)) from error
+    except (socket.timeout, TimeoutError) as error:
       raise ModelFailure("timeout", "model call timed out") from error
-    raise ModelFailure("connection_error", "cannot reach the model endpoint") from error
-  except (http.client.HTTPException, OSError) as error:
-    raise ModelFailure("connection_error", "cannot reach the model endpoint") from error
+    except urllib.error.URLError as error:
+      if isinstance(error.reason, (socket.timeout, TimeoutError)):
+        raise ModelFailure("timeout", "model call timed out") from error
+      raise ModelFailure("connection_error", "cannot reach the model endpoint") from error
+    except (http.client.HTTPException, OSError) as error:
+      raise ModelFailure("connection_error", "cannot reach the model endpoint") from error
   try:
     raw = raw_bytes.decode("utf-8")
     content = json.loads(raw).get("content")

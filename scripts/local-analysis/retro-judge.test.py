@@ -600,6 +600,44 @@ class JudgeCLI(unittest.TestCase):
     self.assertEqual(error["failure"], "connection_error")
     self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
 
+  def test_rate_limit_is_retried_and_thinking_models_get_room_to_answer(self):
+    # 2026-11-24 retro：免費池 20 次判讀連發撞 429 會整份作廢；Gemini Pro 思考吃掉 270–512 token，上限 512 會截斷或回空白。
+    spec = self.spec(
+      condition=MODEL_CONDITION,
+      old=group("old-run-", violated=6, followed=4, marked=True),
+      new=group("new-run-", violated=2, followed=8, marked=True),
+    )
+    no_wait = {"RETRO_JUDGE_429_WAITS": "0,0,0,0"}
+
+    def limited(times):
+      def reply(index, raw):
+        if index in times:
+          return 429, {"error": "rate limited"}, 0
+        return FakeModel().by_marker(index, raw)
+      return reply
+
+    model = self.fake(limited({3, 4}))
+    out = self.judge(spec, model=model, apply=True, env=no_wait)
+    self.assertEqual(out["verdict"], "effective")
+    self.assertEqual(len(model.requests), 22)
+    self.assertEqual(len(self.rows()), 1)
+    self.assertEqual({json.loads(raw)["max_tokens"] for raw in model.requests}, {32768})
+
+    # 一直 429 就照舊失敗、不寫判定：一次原始呼叫加 4 次重試後放棄。
+    before = (self.store / "records.jsonl").read_bytes()
+    stuck = self.fake(limited(set(range(5, 10))))
+    error = self.judge(spec, model=stuck, apply=True, code=3, env=no_wait)
+    self.assertEqual(error["failure"], "http_error")
+    self.assertIn("429", error["error"])
+    self.assertEqual(len(stuck.requests), 10)
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+    # 其他 HTTP 錯誤不重試。
+    broken = self.fake(lambda index, raw: (500, {"error": "boom"}, 0) if index == 2 else FakeModel().by_marker(index, raw))
+    error = self.judge(spec, model=broken, apply=True, code=3, env=no_wait)
+    self.assertEqual(error["failure"], "http_error")
+    self.assertEqual(len(broken.requests), 3)
+
   # ---- 程式判斷式本身判得對 -------------------------------------------------------------------
 
   def per_run_outcomes(self, condition, commands, tool="Bash", field="command"):
