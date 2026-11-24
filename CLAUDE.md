@@ -157,11 +157,10 @@ digest 階段展開原文（解讀 / 摘要 / 引用）時**按來源分流**。
 
 ## 已知 fetcher gap
 
-- Reddit 5 個 sub：**2026-08-11 起 fetcher 改抓 `www.reddit.com/r/X/top.rss`**（`reddit.py`）。沿革：`.json` 未認證早已 403；`old.reddit.com/r/X/top/` 列表 HTML 撐到 2026-08-11 當天開始對未認證請求回 **302 → `/login?reason=lor2`**（5 個 sub 全中、與 VPN / IP 無關，出口是中華電信住宅 IP 一樣擋）。因為 httpx 設 `follow_redirects=True`，跟過去拿到的是**登入頁的 200**，解析 0 篇 → 不拋錯、`fetched=0` → 三個統計位置（`sources_active` / failures / stale）全部隱形，靜默失效整整一天才被 digest 撰寫時的跨天數字比對抓到。
-  - **官方 API 不是退路**：Reddit 於 **2025-11-11 關閉自助申請**（Responsible Builder Policy），新 token 需人工審核；2026-08-05 CTO 另宣布會逐步限縮所有新請求。既有 app 不受影響，但本 repo 沒有舊 app。
-  - **RSS 的取捨**：拿得到 title / permalink / author / timestamp / **selftext**（比舊列表頁更好，舊的沒有內文），但**拿不到 `score` 與 `num_comments`** —— `engagement={}`，熱度只剩 feed 順序（`top?t=day` 決定）。想要絕對數字只有官方 API 一條路。arctic-shift 補不了：它是快照存檔，當天貼文的 score 全是 1，約 2 天後才成熟。
-  - **節流是這條路的主要風險**：Reddit 對 RSS 擋很兇，pipeline 又是 `asyncio.gather` 全並行。`reddit.py` 因此用 module-level lock 把請求序列化（`MIN_REQUEST_GAP_SECONDS=45`）＋ 429 退避重試一次（`THROTTLED_RETRY_DELAY_SECONDS=90`），並用 `TOTAL_BUDGET_SECONDS=300` 封頂。`run-daily.sh` 看門狗是 3300s（linux.do 50 頁慢速抓取的 source budget 3000s 之上）。**調這三個常數前先讀 `reddit.py` 檔頭**。2026-08-11 實測：3 個 sub 全數成功、總耗時 183 秒。
-  - **靜默失效偵測（同日補上）**：`__main__.py` 計算 `empty = [r for r in results if r.ok and r.items_count() == 0]` 傳進 `render_file`，raw md header 會多出 `sources_empty: N` 與 `> empty (HTTP ok but 0 items parsed…)` 區塊。另 `classify_error` 把 **429 從 `persistent_error` 改判 `transient`**（節流可重試，原分類等於「重試也沒用」）。
+- Reddit 5 個 sub：**2026-11-24 起 fetcher 改抓 Arctic Shift `arctic-shift.photon-reddit.com/api/posts/search`**（`reddit.py`）。沿革：`.json` 未認證早已 403；`old.reddit.com/r/X/top/` 於 2026-08-11 改 302 `/login?reason=lor2`；`www.reddit.com/r/X/top.rss` 撐到 2026-11-17（官方 2026-10-08 changelog 公告於 2026-11-13 永久停用原生 RSS，無官方替代方案，2026-11-18 起全數回 404）。
+  - **官方 API 不是退路**：Reddit 於 2025-11-11 關閉自助申請、2026-10-31 停收公開 Data API 新申請，並預告 2027-03 全面終止剩餘公開 API。
+  - **Arctic Shift 的取捨**：免認證、免費且**恢復真實 `score` 與 `num_comments`**（寫入 `engagement`），同時保留 `selftext` 與外連 `url`。但 API 單頁上限 100、不支援伺服器端按 `score` 排序，且發文 0–3 小時內的新帖分數可能尚未刷新（約 2.5–4.3 小時後批次更新）。`reddit.py` 因此以 30 小時視窗＋ `before` 分頁（每 sub 上限 5 頁）抓齊候選、過濾 `removed_by_category`／`[removed]`／`[deleted]`，在 client 端按 `(score, comments, created_utc)` 排序取 top N；請求經 module-level lock 間隔 `0.5s`（429 最多退避重試 2 次），屬第三方個人維運歸檔、無官方 SLA。
+  - **靜默失效偵測（2026-08-11 補上）**：`__main__.py` 計算 `empty = [r for r in results if r.ok and r.items_count() == 0]` 傳進 `render_file`，raw md header 會多出 `sources_empty: N` 與 `> empty (HTTP ok but 0 items parsed…)` 區塊。另 `classify_error` 把 429 判為 `transient`。
 - Threads `threads_keyword` Apify actor 計費不受 `maxItemsPerKeyword` 限制（估約 US$94/月），目前停用（見 `sources.yml`）
 - HN 抓 front_page link + 每則 story 的 top 5 comments（Firebase API，2026-05-11 之後）；不抓巢狀回覆
 - X 目前透過 Apify Advanced Search 送 `from:<handle>`，會一併抓取作者發出的回覆（不抓別人的回覆、引用或關鍵字搜尋；受限每帳號每日 10 筆，留意回覆是否擠佔主貼文名額）

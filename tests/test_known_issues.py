@@ -28,7 +28,7 @@ def test_user_action_section() -> None:
     out = render([_issue("reddit_localllama", "user_action_required")], NOW)
     assert "🚨 User action required" in out
     assert "reddit_localllama" in out
-    assert "VPN" in out
+    assert "arctic-shift" in out
 
 
 def test_persistent_section() -> None:
@@ -79,7 +79,8 @@ def test_reddit_and_twitter_hints_match_active_fetchers() -> None:
         ],
         NOW,
     )
-    assert "top.rss" in out
+    assert "arctic-shift" in out
+    assert "top.rss" not in out
     assert "old.reddit.com" not in out
     assert "OAuth API" not in out
     assert out.count("ScrapeBadger") == 2

@@ -16,9 +16,9 @@ from typing import Any
 TAIPEI = timezone(timedelta(hours=8))
 
 _REDDIT_HINT = (
-    "fetcher 抓 www.reddit.com/r/X/top.rss（官方自助 API 已關閉、old.reddit 列表頁亦已封鎖）。"
-    "若回 403 多半是雲端 / VPN 出口 IP 被擋，關掉 VPN 後跑 `uv run python -m social_info --retry-failures` 補抓；"
-    "若回 429 為 RSS 節流，下次排程會依退避序列重試。"
+    "fetcher 抓 arctic-shift.photon-reddit.com/api/posts/search（Reddit 已於 2026-11-13 永久終止原生 RSS、"
+    "官方公開 API 亦已關申請）。若回 429/5xx 多半是 Arctic Shift 上游限流或維護，稍後跑 "
+    "`uv run python -m social_info --retry-failures` 補抓；若持續不可用需改評估 Apify 備援或停用來源。"
 )
 
 _TWITTER_HINT = (

@@ -371,11 +371,10 @@ async def test_wewe_rss_none_title_link_and_year_10000(httpx_mock, monkeypatch):
     assert len(items_none) == 1
 
 
-@pytest.mark.parametrize("year", [0, 10000])
-def test_reddit_entry_posted_at_extreme_year_returns_fallback(year):
+@pytest.mark.parametrize("ts", [10**15, -(10**15), "not-a-ts", float("inf")])
+def test_reddit_post_posted_at_extreme_epoch_returns_fallback(ts):
     fallback = datetime(2026, 11, 21, 0, 0, 0)
-    entry = {"published_parsed": time.struct_time((year, 1, 1, 0, 0, 0, 0, 1, 0))}
-    assert reddit._entry_posted_at(entry, fallback) == fallback
+    assert reddit._post_posted_at({"created_utc": ts}, fallback) == fallback
 
 
 @pytest.mark.asyncio
