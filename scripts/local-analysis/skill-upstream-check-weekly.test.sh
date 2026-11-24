@@ -217,7 +217,16 @@ git -C "$FIX/skills/fx-git-dir-ahead" add -A
 git -C "$FIX/skills/fx-git-dir-ahead" commit --quiet -m "local edit"
 # -----------------------------------------------------------------------------
 
-PATH="$FIX/bin:$PATH" SKILLS_DIR="$FIX/skills" VENDOR_DIR="$FIX/vendor" AGENTS_SKILLS_DIR="$FIX/agents-skills" SKILL_LOCK_FILE="$FIX/skill-lock.json" LOG_DIR="$FIX/logs" LOCAL_ANALYSIS_DATE="2026-01-02" bash "$SCRIPT_DIR/skill-upstream-check-weekly.sh"
+# --- Herdr 外掛上游對賬三件 fixture，2026-11-24 加 ---
+# 相同（agents）、官方有改（pane：一行換掉）、缺底稿（layouts/main.json）；缺底稿是巡邏失效，要進升級段。
+mkdir -p "$FIX/herdr-home/mods/agents" "$FIX/herdr-home/mods/pane" "$FIX/herdr-home/layouts" "$FIX/herdr-base/mods/agents" "$FIX/herdr-base/mods/pane"
+printf 'same\n' | tee "$FIX/herdr-home/mods/agents/main.js" > "$FIX/herdr-base/mods/agents/main.js"
+printf 'keep\nold\n' > "$FIX/herdr-base/mods/pane/main.js"
+printf 'keep\nnew\n' > "$FIX/herdr-home/mods/pane/main.js"
+printf '{}\n' > "$FIX/herdr-home/layouts/main.json"
+printf '0.0.1\n' > "$FIX/herdr-base/VERSION"
+
+PATH="$FIX/bin:$PATH" SKILLS_DIR="$FIX/skills" VENDOR_DIR="$FIX/vendor" AGENTS_SKILLS_DIR="$FIX/agents-skills" SKILL_LOCK_FILE="$FIX/skill-lock.json" LOG_DIR="$FIX/logs" LOCAL_ANALYSIS_DATE="2026-01-02" HERDR_APP_HOME="$FIX/herdr-home" HERDR_MOD_BASE="$FIX/herdr-base" bash "$SCRIPT_DIR/skill-upstream-check-weekly.sh"
 report="$FIX/logs/2026-01-02.md"
 
 pass=0; fail=0
@@ -261,6 +270,19 @@ check_absent "loop1 邊界：detached 不給 git pull（釘死版本不該被當
 check "loop1 標籤：本機領先報 ℹ️ 領先、附上游 ref" "ℹ️ fx-git-dir-ahead — 本機領先上游 1 commits"
 check_absent "loop1 標籤：本機領先不得報成落後 0 commits" "fx-git-dir-ahead — 0 commits behind"
 check_absent "loop1 標籤：本機領先不得建議 git pull" "fx-git-dir-ahead && git pull"
+
+# --- Herdr 外掛上游對賬 2026-11-24 加 ---
+check "herdr 底稿版本照 VERSION 印出" "底稿對到 Herdr 0\.0\.1"
+check "herdr 官方檔與底稿相同報 ✅" "✅ mods/agents/main\.js — 與底稿相同"
+check "herdr 官方檔有變動報 🔔 與行數" "🔔 \*\*mods/pane/main\.js — 官方版有變動（\+1 −1 行）\*\*，看要不要合進 philip-pane"
+check "herdr 變動附推進底稿指令" "cp $FIX/herdr-home/mods/pane/main\.js $FIX/herdr-base/mods/pane/main\.js"
+check "herdr 缺底稿報 ⚠️" "⚠️ \*\*layouts/main\.json\*\* — 找不到底稿"
+if [ "$(grep -c '⚠️ \*\*layouts/main.json\*\* — 找不到底稿' "$report")" -ge 2 ]; then
+  echo "PASS: herdr 缺底稿進升級段"; pass=$((pass+1))
+else
+  echo "FAIL: herdr 缺底稿沒進升級段"; fail=$((fail+1))
+fi
+check_absent "herdr 相同的檔不報 🔔" "🔔 \*\*mods/agents/main\.js"
 check "tampered installed skill 報 drift" "⚠️ \*\*tampered-skill\*\* — installed skill 與 lock hash 不符"
 check "missing installed skill 報 drift" "⚠️ \*\*missing-skill\*\* — lock 有紀錄，但已安裝 skill 目錄不存在"
 primary_lock_drift_count=$(python3 - "$report" <<'PY'
