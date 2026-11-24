@@ -588,7 +588,19 @@ EXPR_FOLLOWUP_RE = re.compile(r"[ \t]+(?=[A-Za-z_$\(\[\{`'\"])")
 SUBSCRIPT_VALUE_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$.]*(?:\[[^\]\s]+\])+$")
 # 只認雙引號：shell 單引號裡的 `$` 是字面字元，`'$MySecret1'` 是真密碼。`"$argon2id$..."` 這類雜湊不是整段變數，照遮。
 SHELL_SUBST_RE = re.compile(r"^\\?\"\$(?:\(|\{[A-Za-z_][A-Za-z0-9_]*:?[-=]\$\()")
-SUBST_SECRET_FLAG_RE = re.compile(r"(?i)(--?(?:password|passwd|pass|pwd|token|secret|api[-_]?key|auth[-_]?token|access[-_]?token)(?:=|[ \t]+))(\\?'[^'\r\n]*'|[^\s\"')`\\]+)")
+SUBST_SECRET_FLAG_RE = re.compile(
+  r"(?i)(--?(?:password|passwd|pass|pwd|token|secret|api[-_]?key|auth[-_]?token|access[-_]?token)(?:=|[ \t]+))"
+  r"(\\?'[^'\r\n]*'|\\?\"(?:[^\"\\\r\n]|\\(?!\"))*\\?\"|[^\s\"')`\\]+)"
+)
+# 單行 `$(...)`，容許一層巢狀括號；跨行的指令替換不在範圍內。
+SUBST_SPAN_RE = re.compile(r"\$\((?:[^()\r\n]|\([^()\r\n]*\))*\)")
+
+
+def _redact_subst_flag(match):
+  # `$VAR`／`"${TOKEN}"` 是變數引用不是外洩；指令包在程式字串裡時引號會帶反斜線（`--password=\\'X\\'`）。
+  if match.group(2).lstrip("\\'\"").startswith("$"):
+    return match.group(0)
+  return f"{match.group(1)}[REDACTED]"
 # 變數名只認環境變數（全大寫）或純小寫單字；`"$a8f3k92x"` 這種亂碼名在 .env／Python 裡是字面密碼。
 SHELL_VAR_REF_RE = re.compile(r"^\\?\"\$(\{)?(?:[A-Z_][A-Z0-9_]*|[a-z]+(?:_[a-z]+)*|[a-z]+(?:[A-Z][a-z]+)+)(?(1)\})\\?\"$")
 
@@ -809,11 +821,7 @@ def redact_text(value):
       if SHELL_SUBST_RE.match(raw_val.strip()):
         inner = ASSIGNMENT_RE.sub(replace_assignment, raw_val)
         # 舊版會整段遮掉 `TOKEN="$(cmd --password=X)"`；外層改放行後，命令列旗標的字面密碼要另外遮，不能變成舊遮新露。
-        inner = SUBST_SECRET_FLAG_RE.sub(
-          # 指令包在程式字串裡時引號會帶反斜線（`--password=\\'X\\'`）。
-          lambda m: m.group(0) if m.group(2).lstrip("\\'").startswith("$") else f"{m.group(1)}[REDACTED]",
-          inner,
-        )
+        inner = SUBST_SECRET_FLAG_RE.sub(_redact_subst_flag, inner)
         return f"{key_name}{sep}{inner}"
       # 引號字串與 shell 展開不往裡找：`${TOKEN:-unset}` 的冒號不是賦值。
       if raw_val[:1] in "\"'$":
@@ -891,6 +899,8 @@ def redact_text(value):
     else match.group(0),
     text,
   )
+  # `X="$(cli --password "Y")"` 內層的雙引號會讓下一行 assignment 的引號值提早結束、看不到內層旗標，所以先在 `$(...)` 範圍內遮。
+  text = SUBST_SPAN_RE.sub(lambda m: SUBST_SECRET_FLAG_RE.sub(_redact_subst_flag, m.group(0)), text)
   text = ASSIGNMENT_RE.sub(replace_assignment, text)
   text = MFA_CODE_RE.sub(r"\1[REDACTED]\2", text)
   text = _redact_cjk_secret_labels(text)

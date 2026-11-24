@@ -3330,6 +3330,24 @@ class SessionAuditCliTest(unittest.TestCase):
     ):
       self.assertNotIn("KfwbQmXcPLRTzQaM7XP4", mod.redact_text(row), f"show-once key leaked: {row[:20]}")
 
+  def test_redaction_double_quoted_secret_flags_inside_command_substitution(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_dq_flags", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # 2026-11-24 retro 第 6 步：單引號值會遮，雙引號（含程式字串裡的 \"）卻原樣送出去。
+    for leak, secret in (
+      ('DB_PASSWORD="$(mysql-cli --password "Zx9FakePassw0rdQ7" status)"', "Zx9FakePassw0rdQ7"),
+      ('API_TOKEN="$(fakecli --token="FakeTok3nValue12345678" get)"', "FakeTok3nValue12345678"),
+      ('TOKEN="$(cli login --password=\\"RealPass123\\")"', "RealPass123"),
+      ('TOKEN="$(cli login --secret \\"RealPass123\\" --verbose)"', "RealPass123"),
+    ):
+      self.assertNotIn(secret, mod.redact_text(leak), f"literal secret leaked: {leak}")
+    for keep in (
+      'TOKEN="$(cli login --password "$DB_PASS")"',
+      'TOKEN="$(cli login --token="${API_TOKEN}")"',
+    ):
+      self.assertEqual(mod.redact_text(keep), keep, f"variable reference over-redacted: {keep}")
+
 
 def analysis_with_media(media):
   return openai(
