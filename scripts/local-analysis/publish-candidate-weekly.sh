@@ -33,6 +33,7 @@ HOME_DIR="${PUBLISH_CANDIDATE_HOME:-$HOME}"
 REPO_DIR="${PUBLISH_CANDIDATE_REPO_DIR:-/Users/linhancheng/code/social-info}"
 EXPORT_SCRIPT="${PUBLISH_CANDIDATE_EXPORT_SCRIPT:-$HOME_DIR/.claude/scripts/harness-export/export.mjs}"
 CONFIG_DIR="${PUBLISH_CANDIDATE_CONFIG_DIR:-$HOME_DIR/.claude/scripts/harness-export/private}"
+TRIALS_DIR="${PUBLISH_CANDIDATE_TRIALS_DIR:-$HOME_DIR/Desktop/projects/.claude/trials}"
 PUBLIC_DIR="${PUBLISH_CANDIDATE_PUBLIC_DIR:-$HOME_DIR/Desktop/projects/claude-harness-public}"
 NODE_BIN="${PUBLISH_CANDIDATE_NODE:-/opt/homebrew/bin/node}"
 CLAUDE="${PUBLISH_CANDIDATE_CLAUDE_BIN:-/Users/linhancheng/.local/bin/claude}"
@@ -129,7 +130,38 @@ changed_config_files() {
   return 0
 }
 
-# 白名單之外、上次發布後新出現的項目（絕對路徑，每行一個）。
+# 讀取 observing.json（若有），分成「仍觀察中先略過」與「到期／已畢業需自動重提」兩份絕對路徑清單。
+# 判斷是否重提：review_date <= $DATE，或 trial 名稱已不在 active.md 而在 archived.md 出現。
+resolve_observing() { # resolve_observing <skip_out> <due_out>
+  local skip_out="$1" due_out="$2" obs="$CONFIG_DIR/observing.json"
+  : > "$skip_out"; : > "$due_out"
+  [ -f "$obs" ] || return 0
+  local src trial review_date abs due
+  while IFS=$'\t' read -r src trial review_date; do
+    [ -n "$src" ] || continue
+    abs="$(printf '%s' "$src" | sed "s|^~/|$HOME_DIR/|")"
+    [ -e "$abs" ] || continue
+    due=0
+    if [ -n "$review_date" ] && [ ! "$DATE" \< "$review_date" ]; then
+      due=1
+    elif [ -n "$trial" ] && [ -f "$TRIALS_DIR/archived.md" ]; then
+      if grep -qE "^## ${trial}([[:space:](\[]|\$)" "$TRIALS_DIR/archived.md" 2>/dev/null; then
+        if [ ! -f "$TRIALS_DIR/active.md" ] || ! grep -qE "^## ${trial}([[:space:](\[]|\$)" "$TRIALS_DIR/active.md" 2>/dev/null; then
+          due=1
+        fi
+      fi
+    fi
+    if [ "$due" -eq 1 ]; then
+      echo "$abs" >> "$due_out"
+    else
+      echo "$abs" >> "$skip_out"
+    fi
+  done < <(jq -r '.entries[]? | [(.source // ""), (.trial // ""), (.review_date // "")] | @tsv' "$obs" 2>/dev/null)
+  return 0
+}
+
+# 白名單之外、上次發布後新出現的項目（絕對路徑，每行一個）；
+# 同時整合 observing.json：未到期觀察項先略過，已到期或已自 active.md 畢業進 archived.md 的項目自動重新拉回候選。
 # 根目錄 = 白名單每個條目來源的上一層；只有該根目錄底下有「目錄條目」時才把子目錄算項目，否則只算直屬檔案，
 # 不然 ~/.claude 頂層每週新增的 memory／sessions 目錄都會被當成新元件。
 list_new_items() {
@@ -157,8 +189,11 @@ list_new_items() {
       echo "$abs"
     done >> "$TMP/cand"
   done < "$TMP/roots"
+  resolve_observing "$TMP/obs-skip" "$TMP/obs-due"
+  cat "$TMP/obs-due" >> "$TMP/cand"
   sort -u "$TMP/cand" | while IFS= read -r abs; do
     grep -qxF -- "$abs" "$TMP/sources" && continue
+    grep -qxF -- "$abs" "$TMP/obs-skip" && continue
     covered=0
     while IFS= read -r d; do
       case "$abs" in "$d"/*) covered=1; break ;; esac

@@ -495,6 +495,33 @@ run_channel nodiff ok; R="$(report)"
 assert_contains "no origin/main → no-diff week still says there is no candidate" "$NO_CAND" "$R"
 assert_not_contains "no origin/main → no-diff report has no divergence line" "$DIVERGE" "$R"
 
+# ---------------------------------------------------------------- 15. observing.json（觀察中略過＋到期／畢業自動重提）
+setup_world
+mkdir -p "$W/trials"
+printf '## trial-graduated (2026-10-20)\n' > "$W/trials/archived.md"
+printf '## trial-still-active (2026-10-20)\n' > "$W/trials/active.md"
+# 兩個建檔早於 PUB_DATE 的舊檔：一個 review_date 到期、一個 trial 已歸檔畢業；加上一個尚未到期的當週新檔與一個已進白名單的項目。
+printf 'echo old due\n' > "$W/home/.claude/hooks/obs-due.sh"
+printf 'echo old grad\n' > "$W/home/.claude/hooks/obs-grad.sh"
+git -C "$W/home/.claude" add hooks/obs-due.sh hooks/obs-grad.sh
+git_commit "$W/home/.claude" "2026-09-10T00:00:00+00:00" "private: old observing hooks"
+cat > "$W/home/.claude/scripts/harness-export/private/observing.json" <<'JSON'
+{"entries":[
+  {"source":"~/.claude/hooks/new-gate.sh","trial":"trial-still-active","review_date":"2026-10-20","reason":"still observing"},
+  {"source":"~/.claude/hooks/obs-due.sh","trial":"trial-due","review_date":"2026-10-06","reason":"review date reached"},
+  {"source":"~/.claude/hooks/obs-grad.sh","trial":"trial-graduated","review_date":"2026-10-20","reason":"graduated early"},
+  {"source":"~/.claude/hooks/a.sh","trial":"trial-already-public","review_date":"2026-10-01","reason":"already in allowlist"},
+  {"source":"~/.claude/hooks/deleted-trial.sh","trial":"trial-killed","review_date":"2026-10-01","reason":"deleted after kill"}
+]}
+JSON
+run_channel diff ok PUBLISH_CANDIDATE_TRIALS_DIR="$W/trials"
+PROMPT_OBS="$(cat "$W/prompt.capture" 2>/dev/null | sed -n '/===== 新增項目 =====/,$p')"
+assert_not_contains "observing item before review_date is skipped" "~/.claude/hooks/new-gate.sh" "$PROMPT_OBS"
+assert_contains "observing item past review_date resurfaces despite predating last publish" "~/.claude/hooks/obs-due.sh" "$PROMPT_OBS"
+assert_contains "observing item graduated to archived.md resurfaces early" "~/.claude/hooks/obs-grad.sh" "$PROMPT_OBS"
+assert_not_contains "observing item already in allowlist does not resurface" "~/.claude/hooks/a.sh" "$PROMPT_OBS"
+assert_not_contains "deleted observing item does not resurface" "deleted-trial.sh" "$PROMPT_OBS"
+
 # ---------------------------------------------------------------- 12. 真實 export.mjs 整合（CLI 參數與輸出格式沒有跟替身脫節）
 REAL_NODE="$(command -v node || echo /opt/homebrew/bin/node)"
 if [ -f "$REAL_EXPORT" ] && [ -x "$REAL_NODE" ]; then
