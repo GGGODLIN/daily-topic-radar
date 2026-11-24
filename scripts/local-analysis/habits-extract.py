@@ -26,13 +26,17 @@ exit 2 = 參數錯誤或 ccsi 失敗；exit 3 = 三段合計 0 則訊息（多�
 import argparse
 import collections
 import datetime as dt
+import errno
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 HOME = Path.home()
 DEFAULT_OUT_DIR = HOME / "code" / "social-info" / "reports" / "local-analysis" / "habits"
@@ -61,20 +65,52 @@ SKIP_PREFIXES = (
 )
 
 
+def parse_iso_timestamp(ts):
+    """解析 ISO 時間戳；回傳 (sort_key, utc_or_naive_date) 或非法時回 None。"""
+    if not isinstance(ts, str):
+        return None
+    raw = ts.strip()
+    if len(raw) < 10 or not DATE_RE.match(raw[:10]):
+        return None
+    try:
+        dt.date.fromisoformat(raw[:10])
+        if len(raw) == 10:
+            parsed = dt.datetime.fromisoformat(raw)
+        else:
+            parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        utc = parsed.astimezone(dt.timezone.utc)
+        return (utc.replace(tzinfo=None).isoformat(), utc.date().isoformat())
+    return (parsed.isoformat(), parsed.date().isoformat())
+
+
 def parse_user_message(event):
     """回傳 (ts, session, project, text)；不是使用者本人打的訊息回 None。"""
+    if not isinstance(event, dict):
+        return None
     if event.get("role") != "user":
         return None
-    path = event.get("path") or ""
-    if "/subagents/" in path or PROJECT_MARK not in path:
+    path = event.get("path")
+    if not isinstance(path, str) or "/subagents/" in path or PROJECT_MARK not in path:
         return None
-    text = (event.get("text") or "").strip()
+    raw_text = event.get("text")
+    if not isinstance(raw_text, str):
+        return None
+    text = raw_text.strip()
     if not text or text.startswith(SKIP_PREFIXES) or len(text) > MAX_MESSAGE_CHARS:
         return None
     if "task-notification" in text or "system-reminder" in text:
         return None
+    raw_ts = event.get("ts")
+    if raw_ts is not None and not isinstance(raw_ts, str):
+        return None
+    raw_session = event.get("session")
+    if raw_session is not None and not isinstance(raw_session, str):
+        return None
     project = re.sub(r".*/projects/-Users-linhancheng-", "", path).split("/")[0]
-    return (event.get("ts") or "", event.get("session") or "", project, text)
+    return (raw_ts or "", raw_session or "", project, text)
 
 
 def collect_messages(events):
@@ -90,12 +126,14 @@ def collect_messages(events):
             continue
         seen.add(key)
         out.append(parsed)
-    out.sort()
+    out.sort(key=lambda m: ((parse_iso_timestamp(m[0]) or (m[0], ""))[0], m[0], m[1], m[2], m[3]))
     return out
 
 
 def segment_bounds(date):
     """回傳三段 (start, end)，皆含頭尾；最後一段的 end 是 date 當天。"""
+    if not isinstance(date, str) or not DATE_RE.match(date):
+        raise ValueError(f"date must be YYYY-MM-DD: {date!r}")
     end = dt.date.fromisoformat(date)
     first = end - dt.timedelta(days=WINDOW_DAYS - 1)
     bounds = []
@@ -106,7 +144,10 @@ def segment_bounds(date):
 
 
 def in_segment(message, start, end):
-    return start <= message[0][:10] <= end
+    parsed = parse_iso_timestamp(message[0])
+    if parsed is None:
+        return False
+    return start <= parsed[1] <= end
 
 
 def format_body_line(message):
@@ -138,43 +179,13 @@ def split_slice_parts(index, start, end, messages, max_part_bytes=MAX_PART_BYTES
     body = [m for m in messages if len(m[3]) > SHORT_MAX_CHARS]
     sessions = {m[1] for m in messages}
     top = "；".join(f"{text}×{n}" for text, n in short.most_common(TOP_SHORT))
-    body_lines = [format_body_line(m) for m in body]
-    if len(body_lines) <= 1:
-        return []
+    body_lines = [format_body_line(m) + "\n" for m in body]
+    line_sizes = [len(line.encode("utf-8")) for line in body_lines]
 
-    chunks = []
-    cur = []
-    cur_bytes = 0
-    # 預留約 1,500 bytes 給檔頭與短回覆統計（part 1 帶短回覆表）
-    first_budget = max(4_000, max_part_bytes - len(top.encode("utf-8")) - 600)
-    other_budget = max(4_000, max_part_bytes - 400)
-    for line in body_lines:
-        line_bytes = len((line + "\n").encode("utf-8"))
-        budget = first_budget if not chunks else other_budget
-        if cur and cur_bytes + line_bytes > budget:
-            chunks.append(cur)
-            cur = [line]
-            cur_bytes = line_bytes
-        else:
-            cur.append(line)
-            cur_bytes += line_bytes
-    if cur:
-        chunks.append(cur)
-
-    # 若超過上限批數，平均重分批以避免爆出過多小 agent
-    if len(chunks) > MAX_PARTS_PER_SLICE:
-        per = (len(body_lines) + MAX_PARTS_PER_SLICE - 1) // MAX_PARTS_PER_SLICE
-        chunks = [body_lines[i : i + per] for i in range(0, len(body_lines), per)]
-
-    total_parts = len(chunks)
-    if total_parts <= 1:
-        return []
-
-    rendered = []
-    for part_no, part_lines in enumerate(chunks, start=1):
+    def header(part_no, total_parts, part_len):
         lines = [
             f"# 第 {index} 段第 {part_no}/{total_parts} 批：{start} ~ {end}，"
-            f"本批 {len(part_lines)} 則正文訊息（全段共 {len(messages)} 則使用者訊息、{len(sessions)} 個 session）",
+            f"本批 {part_len} 則正文訊息（全段共 {len(messages)} 則使用者訊息、{len(sessions)} 個 session）",
         ]
         if part_no == 1:
             lines.extend([
@@ -183,17 +194,55 @@ def split_slice_parts(index, start, end, messages, max_part_bytes=MAX_PART_BYTES
                 "",
             ])
         lines.append("## 訊息全文（時間｜session｜專案｜內容）")
-        lines.extend(part_lines)
-        rendered.append((part_no, "\n".join(lines) + "\n", len(part_lines)))
-    return rendered
+        return "\n".join(lines) + "\n"
+
+    # 批號及總批數的位數會改變檔頭大小，需依實際批數檢查位元組。
+    for total_parts in range(1, min(MAX_PARTS_PER_SLICE, len(body_lines)) + 1):
+        spans = []
+        first = 0
+        for part_no in range(1, total_parts + 1):
+            last = first
+            used = 0
+            header_base = len(header(part_no, total_parts, 0).encode("utf-8")) - 1
+            while last < len(body_lines):
+                next_size = used + line_sizes[last]
+                if header_base + len(str(last - first + 1)) + next_size > max_part_bytes:
+                    break
+                used = next_size
+                last += 1
+            if last == first:
+                break
+            spans.append((first, last))
+            first = last
+        if first == len(body_lines) and len(spans) == total_parts:
+            return [
+                (part_no, header(part_no, total_parts, last - first) + "".join(body_lines[first:last]), last - first)
+                for part_no, (first, last) in enumerate(spans, start=1)
+            ]
+    return []
 
 
 def write_private(path, text):
-    # O_NOFOLLOW：目標若被換成 symlink 就拒寫，不把私人訊息寫到別處。
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        os.fchmod(f.fileno(), 0o600)
-        f.write(text)
+    # 明確拒絕 symlink 目標，避免將私人訊息寫到別處或覆蓋符號連結。
+    if os.path.islink(path):
+        raise OSError(errno.ELOOP, "refusing symlink target", str(path))
+    directory = os.path.dirname(os.fspath(path)) or "."
+    prefix = f".{os.path.basename(os.fspath(path))}."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.islink(path):
+            raise OSError(errno.ELOOP, "refusing symlink target", str(path))
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
 
 
 def ccsi_events(since):
@@ -204,6 +253,7 @@ def ccsi_events(since):
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        errors="replace",
     )
     for line in proc.stdout:
         try:
@@ -216,7 +266,7 @@ def ccsi_events(since):
 
 
 def file_events(path):
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             try:
                 yield json.loads(line)
@@ -238,8 +288,8 @@ def main(argv=None):
 
     try:
         bounds = segment_bounds(args.date)
-    except ValueError:
-        print(f"--date 必須是 YYYY-MM-DD：{args.date}", file=sys.stderr)
+    except (ValueError, OverflowError):
+        print(f"--date 必須是可回看 {WINDOW_DAYS} 天的 YYYY-MM-DD：{args.date}", file=sys.stderr)
         return 2
 
     try:
@@ -255,18 +305,18 @@ def main(argv=None):
         return 3
 
     out_dir = Path(args.out_dir)
-    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(out_dir, 0o700)
-
+    if out_dir.is_symlink():
+        raise OSError(errno.ELOOP, "refusing symlink out_dir", str(out_dir))
+    if out_dir.exists() and not out_dir.is_dir():
+        raise OSError(errno.ENOTDIR, "out_dir is not a directory", str(out_dir))
+    planned_writes = []
+    planned_paths = set()
     slices = []
     for i, ((start, end), msgs) in enumerate(zip(bounds, per_slice), start=1):
-        # 清理同日重跑可能殘留的舊 part 檔，避免舊批數殘留
-        for stale in out_dir.glob(f"{args.date}-habits-slice-{i}-part-*.txt"):
-            if not stale.is_symlink():
-                stale.unlink()
         text, body_count, session_count = render_slice(i, start, end, msgs)
         path = out_dir / f"{args.date}-habits-slice-{i}.txt"
-        write_private(path, text)
+        planned_writes.append((path, text))
+        planned_paths.add(path)
         slice_entry = {
             "index": i,
             "start": start,
@@ -277,20 +327,44 @@ def main(argv=None):
             "sessions": session_count,
         }
         if len(text.encode("utf-8")) > args.max_part_bytes:
+            parts = split_slice_parts(i, start, end, msgs, max_part_bytes=args.max_part_bytes)
+            if not parts:
+                print(f"第 {i} 段無法切成 {MAX_PARTS_PER_SLICE} 批以內且符合 --max-part-bytes", file=sys.stderr)
+                return 2
             parts_meta = []
-            for part_no, part_text, part_body_count in split_slice_parts(
-                i, start, end, msgs, max_part_bytes=args.max_part_bytes
-            ):
+            for part_no, part_text, part_body_count in parts:
                 part_path = out_dir / f"{args.date}-habits-slice-{i}-part-{part_no}.txt"
-                write_private(part_path, part_text)
+                planned_writes.append((part_path, part_text))
+                planned_paths.add(part_path)
                 parts_meta.append({
                     "part": part_no,
                     "path": str(part_path),
                     "body_messages": part_body_count,
                 })
-            if parts_meta:
-                slice_entry["parts"] = parts_meta
+            slice_entry["parts"] = parts_meta
         slices.append(slice_entry)
+
+    # 預檢所有目標路徑與同日既有 part 檔，任一為 symlink 就於零寫入前拒寫。
+    stale_parts = []
+    for i in range(1, len(bounds) + 1):
+        for existing in out_dir.glob(f"{args.date}-habits-slice-{i}-part-*.txt"):
+            if existing.is_symlink():
+                raise OSError(errno.ELOOP, "refusing symlink part file", str(existing))
+            if existing not in planned_paths:
+                stale_parts.append(existing)
+    for target_path, _ in planned_writes:
+        if target_path.is_symlink():
+            raise OSError(errno.ELOOP, "refusing symlink target", str(target_path))
+
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(out_dir, 0o700)
+    for target_path, content in planned_writes:
+        write_private(target_path, content)
+    for stale in stale_parts:
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
     print(json.dumps({"date": args.date, "since": bounds[0][0], "slices": slices}, ensure_ascii=False))
     return 0
 

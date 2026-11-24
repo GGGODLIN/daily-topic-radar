@@ -17,6 +17,7 @@
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import re
 import sys
@@ -182,13 +183,20 @@ def classify_file_path(fp: str) -> str:
 
 
 def parse_iso_ts(ts_val) -> float:
-    if not ts_val:
+    if not ts_val or isinstance(ts_val, bool):
         return 0.0
     if isinstance(ts_val, (int, float)):
-        return float(ts_val)
+        val = float(ts_val)
+        return val if math.isfinite(val) and val > 0 else 0.0
     if isinstance(ts_val, str):
+        s = ts_val.strip()
+        if not s:
+            return 0.0
+        if s.endswith(("Z", "z")):
+            s = s[:-1] + "+00:00"
         try:
-            return dt.datetime.fromisoformat(ts_val.replace("Z", "+00:00")).timestamp()
+            val = dt.datetime.fromisoformat(s).timestamp()
+            return val if math.isfinite(val) and val > 0 else 0.0
         except Exception:
             return 0.0
     return 0.0
@@ -242,20 +250,47 @@ def recent_month_keys(ref_date: dt.date, count: int) -> list:
     return keys
 
 
+def _to_int(val) -> int:
+    if val is None or isinstance(val, bool):
+        return 0
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _pick_model(primary: str, secondary: str) -> str:
+    if primary and primary != "<synthetic>":
+        return primary
+    if secondary and secondary != "<synthetic>":
+        return secondary
+    return primary or secondary
+
+
+def _local_midnight_ts(d: dt.date) -> float:
+    return dt.datetime.combine(d, dt.time.min).astimezone().timestamp()
+
+
+def _local_dt_from_ts(ts: float, local_tz=None) -> dt.datetime:
+    if local_tz is not None:
+        return dt.datetime.fromtimestamp(ts, tz=local_tz)
+    return dt.datetime.fromtimestamp(ts).astimezone()
+
+
 def _merge_usage(msg_usage: dict, anon_usage: list, file_path_str: str, line_no: int, model: str, u: dict, mid):
     vals = (
-        int(u.get("input_tokens") or 0),
-        int(u.get("cache_creation_input_tokens") or 0),
-        int(u.get("cache_read_input_tokens") or 0),
-        int(u.get("output_tokens") or 0),
+        _to_int(u.get("input_tokens")),
+        _to_int(u.get("cache_creation_input_tokens")),
+        _to_int(u.get("cache_read_input_tokens")),
+        _to_int(u.get("output_tokens")),
     )
-    if mid:
+    if isinstance(mid, str) and mid:
         prev = msg_usage.get(mid)
         if prev is None:
             msg_usage[mid] = (model, vals[0], vals[1], vals[2], vals[3])
         else:
             msg_usage[mid] = (
-                model or prev[0],
+                _pick_model(model, prev[0]),
                 max(prev[1], vals[0]),
                 max(prev[2], vals[1]),
                 max(prev[3], vals[2]),
@@ -285,6 +320,9 @@ def parse_subagent_jsonl(sf: Path, collect_usage: bool = True) -> dict:
                 except Exception:
                     parse_errors += 1
                     continue
+                if not isinstance(obj, dict):
+                    parse_errors += 1
+                    continue
                 if not collect_usage or obj.get("type") != "assistant":
                     continue
                 msg = obj.get("message")
@@ -305,7 +343,7 @@ def parse_subagent_jsonl(sf: Path, collect_usage: bool = True) -> dict:
     }
 
 
-def extract_pure_5_bursts(events: list, sid: str, pname: str, is_worker: bool, fallback_ts: float, local_tz) -> list:
+def extract_pure_5_bursts(events: list, sid: str, pname: str, is_worker: bool, fallback_ts: float, local_tz=None) -> list:
     bursts = []
     in_pr = False
     cur_roles = []
@@ -320,7 +358,7 @@ def extract_pure_5_bursts(events: list, sid: str, pname: str, is_worker: bool, f
         if in_pr and cnt >= 3:
             bursts.append({
                 "sid8": sid[:8],
-                "date": dt.datetime.fromtimestamp(cur_ts or fallback_ts, tz=local_tz).strftime("%Y-%m-%d"),
+                "date": _local_dt_from_ts(cur_ts or fallback_ts, local_tz).strftime("%Y-%m-%d"),
                 "project": short_project_name(pname),
                 "is_worker_session": is_worker,
                 "roles": sorted(set(cur_roles)),
@@ -353,7 +391,7 @@ def extract_pure_5_bursts(events: list, sid: str, pname: str, is_worker: bool, f
             cnt += 1
             if extra:
                 files.add(extra)
-            if (ts - cur_ts) <= 3600:
+            if 0 <= (ts - cur_ts) <= 3600:
                 cnt60 += 1
                 if extra:
                     files60.add(extra)
@@ -409,7 +447,7 @@ def process_session(task: tuple) -> dict:
                         continue
 
                 # 超大 tool_result 行若不含待配對的編輯／審查 tool_use_id 才略過，避免漏接大型審查回報或編輯錯誤
-                if is_user and len(raw) > 32768:
+                if is_user and len(raw) > 32768 and raw.lstrip().startswith(b"{"):
                     if (
                         (b'"type":"tool_result"' in raw or b'"type": "tool_result"' in raw)
                         and b'"promptSource":"typed"' not in raw
@@ -423,6 +461,9 @@ def process_session(task: tuple) -> dict:
                 try:
                     obj = json.loads(raw)
                 except Exception:
+                    parse_errors += 1
+                    continue
+                if not isinstance(obj, dict):
                     parse_errors += 1
                     continue
 
@@ -445,7 +486,8 @@ def process_session(task: tuple) -> dict:
                     is_meta = bool(obj.get("isMeta"))
                     is_side = bool(obj.get("isSidechain"))
 
-                    msg = obj.get("message") or {}
+                    raw_msg = obj.get("message")
+                    msg = raw_msg if isinstance(raw_msg, dict) else {}
                     content = msg.get("content")
                     text = ""
                     has_tool_result = False
@@ -458,12 +500,13 @@ def process_session(task: tuple) -> dict:
                                 bt = blk.get("type")
                                 if bt == "tool_result":
                                     has_tool_result = True
-                                    tuid = str(blk.get("tool_use_id") or "")
+                                    raw_tuid = blk.get("tool_use_id")
+                                    tuid = raw_tuid if isinstance(raw_tuid, str) else ""
                                     if tuid:
                                         if tuid not in tool_results:
                                             tool_results[tuid] = (ts or mtime, line_no, blk.get("is_error") is True)
                                         pending_tid_bytes.discard(tuid.encode("utf-8"))
-                                elif bt == "text" and blk.get("text"):
+                                elif bt == "text" and isinstance(blk.get("text"), str) and blk["text"]:
                                     parts.append(blk["text"])
                         text = "\n".join(parts)
 
@@ -510,11 +553,11 @@ def process_session(task: tuple) -> dict:
                             if not isinstance(blk, dict) or blk.get("type") != "tool_use":
                                 continue
                             tid = blk.get("id")
-                            if tid:
-                                if tid in seen_tool_ids:
+                            tid_s = tid if isinstance(tid, str) else ""
+                            if tid_s:
+                                if tid_s in seen_tool_ids:
                                     continue
-                                seen_tool_ids.add(tid)
-                            tid_s = str(tid or "")
+                                seen_tool_ids.add(tid_s)
                             tn = blk.get("name", "")
                             inp = blk.get("input") or {}
                             if not isinstance(inp, dict):
@@ -535,11 +578,12 @@ def process_session(task: tuple) -> dict:
                                     review_records.append((tid_s, stype))
                                     pending_tid_bytes.add(tid_s.encode("utf-8"))
                                 elif stype in IMPL_ROLES:
-                                    impl_events.append((ts or mtime, line_no, "IMPL_DISPATCH", stype, tid_s))
+                                    impl_events.append((ts or mtime, line_no, "IMPL_DISPATCH", stype, tid_s, tid_s))
     except OSError:
         return {"skipped": True, "path": fpath_str, "mtime": mtime, "last_ts": 0.0, "parse_errors": parse_errors}
 
     ordered_events = list(impl_events)
+    valid_edits = []
     for tid_s, ets, lno, fcat, fkey in edit_records:
         tr = tool_results.get(tid_s) if tid_s else None
         if tr is not None and tr[2]:
@@ -551,17 +595,19 @@ def process_session(task: tuple) -> dict:
             edits_config += 1
         else:
             edits_non_code += 1
-        ordered_events.append((ets, lno, "EDIT", fcat, fkey))
+        valid_edits.append((tid_s, fcat))
+        ordered_events.append((ets, lno, "EDIT", fcat, fkey, tid_s))
 
     for tid_s, stype in review_records:
         tr = tool_results.get(tid_s)
-        if tr is None:
+        if tr is None or tr[2]:
             continue
         rts, rlno, _ = tr
-        ordered_events.append((rts, rlno, "REVIEW", stype, tid_s))
+        ordered_events.append((rts, rlno, "REVIEW", stype, tid_s, tid_s))
 
     ordered_events.sort(key=lambda x: (x[0], x[1]))
     events = [(e[0], e[2], e[3], e[4]) for e in ordered_events]
+    events_with_tid = [(e[0], e[2], e[3], e[4], e[5]) for e in ordered_events]
 
     total_human_turns = human_typed_turns + human_fallback_turns
     is_human = (human_typed_turns > 0) if proj_cat in ("tmp", "var-folders") else (total_human_turns > 0)
@@ -597,7 +643,8 @@ def process_session(task: tuple) -> dict:
                 if sf.name.endswith(".meta.json"):
                     stem = sf.name[:-len(".meta.json")]
                     try:
-                        metas[stem] = json.loads(sf.read_text(encoding="utf-8", errors="replace"))
+                        loaded_meta = json.loads(sf.read_text(encoding="utf-8", errors="replace"))
+                        metas[stem] = loaded_meta if isinstance(loaded_meta, dict) else {}
                     except Exception:
                         metas[stem] = {}
                 elif sf.suffix == ".jsonl":
@@ -607,13 +654,14 @@ def process_session(task: tuple) -> dict:
             pass
 
         for stem in sorted(set(metas.keys()) | set(jsonls.keys())):
-            meta = metas.get(stem) or {}
+            raw_meta = metas.get(stem)
+            meta = raw_meta if isinstance(raw_meta, dict) else {}
             if stem in metas:
                 atype = str(meta.get("agentType") or "<no-meta>")
                 sub_meta_types[atype] += 1
                 tuid = meta.get("toolUseId")
-                if tuid:
-                    sub_tool_use_ids.add(str(tuid))
+                if isinstance(tuid, str) and tuid:
+                    sub_tool_use_ids.add(tuid)
             sf = jsonls.get(stem)
             if sf is not None:
                 sr = parse_subagent_jsonl(sf, collect_usage=need_usage)
@@ -628,7 +676,7 @@ def process_session(task: tuple) -> dict:
                         else:
                             sub_cross_file_deduped += 1
                             sub_msg_usage[mid] = (
-                                prev[0] or vals[0],
+                                _pick_model(prev[0], vals[0]),
                                 max(prev[1], vals[1]),
                                 max(prev[2], vals[2]),
                                 max(prev[3], vals[3]),
@@ -665,16 +713,21 @@ def process_session(task: tuple) -> dict:
         "sub_anon_usage": sub_anon_usage,
         "sub_cross_file_deduped": sub_cross_file_deduped,
         "delegations_main": [(d[0], d[1]) for d in delegations_main],
+        "delegations_main_full": delegations_main,
         "sub_meta_types": dict(sub_meta_types),
         "sub_jsonl_count": sub_jsonl_count,
         "sub_skipped": sub_skipped,
         "matched_tids": matched_tids,
         "main_agent_tid_cnt": len(main_agent_tids),
+        "main_agent_tids": main_agent_tids,
+        "sub_tool_use_ids": sub_tool_use_ids,
         "edits_all": edits_all,
         "edits_code": edits_code,
         "edits_config": edits_config,
         "edits_non_code": edits_non_code,
+        "valid_edits": valid_edits,
         "events": events,
+        "events_with_tid": events_with_tid,
         "parse_errors": parse_errors,
     }
 
@@ -714,17 +767,17 @@ def analyze_projects(
     workers: int = 1,
 ) -> dict:
     t0 = time.time()
-    local_tz = dt.datetime.now().astimezone().tzinfo
     if ref_date is None:
-        ref_date = dt.datetime.now(local_tz).date()
+        ref_date = dt.datetime.now().astimezone().date()
 
-    anchor_end = dt.datetime.combine(ref_date + dt.timedelta(days=1), dt.time.min, tzinfo=local_tz).timestamp()
-    window_start = anchor_end - days * 86400
+    window_start_date = ref_date - dt.timedelta(days=days - 1)
+    anchor_end = _local_midnight_ts(ref_date + dt.timedelta(days=1))
+    window_start = _local_midnight_ts(window_start_date)
 
     trend_month_list = recent_month_keys(ref_date, trend_months)
     trend_month_set = set(trend_month_list)
     first_y, first_m = map(int, trend_month_list[0].split("-"))
-    trend_start = dt.datetime(first_y, first_m, 1, 0, 0, 0, tzinfo=local_tz).timestamp()
+    trend_start = _local_midnight_ts(dt.date(first_y, first_m, 1))
     scan_start = min(window_start, trend_start)
 
     tasks = []
@@ -765,10 +818,16 @@ def analyze_projects(
     skipped_sub = 0
     parse_errors_total = 0
     scanned_in_range = 0
-    win_matched_tids = 0
-    win_main_tids = 0
-    win_human_matched_tids = 0
-    win_human_main_tids = 0
+    win_matched_tids_set = set()
+    win_main_tids_set = set()
+    win_human_matched_tids_set = set()
+    win_human_main_tids_set = set()
+    win_sub_tids_all = set()
+    win_human_sub_tids = set()
+    win_seen_edit_tids = set()
+    win_seen_deleg_tids = set()
+    trend_seen_edit_tids = set()
+    trend_seen_impl_tids = set()
 
     orch = {"sessions": 0, "edits_code": 0, "edits_config": 0, "edits_non_code": 0, "edits_all": 0, "impl_dispatches": 0}
     wrk = {"sessions": 0, "edits_code": 0, "edits_config": 0, "edits_non_code": 0, "edits_all": 0, "impl_dispatches": 0}
@@ -801,7 +860,7 @@ def analyze_projects(
         if last_ts > 0 and last_ts >= anchor_end:
             continue
 
-        ref_dt = dt.datetime.fromtimestamp(ref_ts, tz=local_tz)
+        ref_dt = _local_dt_from_ts(ref_ts)
         month_key = ref_dt.strftime("%Y-%m")
         in_window = (window_start <= ref_ts < anchor_end)
         in_trend = (ref_ts < anchor_end) and (month_key in trend_month_set)
@@ -810,25 +869,43 @@ def analyze_projects(
             continue
 
         scanned_in_range += 1
-        impl_d = sum(
-            1 for tn, stype in res["delegations_main"]
-            if tn in ("Agent", "Task") and classify_role(stype) == "impl"
-        )
+        delegs_full = res.get("delegations_main_full")
+        if delegs_full is None:
+            delegs_full = [(tn, stype, "") for tn, stype in res["delegations_main"]]
+        valid_edits = res.get("valid_edits")
 
-        # Monthly trend (Metric 1): pure orchestrator only
+        # Monthly trend (Metric 1): pure orchestrator only（跨檔 tool_use_id 去重）
         if in_trend and res["is_human"] and not res["is_worker_session"]:
             mm = trend_by_month[month_key]
             mm["sessions"] += 1
-            mm["edits_code"] += res["edits_code"]
-            mm["impl_dispatches"] += impl_d
+            if valid_edits is not None:
+                for tid_s, fcat in valid_edits:
+                    if tid_s:
+                        if tid_s in trend_seen_edit_tids:
+                            continue
+                        trend_seen_edit_tids.add(tid_s)
+                    if fcat == "code":
+                        mm["edits_code"] += 1
+            else:
+                mm["edits_code"] += res["edits_code"]
+            for tn, stype, tid_s in delegs_full:
+                if tn in ("Agent", "Task") and classify_role(stype) == "impl":
+                    if tid_s:
+                        if tid_s in trend_seen_impl_tids:
+                            continue
+                        trend_seen_impl_tids.add(tid_s)
+                    mm["impl_dispatches"] += 1
 
         if not in_window:
             continue
 
         win_sessions_total += 1
         win_sub_jsonl += res["sub_jsonl_count"]
-        win_matched_tids += res["matched_tids"]
-        win_main_tids += res["main_agent_tid_cnt"]
+        res_main_tids = res.get("main_agent_tids", set())
+        res_sub_tids = res.get("sub_tool_use_ids", set())
+        win_main_tids_set.update(res_main_tids)
+        win_sub_tids_all.update(res_sub_tids)
+        win_matched_tids_set.update(res_main_tids & res_sub_tids)
 
         if not res["is_human"]:
             win_sessions_auto += 1
@@ -836,30 +913,64 @@ def analyze_projects(
             continue
 
         win_sessions_human += 1
-        win_human_matched_tids += res["matched_tids"]
-        win_human_main_tids += res["main_agent_tid_cnt"]
+        win_human_main_tids_set.update(res_main_tids)
+        win_human_sub_tids.update(res_sub_tids)
+        win_human_matched_tids_set.update(res_main_tids & res_sub_tids)
 
-        # Metric 1: orchestrator vs worker split
+        # Metric 1: orchestrator vs worker split（跨檔 tool_use_id 去重）
         slot = wrk if res["is_worker_session"] else orch
         slot["sessions"] += 1
-        slot["edits_code"] += res["edits_code"]
-        slot["edits_config"] += res["edits_config"]
-        slot["edits_non_code"] += res["edits_non_code"]
-        slot["edits_all"] += res["edits_all"]
-        slot["impl_dispatches"] += impl_d
+        session_fresh_edit_tids = set()
+        if valid_edits is not None:
+            for tid_s, fcat in valid_edits:
+                if tid_s:
+                    if tid_s in win_seen_edit_tids:
+                        continue
+                    win_seen_edit_tids.add(tid_s)
+                    session_fresh_edit_tids.add(tid_s)
+                slot["edits_all"] += 1
+                if fcat == "code":
+                    slot["edits_code"] += 1
+                elif fcat == "config":
+                    slot["edits_config"] += 1
+                else:
+                    slot["edits_non_code"] += 1
+        else:
+            slot["edits_code"] += res["edits_code"]
+            slot["edits_config"] += res["edits_config"]
+            slot["edits_non_code"] += res["edits_non_code"]
+            slot["edits_all"] += res["edits_all"]
 
-        # Metric 2: post-review bursts on pure orchestrator
+        # Metric 3 & impl_dispatches: human interactive delegation roles（跨檔 tool_use_id 去重）
+        for tn, stype, tid_s in delegs_full:
+            if tn not in ("Agent", "Task"):
+                continue
+            if tid_s:
+                if tid_s in win_seen_deleg_tids:
+                    continue
+                win_seen_deleg_tids.add(tid_s)
+            cat = classify_role(stype)
+            role_main_cats[cat] += 1
+            top_agent_types[stype] += 1
+            if cat == "impl":
+                slot["impl_dispatches"] += 1
+
+        # Metric 2: post-review bursts on pure orchestrator（排除已於他檔計過的重複編輯 tid）
         if not res["is_worker_session"]:
+            ev_with_tid = res.get("events_with_tid")
+            if ev_with_tid is not None:
+                burst_events = [
+                    (ets, kind, det, extra)
+                    for ets, kind, det, extra, tid_s in ev_with_tid
+                    if kind != "EDIT" or not tid_s or tid_s in session_fresh_edit_tids
+                ]
+            else:
+                burst_events = res["events"]
             bursts = extract_pure_5_bursts(
-                res["events"], res["sid"], res["pname"], False, ref_ts, local_tz
+                burst_events, res["sid"], res["pname"], False, ref_ts
             )
             orch_bursts_all.extend(bursts)
 
-        # Metric 3: human interactive delegation roles
-        for tn, stype in res["delegations_main"]:
-            if tn in ("Agent", "Task"):
-                role_main_cats[classify_role(stype)] += 1
-                top_agent_types[stype] += 1
         for atype, cnt in res["sub_meta_types"].items():
             role_sub_meta_cats[classify_role(atype)] += cnt
 
@@ -878,7 +989,7 @@ def analyze_projects(
                     psrc, pm, pi, pcc, pcr, po = prev
                     global_msg_usage[mid] = (
                         psrc,
-                        pm or model,
+                        _pick_model(pm, model),
                         max(pi, i),
                         max(pcc, cc),
                         max(pcr, cr),
@@ -886,6 +997,11 @@ def analyze_projects(
                     )
             for anon_key, model, i, cc, cr, o in anon_list:
                 global_msg_usage[anon_key] = (src, model, i, cc, cr, o)
+
+    win_main_tids = len(win_main_tids_set)
+    win_matched_tids = len(win_matched_tids_set | (win_main_tids_set & win_sub_tids_all))
+    win_human_main_tids = len(win_human_main_tids_set)
+    win_human_matched_tids = len(win_human_matched_tids_set | (win_human_main_tids_set & win_human_sub_tids))
 
     for src, model, i, cc, cr, o in global_msg_usage.values():
         vec = [i, cc, cr, o]
@@ -1150,7 +1266,7 @@ def render_markdown(report: dict) -> str:
         f"| 排除自動檔數 | {_fmt_num(qr['excluded_automated_sessions'])} | {reason_detail}（真人互動 {_fmt_num(qr['window_sessions_human'])}：純主控 {_fmt_num(qr['window_sessions_orchestrator'])} / worker {_fmt_num(qr['window_sessions_worker'])}） |",
         f"| Skipped 檔數 | {_fmt_num(qr['skipped_main_files'] + qr['skipped_subagent_files'])} | 主檔 {qr['skipped_main_files']} / subagent {qr['skipped_subagent_files']} |",
         f"| 跨檔去重 message 數 | {_fmt_num(qr['cross_file_deduped_messages'])} | 分岔／續接對話共享 `message.id` 跨檔合併（取四欄 max、只計入總量一次） |",
-        f"| 原始 JSONL 截斷／壞行數 | {_fmt_num(qr['json_line_parse_errors'])} | 主檔與 subagent 損毀或截斷 JSON 行累計（已跳過；空白行與非 session 目錄不計入） |",
+        f"| 原始 JSONL 截斷／壞行數 | {_fmt_num(qr['json_line_parse_errors'])} | 主檔與 subagent 損毀、截斷或非物件 JSON 行累計（已跳過；空白行與非 session 目錄不計入） |",
         f"| `toolUseId` 對帳率 | {xc['match_rate_pct']:.2f}% | {xc['matched_tids']} / {xc['main_agent_tids']}（真人互動：{xc['human_match_rate_pct']:.2f}%，{xc['human_matched_tids']}/{xc['human_main_agent_tids']}） |",
         f"| 耗時秒數 | {qr['elapsed_seconds']:.3f}s | 無狀態、零 LLM、零常駐 DB |",
         "",
@@ -1159,8 +1275,12 @@ def render_markdown(report: dict) -> str:
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Stateless Claude Code session telemetry weekly report")
-    parser.add_argument("--projects-dir", type=Path, default=None, help="Projects root directory (default: ~/.claude/projects)")
+    parser.add_argument("--projects-dir", type=str, default=None, help="Projects root directory (default: ~/.claude/projects)")
     parser.add_argument("--days", type=int, default=30, help="Primary lookback window in days (default: 30)")
     parser.add_argument("--trend-months", type=int, default=4, help="Months for monthly trend table (default: 4)")
     parser.add_argument("--date", type=str, default=None, help="Reference date YYYY-MM-DD (default: today)")
@@ -1179,7 +1299,14 @@ def main():
             print(f"Error: invalid --date '{args.date}': {exc}", file=sys.stderr)
             sys.exit(2)
 
-    projects_dir = args.projects_dir or Path(os.environ.get("SESSION_TELEMETRY_PROJECTS_DIR") or DEFAULT_PROJECTS_DIR)
+    if args.projects_dir is not None:
+        if not args.projects_dir.strip():
+            print("Error: --projects-dir must not be empty", file=sys.stderr)
+            sys.exit(2)
+        projects_dir = Path(args.projects_dir)
+    else:
+        env_dir = os.environ.get("SESSION_TELEMETRY_PROJECTS_DIR", "").strip()
+        projects_dir = Path(env_dir) if env_dir else DEFAULT_PROJECTS_DIR
     if not projects_dir.is_dir():
         print(f"Error: projects directory does not exist: {projects_dir}", file=sys.stderr)
         sys.exit(2)

@@ -2282,3 +2282,245 @@ test('upgrades unverified legacy 4x5 manifest in-place without re-rolling sample
   assert.deepEqual(upgraded.samples, manifest.samples)
 })
 
+test('finalize rejects non-private samples or reaudit text before writing publication artifacts', () => {
+  {
+    const fixture = makeFixture()
+    writeRows(path.join(fixture.project, 'perm.jsonl'), [assistant({
+      text: repeat('p', 220),
+      timestamp: '2026-08-14T01:00:00.000Z',
+      sessionId: 'perm-samples-session',
+    })])
+    const sampled = run(fixture)
+    const audit = auditFor(samplesFor(fixture), [[{ type: 'unsourced-number', quote: 'ppppp' }]], sampled.audit_nonce)
+    fs.chmodSync(samplesTextPathFor(fixture), 0o644)
+    assertUnverified(fixture, run({ ...fixture, mode: 'finalize', audit, auditNonce: sampled.audit_nonce, reauditNonce: '0' }))
+  }
+  {
+    const fixture = makeFixture()
+    writeRows(path.join(fixture.project, 'perm-reaudit.jsonl'), [assistant({
+      text: repeat('q', 220),
+      timestamp: '2026-08-14T01:00:00.000Z',
+      sessionId: 'perm-reaudit-session',
+    })])
+    const sampled = run(fixture)
+    const samples = samplesFor(fixture)
+    const wfDir = path.join(fixture.reports, 'wf-transcripts')
+    fs.mkdirSync(wfDir, { recursive: true })
+    writeAuditTranscript({ directory: wfDir, name: 'agent-primary.jsonl', samplesPath: samplesTextPathFor(fixture), samplesText: fs.readFileSync(samplesTextPathFor(fixture), 'utf8'), audit: auditFor(samples, [], sampled.audit_nonce) })
+    const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce })
+    const reauditPath = reauditSamplesTextPathFor(fixture)
+    writeAuditTranscript({ directory: wfDir, name: 'agent-reaudit.jsonl', samplesPath: reauditPath, samplesText: fs.readFileSync(reauditPath, 'utf8'), audit: auditFor(samples, [], prepared.reaudit_nonce) })
+    fs.chmodSync(reauditPath, 0o644)
+    assertUnverified(fixture, run({ ...fixture, mode: 'finalize', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce, reauditNonce: prepared.reaudit_nonce }))
+  }
+})
+
+test('rejects symlinked report artifacts and refuses chmodding symlinked reports directory', () => {
+  {
+    const fixture = makeFixture()
+    writeRows(path.join(fixture.project, 'sym.jsonl'), [assistant({
+      text: repeat('s', 220),
+      timestamp: '2026-08-14T01:00:00.000Z',
+      sessionId: 'symlink-report-session',
+    })])
+    const sampled = run(fixture)
+    const audit = auditFor(samplesFor(fixture), [[{ type: 'unsourced-number', quote: 'sssss' }]], sampled.audit_nonce)
+    assert.equal(run({ ...fixture, mode: 'finalize', audit, auditNonce: sampled.audit_nonce, reauditNonce: '0' }).ok, true)
+    const reportPath = reportPathFor(fixture)
+    const externalReport = path.join(fixture.base, 'external-report.md')
+    fs.renameSync(reportPath, externalReport)
+    fs.chmodSync(externalReport, 0o600)
+    fs.symlinkSync(externalReport, reportPath)
+    assert.equal(run({ ...fixture, mode: 'due' }).due, true)
+    assert.equal(run({ ...fixture, mode: 'finalize', audit: { rows: [] }, auditNonce: sampled.audit_nonce }).ok, false)
+  }
+  {
+    const fixture = makeFixture()
+    const targetDir = path.join(fixture.base, 'target-dir')
+    const linkDir = path.join(fixture.base, 'link-reports')
+    fs.mkdirSync(targetDir, { mode: 0o755 })
+    fs.chmodSync(targetDir, 0o755)
+    fs.symlinkSync(targetDir, linkDir)
+    const res = spawnSync(process.execPath, argsFor({ ...fixture, reports: linkDir, mode: 'sample' }), { encoding: 'utf8' })
+    assert.notEqual(res.status, 0)
+    assert.equal(modeFor(targetDir), 0o755)
+  }
+})
+
+test('prepare-reaudit validates permissions and auditNonce on cache hits and stays consistent under concurrency', async () => {
+  const fixture = makeFixture()
+  writeRows(path.join(fixture.project, 'cache.jsonl'), [assistant({
+    text: repeat('c', 220),
+    timestamp: '2026-08-14T01:00:00.000Z',
+    sessionId: 'reaudit-cache-session',
+  })])
+  const sampled = run(fixture)
+  const samples = samplesFor(fixture)
+  const wfDir = path.join(fixture.reports, 'wf-transcripts')
+  fs.mkdirSync(wfDir, { recursive: true })
+  writeAuditTranscript({ directory: wfDir, samplesPath: samplesTextPathFor(fixture), samplesText: fs.readFileSync(samplesTextPathFor(fixture), 'utf8'), audit: auditFor(samples, [], sampled.audit_nonce) })
+
+  const concurrent = await Promise.all(Array.from({ length: 8 }, () =>
+    runAsync({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce })
+  ))
+  assert.equal(concurrent.every((p) => p.reaudit_sample_count === 1), true)
+  assert.equal(new Set(concurrent.map((p) => p.reaudit_nonce)).size, 1)
+
+  const wrongNonce = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: '0'.repeat(64) })
+  assert.equal(wrongNonce.reaudit_sample_count, 0)
+  assert.equal(wrongNonce.reaudit_nonce, null)
+
+  fs.chmodSync(reauditSamplesTextPathFor(fixture), 0o644)
+  const loosePerm = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce })
+  assert.equal(loosePerm.reaudit_sample_count, 0)
+  assert.equal(loosePerm.reaudit_nonce, null)
+})
+
+test('loadOrCreateManifest refuses invalid version commitment without leaving orphan manifest', () => {
+  const fixture = makeFixture()
+  writeRows(path.join(fixture.project, 'ver.jsonl'), [assistant({
+    text: repeat('v', 220),
+    timestamp: '2026-08-14T01:00:00.000Z',
+    sessionId: 'bad-version-session',
+  })])
+  fs.chmodSync(fixture.reports, 0o700)
+  fs.writeFileSync(versionPathFor(fixture), `${JSON.stringify({ date: '2026-08-13', schema_version: 2 })}\n`, { mode: 0o600 })
+  const res = spawnSync(process.execPath, argsFor(fixture), { encoding: 'utf8' })
+  assert.notEqual(res.status, 0)
+  assert.equal(fs.existsSync(manifestPathFor(fixture)), false)
+})
+
+test('auditB64FromSnapshot skips newer unrelated transcript with invalid Read params instead of blocking valid run', () => {
+  const fixture = makeFixture()
+  writeRows(path.join(fixture.project, 'skip.jsonl'), [assistant({
+    text: repeat('k', 220),
+    timestamp: '2026-08-14T01:00:00.000Z',
+    sessionId: 'skip-unrelated-session',
+  })])
+  const sampled = run(fixture)
+  const samples = samplesFor(fixture)
+  const wfDir = path.join(fixture.reports, 'wf-transcripts')
+  fs.mkdirSync(wfDir, { recursive: true })
+  const samplesText = fs.readFileSync(samplesTextPathFor(fixture), 'utf8')
+  writeAuditTranscript({ directory: wfDir, name: 'agent-valid.jsonl', samplesPath: samplesTextPathFor(fixture), samplesText, audit: auditFor(samples, [], sampled.audit_nonce) })
+  const badNewer = path.join(wfDir, 'agent-unrelated-newer.jsonl')
+  writeAuditTranscript({
+    directory: wfDir,
+    name: 'agent-unrelated-newer.jsonl',
+    samplesPath: samplesTextPathFor(fixture),
+    samplesText,
+    audit: auditFor(samples, [], '8'.repeat(64)),
+    chunks: [{ offset: 1, limit: 200000, text: samplesText }],
+  })
+  const newerTime = new Date(Date.now() + 60000)
+  fs.utimesSync(badNewer, newerTime, newerTime)
+  const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce })
+  assert.equal(prepared.reaudit_sample_count, 1)
+})
+
+test('collectEligible skips JSON null or primitive rows without crashing', () => {
+  const fixture = makeFixture()
+  const file = path.join(fixture.project, 'null-row.jsonl')
+  const valid = assistant({ text: repeat('n', 220), timestamp: '2026-08-14T01:00:00.000Z', sessionId: 'after-null' })
+  fs.writeFileSync(file, `null\n123\n[]\n${JSON.stringify(valid)}\n`)
+  const sampled = run(fixture)
+  assert.equal(sampled.eligible, 1)
+  assert.equal(samplesFor(fixture)[0].session, 'after-null')
+})
+
+test('collectEligible falls back from empty or non-string sessionId instead of poisoning manifest', () => {
+  const fixture = makeFixture()
+  const file = path.join(fixture.project, 'empty-sid.jsonl')
+  writeRows(file, [
+    assistant({ text: repeat('e', 220), timestamp: '2026-08-14T01:00:00.000Z', sessionId: '' }),
+    assistant({ text: repeat('f', 220), timestamp: '2026-08-14T02:00:00.000Z', sessionId: 12345 }),
+  ])
+  const sampled = run(fixture)
+  assert.equal(sampled.eligible, 2)
+  assert.deepEqual(samplesFor(fixture).map((s) => s.session), ['empty-sid', 'empty-sid'])
+  assert.equal(run(fixture).challenge, sampled.challenge)
+})
+
+test('forEachJsonlLine and parseTranscriptRows handle leading UTF-8 BOM and CRLF blank lines', () => {
+  const fixture = makeFixture()
+  const bom = String.fromCharCode(0xfeff)
+  const file = path.join(fixture.project, 'bom.jsonl')
+  const row = assistant({ text: repeat('b', 220), timestamp: '2026-08-14T01:00:00.000Z', sessionId: 'bom-session' })
+  fs.writeFileSync(file, `${bom}${JSON.stringify(row)}\r\n\r\n`)
+  const sampled = run(fixture)
+  assert.equal(sampled.eligible, 1)
+  const samples = samplesFor(fixture)
+  const wfDir = path.join(fixture.reports, 'wf-transcripts')
+  fs.mkdirSync(wfDir, { recursive: true })
+  const samplesText = fs.readFileSync(samplesTextPathFor(fixture), 'utf8')
+  writeAuditTranscript({ directory: wfDir, name: 'agent-bom-crlf.jsonl', samplesPath: samplesTextPathFor(fixture), samplesText, audit: auditFor(samples, [], sampled.audit_nonce) })
+  const tPath = path.join(wfDir, 'agent-bom-crlf.jsonl')
+  const raw = fs.readFileSync(tPath, 'utf8').trim().split('\n')
+  fs.writeFileSync(tPath, `${bom}${raw.join('\r\n\r\n')}\r\n`)
+  const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce })
+  assert.equal(prepared.reaudit_sample_count, 1)
+})
+
+test('collectEligible filters and orders ISO timestamps by instant rather than string order', () => {
+  const fixture = makeFixture()
+  const file = path.join(fixture.project, 'tz.jsonl')
+  writeRows(file, [
+    assistant({ text: repeat('a', 220), timestamp: '2026-08-14T23:59:59Z', sessionId: 'no-ms-in-window' }),
+    assistant({ text: repeat('b', 220), timestamp: '2026-08-15T01:00:00.000+08:00', sessionId: 'plus8-in-window' }),
+    assistant({ text: repeat('c', 220), timestamp: '2026-08-14T23:00:00.000-05:00', sessionId: 'minus5-outside' }),
+    assistant({ text: repeat('d', 220), timestamp: '2026-08-10not-a-timestamp', sessionId: 'garbage-ts' }),
+  ])
+  const sampled = run(fixture)
+  assert.equal(sampled.eligible, 2)
+  assert.deepEqual(samplesFor(fixture).map((s) => s.session), ['plus8-in-window', 'no-ms-in-window'])
+})
+
+test('restoreReadText handles carriage returns and Unicode line separators inside sample answers', () => {
+  const fixture = makeFixture()
+  const lineSep = String.fromCharCode(0x2028)
+  writeRows(path.join(fixture.project, 'crlf-sample.jsonl'), [assistant({
+    text: `first line\r\nsecond line${lineSep}third ${repeat('x', 210)}`,
+    timestamp: '2026-08-14T01:00:00.000Z',
+    sessionId: 'crlf-sample-session',
+  })])
+  const sampled = run(fixture)
+  const samples = samplesFor(fixture)
+  const wfDir = path.join(fixture.reports, 'wf-transcripts')
+  fs.mkdirSync(wfDir, { recursive: true })
+  writeAuditTranscript({ directory: wfDir, samplesPath: samplesTextPathFor(fixture), samplesText: fs.readFileSync(samplesTextPathFor(fixture), 'utf8'), audit: auditFor(samples, [], sampled.audit_nonce) })
+  const prepared = run({ ...fixture, mode: 'prepare-reaudit', auditTranscripts: wfDir, auditNonce: sampled.audit_nonce })
+  assert.equal(prepared.reaudit_sample_count, 1)
+})
+
+test('redacts cookie secrets after HTTP-date Expires commas and inside quoted semicolon values', () => {
+  const fixture = makeFixture()
+  const secret1 = 'AFTER-EXPIRES-SECRET-111'
+  const secret2 = 'QUOTED-SEMI-SECRET-222'
+  const secret3 = 'AFTER-QUOTED-SECRET-333'
+  const claim = '結尾未附證據聲明應保留'
+  writeRows(path.join(fixture.project, 'cookie-edge.jsonl'), [assistant({
+    text: `Set-Cookie: Expires=Wed, 21 Oct 2015 07:28:00 GMT; session=${secret1}\nCookie: session="part1;${secret2}"; sid=${secret3}。${claim}\n${repeat('補', 220)}`,
+    timestamp: '2026-08-14T01:00:00.000Z',
+    sessionId: 'cookie-edge-session',
+  })])
+  run(fixture)
+  const answer = samplesFor(fixture)[0].answer
+  assert.equal(answer.includes(secret1), false)
+  assert.equal(answer.includes(secret2), false)
+  assert.equal(answer.includes(secret3), false)
+  assert.equal(answer.includes(claim), true)
+})
+
+test('batched finalize rejects concurrent loser with mismatched attempt_nonce', async () => {
+  const { fixture, sampled: attemptA, manifest } = makeTwentySampleFixture()
+  const attemptB = run(fixture)
+  assert.notEqual(attemptA.attempt_nonce, attemptB.attempt_nonce)
+  const wfDirA = writeValidBatchTranscripts({ fixture, sampled: attemptA, manifest, directory: path.join(fixture.reports, 'wf-a') })
+  const wfDirB = writeValidBatchTranscripts({ fixture, sampled: attemptB, manifest, directory: path.join(fixture.reports, 'wf-b') })
+  const [resA, resB] = await Promise.all([
+    runAsync({ ...fixture, mode: 'finalize', auditTranscripts: wfDirA, auditNonce: attemptA.audit_nonce, attemptNonce: attemptA.attempt_nonce, reauditNonce: '0' }),
+    runAsync({ ...fixture, mode: 'finalize', auditTranscripts: wfDirB, auditNonce: attemptB.audit_nonce, attemptNonce: attemptB.attempt_nonce, reauditNonce: '0' }),
+  ])
+  const okCount = [resA, resB].filter((r) => r.ok).length
+  assert.equal(okCount, 1)
+})

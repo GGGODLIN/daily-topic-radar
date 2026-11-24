@@ -67,13 +67,37 @@ const publicationPathFor = (reports, date) => path.join(reports, `${date}-eviden
 const reportPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.md`)
 const receiptPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.verified.json`)
 const versionPathFor = (reports, date) => path.join(reports, `${date}-evidence-level.version.json`)
+const isPrivateDirectory = (directory) => {
+  try {
+    const stat = fs.lstatSync(directory)
+    return stat.isDirectory() && (stat.mode & 0o077) === 0
+  } catch {
+    return false
+  }
+}
 const ensurePrivateDirectory = (directory) => {
+  let stat = null
+  try {
+    stat = fs.lstatSync(directory)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+  if (stat != null && (stat.isSymbolicLink() || !stat.isDirectory())) {
+    throw new Error('reports directory must be a non-symlink directory')
+  }
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
   fs.chmodSync(directory, 0o700)
 }
-const isPrivateFile = (file) => (fs.statSync(file).mode & 0o077) === 0
+const isPrivateFile = (file) => {
+  try {
+    const stat = fs.lstatSync(file)
+    return stat.isFile() && (stat.mode & 0o077) === 0
+  } catch {
+    return false
+  }
+}
 const hasVerifiedReport = (reports, date) => {
-  if (!fs.existsSync(reports) || (fs.statSync(reports).mode & 0o077) !== 0) return false
+  if (!isPrivateDirectory(reports)) return false
   const reportPath = reportPathFor(reports, date)
   const manifestPath = manifestPathFor(reports, date)
   const publicationPath = publicationPathFor(reports, date)
@@ -199,36 +223,57 @@ const isCookieNameCharacter = (character) =>
 
 const cookiePairRanges = (value, start, end) => {
   const ranges = []
-  let segmentStart = start
-  while (segmentStart < end) {
-    let segmentEnd = segmentStart
-    while (
-      segmentEnd < end &&
-      value[segmentEnd] !== ';' &&
-      value[segmentEnd] !== ',' &&
-      !FULLWIDTH_STOPS.has(value[segmentEnd])
-    ) segmentEnd += 1
-
-    let index = segmentStart
-    while (index < segmentEnd && /\s/.test(value[index])) index += 1
+  let index = start
+  while (index < end) {
+    while (index < end && /\s/.test(value[index])) index += 1
+    if (index >= end) break
     const nameStart = index
-    while (index < segmentEnd && isCookieNameCharacter(value[index])) index += 1
-    while (index < segmentEnd && /\s/.test(value[index])) index += 1
+    while (index < end && isCookieNameCharacter(value[index])) index += 1
+    const name = value.slice(nameStart, index)
+    while (index < end && /\s/.test(value[index])) index += 1
     if (index > nameStart && value[index] === '=') {
       index += 1
-      while (index < segmentEnd && /\s/.test(value[index])) index += 1
-      const bounds = quotedBoundsAt(value, index, segmentEnd)
+      while (index < end && /\s/.test(value[index])) index += 1
+      const bounds = quotedBoundsAt(value, index, end)
       if (bounds != null) {
         ranges.push({ start: bounds.contentStart, end: bounds.contentEnd })
+        index = bounds.after
+      } else if (name.toLowerCase() === 'expires') {
+        const valueStart = index
+        while (
+          index < end &&
+          value[index] !== ';' &&
+          value[index] !== '"' &&
+          value[index] !== "'" &&
+          !FULLWIDTH_STOPS.has(value[index])
+        ) index += 1
+        let valueEnd = index
+        while (valueEnd > valueStart && /\s/.test(value[valueEnd - 1])) valueEnd -= 1
+        ranges.push({ start: valueStart, end: valueEnd })
       } else {
         const valueStart = index
-        while (index < segmentEnd && !/\s/.test(value[index]) && value[index] !== '"' && value[index] !== "'") index += 1
+        while (
+          index < end &&
+          value[index] !== ';' &&
+          value[index] !== ',' &&
+          !/\s/.test(value[index]) &&
+          value[index] !== '"' &&
+          value[index] !== "'" &&
+          !FULLWIDTH_STOPS.has(value[index])
+        ) index += 1
         ranges.push({ start: valueStart, end: index })
       }
     }
-
-    if (segmentEnd >= end || value[segmentEnd] !== ';') break
-    segmentStart = segmentEnd + 1
+    while (
+      index < end &&
+      value[index] !== ';' &&
+      value[index] !== ',' &&
+      value[index] !== '"' &&
+      value[index] !== "'" &&
+      !FULLWIDTH_STOPS.has(value[index])
+    ) index += 1
+    if (index >= end || value[index] !== ';') break
+    index += 1
   }
   return ranges
 }
@@ -304,6 +349,7 @@ const listJsonlFiles = (root) => {
 }
 
 const JSONL_READ_CHUNK_BYTES = 1024 * 1024
+const UTF8_BOM = String.fromCharCode(0xfeff)
 
 // Session JSONL files with screenshot tool results can exceed V8's 512MB max string length,
 // so readFileSync(file, 'utf8') throws ERR_STRING_TOO_LONG. Streaming UTF-8 chunks keeps memory bounded.
@@ -313,11 +359,16 @@ const forEachJsonlLine = (file, onLine) => {
   const decoder = new StringDecoder('utf8')
   let remainder = ''
   let rowIndex = 0
+  let strippedBom = false
   try {
     for (;;) {
       const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)
       if (bytesRead === 0) break
       remainder += decoder.write(buffer.subarray(0, bytesRead))
+      if (!strippedBom && remainder.length > 0) {
+        if (remainder.startsWith(UTF8_BOM)) remainder = remainder.slice(1)
+        strippedBom = true
+      }
       let newlineIndex = remainder.indexOf('\n')
       while (newlineIndex !== -1) {
         onLine(remainder.slice(0, newlineIndex), rowIndex)
@@ -327,19 +378,36 @@ const forEachJsonlLine = (file, onLine) => {
       }
     }
     remainder += decoder.end()
+    if (!strippedBom && remainder.startsWith(UTF8_BOM)) remainder = remainder.slice(1)
     onLine(remainder, rowIndex)
   } finally {
     fs.closeSync(fd)
   }
 }
 
+const parseIsoTimestampMs = (value) => {
+  if (typeof value !== 'string') return null
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/)
+  if (match == null) return null
+  const datePart = match[1]
+  const dateObj = new Date(`${datePart}T00:00:00.000Z`)
+  if (Number.isNaN(dateObj.getTime()) || dateObj.toISOString().slice(0, 10) !== datePart) return null
+  const hour = Number(match[2])
+  const minute = Number(match[3])
+  const second = Number(match[4])
+  if (hour > 23 || minute > 59 || second > 59) return null
+  const ms = Date.parse(value)
+  return Number.isNaN(ms) ? null : ms
+}
+
 const collectEligible = (root, date) => {
   const currentDate = parseDate(date)
-  const start = `${formatDate(addDays(currentDate, -6))}T00:00:00.000Z`
-  const end = `${date}T23:59:59.999Z`
+  const startMs = addDays(currentDate, -6).getTime()
+  const endExclusiveMs = addDays(currentDate, 1).getTime()
   const eligible = []
 
   for (const file of listJsonlFiles(root)) {
+    const fallbackSession = path.basename(file, '.jsonl') || path.basename(file)
     forEachJsonlLine(file, (line, rowIndex) => {
       if (line.trim() === '') return
       let row
@@ -348,22 +416,25 @@ const collectEligible = (root, date) => {
       } catch {
         return
       }
-      const message = row.message ?? {}
+      if (row == null || typeof row !== 'object' || Array.isArray(row)) return
+      const message = row.message && typeof row.message === 'object' ? row.message : {}
       const timestamp = row.timestamp
+      const timestampMs = parseIsoTimestampMs(timestamp)
       if (
         row.type !== 'assistant' ||
         row.isSidechain === true ||
         message.stop_reason !== 'end_turn' ||
-        typeof timestamp !== 'string' ||
-        timestamp < start ||
-        timestamp > end
+        timestampMs == null ||
+        timestampMs < startMs ||
+        timestampMs >= endExclusiveMs
       ) return
       const answer = extractText(message.content)
       if (removeCode(answer).trim().length < 200) return
       eligible.push({
-        session: row.sessionId ?? path.basename(file, '.jsonl'),
+        session: typeof row.sessionId === 'string' && row.sessionId !== '' ? row.sessionId : fallbackSession,
         path: file,
         timestamp,
+        timestampMs,
         row_index: rowIndex,
         answer: redactCredentials(answer),
       })
@@ -371,11 +442,14 @@ const collectEligible = (root, date) => {
   }
 
   const compareText = (left, right) => left === right ? 0 : left < right ? -1 : 1
-  return eligible.sort((left, right) =>
-    compareText(left.timestamp, right.timestamp) ||
-    compareText(left.path, right.path) ||
-    left.row_index - right.row_index
-  )
+  return eligible
+    .sort((left, right) =>
+      (left.timestampMs - right.timestampMs) ||
+      compareText(left.timestamp, right.timestamp) ||
+      compareText(left.path, right.path) ||
+      left.row_index - right.row_index
+    )
+    .map(({ timestampMs, ...sample }) => sample)
 }
 
 const sampleEvenly = (items, limit = 20) => {
@@ -527,6 +601,9 @@ const loadOrCreateManifest = (root, reports, date) => {
     if (persisted != null) return { file, manifest: persisted }
     throw new Error('existing evidence-level manifest is invalid')
   }
+  const commitment = { date, schema_version: 2 }
+  publishFirstWins(versionPathFor(reports, date), `${JSON.stringify(commitment)}\n`)
+  if (!parseVersionCommitment(reports, date)) throw new Error('evidence-level version commitment persistence failed')
   const eligibleAnswers = collectEligible(root, date)
   const samples = sampleEvenly(eligibleAnswers)
   const challenge = crypto.randomBytes(32).toString('hex')
@@ -539,8 +616,7 @@ const loadOrCreateManifest = (root, reports, date) => {
       samples,
       challenge,
     }
-  const temporary = `${file}.${process.pid}.tmp`
-  fs.rmSync(temporary, { force: true })
+  const temporary = uniqueTemporaryPath(file)
   fs.writeFileSync(temporary, `${JSON.stringify(manifest)}\n`, { flag: 'wx', mode: 0o600 })
   let linked = true
   try {
@@ -556,8 +632,6 @@ const loadOrCreateManifest = (root, reports, date) => {
     if (persisted == null) throw new Error('evidence-level manifest persistence failed')
     return { file, manifest: persisted }
   }
-  const commitment = { date, schema_version: 2 }
-  publishFirstWins(versionPathFor(reports, date), `${JSON.stringify(commitment)}\n`)
   const persisted = parseManifest(file, date)
   if (persisted == null) throw new Error('evidence-level manifest persistence failed')
   return { file, manifest: persisted }
@@ -748,8 +822,8 @@ const replaceFile = (file, content) => {
   const temporary = uniqueTemporaryPath(file)
   fs.writeFileSync(temporary, content, { flag: 'wx', mode: 0o600 })
   try {
+    fs.chmodSync(temporary, 0o600)
     fs.renameSync(temporary, file)
-    fs.chmodSync(file, 0o600)
   } finally {
     fs.rmSync(temporary, { force: true })
   }
@@ -769,10 +843,20 @@ const publishFirstWins = (file, content) => {
     fs.rmSync(temporary, { force: true })
   }
 }
+const isSymlink = (file) => {
+  try {
+    return fs.lstatSync(file).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
 const materializePublication = (reports, date, publication) => {
   const manifestPath = manifestPathFor(reports, date)
   const reportPath = reportPathFor(reports, date)
   const receiptPath = receiptPathFor(reports, date)
+  if (isSymlink(reportPath) || isSymlink(receiptPath)) {
+    return packetFor(date, reportPath, manifestPath, null, null, [], false)
+  }
   replaceFile(reportPath, publication.report)
   replaceFile(receiptPath, `${JSON.stringify({
     ...(publication.schema_version === 2 ? { schema_version: 2 } : {}),
@@ -833,9 +917,10 @@ const stableTranscriptText = (file) => {
   return null
 }
 const parseTranscriptRows = (text) => {
+  const normalized = text.startsWith(UTF8_BOM) ? text.slice(1) : text
   const rows = []
-  for (const line of text.split('\n')) {
-    if (line === '') continue
+  for (const line of normalized.split('\n')) {
+    if (line.trim() === '') continue
     try {
       rows.push(JSON.parse(line))
     } catch {
@@ -878,7 +963,7 @@ const restoreReadText = (content, expectedStartLine) => {
   const lines = content.split('\n')
   const restored = []
   for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(/^(\d+)\t(.*)$/)
+    const match = lines[index].match(/^(\d+)\t([^\n]*)$/)
     const lineNumber = match == null ? null : Number(match[1])
     const expectedLine = expectedStartLine + index
     if (match == null || !Number.isSafeInteger(lineNumber) || !Number.isSafeInteger(expectedLine) || lineNumber !== expectedLine) return null
@@ -938,7 +1023,10 @@ const auditB64FromSnapshot = (snapshots, samplesTextPath, expectedText, auditNon
         }
         if (item?.type === 'tool_use' && item?.name === 'Read' && item?.input?.file_path === samplesTextPath && typeof item.id === 'string') {
           const inputKeys = ['file_path', ...(item.input.offset == null ? [] : ['offset']), ...(item.input.limit == null ? [] : ['limit'])]
-          if (seenIds.has(item.id) || !sameKeys(item.input, inputKeys) || (item.input.offset != null && (!Number.isSafeInteger(item.input.offset) || item.input.offset < 0 || item.input.offset > MAX_READ_OFFSET)) || (item.input.limit != null && (!Number.isSafeInteger(item.input.limit) || item.input.limit <= 0 || item.input.limit > MAX_READ_LIMIT))) return null
+          if (seenIds.has(item.id) || !sameKeys(item.input, inputKeys) || (item.input.offset != null && (!Number.isSafeInteger(item.input.offset) || item.input.offset < 0 || item.input.offset > MAX_READ_OFFSET)) || (item.input.limit != null && (!Number.isSafeInteger(item.input.limit) || item.input.limit <= 0 || item.input.limit > MAX_READ_LIMIT))) {
+            invalidTranscript = true
+            break
+          }
           seenIds.add(item.id)
           pending.set(item.id, item.input)
           continue
@@ -950,7 +1038,10 @@ const auditB64FromSnapshot = (snapshots, samplesTextPath, expectedText, auditNon
           }
           const input = pending.get(item.tool_use_id)
           const text = restoreReadText(item.content, input.offset ?? 1)
-          if (text == null) return null
+          if (text == null) {
+            invalidTranscript = true
+            break
+          }
           chunks.push({ startLine: input.offset ?? 1, limit: input.limit ?? null, text })
           pending.delete(item.tool_use_id)
           continue
@@ -1249,50 +1340,88 @@ const reauditBatchAuditsFromSnapshot = (snapshots, reports, date, sliceAttemptNo
     packet: rows.length === passSamples.length ? { auditNonce: reauditNonce, rows } : null,
   }
 }
+const pathExistsLstat = (file) => {
+  try {
+    fs.lstatSync(file)
+    return true
+  } catch {
+    return false
+  }
+}
+const readPrivateFileIfExact = (file, expectedText) => {
+  if (!isPrivateFile(file)) return false
+  try {
+    return fs.readFileSync(file, 'utf8') === expectedText
+  } catch {
+    return false
+  }
+}
 const prepareReaudit = (reports, date, transcriptsRoot, auditNonce, attemptNonce = null) => {
   ensurePrivateDirectory(reports)
   const manifest = parseManifest(manifestPathFor(reports, date), date)
+  if (manifest == null || !isNonce(auditNonce)) return null
   const batched = isBatchedManifest(manifest)
-  if (batched && !isNonce(attemptNonce)) return null
-  const sliceAttemptNonce = batched ? attemptNonce : null
-  const expectedReauditPath = reauditSamplesTextPathFor(reports, date, sliceAttemptNonce)
-  const existingPath = expectedReauditPath
-  if (fs.existsSync(existingPath)) {
-    const existingText = fs.readFileSync(existingPath, 'utf8')
-    const marker = existingText.match(/^=== BEGIN SAMPLE 1\/\d+ \[([a-f0-9]{16})\] ===$/m)?.[1]
-    const count = Number(existingText.match(/^=== BEGIN SAMPLE 1\/(\d+) /m)?.[1])
-    if (marker != null && Number.isInteger(count) && count > 0) {
-      const nonceFile = `${existingPath}.nonce`
-      if (fs.existsSync(nonceFile) && isPrivateFile(nonceFile)) {
-        const nonce = fs.readFileSync(nonceFile, 'utf8').trim()
-        if (/^[a-f0-9]{64}$/.test(nonce) && nonce.startsWith(marker)) return { date, reaudit_sample_count: count, reaudit_nonce: nonce }
-      }
-    }
-    return null
-  }
+  if (batched && (!isNonce(attemptNonce) || auditNonce !== manifest.audit_nonce)) return null
   const samplesTextPath = samplesTextPathFor(reports, date)
-  if (manifest == null || transcriptsRoot == null || !fs.existsSync(samplesTextPath) || !batchArtifactsValid(reports, date, manifest)) return null
-  const snapshots = batched && auditNonce !== manifest.audit_nonce
-    ? []
-    : batched
-      ? batchTranscriptSnapshot(transcriptsRoot, samplesTextPath, manifest, attemptNonce)
-      : transcriptSnapshot(transcriptsRoot, samplesTextPath)
+  const expectedSamplesText = renderSamplesText(manifest)
+  if (transcriptsRoot == null || !readPrivateFileIfExact(samplesTextPath, expectedSamplesText) || !batchArtifactsValid(reports, date, manifest)) return null
+  const snapshots = batched
+    ? batchTranscriptSnapshot(transcriptsRoot, samplesTextPath, manifest, attemptNonce)
+    : transcriptSnapshot(transcriptsRoot, samplesTextPath)
   const auditPacket = batched
     ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce, reports, date)
-    : parseAudit(auditB64FromSnapshot(snapshots, samplesTextPath, renderSamplesText(manifest), auditNonce), manifest)
+    : parseAudit(auditB64FromSnapshot(snapshots, samplesTextPath, expectedSamplesText, auditNonce), manifest)
   if (auditPacket == null || auditPacket.auditNonce !== auditNonce) return null
   const passSamples = manifest.samples.filter((sample, index) => auditPacket.rows[index].result === 'PASS')
   if (passSamples.length === 0) return null
-  const reauditNonce = crypto.randomBytes(32).toString('hex')
-  const reauditText = renderSampleRowsText(passSamples, reauditNonce)
-  const reauditSamplesTextPath = expectedReauditPath
-  if (!publishFirstWins(reauditSamplesTextPath, reauditText)) return prepareReaudit(reports, date, transcriptsRoot, auditNonce, attemptNonce)
-  publishFirstWins(`${reauditSamplesTextPath}.nonce`, `${reauditNonce}\n`)
-  materializeReauditSlices(reports, date, sliceAttemptNonce, passSamples, reauditNonce)
+
+  const sliceAttemptNonce = batched ? attemptNonce : null
+  const reauditSamplesTextPath = reauditSamplesTextPathFor(reports, date, sliceAttemptNonce)
+  const nonceFile = `${reauditSamplesTextPath}.nonce`
+  if (pathExistsLstat(reauditSamplesTextPath) && !pathExistsLstat(nonceFile)) return null
+
+  const candidateNonce = crypto.randomBytes(32).toString('hex')
+  const won = publishFirstWins(nonceFile, `${candidateNonce}\n`)
+  if (won) {
+    const reauditText = renderSampleRowsText(passSamples, candidateNonce)
+    materializeReauditSlices(reports, date, sliceAttemptNonce, passSamples, candidateNonce)
+    publishFirstWins(reauditSamplesTextPath, reauditText)
+    if (!readPrivateFileIfExact(reauditSamplesTextPath, reauditText)) return null
+    return {
+      date,
+      reaudit_sample_count: passSamples.length,
+      reaudit_nonce: candidateNonce,
+    }
+  }
+
+  if (!isPrivateFile(nonceFile)) return null
+  let persistedNonce
+  try {
+    persistedNonce = fs.readFileSync(nonceFile, 'utf8').trim()
+  } catch {
+    return null
+  }
+  if (!isNonce(persistedNonce) || persistedNonce === auditNonce) return null
+  const expectedReauditText = renderSampleRowsText(passSamples, persistedNonce)
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (pathExistsLstat(reauditSamplesTextPath)) {
+      if (!readPrivateFileIfExact(reauditSamplesTextPath, expectedReauditText)) return null
+      materializeReauditSlices(reports, date, sliceAttemptNonce, passSamples, persistedNonce)
+      return {
+        date,
+        reaudit_sample_count: passSamples.length,
+        reaudit_nonce: persistedNonce,
+      }
+    }
+    if (attempt < 19) sleepSync(5)
+  }
+  materializeReauditSlices(reports, date, sliceAttemptNonce, passSamples, persistedNonce)
+  publishFirstWins(reauditSamplesTextPath, expectedReauditText)
+  if (!readPrivateFileIfExact(reauditSamplesTextPath, expectedReauditText)) return null
   return {
     date,
     reaudit_sample_count: passSamples.length,
-    reaudit_nonce: reauditNonce,
+    reaudit_nonce: persistedNonce,
   }
 }
 const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, attemptNonce, reauditNonce) => {
@@ -1308,14 +1437,22 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, at
   const expectedReauditPath = reauditSamplesTextPathFor(reports, date, batched ? attemptNonce : null)
   if (batched && !batchArtifactsValid(reports, date, manifest)) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
 
+  const samplesTextPath = samplesTextPathFor(reports, date)
+  const expectedSamplesText = renderSamplesText(manifest)
   const published = parsePublication(publicationPath, date, manifest)
   if (published != null) {
     if (batched && published.attempt_nonce !== attemptNonce) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
+    if (published.schema_version === 2) {
+      if (!readPrivateFileIfExact(samplesTextPath, expectedSamplesText)) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
+      if (published.reaudit_sample_count > 0) {
+        const publishedReauditPath = reauditSamplesTextPathFor(reports, date, batched ? published.attempt_nonce : null)
+        if (!isPrivateFile(publishedReauditPath)) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
+      }
+    }
     return materializePublication(reports, date, published)
   }
   if (fs.existsSync(publicationPath)) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
-  const samplesTextPath = samplesTextPathFor(reports, date)
-  if (!fs.existsSync(samplesTextPath) || fs.readFileSync(samplesTextPath, 'utf8') !== renderSamplesText(manifest)) {
+  if (!readPrivateFileIfExact(samplesTextPath, expectedSamplesText)) {
     return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   }
 
@@ -1329,7 +1466,7 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, at
       : transcriptSnapshot(transcriptsRoot, samplesTextPath)
   const auditPacket = batched
     ? batchAuditsFromSnapshot(snapshots, manifest, attemptNonce, reports, date)
-    : parseAudit(transcriptsRoot == null ? auditB64 : auditB64FromSnapshot(snapshots, samplesTextPath, renderSamplesText(manifest), auditNonce), manifest)
+    : parseAudit(transcriptsRoot == null ? auditB64 : auditB64FromSnapshot(snapshots, samplesTextPath, expectedSamplesText, auditNonce), manifest)
   if (auditPacket == null || auditPacket.auditNonce !== auditNonce) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   const primaryPassSamples = manifest.samples.filter((sample, index) => auditPacket.rows[index].result === 'PASS')
   const reauditDeclared = reauditNonce != null
@@ -1338,7 +1475,7 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, at
   if (primaryPassSamples.length > 0 && Object.hasOwn(manifest, 'schema_version') && !reauditDeclared) return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
   if (primaryPassSamples.length > 0 && reauditDeclared) {
     const reauditSamplesTextPath = expectedReauditPath
-    if (transcriptsRoot == null || !/^[a-f0-9]{64}$/.test(reauditNonce ?? '') || reauditNonce === auditNonce || !fs.existsSync(reauditSamplesTextPath)) {
+    if (transcriptsRoot == null || !/^[a-f0-9]{64}$/.test(reauditNonce ?? '') || reauditNonce === auditNonce || !isPrivateFile(reauditSamplesTextPath)) {
       return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
     }
     const expectedReauditText = renderSampleRowsText(primaryPassSamples, reauditNonce)
@@ -1396,9 +1533,10 @@ const finalizeReport = (reports, date, auditB64, transcriptsRoot, auditNonce, at
   }
   publishFirstWins(publicationPath, `${JSON.stringify(publication)}\n`)
   const winner = parsePublication(publicationPath, date, manifest)
-  return winner == null
-    ? packetFor(date, reportPath, manifestPath, manifest, null, [], false)
-    : materializePublication(reports, date, winner)
+  if (winner == null || (batched && winner.attempt_nonce !== attemptNonce)) {
+    return packetFor(date, reportPath, manifestPath, manifest, null, [], false)
+  }
+  return materializePublication(reports, date, winner)
 }
 
 const sampleMarker = (manifest, index, position) =>

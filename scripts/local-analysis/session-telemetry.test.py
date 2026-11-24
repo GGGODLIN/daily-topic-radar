@@ -639,6 +639,178 @@ class SessionTelemetryTest(unittest.TestCase):
         self.assertEqual(qr["excluded_automated_sessions"], 0)
         self.assertEqual(qr["json_line_parse_errors"], 0)
 
+    def test_dst_calendar_window_boundaries(self):
+        # 在 DST 切換日（America/New_York：2026-11-01 為 25h，2026-03-08 為 23h），視窗起點須對齊本地曆日 00:00 而非固定 86400s
+        code = f"""
+import datetime as dt, importlib.util, json, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("st_dst", {str(SCRIPT_PY)!r})
+st_dst = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(st_dst)
+
+with tempfile.TemporaryDirectory() as td:
+    proj = Path(td) / "-Users-linhancheng-Desktop-projects-dst"
+    proj.mkdir(parents=True)
+    # Fall-back: 2026-11-01 00:30-04:00 必落在 days=2, ref_date=2026-11-02 (2026-11-01..2026-11-02) 內
+    (proj / "fallback-early.jsonl").write_text("\\n".join([
+        json.dumps({{"type":"user","timestamp":"2026-11-01T00:30:00-04:00","entrypoint":"cli","promptSource":"typed","message":{{"role":"user","content":"fb"}}}}),
+        json.dumps({{"type":"assistant","timestamp":"2026-11-01T00:31:00-04:00","message":{{"id":"fb-1","model":"claude-opus-4-1","usage":{{"input_tokens":10,"output_tokens":10}},"content":[]}}}}),
+    ]) + "\\n", encoding="utf-8")
+    rep_fb = st_dst.analyze_projects(Path(td), days=2, trend_months=1, ref_date=dt.date(2026, 11, 2))
+
+    # Spring-forward: 2026-03-07 23:30-05:00 不得被拉進 days=2, ref_date=2026-03-09 (2026-03-08..2026-03-09)
+    td2 = Path(td) / "sf"
+    proj2 = td2 / "-Users-linhancheng-Desktop-projects-dst2"
+    proj2.mkdir(parents=True)
+    (proj2 / "prev-night.jsonl").write_text("\\n".join([
+        json.dumps({{"type":"user","timestamp":"2026-03-07T23:30:00-05:00","entrypoint":"cli","promptSource":"typed","message":{{"role":"user","content":"sf"}}}}),
+        json.dumps({{"type":"assistant","timestamp":"2026-03-07T23:31:00-05:00","message":{{"id":"sf-1","model":"claude-opus-4-1","usage":{{"input_tokens":10,"output_tokens":10}},"content":[]}}}}),
+    ]) + "\\n", encoding="utf-8")
+    rep_sf = st_dst.analyze_projects(td2, days=2, trend_months=1, ref_date=dt.date(2026, 3, 9))
+    print(json.dumps({{"fb": rep_fb["quality_receipt"]["window_sessions_human"], "sf": rep_sf["quality_receipt"]["window_sessions_human"]}}))
+"""
+        env = os.environ.copy()
+        env["TZ"] = "America/New_York"
+        r = subprocess.run([sys.executable, "-B", "-c", code], env=env, capture_output=True, text=True, check=True)
+        res = json.loads(r.stdout.strip())
+        self.assertEqual(res["fb"], 1)
+        self.assertEqual(res["sf"], 0)
+
+    def test_cross_file_tool_use_id_dedup_and_synthetic_model_merge(self):
+        proj = self.root / "-Users-linhancheng-Desktop-projects-fork-tools"
+        shared_lines = [
+            user_msg(iso_at("2026-11-18", 0), "原本對話", promptSource="typed"),
+            asst_usage_msg(
+                iso_at("2026-11-18", 10),
+                "fork-m1",
+                "<synthetic>",
+                100, 0, 0, 50,
+                [
+                    tool_agent("rev-shared", "code-reviewer"),
+                    tool_agent("impl-shared", "routed-impl"),
+                ],
+            ),
+            tool_result_msg(iso_at("2026-11-18", 20), "rev-shared"),
+            asst_usage_msg(iso_at("2026-11-18", 30), "fork-m2", "claude-opus-4-1", 50, 0, 0, 50, [
+                tool_edit("ed-shared-1", "/app/a.py"),
+                tool_edit("ed-shared-2", "/app/b.py"),
+                tool_edit("ed-shared-3", "/app/c.py"),
+            ]),
+        ]
+        # parent 與 child 共享完全相同的 tool_use_id，child 另補真實 model 名與 1 筆新 edit
+        write_jsonl(proj / "a-parent.jsonl", shared_lines)
+        child_lines = list(shared_lines) + [
+            asst_usage_msg(iso_at("2026-11-18", 10), "fork-m1", "claude-opus-4-1", 100, 0, 0, 100),
+            asst_usage_msg(iso_at("2026-11-18", 90), "fork-m3", "claude-opus-4-1", 10, 0, 0, 10, [
+                tool_edit("ed-child-only", "/app/d.py"),
+            ]),
+        ]
+        write_jsonl(proj / "b-child.jsonl", child_lines)
+
+        rep = st.analyze_projects(self.root, days=30, trend_months=2, ref_date=self.ref_date)
+        orch = rep["metric1_self_edit_vs_impl"]["orchestrator_only"]
+        m2 = rep["metric2_post_review_60m_bursts"]
+        m3 = rep["metric3_delegation_roles"]
+        m4 = rep["metric4_tokens_and_models"]
+
+        self.assertEqual(orch["edits_code"], 4)
+        self.assertEqual(orch["impl_dispatches"], 1)
+        self.assertEqual(m3["total_main_delegations"], 2)
+        self.assertEqual(m2["orchestrator_only_episodes_ge3_within_60m"], 1)
+        # <synthetic> 跨檔合併時應被真實模型 claude-opus-4-1 取代
+        self.assertEqual(m4["by_model_family"]["other"]["total"], 0)
+        self.assertEqual(m4["by_model_family"]["opus/pro"]["total"], 320)
+        trend = {row["month"]: row for row in rep["metric1_self_edit_vs_impl"]["trend_by_month"]}
+        self.assertEqual(trend["2026-11"]["edits_code"], 4)
+        self.assertEqual(trend["2026-11"]["impl_dispatches"], 1)
+
+    def test_malformed_jsonl_types_unhashable_ids_and_ts_guards(self):
+        # parse_iso_ts 不可把 bool True 當成 epoch 1.0，也不可讓 NaN/負數通過
+        self.assertEqual(st.parse_iso_ts(True), 0.0)
+        self.assertEqual(st.parse_iso_ts(False), 0.0)
+        self.assertEqual(st.parse_iso_ts(float("nan")), 0.0)
+        self.assertEqual(st.parse_iso_ts(float("inf")), 0.0)
+        self.assertEqual(st.parse_iso_ts(-10), 0.0)
+        self.assertGreater(st.parse_iso_ts("2026-11-18T12:00:00z"), 0.0)
+
+        proj = self.root / "-Users-linhancheng-Desktop-projects-fault"
+        write_jsonl(
+            proj / "weird.jsonl",
+            [
+                "[]",
+                "123",
+                "null",
+                json.dumps({"type": "user", "timestamp": True, "entrypoint": "cli", "promptSource": "typed", "message": "not-a-dict"}),
+                json.dumps({"type": "user", "timestamp": iso_at("2026-11-18", 0), "entrypoint": "cli", "promptSource": "typed", "message": {"content": [{"type": "text", "text": 999}, {"type": "text", "text": "hello"}]}}),
+                json.dumps({
+                    "type": "assistant",
+                    "timestamp": iso_at("2026-11-18", 10),
+                    "message": {
+                        "id": ["unhashable-id"],
+                        "model": "claude-opus-4-1",
+                        "usage": {"input_tokens": "bad", "cache_creation_input_tokens": True, "cache_read_input_tokens": None, "output_tokens": 42},
+                        "content": [
+                            {"type": "tool_use", "id": ["bad-tid"], "name": "Edit", "input": {"file_path": "/app/ok.py"}},
+                        ],
+                    },
+                }),
+            ],
+        )
+        sub_dir = proj / "weird" / "subagents"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (sub_dir / "a1.meta.json").write_text('["not-a-dict"]', encoding="utf-8")
+        write_jsonl(sub_dir / "a1.jsonl", ["[]", "null", "true"])
+
+        rep = st.analyze_projects(self.root, days=30, trend_months=2, ref_date=self.ref_date)
+        self.assertEqual(rep["quality_receipt"]["json_line_parse_errors"], 6)
+        self.assertEqual(rep["quality_receipt"]["window_sessions_human"], 1)
+        self.assertEqual(rep["metric1_self_edit_vs_impl"]["orchestrator_only"]["edits_code"], 1)
+        self.assertEqual(rep["metric4_tokens_and_models"]["main"]["output_tokens"], 42)
+        self.assertEqual(rep["metric4_tokens_and_models"]["main"]["cache_creation_input_tokens"], 0)
+
+    def test_post_review_negative_delta_exact_boundary_and_failed_review(self):
+        # 直接呼叫 extract_pure_5_bursts：早於 review ts 的負差值不可計入 60m；恰好 3600s 邊界應計入
+        events = [
+            (1000.0, "REVIEW", "code-reviewer", "r1"),
+            (500.0, "EDIT", "code", "early.py"),
+            (1000.0, "EDIT", "code", "t0.py"),
+            (4600.0, "EDIT", "code", "t3600.py"),
+            (4601.0, "EDIT", "code", "t3601.py"),
+        ]
+        bursts = st.extract_pure_5_bursts(events, "sid-edge1", "p", False, 1000.0)
+        self.assertEqual(len(bursts), 1)
+        self.assertEqual(bursts[0]["code_edits"], 4)
+        self.assertEqual(bursts[0]["code_edits_within_60m"], 2)
+
+        # is_error=True 的 review tool_result 不可觸發審查後連改統計
+        proj = self.root / "-Users-linhancheng-Desktop-projects-failed-rev"
+        write_jsonl(
+            proj / "failed-rev.jsonl",
+            [
+                user_msg(iso_at("2026-11-18", 0), "審查失敗", promptSource="typed"),
+                asst_usage_msg(iso_at("2026-11-18", 10), "fr-1", "claude-opus-4-1", 10, 0, 0, 10, [tool_agent("rev-err", "code-reviewer")]),
+                tool_result_msg(iso_at("2026-11-18", 20), "rev-err", is_error=True, content="failed to start"),
+                asst_usage_msg(iso_at("2026-11-18", 30), "fr-2", "claude-opus-4-1", 10, 0, 0, 10, [tool_edit("fe1", "/p/a.py")]),
+                asst_usage_msg(iso_at("2026-11-18", 40), "fr-3", "claude-opus-4-1", 10, 0, 0, 10, [tool_edit("fe2", "/p/b.py")]),
+                asst_usage_msg(iso_at("2026-11-18", 50), "fr-4", "claude-opus-4-1", 10, 0, 0, 10, [tool_edit("fe3", "/p/c.py")]),
+            ],
+        )
+        rep = st.analyze_projects(self.root, days=30, trend_months=2, ref_date=self.ref_date)
+        self.assertEqual(rep["metric2_post_review_60m_bursts"]["orchestrator_only_episodes_ge3_within_60m"], 0)
+        self.assertEqual(rep["metric2_post_review_60m_bursts"]["orchestrator_only_episodes_ge3_any_window"], 0)
+
+    def test_cli_rejects_empty_projects_dir_and_invalid_days(self):
+        r_empty = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT_PY), "--projects-dir", ""],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(r_empty.returncode, 2)
+        r_days = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT_PY), "--projects-dir", str(self.root), "--days", "0"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(r_days.returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

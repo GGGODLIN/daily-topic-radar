@@ -160,6 +160,39 @@ class MainTest(unittest.TestCase):
             self.assertEqual(habits.main(["--date", "2026-11-16", "--events-file", "/nonexistent/x.ndjson"]), 2)
             self.assertEqual(habits.main(["--date", "2026-11-16", "--max-part-bytes", "100"]), 2)
 
+    def test_early_calendar_date_exits_2_without_writing(self):
+        rc, out, err, out_dir = run_main([], date="0001-01-02")
+        self.assertEqual((rc, out), (2, ""))
+        self.assertIn("--date", err)
+        self.assertFalse(out_dir.exists())
+
+    def test_unsatisfiable_part_limits_leave_existing_output_intact(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            out_dir = root / "out"
+            out_dir.mkdir(mode=0o755)
+            os.chmod(out_dir, 0o755)
+            stale = out_dir / "2026-11-16-habits-slice-3-part-1.txt"
+            stale.write_text("prior output", encoding="utf-8")
+            events = [event("2026-10-28T00:00:00Z", "第一段的一則長訊息內容")]
+            events += [
+                event(f"2026-11-12T01:{i:02d}:00Z", "內容" * 500)
+                for i in range(habits.MAX_PARTS_PER_SLICE + 1)
+            ]
+            source = root / "events.jsonl"
+            source.write_text("\n".join(json.dumps(row) for row in events), encoding="utf-8")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = habits.main([
+                    "--date", "2026-11-16", "--out-dir", str(out_dir), "--events-file", str(source),
+                    "--max-part-bytes", "4000",
+                ])
+            self.assertEqual((rc, stdout.getvalue()), (2, ""))
+            self.assertIn("第 3 段無法切成", stderr.getvalue())
+            self.assertEqual(list(out_dir.iterdir()), [stale])
+            self.assertEqual(stale.read_text(encoding="utf-8"), "prior output")
+            self.assertEqual(stat.S_IMODE(out_dir.stat().st_mode), 0o755)
+
     def test_oversized_slice_splits_into_0600_parts_preserving_body_count(self):
         events = [
             event(f"2026-11-12T01:{i // 60:02d}:{i % 60:02d}Z", f"第三段長訊息編號 {i:03d} " + "內文填充" * 30, session=f"sess-{i:04d}")
@@ -190,6 +223,89 @@ class MainTest(unittest.TestCase):
             else:
                 self.assertNotIn("短回覆次數", text)
 
+    def test_split_slice_parts_respects_4000_byte_limit_without_dropping_split(self):
+        msgs_many = [
+            (f"2026-11-12T01:{i // 60:02d}:{i % 60:02d}Z", f"sess-{i:04d}", "demo", f"訊息 {i:03d} " + "內文" * 35)
+            for i in range(40)
+        ]
+        parts = habits.split_slice_parts(3, "2026-11-10", "2026-11-16", msgs_many, max_part_bytes=4000)
+        self.assertGreater(len(parts), 1)
+        for _part_no, part_text, _cnt in parts:
+            self.assertLessEqual(len(part_text.encode("utf-8")), 4000)
+
+        short_msgs = [(f"2026-11-12T00:{j:02d}:00Z", "s", "demo", f"短{j:02d}") for j in range(25)]
+        body_msgs = [(f"2026-11-12T01:{j:02d}:00Z", "s", "demo", f"長訊息編號{j:02d} " + "內容" * 28) for j in range(19)]
+        all_msgs = short_msgs + body_msgs
+        full_text, _, _ = habits.render_slice(3, "2026-11-10", "2026-11-16", all_msgs)
+        self.assertGreater(len(full_text.encode("utf-8")), 4000)
+        parts2 = habits.split_slice_parts(3, "2026-11-10", "2026-11-16", all_msgs, max_part_bytes=4000)
+        self.assertGreater(len(parts2), 1)
+        for _part_no, part_text, _cnt in parts2:
+            self.assertLessEqual(len(part_text.encode("utf-8")), 4000)
+
+    def test_symlink_out_dir_refused_without_chmodding_target(self):
+        tmp = Path(tempfile.mkdtemp())
+        victim_dir = tmp / "victim-dir"
+        victim_dir.mkdir(mode=0o755)
+        os.chmod(victim_dir, 0o755)
+        link_dir = tmp / "out-link"
+        os.symlink(victim_dir, link_dir)
+        with self.assertRaises(OSError):
+            run_main([event("2026-10-28T01:00:00Z", "第一段的一則長訊息內容")], out_dir=str(link_dir))
+        self.assertEqual(stat.S_IMODE(os.stat(victim_dir).st_mode), 0o755)
+        self.assertEqual(list(victim_dir.iterdir()), [])
+
+    def test_stale_part_symlink_and_late_slice_symlink_fail_atomically(self):
+        tmp = Path(tempfile.mkdtemp())
+        victim = tmp / "victim.txt"
+        victim.write_text("原樣", encoding="utf-8")
+        out_dir = tmp / "out"
+        out_dir.mkdir()
+        os.symlink(victim, out_dir / "2026-11-16-habits-slice-1-part-2.txt")
+        with self.assertRaises(OSError):
+            run_main([event("2026-10-28T01:00:00Z", "第一段的一則長訊息內容")], out_dir=str(out_dir))
+        self.assertFalse((out_dir / "2026-11-16-habits-slice-1.txt").exists())
+
+        out_dir2 = tmp / "out2"
+        out_dir2.mkdir()
+        os.symlink(victim, out_dir2 / "2026-11-16-habits-slice-2.txt")
+        with self.assertRaises(OSError):
+            run_main([
+                event("2026-10-28T01:00:00Z", "第一段的一則長訊息內容"),
+                event("2026-11-04T01:00:00Z", "第二段的一則長訊息內容"),
+            ], out_dir=str(out_dir2))
+        self.assertFalse((out_dir2 / "2026-11-16-habits-slice-1.txt").exists())
+        self.assertEqual(victim.read_text(encoding="utf-8"), "原樣")
+
+    def test_non_dict_jsonl_and_non_string_fields_are_skipped(self):
+        tmp = Path(tempfile.mkdtemp())
+        events_file = tmp / "mixed.ndjson"
+        events_file.write_bytes(
+            b'null\n123\n[]\n'
+            + json.dumps({"role": "user", "path": GOOD_PATH, "ts": 12345, "session": "s1", "text": "bad ts type"}).encode() + b'\n'
+            + json.dumps({"role": "user", "path": GOOD_PATH, "ts": "2026-10-28T01:00:00Z", "session": "s2", "text": 999}).encode() + b'\n'
+            + b'\xff\xfe invalid utf8\n'
+            + json.dumps(event("2026-10-28T01:00:00Z", "這是一則合法使用者訊息內容"), ensure_ascii=False).encode("utf-8") + b'\n'
+        )
+        out_dir = tmp / "out"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = habits.main(["--date", "2026-11-16", "--out-dir", str(out_dir), "--events-file", str(events_file)])
+        self.assertEqual(rc, 0, stderr.getvalue())
+        packet = json.loads(stdout.getvalue())
+        self.assertEqual(packet["slices"][0]["total_messages"], 1)
+
+    def test_strict_date_and_timezone_aware_segment_bucketing_and_ordering(self):
+        with self.assertRaises(ValueError):
+            habits.segment_bounds("20261116")
+        self.assertFalse(habits.in_segment(("2026-10-32T01:00:00Z", "s", "p", "非法日期"), "2026-10-27", "2026-11-02"))
+        e_earlier = event("2026-11-03T01:00:00+08:00", "台北凌晨一點其實是前一天UTC十七點", session="s-tz")
+        e_later = event("2026-11-02T20:00:00Z", "UTC晚上八點比台北凌晨一點晚", session="s-utc")
+        collected = habits.collect_messages([e_later, e_earlier])
+        self.assertEqual([m[1] for m in collected], ["s-tz", "s-utc"])
+        bounds = habits.segment_bounds("2026-11-16")
+        self.assertTrue(habits.in_segment(collected[0], *bounds[0]))
+        self.assertFalse(habits.in_segment(collected[0], *bounds[1]))
 
 
 if __name__ == "__main__":
