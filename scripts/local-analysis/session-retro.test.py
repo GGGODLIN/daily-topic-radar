@@ -122,11 +122,21 @@ class RetroCLI(unittest.TestCase):
     (folder / "agent-fixture.jsonl").write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
     return folder
 
-  def composition_fixture(self, analyst_reads=True, with_pattern=False):
+  def composition_fixture(self, analyst_reads=True, with_pattern=False, issue_index=False, index_read=True):
     retro = self.retro()
     run = self.root / "composition-run"
     (run / "reports").mkdir(parents=True)
     (run / "validated").mkdir()
+    index_reads = []
+    if issue_index:
+      index_path = run / "issue-index.jsonl"
+      index_path.write_text(json.dumps({"id": "I1", "title": "t", "decision": None, "sessions": 1, "sessions_since_decision": 1}) + "\n", encoding="utf-8")
+      synthesis_index = run / "issue-index-synthesis.jsonl"
+      synthesis_index.write_text(index_path.read_text(encoding="utf-8"), encoding="utf-8")
+      index_reads = [index_path] if index_read else []
+      synthesis_index_reads = [synthesis_index] if index_read else []
+    else:
+      synthesis_index_reads = []
     plan = {"schema_version": 1, "run_id": run.name, "scope": "all", "sessions": [],
             "models": {}, "concurrency": 1, "focus": "test", "depth": "full",
             "window_start": RECENT, "cutoff": NOW, "references": [], "effort": "high"}
@@ -153,7 +163,7 @@ class RetroCLI(unittest.TestCase):
                       "patterns": [], "secondary_patterns": [], "dispositions": []}
     if with_pattern:
       analyst_report["patterns"] = [{"id": "cross-b01-P1", "source_finding_ids": [], "evidence": [], "counterevidence": "bounded"}]
-    analyst_dir = self.composition_agent("analyst-writer", [partition_path, tracking_path, source_path] if analyst_reads else [], analyst_path, analyst_report)
+    analyst_dir = self.composition_agent("analyst-writer", [partition_path, tracking_path, source_path] + index_reads if analyst_reads else [], analyst_path, analyst_report)
     if not analyst_reads:
       reader_dir = self.composition_agent("analyst-reader", [partition_path, tracking_path, source_path], analyst_path, analyst_report, write=False)
     else:
@@ -165,7 +175,7 @@ class RetroCLI(unittest.TestCase):
     partial = {"unit": "cross-session", "session": "cross-session", "status": "partial",
                "patterns": [], "secondary_patterns": [], "dispositions": [],
                "tracking_observations": [], "tracking_dispositions": []}
-    final_dir = self.composition_agent("final-writer", [synthesis_path, tracking_path], partial_path, partial)
+    final_dir = self.composition_agent("final-writer", [synthesis_path, tracking_path] + synthesis_index_reads, partial_path, partial)
     remaining_path = run / "cross-final-remaining.json"
     dump(remaining_path, {"existing_patterns": [], "existing_secondary_patterns": [],
       "pending_candidates": [], "pending_prior_rejections": [], "all_source_ids": []})
@@ -794,6 +804,8 @@ class RetroCLI(unittest.TestCase):
     run.mkdir()
     index = run / "issue-index.jsonl"
     index.write_text("".join(json.dumps({"id": f"I{n}", "title": "t", "decision": None, "sessions": 1, "sessions_since_decision": 1}) + "\n" for n in range(3)), encoding="utf-8")
+    for name in ("tc.json", "p.json", "s01.json", "pkt.json"):
+      (run / name).write_text("{}\n", encoding="utf-8")
     batches = run / "batches-preset.json"
     batches.write_text(json.dumps({
       "plan_path": str(run / "plan.json"), "partition_path": str(run / "p.json"),
@@ -831,11 +843,13 @@ console.log(JSON.stringify(prompts))
     batch_prompt, batch_ok, syn_prompt, syn_ok = json.loads(done.stdout)
     self.assertEqual(json.loads(batch_ok), {"ok": True})
     self.assertEqual(json.loads(syn_ok), {"ok": True})
+    self.assertIn(str(index), batch_prompt)
+    self.assertIn("共 3 行", batch_prompt)
+    self.assertIn("分批席已掛回之舊題的索引（共 0 行", syn_prompt)
     for prompt in (batch_prompt, syn_prompt):
-      self.assertIn(str(index), prompt)
-      self.assertIn("共 3 行", prompt)
       self.assertIn("任何狀態", prompt)
       self.assertNotIn("未拍板（decision 為 null）舊問題", prompt)
+      self.assertEqual(prompt.count("只能寫入"), 1, "write boundary must appear exactly once")
     self.assertIn("sessions_since_decision 達 >= 2", syn_prompt)
     missing = self.cli("cross-script", "--kind", "batches", "--preset", batches, "--issue-index", run / "nope.jsonl", "--out-dir", run, code=2)
     self.assertFalse(missing["pass"])
@@ -2146,6 +2160,70 @@ class EventEvidenceCLI(unittest.TestCase):
     with self.assertRaises(retro.Invalid) as error:
       retro.composition_manifest_chain(manifest)
     self.assertIn("did not fully read", str(error.exception))
+
+  def test_composition_requires_batch_and_synthesis_seats_to_read_the_run_issue_index(self):
+    # 11/23、11/24 兩輪的席位沒讀全部舊題索引也照樣通過組裝；run 內有索引時，分批與合成席都必須讀完它。
+    for read, expect_error in ((True, None), (False, "issue-index.jsonl")):
+      fixture = RetroCLI()
+      fixture.setUp()
+      self.addCleanup(fixture.tmp.cleanup)
+      retro, _run, manifest, _plan = fixture.composition_fixture(issue_index=True, index_read=read)
+      if expect_error is None:
+        retro.composition_manifest_chain(manifest)
+        continue
+      with self.assertRaises(retro.Invalid) as error:
+        retro.composition_manifest_chain(manifest)
+      self.assertIn("did not fully read", str(error.exception))
+      self.assertIn(expect_error, str(error.exception))
+
+  def test_cross_script_computes_read_plans_and_rejects_incomplete_presets(self):
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    run = fixture.root / "run-preset"
+    run.mkdir()
+    index = run / "issue-index.jsonl"
+    index.write_text(json.dumps({"id": "I1", "title": "t"}) + "\n", encoding="utf-8")
+    tc = run / "tracking-context.json"
+    tc.write_text("{\n}\n", encoding="utf-8")
+    src = run / "s01.json"
+    src.write_text("{}\n" * 4, encoding="utf-8")
+    index.write_text("".join(json.dumps({"id": f"I{n}", "title": "t"}) + "\n" for n in range(1, 4)), encoding="utf-8")
+    pkt = run / "pkt.json"
+    packet = {"session": "cross-session", "batches": [{"unit": "cross-b01", "patterns": [{"matched_issue_id": "I2"}, {"matched_issue_id": None}], "dispositions": []},
+                                                      {"unit": "cross-b02", "patterns": [{"matched_issue_id": "I3"}, {"matched_issue_id": "I2"}], "dispositions": []}]}
+    pkt.write_text(json.dumps(packet) + "\n" + "\n" * 2500, encoding="utf-8")
+    part = run / "cross-partition.json"
+    part.write_text("{}", encoding="utf-8")
+    good = {"partition_path": str(part), "tracking_context_path": str(tc), "model": "m", "effort": "high", "concurrency": 2,
+            "items": [{"unit": "cross-b01", "report_path": str(run / "b01.json"), "input_reports": [str(src)], "expected_source_ids": ["s01-F1"]}]}
+    preset = run / "b.json"
+    dump(preset, good)
+    out = fixture.cli("cross-script", "--kind", "batches", "--preset", preset, "--issue-index", index, "--out-dir", run)
+    script = Path(out["workflow_script_path"]).read_text(encoding="utf-8")
+    embedded = json.loads(script.split("const preset = ", 1)[1].split("\n", 1)[0])
+    self.assertEqual(embedded["tracking_context_lines"], 2)
+    self.assertEqual(embedded["items"][0]["file_reads"], [{"path": str(src.resolve()), "lines": 4}])
+    syn = run / "s.json"
+    dump(syn, {"synthesis_packet_path": str(pkt), "tracking_context_path": str(tc), "report_path": str(run / "cross-session.json"),
+               "model": "m", "effort": "high", "source_records": 1})
+    out = fixture.cli("cross-script", "--kind", "synthesis", "--preset", syn, "--issue-index", index, "--out-dir", run)
+    embedded = json.loads(Path(out["workflow_script_path"]).read_text(encoding="utf-8").split("const preset = ", 1)[1].split("\n", 1)[0])
+    self.assertEqual(embedded["synthesis_packet_lines"], 2501)
+    self.assertEqual(len(embedded["pkt_reads"]), 2)
+    # 合成席只讀分批已掛回的舊題：全量索引加封包與追蹤背景在 11/24 實跑超過模型上限（Prompt is too long）。
+    synthesis_index = Path(embedded["issue_index_path"])
+    self.assertEqual(synthesis_index, (run / "issue-index-synthesis.jsonl").resolve())
+    self.assertEqual([json.loads(line)["id"] for line in synthesis_index.read_text(encoding="utf-8").splitlines()], ["I2", "I3"])
+    self.assertEqual(embedded["issue_index_lines"], 2)
+    self.assertEqual(embedded["tracking_context_lines"], 2)
+    for bad in ({**good, "concurrency": 0}, {**good, "model": ""}, {**good, "items": [dict(good["items"][0], report_path="/elsewhere/b01.json")]},
+                {**good, "items": [good["items"][0]] * 17}, {k: v for k, v in good.items() if k != "tracking_context_path"}):
+      dump(preset, bad)
+      self.assertFalse(fixture.cli("cross-script", "--kind", "batches", "--preset", preset, "--issue-index", index, "--out-dir", run, code=2)["pass"])
+    dump(preset, good)
+    index.write_text("{not json\n", encoding="utf-8")
+    self.assertFalse(fixture.cli("cross-script", "--kind", "batches", "--preset", preset, "--issue-index", index, "--out-dir", run, code=2)["pass"])
 
   def test_composition_empty_decision_seat_needs_no_report_or_reads(self):
     fixture = RetroCLI()

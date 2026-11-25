@@ -1250,6 +1250,13 @@ def composition_writer(artifact, run, cache, label, expected_session=None):
   return {"agent": agent, "target": target, "report": report, "agents": agents, "writer_agent": agent, "dirs": dirs}
 
 
+def run_issue_index(run, name="issue-index.jsonl"):
+  # 分批與合成席沒讀舊題索引也曾照樣通過組裝（11/23、11/24），掛回因此靜默退回舊行為；舊 run 沒有索引檔時不要求。
+  # 分批席讀全量 issue-index.jsonl；合成席只讀 cross-script 產的 issue-index-synthesis.jsonl。
+  path = Path(run) / name
+  return [path.resolve()] if path.is_file() else []
+
+
 def composition_batch_report(artifact, source_reports, run, plan, canonical, cache, label):
   input_packets = [composition_path(run, path, label + " input packet") for path in artifact.get("input_packets", [])]
   source_reports = [Path(path).resolve() for path in source_reports]
@@ -1259,7 +1266,7 @@ def composition_batch_report(artifact, source_reports, run, plan, canonical, cac
     cache[key] = transcript_agents(dirs)
   result = composition_writer(artifact, run, cache, label, expected_session="cross-session")
   base = result["report"]
-  composition_require_reads([result["writer_agent"]], input_packets + source_reports, label)
+  composition_require_reads([result["writer_agent"]], input_packets + source_reports + run_issue_index(run), label)
   require(base.get("unit") == artifact.get("unit"), label + " report identity mismatch")
   supplement = artifact.get("supplement")
   supplement_result = None
@@ -1367,7 +1374,7 @@ def composition_manifest_chain(manifest_path):
                              "limitations": batch["base"].get("limitations", [])})
   require(synthesis.get("batches") == expected_batches, "synthesis packet differs from report-writer outputs")
   old_result = composition_writer(manifest["final_artifact"], run, cache, "final artifact", expected_session="cross-session")
-  composition_require_reads([old_result["writer_agent"]], [synthesis_path, tracking_context_path], "final artifact")
+  composition_require_reads([old_result["writer_agent"]], [synthesis_path, tracking_context_path] + run_issue_index(run, "issue-index-synthesis.jsonl"), "final artifact")
   partial = old_result["report"]
   require(partial.get("status") == "partial", "final artifact must preserve the partial report boundary")
   writer_artifacts.append({"unit": "cross-session", "report_path": str(old_result["target"]),
@@ -2992,37 +2999,92 @@ def parser():
 
 
 CROSS_TEMPLATES = {kind: Path.home() / f".claude/workflows/retro-cross-{kind}.js" for kind in ("batches", "synthesis")}
+CROSS_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+CROSS_MAX_BATCHES = 16
+
+
+def _line_count(path, label):
+  path = Path(path).resolve()
+  require(path.is_file(), label + " not found: " + str(path))
+  return path, sum(1 for _ in path.open(encoding="utf-8"))
+
+
+def _read_plan(path, lines):
+  return [f"Read({path}, offset: {off}, limit: {min(2000, lines - off + 1)}, allow_large: true)" for off in range(1, lines + 1, 2000)]
 
 
 def cross_script(args):
-  """Embed a run's preset and the issue-index read plan into a tracked cross template.
+  """Embed a run's preset and computed read plans into a tracked cross template.
 
   The batch and synthesis prompts used to be hand-written per run and copied forward, so a rule fixed in
-  the command never reached the prompt that ran. Only the preset varies per run; the prompt text lives in
-  the template.
+  the command never reached the prompt that ran. Only paths, lists and model settings vary per run; line
+  counts and read segments are counted here because a hand-typed count went stale within one run (8077 vs 8076).
   """
-  index = Path(args.issue_index).resolve()
-  require(index.is_file(), "issue index not found: " + str(index))
-  lines = sum(1 for _ in index.open(encoding="utf-8"))
+  out = Path(args.out_dir).resolve()
+  require(out.is_dir(), "out dir not found: " + str(out))
+  index, lines = _line_count(args.issue_index, "issue index")
   require(lines > 0, "issue index is empty")
+  for number, raw in enumerate(index.open(encoding="utf-8"), 1):
+    try:
+      row = json.loads(raw)
+    except ValueError as error:
+      raise Invalid(f"issue index line {number} is not JSON") from error
+    require(isinstance(row, dict) and isinstance(row.get("id"), str) and isinstance(row.get("title"), str),
+            f"issue index line {number} lacks id/title")
   preset = json.loads(Path(args.preset).read_text(encoding="utf-8"))
   require(isinstance(preset, dict), "preset must be a JSON object")
-  preset["issue_index_path"] = str(index)
-  preset["issue_index_lines"] = lines
-  if args.kind == "synthesis":
-    preset["ii_reads"] = [f"Read({index}, offset: {off}, limit: {min(2000, lines - off + 1)}, allow_large: true)"
-                          for off in range(1, lines + 1, 2000)]
+  require(isinstance(preset.get("model"), str) and preset["model"].strip(), "preset needs a model")
+  require(preset.get("effort") in CROSS_EFFORTS, "preset effort must be one of " + ", ".join(sorted(CROSS_EFFORTS)))
+  tc_path, tc_lines = _line_count(preset.get("tracking_context_path") or "", "tracking context")
+  preset.update({"tracking_context_path": str(tc_path), "tracking_context_lines": tc_lines,
+                 "issue_index_path": str(index), "issue_index_lines": lines})
+  if args.kind == "batches":
+    items = preset.get("items")
+    require(isinstance(items, list) and 0 < len(items) <= CROSS_MAX_BATCHES, f"batches preset needs 1..{CROSS_MAX_BATCHES} items")
+    concurrency = preset.get("concurrency")
+    require(isinstance(concurrency, int) and not isinstance(concurrency, bool) and 1 <= concurrency <= 16, "concurrency must be 1..16")
+    partition = Path(preset.get("partition_path") or "").resolve()
+    require(partition.is_file(), "partition not found: " + str(partition))
+    preset["partition_path"] = str(partition)
+    for item in items:
+      require(isinstance(item, dict) and isinstance(item.get("unit"), str) and item["unit"], "batch item needs a unit")
+      report = Path(item.get("report_path") or "").resolve()
+      require(report.is_relative_to(out), item["unit"] + " report_path must sit inside the out dir")
+      require(isinstance(item.get("expected_source_ids"), list) and isinstance(item.get("input_reports"), list) and item["input_reports"],
+              item["unit"] + " needs input_reports and expected_source_ids")
+      reads = []
+      for source in item["input_reports"]:
+        source_path, source_lines = _line_count(source, item["unit"] + " input report")
+        reads.append({"path": str(source_path), "lines": source_lines})
+      item.update({"report_path": str(report), "input_reports": [r["path"] for r in reads], "file_reads": reads})
   else:
-    require(isinstance(preset.get("items"), list) and bool(preset["items"]), "batches preset needs items")
+    report = Path(preset.get("report_path") or "").resolve()
+    require(report.is_relative_to(out), "synthesis report_path must sit inside the out dir")
+    require(isinstance(preset.get("source_records"), int), "synthesis preset needs source_records")
+    packet, packet_lines = _line_count(preset.get("synthesis_packet_path") or "", "synthesis packet")
+    # 合成席不重新配對，只需要分批已掛回之舊題的狀態與場次來套門檻；全量索引加封包與追蹤背景
+    # 在 11/24 實跑超過模型上限（Prompt is too long），所以只給它分批填過的那幾題。
+    matched = []
+    for batch in json.loads(packet.read_text(encoding="utf-8")).get("batches", []):
+      for pattern in batch.get("patterns", []):
+        key = pattern.get("matched_issue_id")
+        if isinstance(key, str) and key and key not in matched:
+          matched.append(key)
+    wanted = set(matched)
+    rows = [raw for raw in index.open(encoding="utf-8") if json.loads(raw)["id"] in wanted]
+    synthesis_index = out / "issue-index-synthesis.jsonl"
+    synthesis_index.write_text("".join(rows), encoding="utf-8")
+    preset.update({"issue_index_path": str(synthesis_index), "issue_index_lines": len(rows),
+                   "report_path": str(report), "synthesis_packet_path": str(packet), "synthesis_packet_lines": packet_lines,
+                   "pkt_reads": _read_plan(packet, packet_lines), "tc_reads": _read_plan(tc_path, tc_lines),
+                   "ii_reads": _read_plan(synthesis_index, len(rows))})
   template = CROSS_TEMPLATES[args.kind].read_text(encoding="utf-8")
   marker = "const preset = null"
   require(template.count(marker) == 1, "cross template missing preset marker")
   embedded = json.dumps(preset, ensure_ascii=False).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-  out = Path(args.out_dir).resolve()
-  require(out.is_dir(), "out dir not found: " + str(out))
   script_path = out / f"workflow-cross-{args.kind}.js"
   script_path.write_text(template.replace(marker, f"const preset = {embedded}", 1), encoding="utf-8")
-  return {"kind": args.kind, "issue_index_lines": lines, "workflow_script_path": str(script_path)}
+  return {"kind": args.kind, "issue_index_lines": preset["issue_index_lines"], "workflow_script_path": str(script_path)}
 
 
 def event_evidence_command(args):
