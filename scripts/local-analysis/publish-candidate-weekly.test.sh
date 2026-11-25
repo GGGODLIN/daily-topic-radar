@@ -308,6 +308,13 @@ setup_world
 run_channel diff timeout; R="$(report)"
 assert_contains "timeout is named as such" "逾時" "$R"
 setup_world
+run_channel diff timeout PUBLISH_CANDIDATE_MAX_DIFF_BYTES=10; R="$(report)"
+assert_contains "truncated + timeout: names input truncation without claiming completed prefix review" "送審輸入僅含前段（第 3 關未完成，未有審畢範圍）" "$R"
+assert_not_contains "truncated + timeout: does not claim gate 3 reviewed prefix" "第 3 關只審了前段" "$R"
+setup_world
+run_channel diff ok PUBLISH_CANDIDATE_MAX_DIFF_BYTES=10; R="$(report)"
+assert_contains "truncated + completed: still reports prefix-only review" "第 3 關只審了前段" "$R"
+setup_world
 run_channel diff fail; R="$(report)"
 assert_contains "failure carries the model error" "relay unavailable" "$R"
 

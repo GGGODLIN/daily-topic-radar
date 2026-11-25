@@ -375,7 +375,13 @@ build_prompt() { # build_prompt <new items 檔> → stdout
     low-confidence) echo "第 3 關審查回報沒有把握（low-confidence）" >> "$TMP/reasons" ;;
     incomplete) echo "第 3 關未完成（${G3_NOTE}），沒有人審過這份差異中字串比對抓不到的內容" >> "$TMP/reasons" ;;
   esac
-  [ "$DIFF_TRUNCATED" -eq 1 ] && echo "差異超過 $MAX_DIFF_BYTES bytes，第 3 關只審了前段" >> "$TMP/reasons"
+  if [ "$DIFF_TRUNCATED" -eq 1 ]; then
+    if [ "$G3_STATE" = incomplete ]; then
+      echo "差異超過 $MAX_DIFF_BYTES bytes，送審輸入僅含前段（第 3 關未完成，未有審畢範圍）" >> "$TMP/reasons"
+    else
+      echo "差異超過 $MAX_DIFF_BYTES bytes，第 3 關只審了前段" >> "$TMP/reasons"
+    fi
+  fi
 
   # 5. 組報告（候選段永遠最後，同日重跑才抽得回來）
   f="$TMP/report.out"
