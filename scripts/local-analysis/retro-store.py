@@ -2049,7 +2049,9 @@ def issue_index(store, out_dir):
     line = {"id": issue, "title": titles[issue], "decision": decision, "sessions": len(sessions.get(issue, []))}
     if decision is not None:
       line["sessions_since_decision"] = len(since.get(issue, []))
-    model_lines.append(json.dumps(line, ensure_ascii=False))
+    # 0 場的題多半是早期把多個根因用「；」串成一題的雜項標題，給模型配對會把新事件掛到混根因的題上。
+    if line["sessions"]:
+      model_lines.append(json.dumps(line, ensure_ascii=False))
     machine.append({"id": issue, "title": titles[issue], "decision": decision,
                     "source_sessions": sessions.get(issue, []), "sessions_since_decision": since.get(issue, [])})
   index_path, sessions_path = out / ISSUE_INDEX, out / ISSUE_SESSIONS

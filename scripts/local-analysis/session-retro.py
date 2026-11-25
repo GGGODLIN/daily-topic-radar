@@ -1495,6 +1495,9 @@ def composition_output(chain):
     groups[definition["target"]] = copy.deepcopy(definition)
   decisions = {entry["id"]: copy.deepcopy(entry) for entry in partial.get("dispositions", [])}
   rejected_groups = []
+  # 裁決與分類席輸出的新組不帶 matched_issue_id（2026-11-24 實測 289 個分批配對最後 0 個掛回），
+  # 所以從併入該組的候選決定論帶入；候選間不一致就不猜。
+  carried = {}
   for decision in chain["decisions"]:
     by_id = {candidate["id"]: candidate for candidate in decision["input"]["candidates"]}
     for row in decision["report"]["decisions"]:
@@ -1508,6 +1511,9 @@ def composition_output(chain):
         target = row["target"] if row["verdict"] == "merge_existing" else labels.get((decision["artifact"]["unit"], row["target"]))
         require(target in groups, "decision target is not in taxonomy output")
         refs.setdefault(target, set()).update(ids)
+        matched = candidate.get("matched_issue_id")
+        if isinstance(matched, str) and matched.strip():
+          carried.setdefault(target, set()).add(matched.strip())
         for record_id in ids:
           decisions[record_id] = {"id": record_id, "verdict": "merged", "reason": row["reason"]}
   for row in chain["remaining"]["pending_prior_rejections"]:
@@ -1529,6 +1535,8 @@ def composition_output(chain):
         if entry not in evidence:
           evidence.append(copy.deepcopy(entry))
     sessions = sorted({entry["session"] for entry in evidence})
+    if not base.get("matched_issue_id") and len(carried.get(target, ())) == 1:
+      base["matched_issue_id"] = next(iter(carried[target]))
     matched_id = base.get("matched_issue_id")
     matched = issues.get(matched_id) if isinstance(matched_id, str) else None
     # 已拍板的舊題也保留 ID，讓新事件掛回原題；是否升主項依決策狀態的門檻（promotion_basis）。

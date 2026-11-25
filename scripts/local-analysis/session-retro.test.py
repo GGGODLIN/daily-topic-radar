@@ -2690,6 +2690,56 @@ class EventEvidenceCLI(unittest.TestCase):
     self.assertEqual(len(output3.get("rejected", [])), 1)
     self.assertEqual(len(output3["rejected"][0]["source_finding_ids"]), 4)
 
+  def test_composition_carries_candidate_matched_issue_into_new_secondary_groups(self):
+    # 2026-11-24 實測：分批席填了 289 個舊題 ID，裁決／分類席的新組不帶這欄，97 個次要項 0 個掛回。
+    fixture = RetroCLI()
+    fixture.setUp()
+    self.addCleanup(fixture.tmp.cleanup)
+    retro, _run, manifest, _plan = fixture.composition_fixture()
+    chain = retro.composition_manifest_chain(manifest)
+    dump(Path(chain["run"]) / "issue-sessions.json", {"issues": [
+      {"id": "old-1", "title": "old one", "decision": None, "source_sessions": ["h1"], "sessions_since_decision": []},
+      {"id": "old-2", "title": "old two", "decision": None, "source_sessions": ["h2"], "sessions_since_decision": []},
+    ]})
+    chain["source_records"] = [
+      {"id": f"source-{i}", "status": "unresolved", "outcome_fact": "unknown",
+       "evidence": [{"session": f"s{i}", "source_line": 1, "quote": f"q{i}"}]}
+      for i in range(1, 5)
+    ]
+    chain["partial"] = {"patterns": [], "secondary_patterns": [], "low_harm_deferred": [], "dispositions": []}
+    chain["remaining"] = {"pending_prior_rejections": []}
+    chain["taxonomy_input"] = {"groups": [
+      {"key": "K1", "unit": "cross-decide-01", "target": "G1"},
+      {"key": "K2", "unit": "cross-decide-01", "target": "G2"},
+    ]}
+    chain["taxonomy"] = {
+      "mapping": [{"key": "K1", "target": "S001"}, {"key": "K2", "target": "S002"}],
+      "definitions": [
+        {"target": "S001", "observation": "agreeing members", "matched_issue_id": None, "matched_issue_title": None},
+        {"target": "S002", "observation": "conflicting members", "matched_issue_id": None, "matched_issue_title": None},
+      ],
+    }
+    chain["decisions"] = [{"artifact": {"unit": "cross-decide-01"},
+      "input": {"candidates": [
+        {"id": "c1", "pending_source_ids": ["source-1"], "matched_issue_id": "old-1"},
+        {"id": "c2", "pending_source_ids": ["source-2"], "matched_issue_id": "old-1"},
+        {"id": "c3", "pending_source_ids": ["source-3"], "matched_issue_id": "old-1"},
+        {"id": "c4", "pending_source_ids": ["source-4"], "matched_issue_id": "old-2"},
+      ]},
+      "report": {"decisions": [
+        {"id": "c1", "verdict": "new_group", "target": "G1", "reason": "same root"},
+        {"id": "c2", "verdict": "new_group", "target": "G1", "reason": "same root"},
+        {"id": "c3", "verdict": "new_group", "target": "G2", "reason": "mixed"},
+        {"id": "c4", "verdict": "new_group", "target": "G2", "reason": "mixed"},
+      ]}}]
+    chain["transfer"] = {"tracking_observations": [], "tracking_dispositions": []}
+    output = retro.composition_output(chain)
+    by_obs = {item["observation"]: item for item in output["secondary_patterns"]}
+    self.assertEqual(by_obs["agreeing members"]["matched_issue_id"], "old-1")
+    self.assertEqual(by_obs["agreeing members"]["matched_issue_title"], "old one")
+    # 成員指向不同舊題時不猜。
+    self.assertIsNone(by_obs["conflicting members"]["matched_issue_id"])
+
   def test_cross_low_harm_partition_pbt_with_independent_oracle_and_calibration(self):
     import random
     spec = importlib.util.spec_from_file_location("session_retro_pbt_test", SCRIPT)

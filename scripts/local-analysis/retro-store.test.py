@@ -1901,9 +1901,12 @@ class StoreCLI(unittest.TestCase):
     later, _ = self.packet(
       run={"id": "run-2", "source": "fixture", "status": "complete", "cutoff": WHEN},
       issues=[{"id": "issue-1", "title": "Lost handoff", "related_to": []},
-              {"id": "issue-2", "title": "Single-session issue", "related_to": []}],
+              {"id": "issue-2", "title": "Single-session issue", "related_to": []},
+              {"id": "issue-3", "title": "Sessionless bundle; several roots", "related_to": []}],
       discoveries=[{"id": "disc-2", "issue_id": "issue-2", "source": note, "verification": "pending",
-                    "review_sources": [], "scope": "session-c", "candidate": "c", "counterevidence": "none"}],
+                    "review_sources": [], "scope": "session-c", "candidate": "c", "counterevidence": "none"},
+                   {"id": "disc-3", "issue_id": "issue-3", "source": note, "verification": "pending",
+                    "review_sources": [], "scope": "none", "candidate": "c", "counterevidence": "none"}],
       events=[
         {"id": "episode-2", "session": "session-b", "event_at": WHEN, "anchors": [note], "verification": "confirmed",
          "review_sources": [review], "scope": "session-b", "issue_ids": ["issue-1"]},
@@ -1915,7 +1918,7 @@ class StoreCLI(unittest.TestCase):
     before = (self.store / "records.jsonl").read_bytes()
     out = self.root / "run"
     result = self.cli("issue-index", "--out-dir", out)
-    self.assertEqual(result["issues"], 2)
+    self.assertEqual(result["issues"], 3)
     self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
     lines = [json.loads(line) for line in (out / "issue-index.jsonl").read_text(encoding="utf-8").splitlines()]
     self.assertEqual(
@@ -1925,6 +1928,8 @@ class StoreCLI(unittest.TestCase):
     )
     machine = json.loads((out / "issue-sessions.json").read_text(encoding="utf-8"))
     by_id = {item["id"]: item for item in machine["issues"]}
+    # 0 場的雜項題留在機器用檔，不給模型配對（多半是多根因串接的舊標題，掛上去會混根因）。
+    self.assertEqual(by_id["issue-3"]["source_sessions"], [])
     self.assertEqual(by_id["issue-1"]["source_sessions"], ["session-a", "session-b"])
     self.assertEqual(by_id["issue-1"]["sessions_since_decision"], ["session-b"])
     # tracking-context 照舊只給閱讀席小清單：未拍板、無改動、未滿 4 場的 issue-2 不在裡面，但索引有。
