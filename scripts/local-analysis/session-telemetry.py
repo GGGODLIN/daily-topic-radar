@@ -300,6 +300,20 @@ def _merge_usage(msg_usage: dict, anon_usage: list, file_path_str: str, line_no:
         anon_usage.append(((file_path_str, line_no), model, vals[0], vals[1], vals[2], vals[3]))
 
 
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _load_jsonl_record(raw: bytes):
+    # This prefix identifies UTF-8 and the start of the JSON value.
+    if raw.startswith(b'{"'):
+        text = raw.decode("utf-8", "surrogatepass")
+        record, end = _JSON_DECODER.raw_decode(text)
+        if text[end:].strip(" \t\r\n"):
+            raise json.JSONDecodeError("Extra data", text, end)
+        return record
+    return json.loads(raw)
+
+
 def parse_subagent_jsonl(sf: Path, collect_usage: bool = True) -> dict:
     msg_usage = {}
     anon_usage = []
@@ -309,14 +323,14 @@ def parse_subagent_jsonl(sf: Path, collect_usage: bool = True) -> dict:
     try:
         with sf.open("rb") as fh:
             for line_no, raw in enumerate(fh, 1):
-                if not raw.strip():
+                if raw.isspace():
                     continue
                 is_asst = b'"type":"assistant"' in raw or b'"type": "assistant"' in raw
                 if not is_asst:
                     if raw.lstrip().startswith(b"{") and b'"type"' in raw:
                         continue
                 try:
-                    obj = json.loads(raw)
+                    obj = _load_jsonl_record(raw)
                 except Exception:
                     parse_errors += 1
                     continue
@@ -438,7 +452,7 @@ def process_session(task: tuple) -> dict:
     try:
         with fpath.open("rb") as fh:
             for line_no, raw in enumerate(fh, 1):
-                if not raw.strip():
+                if raw.isspace():
                     continue
                 is_asst = b'"type":"assistant"' in raw or b'"type": "assistant"' in raw
                 is_user = (not is_asst) and (b'"type":"user"' in raw or b'"type": "user"' in raw)
@@ -459,7 +473,7 @@ def process_session(task: tuple) -> dict:
                         continue
 
                 try:
-                    obj = json.loads(raw)
+                    obj = _load_jsonl_record(raw)
                 except Exception:
                     parse_errors += 1
                     continue
@@ -582,7 +596,14 @@ def process_session(task: tuple) -> dict:
     except OSError:
         return {"skipped": True, "path": fpath_str, "mtime": mtime, "last_ts": 0.0, "parse_errors": parse_errors}
 
-    ordered_events = list(impl_events)
+    ref_ts = last_ts if last_ts > 0 else mtime
+    in_usage_window = (
+        window_start is None
+        or anchor_end is None
+        or (window_start <= ref_ts < anchor_end and not (last_ts > 0 and last_ts >= anchor_end))
+    )
+
+    ordered_events = impl_events if in_usage_window else []
     valid_edits = []
     for tid_s, ets, lno, fcat, fkey in edit_records:
         tr = tool_results.get(tid_s) if tid_s else None
@@ -596,16 +617,17 @@ def process_session(task: tuple) -> dict:
         else:
             edits_non_code += 1
         valid_edits.append((tid_s, fcat))
-        ordered_events.append((ets, lno, "EDIT", fcat, fkey, tid_s))
+        if in_usage_window:
+            ordered_events.append((ets, lno, "EDIT", fcat, fkey, tid_s))
 
-    for tid_s, stype in review_records:
-        tr = tool_results.get(tid_s)
-        if tr is None or tr[2]:
-            continue
-        rts, rlno, _ = tr
-        ordered_events.append((rts, rlno, "REVIEW", stype, tid_s, tid_s))
-
-    ordered_events.sort(key=lambda x: (x[0], x[1]))
+    if in_usage_window:
+        for tid_s, stype in review_records:
+            tr = tool_results.get(tid_s)
+            if tr is None or tr[2]:
+                continue
+            rts, rlno, _ = tr
+            ordered_events.append((rts, rlno, "REVIEW", stype, tid_s, tid_s))
+        ordered_events.sort(key=lambda x: (x[0], x[1]))
     events = [(e[0], e[2], e[3], e[4]) for e in ordered_events]
     events_with_tid = [(e[0], e[2], e[3], e[4], e[5]) for e in ordered_events]
 
@@ -613,12 +635,6 @@ def process_session(task: tuple) -> dict:
     is_human = (human_typed_turns > 0) if proj_cat in ("tmp", "var-folders") else (total_human_turns > 0)
     is_worker_session = is_human and (is_worktree or worker_like_first_prompt)
 
-    ref_ts = last_ts if last_ts > 0 else mtime
-    in_usage_window = (
-        window_start is None
-        or anchor_end is None
-        or (window_start <= ref_ts < anchor_end and not (last_ts > 0 and last_ts >= anchor_end))
-    )
     need_usage = is_human and in_usage_window
     if not need_usage:
         msg_usage = {}
@@ -641,6 +657,9 @@ def process_session(task: tuple) -> dict:
                 if not sf.is_file():
                     continue
                 if sf.name.endswith(".meta.json"):
+                    # Window-external sessions contribute parse receipts, but no sidecar metadata.
+                    if not in_usage_window:
+                        continue
                     stem = sf.name[:-len(".meta.json")]
                     try:
                         loaded_meta = json.loads(sf.read_text(encoding="utf-8", errors="replace"))
@@ -694,7 +713,9 @@ def process_session(task: tuple) -> dict:
     else:
         auto_reason = "human-worker" if is_worker_session else "human-direct"
 
-    main_agent_tids = {t[2] for t in delegations_main if t[0] in ("Agent", "Task") and t[2]}
+    main_agent_tids = set()
+    if in_usage_window:
+        main_agent_tids = {t[2] for t in delegations_main if t[0] in ("Agent", "Task") and t[2]}
     matched_tids = len(main_agent_tids & sub_tool_use_ids)
 
     return {
@@ -759,6 +780,14 @@ def fmt_token_block(arr: list) -> dict:
     }
 
 
+def _session_results(tasks, workers):
+    if workers > 1 and len(tasks) >= 64:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            yield from ex.map(process_session, tasks, chunksize=32)
+    else:
+        yield from map(process_session, tasks)
+
+
 def analyze_projects(
     projects_dir: Path,
     days: int = 30,
@@ -803,12 +832,6 @@ def analyze_projects(
             if st.st_mtime >= scan_start:
                 tasks.append((str(f), st.st_mtime, window_start, anchor_end))
 
-    if workers > 1 and len(tasks) >= 64:
-        with ProcessPoolExecutor(max_workers=workers) as ex:
-            results = list(ex.map(process_session, tasks, chunksize=32))
-    else:
-        results = [process_session(t) for t in tasks]
-
     # Aggregators for primary --days window
     win_sessions_total = 0
     win_sessions_human = 0
@@ -847,7 +870,7 @@ def analyze_projects(
     # Trend aggregator (pure orchestrator only, per month)
     trend_by_month = {mk: {"sessions": 0, "edits_code": 0, "impl_dispatches": 0} for mk in trend_month_list}
 
-    for res in results:
+    for res in _session_results(tasks, workers):
         parse_errors_total += res.get("parse_errors", 0)
         if res.get("skipped"):
             skipped_main += 1
@@ -1003,13 +1026,18 @@ def analyze_projects(
     win_human_main_tids = len(win_human_main_tids_set)
     win_human_matched_tids = len(win_human_matched_tids_set | (win_human_main_tids_set & win_human_sub_tids))
 
+    model_family_totals = {}
     for src, model, i, cc, cr, o in global_msg_usage.values():
         vec = [i, cc, cr, o]
         if src == "main":
             add_vec(tokens_main, vec)
         else:
             add_vec(tokens_sub, vec)
-        add_vec(tokens_by_family[classify_model_family(model)], vec)
+        family_total = model_family_totals.get(model)
+        if family_total is None:
+            family_total = tokens_by_family[classify_model_family(model)]
+            model_family_totals[model] = family_total
+        add_vec(family_total, vec)
 
     # Finalize Metric 1
     trend_rows = []

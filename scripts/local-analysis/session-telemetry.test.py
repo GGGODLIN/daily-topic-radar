@@ -6,14 +6,18 @@
 
 import datetime as dt
 import importlib.util
+import io
 import json
 import os
 import stat
 import subprocess
 import sys
 import tempfile
+import time
+import tracemalloc
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SCRIPT_PY = HERE / "session-telemetry.py"
@@ -798,6 +802,257 @@ with tempfile.TemporaryDirectory() as td:
         rep = st.analyze_projects(self.root, days=30, trend_months=2, ref_date=self.ref_date)
         self.assertEqual(rep["metric2_post_review_60m_bursts"]["orchestrator_only_episodes_ge3_within_60m"], 0)
         self.assertEqual(rep["metric2_post_review_60m_bursts"]["orchestrator_only_episodes_ge3_any_window"], 0)
+
+    def test_parallel_pool_keeps_cross_file_dedup_and_tied_role_order(self):
+        proj = self.root / "-Users-linhancheng-Desktop-projects-pool"
+        ts = iso_at("2026-11-18")
+        mtime = dt.datetime.fromisoformat(ts).timestamp()
+        for index in range(65):
+            main = proj / f"session-{index:02}.jsonl"
+            rows = [user_msg(ts, "run", promptSource="typed")]
+            if index == 0:
+                rows.append(asst_usage_msg(ts, "shared", "<synthetic>", 2, 9, 4, 8, [
+                    tool_agent("review-1", "code-reviewer"),
+                ]))
+            elif index == 64:
+                rows.append(asst_usage_msg(ts, "last", "claude-opus-4-1", 1, 0, 0, 2, [
+                    tool_agent("dispatch-1", "routed-impl"),
+                ]))
+            write_jsonl(main, rows)
+            os.utime(main, (mtime, mtime))
+        write_jsonl(proj / "session-64" / "subagents" / "worker.jsonl", [
+            asst_usage_msg(ts, "shared", "claude-opus-4-1", 5, 3, 7, 11),
+        ])
+
+        with mock.patch.object(st, "classify_model_family", wraps=st.classify_model_family) as classify:
+            serial = st.analyze_projects(self.root, ref_date=self.ref_date)
+        classify.assert_called_once_with("claude-opus-4-1")
+        parallel = json.loads(subprocess.check_output([
+            sys.executable, "-B", "-c",
+            "import os, runpy, sys; os.cpu_count = lambda: 2; "
+            "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')",
+            str(SCRIPT_PY), "--projects-dir", str(self.root), "--date", str(self.ref_date), "--format", "json",
+        ]))
+        for report in (serial, parallel):
+            report["meta"]["elapsed_seconds"] = report["quality_receipt"]["elapsed_seconds"] = 0
+        self.assertEqual(json.dumps(parallel, ensure_ascii=False), json.dumps(serial, ensure_ascii=False))
+        self.assertEqual(parallel["quality_receipt"]["window_sessions_total"], 65)
+        self.assertEqual(list(parallel["metric3_delegation_roles"]["top_agent_types"].items()), [
+            ("code-reviewer", 1), ("routed-impl", 1),
+        ])
+        tokens = parallel["metric4_tokens_and_models"]
+        self.assertEqual(tokens["main"]["total"], 35)
+        self.assertEqual(tokens["subagent"]["total"], 0)
+        self.assertEqual(parallel["quality_receipt"]["cross_file_deduped_messages"], 1)
+        self.assertEqual(tokens["by_model_family"]["opus/pro"]["total"], 35)
+
+    def write_trend_only_sessions(self, proj):
+        ts = "2026-10-02T12:00:00+00:00"
+        old_mtime = dt.datetime.fromisoformat(ts).timestamp()
+        cases = (
+            ("orch-a", ts, "run", "typed", "shared"),
+            ("orch-b", ts, "continue", "typed", "shared"),
+            ("worker", ts, "[main] routed task", "typed", "worker"),
+            ("auto", ts, "scheduled", None, "auto"),
+            ("future", "2026-11-20T12:00:00+00:00", "run", "typed", "future"),
+        )
+        for sid, timestamp, text, source, tool_id_prefix in cases:
+            main = proj / f"{sid}.jsonl"
+            delegate_id = f"{tool_id_prefix}-delegate"
+            write_jsonl(main, [
+                user_msg(timestamp, text, promptSource=source, entrypoint="cli" if source else "sdk-cli"),
+                asst_usage_msg(timestamp, sid, "claude-opus-4-1", 5, 0, 0, 7, [
+                    tool_edit(f"{tool_id_prefix}-edit", "/p/main.py"),
+                    tool_agent(delegate_id, "routed-impl"),
+                ]),
+                asst_usage_msg(timestamp, None, "claude-opus-4-1", 1, 0, 0, 1),
+            ])
+            os.utime(main, (old_mtime, old_mtime))
+            sub = proj / sid / "subagents"
+            write_jsonl(sub / "worker.jsonl", [
+                asst_usage_msg(timestamp, "sub-usage", "claude-opus-4-1", 2, 0, 0, 3),
+                asst_usage_msg(timestamp, None, "claude-opus-4-1", 1, 0, 0, 1),
+                '{"type":"assistant",',
+            ])
+            (sub / "worker.meta.json").write_text(json.dumps({
+                "agentType": "routed-impl", "toolUseId": delegate_id,
+            }), encoding="utf-8")
+        return old_mtime
+
+    def test_trend_only_keeps_receipts_and_skips_sidecars(self):
+        proj = self.root / "-Users-linhancheng-Desktop-projects-trend"
+        old_mtime = self.write_trend_only_sessions(proj)
+
+        process = st.process_session
+        with mock.patch.object(st.time, "time", return_value=1):
+            with mock.patch.object(st, "process_session", side_effect=lambda task: process(task[:2])):
+                full_report = st.analyze_projects(self.root, ref_date=self.ref_date)
+            with mock.patch.object(Path, "read_text", side_effect=AssertionError("unused sidecar")) as read:
+                with mock.patch.object(st, "parse_subagent_jsonl", wraps=st.parse_subagent_jsonl) as parse:
+                    slim_report = st.analyze_projects(self.root, ref_date=self.ref_date)
+                    self.assertEqual([call.kwargs for call in parse.call_args_list], [{"collect_usage": False}] * 5)
+                read.assert_not_called()
+        self.assertEqual(json.dumps(slim_report).encode(), json.dumps(full_report).encode())
+        self.assertEqual(st.render_markdown(slim_report).encode(), st.render_markdown(full_report).encode())
+        receipt = slim_report["quality_receipt"]
+        self.assertEqual(receipt["json_line_parse_errors"], 5)
+        self.assertEqual(receipt["window_sessions_total"], 0)
+        trend = {row["month"]: row for row in slim_report["metric1_self_edit_vs_impl"]["trend_by_month"]}
+        self.assertEqual(trend["2026-10"], {"month": "2026-10", "sessions": 2, "edits_code": 1,
+                                            "impl_dispatches": 1, "ratio_code_to_impl": 1.0})
+
+        main_task = (str(proj / "orch-a.jsonl"), old_mtime)
+        full = process(main_task)
+        slim = process((*main_task, st._local_midnight_ts(dt.date(2026, 10, 21)),
+                        st._local_midnight_ts(dt.date(2026, 11, 20))))
+        self.assertEqual(slim.keys(), full.keys())
+        for field in ("events", "events_with_tid", "main_agent_tids", "sub_tool_use_ids", "sub_meta_types",
+                      "main_msg_usage", "main_anon_usage", "sub_msg_usage", "sub_anon_usage"):
+            self.assertTrue(full[field], field)
+            self.assertFalse(slim[field], field)
+        self.assertEqual(full["sub_meta_types"], {"routed-impl": 1})
+
+    def test_trend_only_cli_parity_in_both_timezones(self):
+        proj = self.root / "-Users-linhancheng-Desktop-projects-trend"
+        self.write_trend_only_sessions(proj)
+        ts = "2026-11-01T02:00:00+00:00"
+        main = proj / "in-window.jsonl"
+        write_jsonl(main, [
+            user_msg(ts, "run", promptSource="typed"),
+            asst_usage_msg(ts, "shared-message", "claude-opus-4-1", 2, 0, 0, 7, [
+                tool_edit("window-edit", "/p/window.py"),
+            ]),
+        ])
+        mtime = dt.datetime.fromisoformat(ts).timestamp()
+        os.utime(main, (mtime, mtime))
+        write_jsonl(proj / "in-window" / "subagents" / "worker.jsonl", [
+            asst_usage_msg(ts, "shared-message", "claude-opus-4-1", 5, 0, 0, 3),
+        ])
+
+        def cli_bytes(fmt):
+            argv = [str(SCRIPT_PY), "--projects-dir", str(self.root),
+                    "--date", str(self.ref_date), "--format", fmt]
+            out = io.StringIO()
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(sys, "stdout", out):
+                st.main()
+            return out.getvalue().encode("utf-8")
+
+        process = st.process_session
+        self.addCleanup(time.tzset)
+        for tz, expected_trend in (
+            ("Asia/Taipei", [(2, 1, 1), (1, 1, 0)]),
+            ("America/New_York", [(3, 2, 1), (0, 0, 0)]),
+        ):
+            with self.subTest(tz=tz), mock.patch.dict(os.environ, {"TZ": tz}), mock.patch.object(st.time, "time", return_value=1):
+                time.tzset()
+                with mock.patch.object(st, "process_session", side_effect=lambda task: process(task[:2])):
+                    full_json = cli_bytes("json")
+                    full_markdown = cli_bytes("markdown")
+                optimized_json = cli_bytes("json")
+                self.assertEqual(optimized_json, full_json, "JSON")
+                self.assertEqual(cli_bytes("markdown"), full_markdown, "Markdown")
+
+                report = json.loads(optimized_json)
+                receipt = report["quality_receipt"]
+                self.assertEqual(receipt["scanned_main_jsonl"], 5)
+                self.assertEqual(receipt["window_sessions_total"], 1)
+                self.assertEqual(receipt["json_line_parse_errors"], 5)
+                self.assertEqual(receipt["cross_file_deduped_messages"], 1)
+                tokens = report["metric4_tokens_and_models"]
+                self.assertEqual(tokens["main"]["input_tokens"], 5)
+                self.assertEqual(tokens["main"]["output_tokens"], 7)
+                self.assertEqual(tokens["subagent"]["total"], 0)
+                trend = report["metric1_self_edit_vs_impl"]["trend_by_month"]
+                self.assertEqual([
+                    (row["sessions"], row["edits_code"], row["impl_dispatches"])
+                    for row in trend[-2:]
+                ], expected_trend)
+
+    def test_large_unicode_lines_are_parsed_by_iteration(self):
+        proj = self.root / "-Users-linhancheng-Desktop-projects-stream"
+        main = proj / "large.jsonl"
+        sub = proj / "large" / "subagents" / "worker.jsonl"
+        ts = iso_at("2026-11-18")
+        payload = "編輯🚀" * (300 * 1024)
+        write_jsonl(main, [
+            user_msg(ts, "run", promptSource="typed"),
+            asst_usage_msg(ts, "main", "claude-opus-4-1", 2, 3, 5, 7, [
+                {"type": "text", "text": payload}, tool_edit("failed-edit", "/p/a.py"),
+            ]),
+            tool_result_msg(ts, "failed-edit", is_error=True, content=payload),
+            asst_usage_msg(ts, "main-tail", "claude-opus-4-1", 0, 0, 0, 1, [tool_edit("ok-edit", "/p/b.py")]),
+        ])
+        write_jsonl(sub, [asst_usage_msg(ts, "sub", "claude-opus-4-1", 11, 0, 0, 13, [
+            {"type": "text", "text": payload},
+        ])])
+
+        parse_record = st._load_jsonl_record
+        lines_parsed = 0
+
+        def parse_next(raw):
+            nonlocal lines_parsed
+            lines_parsed += 1
+            return parse_record(raw)
+
+        def iter_lines(file):
+            for line in file:
+                before = lines_parsed
+                yield line
+                self.assertEqual(lines_parsed, before + 1)
+
+        class IterationOnly:
+            def __init__(self, file):
+                self.file = file
+
+            def __enter__(self):
+                return iter_lines(self.file)
+
+            def __exit__(self, *exc):
+                self.file.close()
+
+        open_file = Path.open
+
+        def open_stream(path, mode):
+            self.assertIn(path, (main, sub))
+            self.assertEqual(mode, "rb")
+            return IterationOnly(open_file(path, mode))
+
+        with mock.patch.object(Path, "open", open_stream), mock.patch.object(st, "_load_jsonl_record", parse_next):
+            result = st.process_session((str(main), main.stat().st_mtime))
+        self.assertEqual(lines_parsed, 5)
+        self.assertEqual(result["parse_errors"], 0)
+        self.assertEqual(result["valid_edits"], [("ok-edit", "code")])
+        self.assertEqual(result["main_msg_usage"], {
+            "main": ("claude-opus-4-1", 2, 3, 5, 7), "main-tail": ("claude-opus-4-1", 0, 0, 0, 1),
+        })
+        self.assertEqual(result["sub_msg_usage"], {"sub": ("claude-opus-4-1", 11, 0, 0, 13)})
+
+    def test_process_session_bounds_peak_memory_for_large_unicode_jsonl(self):
+        main = self.root / "-Users-linhancheng-Desktop-projects-stream" / "many-lines.jsonl"
+        ts = iso_at("2026-11-18")
+        line_count = 64
+        # 非 BMP 字元讓整檔解碼的字串採用較寬的表示，放大緩衝整檔的記憶體成本。
+        payload = "a" * (512 * 1024) + "編輯🚀"
+        main.parent.mkdir()
+        with main.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(user_msg(ts, "run", promptSource="typed")) + "\n")
+            for index in range(line_count):
+                row = asst_usage_msg(ts, f"record-{index}", "claude-opus-4-1", 1, 0, 0, 1, [
+                    {"type": "text", "text": payload},
+                ])
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        task = (str(main), main.stat().st_mtime)
+        tracemalloc.start()
+        try:
+            result = st.process_session(task)
+            _, peak_bytes = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        self.assertEqual(result["parse_errors"], 0)
+        self.assertEqual(len(result["main_msg_usage"]), line_count)
+        self.assertLess(peak_bytes, 25 * 1024 * 1024)
 
     def test_cli_rejects_empty_projects_dir_and_invalid_days(self):
         r_empty = subprocess.run(
