@@ -172,6 +172,8 @@ PHONE_RE = re.compile(
   r"|\(\d{2,4}\)[ \t]*\d{3,4}[- .]\d{3,4}"
   r"|0\d{1,3}-\d{3,4}-\d{3,4}"
   r"|09\d{2}-\d{6}"
+  # 台灣手機常被包在反引號或表格儲存格裡、不帶標籤（2026-11-25 retro c8 第 6 步）。
+  r"|09\d{8}"
   r"|[2-9]\d{2}-\d{3}-\d{4}"
   r")(?!\w)"
 )
@@ -197,12 +199,12 @@ CJK_SENSITIVE_KEY_RE = re.compile(
 CJK_SECRET_LABEL_RE = re.compile(
   r"(?<!忘記|重設|修改|變更|設定|輸入|驗證|確認)"
   r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
-  r"(\s*[：:=]\s*)(?:`[^`\r\n]+`|\"[^\"\r\n]*\"|'[^'\r\n]*'|(?:(?!(?:\\[nrt\"'\\]))[^\s,，。；;、\r\n\"'`])+)"
+  r"(\s*(?:是|為)?\s*[：:=]\s*)(?:`[^`\r\n]+`|\"[^\"\r\n]*\"|'[^'\r\n]*'|(?:(?!(?:\\[nrt\"'\\]))[^\s,，。；;、\r\n\"'`])+)"
 )
 CJK_SECRET_LABEL_TABLE_RE = re.compile(
   r"(?<!忘記|重設|修改|變更|設定|輸入|驗證|確認)"
   r"((?:初始|預設|臨時|登入|新|舊|管理員|資料庫|測試)?(?:密碼|口令|金鑰|密鑰|私鑰))"
-  r"(\s*[：:=]\s*)(?:`[^`\r\n|]+`|\"[^\"\r\n|]*\"|'[^'\r\n|]*'|(?:\\\|(?=\S)|(?!(?:\\[nrt\"'\\]|\|))[^\s,，。；;、\r\n\"'`])+)"
+  r"(\s*(?:是|為)?\s*[：:=]\s*)(?:`[^`\r\n|]+`|\"[^\"\r\n|]*\"|'[^'\r\n|]*'|(?:\\\|(?=\S)|(?!(?:\\[nrt\"'\\]|\|))[^\s,，。；;、\r\n\"'`])+)"
 )
 OTP_LABEL_RE = re.compile(
   # 通行碼／passcode（會議邀請）只走這條標籤緊鄰規則，刻意不加進 OTP_KEYWORD_RE 的 60 字窗口：邀請信同段常有會議 ID（2026-11-24 retro P4）。
@@ -541,6 +543,9 @@ def sensitive_key(name):
     return True
   key = re.sub(r"[^A-Za-z0-9]+", "_", name).upper().strip("_")
   # PASS／PWD 單獨出現多半是測試結果（「PASS: 測試名」），只在有前綴時才算憑證名。
+  # 複數 *_TOKENS（如 RECOVERY_TOKENS）漏掉時物件路徑整個不遮；token 計數欄位由 TOKEN_COUNT_KEY_RE 豁免。
+  if key.endswith("_TOKENS"):
+    return True
   return any(
     (key == suffix and suffix not in {"PASS", "PWD"}) or key.endswith(f"_{suffix}")
     for suffix in SENSITIVE_SUFFIXES

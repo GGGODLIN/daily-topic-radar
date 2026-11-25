@@ -3350,6 +3350,39 @@ class SessionAuditCliTest(unittest.TestCase):
       self.assertNotIn(code, out, f"meeting passcode leaked: {leak!r}")
       self.assertIn("812 3456 7890", out, "meeting ID must stay readable")
 
+  def test_redaction_copula_password_compact_mobile_and_plural_token_keys(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_c8_step7", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # 2026-11-25 retro c8 第 6 步：「密碼是：`…`」多一個「是」就整段原樣進分析副本（1930f2b6:340 真實發生）。
+    pw = "Zx9QwErTy7UiOp3AsDfG"
+    for leak in (f"帳號 admin，密碼是：`{pw}`", f"初始密碼為：{pw}", f"|帳號|密碼是：{pw}|"):
+      out = mod.redact_text(leak)
+      self.assertNotIn(pw, out, f"copula password leaked: {leak}")
+      self.assertEqual(mod.redact_text(out), out, "redaction must be idempotent")
+    for keep in ("密碼是對的，可以登入", "忘記密碼是常見問題"):
+      self.assertEqual(mod.redact_text(keep), keep, f"prose over-redacted: {keep}")
+    # 手機號碼包在反引號或 Markdown 表格儲存格裡（c3764a38:56、c3764a38:2549、67ee0046:4562）。
+    mobile = "0912345678"
+    for leak in (
+      f"手機：`{mobile}`",
+      f"手機／WhatsApp（`{mobile}`）、三組個人信箱",
+      f"| 手機／WhatsApp | `{mobile}` / `[PHONE]` | 明示授權 |",
+      f"| 王小明 | {mobile} |",
+    ):
+      out = mod.redact_text(leak)
+      self.assertNotIn(mobile, out, f"compact mobile leaked: {leak}")
+      self.assertEqual(mod.redact_text(out), out, "redaction must be idempotent")
+    for keep in ("build 09123456789 finished", "id=x0912345678", "v0912345678"):
+      self.assertEqual(mod.redact_text(keep), keep, f"non-mobile digits over-redacted: {keep}")
+    # 複數 *_TOKENS 鍵在物件路徑與 KEY=value 純文字都漏（retro prepare 走 redact_obj）；token 計數欄位維持可讀。
+    code = "87654321"
+    self.assertEqual(mod.redact_obj({"RECOVERY_TOKENS": code})["RECOVERY_TOKENS"], "[REDACTED]")
+    self.assertEqual(mod.redact_obj({"a": {"RECOVERY_TOKENS": int(code)}})["a"]["RECOVERY_TOKENS"], "[REDACTED]")
+    self.assertNotIn(code, mod.redact_text(f"RECOVERY_TOKENS={code}"))
+    kept = mod.redact_obj({"input_tokens": 158458398, "max_tokens": "32768", "cache_read_input_tokens": 12})
+    self.assertEqual(kept, {"input_tokens": 158458398, "max_tokens": "32768", "cache_read_input_tokens": 12})
+
   def test_redaction_double_quoted_secret_flags_inside_command_substitution(self):
     spec = importlib.util.spec_from_file_location("session_audit_mod_dq_flags", str(SCRIPT))
     mod = importlib.util.module_from_spec(spec)
