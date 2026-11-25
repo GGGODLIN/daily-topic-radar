@@ -2976,6 +2976,11 @@ def parser():
   compose = commands.add_parser("compose-cross")
   compose.add_argument("--manifest", required=True)
   compose.add_argument("--check-only", action="store_true")
+  cross = commands.add_parser("cross-script")
+  cross.add_argument("--kind", required=True, choices=["batches", "synthesis"])
+  cross.add_argument("--preset", required=True)
+  cross.add_argument("--issue-index", required=True)
+  cross.add_argument("--out-dir", required=True)
   event = commands.add_parser("event-evidence")
   event.add_argument("--session-file", required=True)
   event.add_argument("--source-line", type=int)
@@ -2984,6 +2989,40 @@ def parser():
   metering = commands.add_parser("usage")
   metering.add_argument("--transcript-dir", action="append", required=True)
   return root
+
+
+CROSS_TEMPLATES = {kind: Path.home() / f".claude/workflows/retro-cross-{kind}.js" for kind in ("batches", "synthesis")}
+
+
+def cross_script(args):
+  """Embed a run's preset and the issue-index read plan into a tracked cross template.
+
+  The batch and synthesis prompts used to be hand-written per run and copied forward, so a rule fixed in
+  the command never reached the prompt that ran. Only the preset varies per run; the prompt text lives in
+  the template.
+  """
+  index = Path(args.issue_index).resolve()
+  require(index.is_file(), "issue index not found: " + str(index))
+  lines = sum(1 for _ in index.open(encoding="utf-8"))
+  require(lines > 0, "issue index is empty")
+  preset = json.loads(Path(args.preset).read_text(encoding="utf-8"))
+  require(isinstance(preset, dict), "preset must be a JSON object")
+  preset["issue_index_path"] = str(index)
+  preset["issue_index_lines"] = lines
+  if args.kind == "synthesis":
+    preset["ii_reads"] = [f"Read({index}, offset: {off}, limit: {min(2000, lines - off + 1)}, allow_large: true)"
+                          for off in range(1, lines + 1, 2000)]
+  else:
+    require(isinstance(preset.get("items"), list) and bool(preset["items"]), "batches preset needs items")
+  template = CROSS_TEMPLATES[args.kind].read_text(encoding="utf-8")
+  marker = "const preset = null"
+  require(template.count(marker) == 1, "cross template missing preset marker")
+  embedded = json.dumps(preset, ensure_ascii=False).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+  out = Path(args.out_dir).resolve()
+  require(out.is_dir(), "out dir not found: " + str(out))
+  script_path = out / f"workflow-cross-{args.kind}.js"
+  script_path.write_text(template.replace(marker, f"const preset = {embedded}", 1), encoding="utf-8")
+  return {"kind": args.kind, "issue_index_lines": lines, "workflow_script_path": str(script_path)}
 
 
 def event_evidence_command(args):
@@ -3001,7 +3040,8 @@ def main():
     args = parser().parse_args()
     handlers = {"inventory": inventory, "prepare": prepare, "stage-args": stage_args,
                 "validate": validate, "usage": usage, "finish": finish,
-                "event-evidence": event_evidence_command, "compose-cross": compose_cross}
+                "event-evidence": event_evidence_command, "compose-cross": compose_cross,
+                "cross-script": cross_script}
     result = handlers[args.command](args)
     print(json.dumps(result, ensure_ascii=False))
     return 2 if result.get("pass") is False else 0

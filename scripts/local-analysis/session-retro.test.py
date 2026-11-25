@@ -788,6 +788,58 @@ class RetroCLI(unittest.TestCase):
     self.assertEqual(result["unknown_messages"], 1)
     self.assertFalse(result["billing"])
 
+  def test_cross_script_embeds_preset_and_issue_index_into_tracked_templates(self):
+    # 分批與合成提示改由 ~/.claude/workflows 固定範本產生；手寫並沿用上一輪檔案曾讓跨輪掛回規則沒進到實際提示。
+    run = self.root / "run-cross"
+    run.mkdir()
+    index = run / "issue-index.jsonl"
+    index.write_text("".join(json.dumps({"id": f"I{n}", "title": "t", "decision": None, "sessions": 1, "sessions_since_decision": 1}) + "\n" for n in range(3)), encoding="utf-8")
+    batches = run / "batches-preset.json"
+    batches.write_text(json.dumps({
+      "plan_path": str(run / "plan.json"), "partition_path": str(run / "p.json"),
+      "tracking_context_path": str(run / "tc.json"), "tracking_context_lines": 10,
+      "model": "m", "effort": "high", "concurrency": 2,
+      "items": [{"unit": "cross-b01", "report_path": str(run / "b01.json"), "input_reports": [str(run / "s01.json")],
+                 "file_reads": [{"path": str(run / "s01.json"), "lines": 5}], "expected_source_ids": ["s01-F1"]}],
+    }), encoding="utf-8")
+    out = self.cli("cross-script", "--kind", "batches", "--preset", batches, "--issue-index", index, "--out-dir", run)
+    script = Path(out["workflow_script_path"])
+    self.assertEqual(script, run.resolve() / "workflow-cross-batches.js")
+    synthesis = run / "synthesis-preset.json"
+    synthesis.write_text(json.dumps({
+      "plan_path": str(run / "plan.json"), "synthesis_packet_path": str(run / "pkt.json"), "synthesis_packet_lines": 4,
+      "pkt_reads": ["Read(pkt)"], "tracking_context_path": str(run / "tc.json"), "tracking_context_lines": 10,
+      "tc_reads": ["Read(tc)"], "report_path": str(run / "cross-session.json"), "model": "m", "effort": "high", "source_records": 1,
+    }), encoding="utf-8")
+    syn = Path(self.cli("cross-script", "--kind", "synthesis", "--preset", synthesis, "--issue-index", index, "--out-dir", run)["workflow_script_path"])
+    runner = """
+import { readFile } from 'node:fs/promises'
+const prompts = []
+for (const path of process.argv.slice(1)) {
+  const src = (await readFile(path, 'utf8')).replace(/^export const meta =/m, 'const meta =')
+  const fn = new Function('args', 'agent', 'parallel', 'log', `return (async () => {\\n${src}\\n})()`)
+  const res = await fn({ confirmed: true }, async (p, opts) => {
+    prompts.push(p)
+    return { session: 'cross-session', unit: opts.label === 'cross-session' ? 'cross-session' : opts.label, status: opts.label === 'cross-session' ? 'partial' : 'complete', report_path: p.match(/只能寫入 (\\S+?)（/)[1], limitations: [] }
+  }, async fns => Promise.all(fns.map(f => f())), () => {})
+  prompts.push(JSON.stringify({ ok: res.ok }))
+}
+console.log(JSON.stringify(prompts))
+"""
+    done = subprocess.run(["node", "--input-type=module", "-e", runner, str(script), str(syn)], text=True, capture_output=True)
+    self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+    batch_prompt, batch_ok, syn_prompt, syn_ok = json.loads(done.stdout)
+    self.assertEqual(json.loads(batch_ok), {"ok": True})
+    self.assertEqual(json.loads(syn_ok), {"ok": True})
+    for prompt in (batch_prompt, syn_prompt):
+      self.assertIn(str(index), prompt)
+      self.assertIn("共 3 行", prompt)
+      self.assertIn("任何狀態", prompt)
+      self.assertNotIn("未拍板（decision 為 null）舊問題", prompt)
+    self.assertIn("sessions_since_decision 達 >= 2", syn_prompt)
+    missing = self.cli("cross-script", "--kind", "batches", "--preset", batches, "--issue-index", run / "nope.jsonl", "--out-dir", run, code=2)
+    self.assertFalse(missing["pass"])
+
   def test_stage_args_writes_embedded_workflow_script_requiring_caller_confirmation(self):
     path, _ = self.prepare([user("source finding"), assistant("x" * 850000)])
     out = self.stage(path, "reading")
