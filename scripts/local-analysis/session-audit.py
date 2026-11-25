@@ -149,6 +149,12 @@ JSON_SECRET_RE = re.compile(
 )
 # Magpie providers.json 等設定把憑證欄位命名為裸 key；只遮無空白／冒號／斜線且英數混合的長值，保留一般識別字與 v2:... 快取鍵。
 BARE_KEY_SECRET_RE = re.compile(r"(?i)([\"']key[\"']\s*:\s*)([\"'])([^\"'\r\n]+)([\"'])")
+# 散文裡的 `KEY:<uuid>`／`api key <uuid>` 沒有引號欄位語境，上面兩條看不到（2026-11-24 retro P3：舊 Exa 金鑰留在副本）。
+# 只認標籤緊鄰的 UUID：`key id <uuid>` 是識別碼，session UUID 是 retro 跨輪對帳鍵，誤遮會斷掉事件比對。
+PROSE_KEY_UUID_RE = re.compile(
+  r"(?i)(?<![A-Za-z0-9_])((?:api[ _-]?)?key(?:\s*[:=]\s*|\s+))"
+  r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9A-Za-z-])"
+)
 AUTHORIZATION_RE = re.compile(r"(?im)\bAuthorization\s*:\s*[^\r\n]+")
 COOKIE_RE = re.compile(r"(?im)\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]+")
 URI_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@/\s]+)@")
@@ -199,8 +205,9 @@ CJK_SECRET_LABEL_TABLE_RE = re.compile(
   r"(\s*[：:=]\s*)(?:`[^`\r\n|]+`|\"[^\"\r\n|]*\"|'[^'\r\n|]*'|(?:\\\|(?=\S)|(?!(?:\\[nrt\"'\\]|\|))[^\s,，。；;、\r\n\"'`])+)"
 )
 OTP_LABEL_RE = re.compile(
-  r"(?i)((?:(?<!忘記|重設|修改|變更|設定|輸入|確認)(?:簡訊|登入|動態|一次性|信箱|郵件)?(?:驗證碼|認證碼|動態碼|一次性密碼)"
-  r"|\b(?:verification\s+code|one-time\s+(?:pass)?code|security\s+code|auth(?:entication)?\s+code|otp(?:[\s_-]+code)?)\b)"
+  # 通行碼／passcode（會議邀請）只走這條標籤緊鄰規則，刻意不加進 OTP_KEYWORD_RE 的 60 字窗口：邀請信同段常有會議 ID（2026-11-24 retro P4）。
+  r"(?i)((?:(?<!忘記|重設|修改|變更|設定|輸入|確認)(?:簡訊|登入|動態|一次性|信箱|郵件)?(?:驗證碼|認證碼|動態碼|一次性密碼|通行碼)"
+  r"|\b(?:verification\s+code|one-time\s+(?:pass)?code|passcode|security\s+code|auth(?:entication)?\s+code|otp(?:[\s_-]+code)?)\b)"
   r"(?:是|為)?\s*[：:=][ \t]*(?:(?:\r?\n|\\r?\\n)[ \t>*•-]*)?)"
   r"(?:`([^`\r\n]{4,16})`|\"([^\"\r\n]{4,16})\"|'([^'\r\n]{4,16})'|((?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{4,12}))(?![A-Za-z0-9_-])"
 )
@@ -902,6 +909,7 @@ def redact_text(value):
   # 命令列旗標要在 assignment 之前遮：`X="$(cli --password "Y")"` 內層雙引號會讓 assignment 的引號值提早結束、看不到旗標。
   text = SECRET_FLAG_RE.sub(_redact_secret_flag, text)
   text = ASSIGNMENT_RE.sub(replace_assignment, text)
+  text = PROSE_KEY_UUID_RE.sub(r"\1[REDACTED]", text)
   text = MFA_CODE_RE.sub(r"\1[REDACTED]\2", text)
   text = _redact_cjk_secret_labels(text)
   text = CJK_SECRET_PAREN_RE.sub(r"\1\2[REDACTED]\3", text)

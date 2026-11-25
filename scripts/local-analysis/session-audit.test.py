@@ -3330,6 +3330,26 @@ class SessionAuditCliTest(unittest.TestCase):
     ):
       self.assertNotIn("KfwbQmXcPLRTzQaM7XP4", mod.redact_text(row), f"show-once key leaked: {row[:20]}")
 
+  def test_redaction_prose_key_uuid_and_meeting_passcode_labels(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_key_uuid", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # 2026-11-24 retro P3：散文裡 `KEY:<uuid>` 的完整舊 API 金鑰留在分析副本（結構化 api_key 欄位原本就會遮）。
+    key = "1b2c3d4e-0000-4abc-8def-1234567890ab"
+    for leak in (f"請撤銷舊的 `KEY:{key}`", f"api key {key} is invalid", f"API_KEY = {key}"):
+      out = mod.redact_text(leak)
+      self.assertNotIn(key, out, f"prose key leaked: {leak}")
+      self.assertEqual(mod.redact_text(out), out, "key redaction must be idempotent")
+    # session UUID 是跨輪對帳鍵，`key id` 是識別碼不是金鑰，都不能被遮。
+    for keep in (f"session {key} 的 key 事件", f"key id {key}", f"resume --session {key}"):
+      self.assertEqual(mod.redact_text(keep), keep, f"non-secret UUID over-redacted: {keep}")
+    # 2026-11-24 retro P4：會議邀請正文的通行碼；只遮標籤緊鄰的值，會議 ID 不能被當成通行碼。
+    code = "482913"
+    for leak in (f"會議 ID: 812 3456 7890\n通行碼: {code}", f"Meeting ID: 812 3456 7890\nPasscode: {code}"):
+      out = mod.redact_text(leak)
+      self.assertNotIn(code, out, f"meeting passcode leaked: {leak!r}")
+      self.assertIn("812 3456 7890", out, "meeting ID must stay readable")
+
   def test_redaction_double_quoted_secret_flags_inside_command_substitution(self):
     spec = importlib.util.spec_from_file_location("session_audit_mod_dq_flags", str(SCRIPT))
     mod = importlib.util.module_from_spec(spec)
