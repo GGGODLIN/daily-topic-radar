@@ -1518,7 +1518,7 @@ def composition_output(chain):
     if decisions[record_id]["verdict"] == "rejected":
       decisions[record_id] = {"id": record_id, "verdict": "merged",
                               "reason": "同一來源仍有已保留候選；部分候選拒絕不刪除其餘獨立問題。"}
-  issues = {issue["id"]: issue for issue in load(chain["run"] / "tracking-context.json").get("issues", [])}
+  issues = run_issue_states(chain["run"])
   patterns, secondary, low_harm_deferred = [], [], []
   for target, ids in refs.items():
     base = copy.deepcopy(groups[target])
@@ -1531,9 +1531,10 @@ def composition_output(chain):
     sessions = sorted({entry["session"] for entry in evidence})
     matched_id = base.get("matched_issue_id")
     matched = issues.get(matched_id) if isinstance(matched_id, str) else None
-    matched = matched if matched and not matched.get("decision") else None
-    historical = matched.get("source_sessions", []) if matched else []
-    reaches_threshold = target.startswith("P") or target.startswith("L") or len(set(sessions) | set(historical)) >= 4
+    # 已拍板的舊題也保留 ID，讓新事件掛回原題；是否升主項依決策狀態的門檻（promotion_basis）。
+    basis = promotion_basis(matched)
+    reaches_threshold = (target.startswith("P") or target.startswith("L")
+                         or (basis is not None and len(set(sessions) | basis[0]) >= basis[1]))
     all_harmless = bool(source) and all(record.get("outcome_fact") == "harmless" for record in source)
     has_valid_defer = (
       target.startswith("L")
@@ -1854,23 +1855,60 @@ def _unresolved_session_ids(refs, by_id, label, require_known):
   return sessions
 
 
-def _historical_open_sessions(item):
+PRIMARY_SESSIONS = 4
+HOLD_RESURFACE_SESSIONS = 2
+ISSUE_SESSIONS = "issue-sessions.json"
+
+
+def run_issue_states(run_dir):
+  """Issue id -> state for linking new events back: tracking-context plus the full issue-sessions.json index.
+
+  tracking-context only carries the reading seats' short list; issue-sessions.json (retro-store issue-index)
+  covers every issue, so a repeat of an undecided 1-3 session issue, or of a held/declined one, can still be
+  counted against it instead of being filed as new.
+  """
+  states = {}
+  ctx_path = Path(run_dir) / "tracking-context.json"
+  if ctx_path.is_file():
+    data = load(ctx_path)
+    require(isinstance(data, dict), "tracking-context.json must be an object")
+    issues = data.get("issues")
+    require(issues is None or isinstance(issues, list), "tracking-context.json issues must be an array")
+    for issue in issues or []:
+      if isinstance(issue, dict) and isinstance(issue.get("id"), str):
+        states[issue["id"]] = dict(issue)
+  index_path = Path(run_dir) / ISSUE_SESSIONS
+  if index_path.is_file():
+    data = load(index_path)
+    require(isinstance(data, dict) and isinstance(data.get("issues"), list), "issue-sessions.json issues must be an array")
+    for issue in data["issues"]:
+      if isinstance(issue, dict) and isinstance(issue.get("id"), str):
+        states[issue["id"]] = {**states.get(issue["id"], {}), **issue}
+  return states
+
+
+def promotion_basis(issue):
+  """(history sessions, threshold) a matched issue adds before a repeat must be raised as primary, or None.
+
+  Undecided: all history counts toward 4. Held: only sessions first seen after the hold count, toward 2.
+  Declined or approved: the repeat is linked back but never forced up (a credential leak or data loss still
+  becomes primary through the model's own rule (c)); approved issues are watched through their changes.
+  """
+  if issue is None:
+    return set(), PRIMARY_SESSIONS
+  decision = issue.get("decision")
+  if not decision:
+    return {s for s in issue.get("source_sessions") or [] if isinstance(s, str)}, PRIMARY_SESSIONS
+  if decision == "hold":
+    return {s for s in issue.get("sessions_since_decision") or [] if isinstance(s, str)}, HOLD_RESURFACE_SESSIONS
+  return None
+
+
+def _historical_issue_states(item):
   inputs = item.get("input_reports") or []
   if not inputs:
     return {}
-  ctx_path = Path(inputs[0]).resolve().parent.parent / "tracking-context.json"
-  if not ctx_path.is_file():
-    return {}
-  data = load(ctx_path)
-  require(isinstance(data, dict), "tracking-context.json must be an object")
-  issues = data.get("issues")
-  require(issues is None or isinstance(issues, list), "tracking-context.json issues must be an array")
-  result = {}
-  for issue in issues or []:
-    if isinstance(issue, dict) and isinstance(issue.get("id"), str) and not issue.get("decision"):
-      hist = [s for s in (issue.get("source_sessions") or []) if isinstance(s, str)]
-      result[issue["id"]] = set(hist)
-  return result
+  return run_issue_states(Path(inputs[0]).resolve().parent.parent)
 
 
 def _entry_refs(entry, refs_key):
@@ -1902,11 +1940,10 @@ def _check_low_harm_deferred_entry(entry, by_id, refs_key):
     require(outcome == "harmless", f"low_harm_deferred cannot include non-harmless outcome_fact ({outcome!r}) on {ref}")
 
 
-def _union_sessions(entry, sessions, open_issues):
+def _must_surface(entry, sessions, issue_states):
   matched_id = entry.get("matched_issue_id")
-  if isinstance(matched_id, str) and matched_id in open_issues:
-    return sessions | open_issues[matched_id]
-  return sessions
+  basis = promotion_basis(issue_states.get(matched_id) if isinstance(matched_id, str) else None)
+  return basis is not None and len(sessions | basis[0]) >= basis[1]
 
 
 def check_cross_low_harm_triage(report, by_id, refs_key, item):
@@ -1914,12 +1951,13 @@ def check_cross_low_harm_triage(report, by_id, refs_key, item):
   require(isinstance(deferred, list), "low_harm_deferred must be an array")
   for entry in deferred:
     _check_low_harm_deferred_entry(entry, by_id, refs_key)
-  open_issues = _historical_open_sessions(item)
+  issue_states = _historical_issue_states(item)
   for entry in report.get("secondary_patterns", []):
     refs = _entry_refs(entry, refs_key)
     require(isinstance(refs, list), "secondary_patterns entry requires source_finding_ids array")
-    sessions = _union_sessions(entry, _unresolved_session_ids(refs, by_id, "secondary_patterns", require_known=True), open_issues)
-    require(len(sessions) < 4, "unresolved root cause reaching >=4 unique sessions cannot be placed in secondary_patterns")
+    sessions = _unresolved_session_ids(refs, by_id, "secondary_patterns", require_known=True)
+    require(not _must_surface(entry, sessions, issue_states),
+            "unresolved root cause reaching its surfacing threshold (>=4 sessions, or >=2 new since a hold) cannot be placed in secondary_patterns")
   if "rejected" in report and report["rejected"] is not None:
     rejected = report["rejected"]
     require(isinstance(rejected, list), "rejected must be an array")
@@ -1927,8 +1965,9 @@ def check_cross_low_harm_triage(report, by_id, refs_key, item):
       require(isinstance(entry, dict), "rejected contains a nonobject")
       refs = _entry_refs(entry, refs_key)
       require(isinstance(refs, list), "rejected entry requires source_finding_ids array")
-      sessions = _union_sessions(entry, _unresolved_session_ids(refs, by_id, "rejected", require_known=False), open_issues)
-      require(len(sessions) < 4, "unresolved root cause reaching >=4 unique sessions cannot be silently dropped into rejected")
+      sessions = _unresolved_session_ids(refs, by_id, "rejected", require_known=False)
+      require(not _must_surface(entry, sessions, issue_states),
+              "unresolved root cause reaching its surfacing threshold (>=4 sessions, or >=2 new since a hold) cannot be silently dropped into rejected")
 
 
 def check_dispositions(report, item, stage):

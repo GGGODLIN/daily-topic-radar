@@ -1889,6 +1889,48 @@ class StoreCLI(unittest.TestCase):
     empty = self.cli("--store", self.root / "nowhere", "tracking-context")
     self.assertEqual((empty["issues"], empty["changes"]), ([], []))
 
+  def test_issue_index_lists_every_issue_and_sessions_added_after_the_decision(self):
+    path, _body = self.packet()
+    self.cli("ingest", "--packet", path, "--apply")
+    self.cli(
+      "decide", "--issue", "issue-1", "--action", "hold", "--source", self.human("hold issue-1"),
+      "--line", 1, "--quote", "hold issue-1", "--apply",
+    )
+    note = self.pointer("later event text")
+    review = self.pointer("reviewer confirmed the later event")
+    later, _ = self.packet(
+      run={"id": "run-2", "source": "fixture", "status": "complete", "cutoff": WHEN},
+      issues=[{"id": "issue-1", "title": "Lost handoff", "related_to": []},
+              {"id": "issue-2", "title": "Single-session issue", "related_to": []}],
+      discoveries=[{"id": "disc-2", "issue_id": "issue-2", "source": note, "verification": "pending",
+                    "review_sources": [], "scope": "session-c", "candidate": "c", "counterevidence": "none"}],
+      events=[
+        {"id": "episode-2", "session": "session-b", "event_at": WHEN, "anchors": [note], "verification": "confirmed",
+         "review_sources": [review], "scope": "session-b", "issue_ids": ["issue-1"]},
+        {"id": "episode-3", "session": "session-c", "event_at": WHEN, "anchors": [note], "verification": "confirmed",
+         "review_sources": [review], "scope": "session-c", "issue_ids": ["issue-2"]},
+      ],
+    )
+    self.cli("ingest", "--packet", later, "--apply")
+    before = (self.store / "records.jsonl").read_bytes()
+    out = self.root / "run"
+    result = self.cli("issue-index", "--out-dir", out)
+    self.assertEqual(result["issues"], 2)
+    self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+    lines = [json.loads(line) for line in (out / "issue-index.jsonl").read_text(encoding="utf-8").splitlines()]
+    self.assertEqual(
+      lines,
+      [{"id": "issue-1", "title": "Lost handoff", "decision": "hold", "sessions": 2, "sessions_since_decision": 1},
+       {"id": "issue-2", "title": "Single-session issue", "decision": None, "sessions": 1}],
+    )
+    machine = json.loads((out / "issue-sessions.json").read_text(encoding="utf-8"))
+    by_id = {item["id"]: item for item in machine["issues"]}
+    self.assertEqual(by_id["issue-1"]["source_sessions"], ["session-a", "session-b"])
+    self.assertEqual(by_id["issue-1"]["sessions_since_decision"], ["session-b"])
+    # tracking-context 照舊只給閱讀席小清單：未拍板、無改動、未滿 4 場的 issue-2 不在裡面，但索引有。
+    context_ids = {item["id"] for item in self.cli("tracking-context")["issues"]}
+    self.assertEqual(context_ids, {"issue-1"})
+
   def test_tracking_context_is_read_only(self):
     self.ready(changes=())
     self.change_at("c-rule", "rules/common/search.md", "rule text")

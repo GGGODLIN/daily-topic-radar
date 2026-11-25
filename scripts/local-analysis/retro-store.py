@@ -1497,23 +1497,31 @@ def counts(rows, issue):
   return bucket, events
 
 
+def row_issue_sessions(row):
+  """(issue_id, session) pairs one record contributes; issue_sessions and issue_index must count the same way."""
+  if row["type"] == "discovery":
+    raw = row.get("raw")
+    if isinstance(raw, dict):
+      for s in raw.get("source_sessions") or []:
+        if isinstance(s, str) and s.strip():
+          yield row["issue_id"], s.strip()
+      for ev in raw.get("evidence") or []:
+        s = ev.get("session") if isinstance(ev, dict) else None
+        if isinstance(s, str) and s.strip():
+          yield row["issue_id"], s.strip()
+  elif row["type"] == "event":
+    s = row.get("session")
+    if isinstance(s, str) and s.strip():
+      for issue in row.get("issue_ids", []):
+        yield issue, s.strip()
+
+
 def issue_sessions(rows, issue):
   seen = []
   for row in rows:
-    if row["type"] == "discovery" and row["issue_id"] == issue:
-      raw = row.get("raw")
-      if isinstance(raw, dict):
-        for s in raw.get("source_sessions") or []:
-          if isinstance(s, str) and s.strip() and s.strip() not in seen:
-            seen.append(s.strip())
-        for ev in raw.get("evidence") or []:
-          s = ev.get("session") if isinstance(ev, dict) else None
-          if isinstance(s, str) and s.strip() and s.strip() not in seen:
-            seen.append(s.strip())
-    elif row["type"] == "event" and issue in row.get("issue_ids", []):
-      s = row.get("session")
-      if isinstance(s, str) and s.strip() and s.strip() not in seen:
-        seen.append(s.strip())
+    for owner, session in row_issue_sessions(row):
+      if owner == issue and session not in seen:
+        seen.append(session)
   return seen
 
 
@@ -2002,6 +2010,55 @@ def tracking_context(store, issue):
   return {"ok": True, "command": "tracking-context", "issues": issues, "changes": changes}
 
 
+ISSUE_INDEX = "issue-index.jsonl"
+ISSUE_SESSIONS = "issue-sessions.json"
+
+
+def issue_index(store, out_dir):
+  """Read-only: every issue, for the cross stage to link new events back to it whatever its decision.
+
+  tracking-context keeps the reading seats' list small, so issues that are undecided, unchanged and under
+  4 sessions are left out of it; without this index the next run cannot see them and files a repeat as a
+  new issue. issue-index.jsonl is the model-facing list (counts only, to keep each cross seat's read small);
+  issue-sessions.json carries the session sets session-retro needs to count thresholds.
+  """
+  folder = os.path.abspath(os.path.expanduser(store))
+  rows = []
+  if os.path.lexists(folder) and os.path.lexists(os.path.join(folder, RECORDS)):
+    with locked(store) as (_folder, handle):
+      rows = load_entries(handle)
+  titles, sessions, since, decided = {}, {}, {}, {}
+  for row in rows:
+    if row["type"] == "issue":
+      titles[row["issue_id"]] = row["title"]
+    elif row["type"] == "decision":
+      # Only sessions first seen after the latest decision count toward re-raising a held issue.
+      decided[row["issue_id"]] = row["action"]
+      since[row["issue_id"]] = []
+    for issue, session in row_issue_sessions(row):
+      bucket = sessions.setdefault(issue, [])
+      if session not in bucket:
+        bucket.append(session)
+        if issue in decided:
+          since[issue].append(session)
+  out = Path(out_dir).expanduser()
+  out.mkdir(parents=True, exist_ok=True)
+  model_lines, machine = [], []
+  for issue in sorted(titles):
+    decision = decided.get(issue)
+    line = {"id": issue, "title": titles[issue], "decision": decision, "sessions": len(sessions.get(issue, []))}
+    if decision is not None:
+      line["sessions_since_decision"] = len(since.get(issue, []))
+    model_lines.append(json.dumps(line, ensure_ascii=False))
+    machine.append({"id": issue, "title": titles[issue], "decision": decision,
+                    "source_sessions": sessions.get(issue, []), "sessions_since_decision": since.get(issue, [])})
+  index_path, sessions_path = out / ISSUE_INDEX, out / ISSUE_SESSIONS
+  index_path.write_text("".join(line + "\n" for line in model_lines), encoding="utf-8")
+  sessions_path.write_text(json.dumps({"issues": machine}, ensure_ascii=False) + "\n", encoding="utf-8")
+  return {"ok": True, "command": "issue-index", "issues": len(machine),
+          "index": str(index_path), "sessions": str(sessions_path)}
+
+
 def emit(payload):
   print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
@@ -2028,6 +2085,9 @@ def build():
 
   context_cmd = commands.add_parser("tracking-context")
   context_cmd.add_argument("--issue")
+
+  index_cmd = commands.add_parser("issue-index")
+  index_cmd.add_argument("--out-dir", required=True)
 
   decision = commands.add_parser("decide")
   decision.add_argument("--issue")
@@ -2129,6 +2189,8 @@ def main(argv):
       payload = rule_anchors(args.store)
     elif args.command == "tracking-context":
       payload = tracking_context(args.store, args.issue)
+    elif args.command == "issue-index":
+      payload = issue_index(args.store, args.out_dir)
     elif args.command == "decide":
       payload = decide(args)
     elif args.command == "progress":

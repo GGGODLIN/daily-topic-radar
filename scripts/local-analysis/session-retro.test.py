@@ -2584,6 +2584,67 @@ class EventEvidenceCLI(unittest.TestCase):
       with self.assertRaisesRegex(retro.Invalid, "secondary_patterns"):
         retro.check_report(cross, item, "cross", canonical)
 
+    # 2026-11-25：新事件依舊題的決策狀態算門檻。未拍板累計滿 4 場、暫緩後新增滿 2 場不能藏在次要項；
+    # 不做與批准只掛回、不強制升主項。tracking-context 只給閱讀席小清單，舊題全集在 issue-sessions.json。
+    def matched_secondary(matched_id):
+      def apply(cross, refs, sessions, ev):
+        cross["low_harm_deferred"] = []
+        cross["secondary_patterns"] = [{
+          "id": "S1", "source_sessions": sessions, "source_finding_ids": refs, "observation": "repeat",
+          "impact": "none", "evidence": ev, "counterevidence": "",
+          "matched_issue_id": matched_id, "matched_issue_title": "old",
+        }]
+      return apply
+
+    def write_index(tmp, issues):
+      dump(Path(tmp) / "issue-sessions.json", {"issues": issues})
+
+    def old(issue_id, decision, history, since=()):
+      return {"id": issue_id, "title": "old", "decision": decision,
+              "source_sessions": list(history), "sessions_since_decision": list(since)}
+
+    cases = [
+      # (說明, 本輪成員數, 舊題, 應擋下)
+      ("undecided issue only in the full index reaches 4", 1, old("u", None, ["h1", "h2", "h3"]), True),
+      ("undecided issue under 4 stays secondary", 1, old("u", None, ["h1", "h2"]), False),
+      ("held issue with 2 sessions since the hold", 1, old("u", "hold", ["h1", "h2", "h3"], ["h3"]), True),
+      ("held issue with 1 session since the hold", 1, old("u", "hold", ["h1", "h2", "h3"]), False),
+      ("declined issue is linked back, never forced up", 4, old("u", "decline", ["h1", "h2", "h3"]), False),
+      ("approved issue is linked back, never forced up", 4, old("u", "approve", ["h1"]), False),
+    ]
+    for label, members, issue, blocked in cases:
+      with tempfile.TemporaryDirectory() as tmp:
+        write_index(tmp, [issue])
+        cross, item, canonical = make_fixture(tmp, ["harmless"] * members, matched_secondary("u"))
+        if blocked:
+          with self.assertRaisesRegex(retro.Invalid, "secondary_patterns", msg=label):
+            retro.check_report(cross, item, "cross", canonical)
+        else:
+          norm = retro.check_report(cross, item, "cross", canonical)
+          self.assertEqual(norm["secondary_patterns"][0]["matched_issue_id"], "u", label)
+
+    # 找不到的舊 ID 照舊只算本輪場次。
+    with tempfile.TemporaryDirectory() as tmp:
+      write_index(tmp, [])
+      cross, item, canonical = make_fixture(tmp, ["harmless"] * 4, matched_secondary("missing"))
+      with self.assertRaisesRegex(retro.Invalid, "secondary_patterns"):
+        retro.check_report(cross, item, "cross", canonical)
+
+  def test_promotion_basis_by_decision_state(self):
+    spec = importlib.util.spec_from_file_location("session_retro_promotion_test", SCRIPT)
+    retro = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(retro)
+    self.assertEqual(retro.promotion_basis(None), (set(), 4))
+    self.assertEqual(retro.promotion_basis({"decision": None, "source_sessions": ["a", "b"]}), ({"a", "b"}, 4))
+    self.assertEqual(
+      retro.promotion_basis({"decision": "hold", "source_sessions": ["a", "b"], "sessions_since_decision": ["b"]}),
+      ({"b"}, 2),
+    )
+    # tracking-context 的暫緩題沒有 sessions_since_decision 欄：沒有新增證據就當 0 場。
+    self.assertEqual(retro.promotion_basis({"decision": "hold", "source_sessions": ["a"]}), (set(), 2))
+    self.assertIsNone(retro.promotion_basis({"decision": "decline", "source_sessions": ["a"]}))
+    self.assertIsNone(retro.promotion_basis({"decision": "approve", "source_sessions": ["a"]}))
+
   def test_composition_output_preserves_low_harm_deferred_parity(self):
     fixture = RetroCLI()
     fixture.setUp()
