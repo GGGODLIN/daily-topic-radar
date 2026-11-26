@@ -280,5 +280,71 @@ HOME="$FAKE_HOME2" python3 "$SCRIPT" \
   --registry "$REG2" --claude-git-dir "" >/dev/null 2>&1 || rc_miss=$?
 check "缺 --projects-dir 回傳 exit 2" test "$rc_miss" -eq 2
 
+# Wave 35 回歸防護：frontmatter  、小寫 z 時間戳、log.follow=true 改名、批次失敗退回逐檔與斷鏈 symlink
+check "W35 frontmatter U+2028、小寫 z 時間戳、log.follow 改名與批次失敗退回逐檔" python3 - "$SCRIPT" <<'PY'
+import importlib.util, os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+script = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("sth_w35", script)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+with tempfile.TemporaryDirectory() as td:
+    tdp = Path(td)
+    # 1. frontmatter   must break line like splitlines() (not leak "invokable manually")
+    fm_f = tdp / "SKILL.md"
+    fm_f.write_text("---\ndescription: helper invokable manually\n---\n", encoding="utf-8")
+    desc, dis = mod.read_frontmatter(str(fm_f))
+    assert desc == "helper" and dis is False, f"unexpected frontmatter: {(desc, dis)}"
+
+    # 2. lowercase 'z' timestamp must parse instead of falling back to mtime
+    ts = mod.parse_ts({"timestamp": "2026-11-20T10:00:00.000z"}, 12345.0)
+    assert ts != 12345.0 and abs(ts - 1795168800.0) < 1.0, f"lowercase z failed: {ts}"
+
+    # 3. broken symlink SKILL.md still discovered by build_inventory (glob parity)
+    sk_dir = tdp / "skills"
+    (sk_dir / "broken-sk").mkdir(parents=True)
+    os.symlink(tdp / "nonexistent-target.md", sk_dir / "broken-sk" / "SKILL.md")
+    cmd_dir = tdp / "commands"
+    cmd_dir.mkdir()
+    inv = mod.build_inventory(str(sk_dir), str(cmd_dir))
+    assert "broken-sk" in inv, f"broken symlink missed: {inv}"
+
+    # 4. git config log.follow=true + git mv must match per-file install_date (original add timestamp)
+    grepo = tdp / "grepo"
+    grepo.mkdir()
+    env_g = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@e"}
+    subprocess.run(["git", "-C", str(grepo), "init", "-q", "-b", "main"], check=True, env=env_g)
+    subprocess.run(["git", "-C", str(grepo), "config", "log.follow", "true"], check=True, env=env_g)
+    for rel, ts_s in (("skills/old/SKILL.md", "1700000000 +0000"), ("skills/other/SKILL.md", "1710000000 +0000")):
+        p = grepo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("---\ndescription: x\n---\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(grepo), "add", rel], check=True, env={**env_g, "GIT_AUTHOR_DATE": ts_s, "GIT_COMMITTER_DATE": ts_s})
+        subprocess.run(["git", "-C", str(grepo), "commit", "-q", "-m", f"add {rel}"], check=True, env={**env_g, "GIT_AUTHOR_DATE": ts_s, "GIT_COMMITTER_DATE": ts_s})
+    (grepo / "skills/new").mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "-C", str(grepo), "mv", "skills/old/SKILL.md", "skills/new/SKILL.md"], check=True, env=env_g)
+    subprocess.run(["git", "-C", str(grepo), "commit", "-q", "-m", "rename"], check=True, env={**env_g, "GIT_AUTHOR_DATE": "1750000000 +0000", "GIT_COMMITTER_DATE": "1750000000 +0000"})
+    got = mod.batch_install_dates(str(grepo), ["skills/new/SKILL.md", "skills/other/SKILL.md"])
+    assert got["skills/new/SKILL.md"] == 1700000000, f"log.follow mismatch: {got}"
+
+    # 5. batch git --relative failure falls back to per-file install_date (non-None)
+    subprocess.run(["git", "-C", str(grepo), "config", "log.follow", "false"], check=True, env=env_g)
+    fbin = tdp / "fbin"
+    fbin.mkdir()
+    real_git = shutil.which("git")
+    fg = fbin / "git"
+    fg.write_text(f'#!/bin/sh\nfor a in "$@"; do [ "$a" = "--relative" ] && exit 128; done\nexec {real_git} "$@"\n', encoding="utf-8")
+    os.chmod(fg, 0o755)
+    old_path = os.environ["PATH"]
+    os.environ["PATH"] = f"{fbin}:{old_path}"
+    try:
+        fb = mod.batch_install_dates(str(grepo), ["skills/new/SKILL.md", "skills/other/SKILL.md"])
+        assert fb["skills/new/SKILL.md"] == 1750000000 and fb["skills/other/SKILL.md"] == 1710000000, f"fallback failed: {fb}"
+    finally:
+        os.environ["PATH"] = old_path
+PY
+
 echo "$pass/$((pass+fail)) passed"
 [ "$fail" -eq 0 ]

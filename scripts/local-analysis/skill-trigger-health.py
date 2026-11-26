@@ -24,10 +24,10 @@ registry mode 為 hook-driven 的同樣排除（2026-09-22 拍板）：這類 co
 import argparse
 import datetime
 import json
-import glob
 import math
 import os
 import re
+import select
 import subprocess
 import sys
 import tempfile
@@ -76,8 +76,18 @@ def read_frontmatter(path):
 
 def build_inventory(skills_dir, commands_dir):
   inv = {}
-  for skill_md in sorted(glob.glob(os.path.join(skills_dir, "*", "SKILL.md"))):
-    name = os.path.basename(os.path.dirname(skill_md))
+  try:
+    skill_dirs = sorted(
+      (e for e in os.scandir(skills_dir) if not e.name.startswith(".")),
+      key=lambda e: e.name,
+    )
+  except OSError:
+    skill_dirs = []
+  for entry in skill_dirs:
+    skill_md = os.path.join(entry.path, "SKILL.md")
+    if not os.path.lexists(skill_md):
+      continue
+    name = entry.name
     desc, disable = read_frontmatter(skill_md)
     if disable:
       guess = "manual-by-design"
@@ -86,8 +96,16 @@ def build_inventory(skills_dir, commands_dir):
     else:
       guess = "auto-only"
     inv[name] = {"source": "skill", "guess": guess, "path": skill_md, "disable": disable}
-  for cmd_md in sorted(glob.glob(os.path.join(commands_dir, "*.md"))):
-    name = os.path.basename(cmd_md)[:-3]
+  try:
+    cmd_entries = sorted(
+      (e for e in os.scandir(commands_dir) if not e.name.startswith(".") and e.name.endswith(".md")),
+      key=lambda e: e.name,
+    )
+  except OSError:
+    cmd_entries = []
+  for entry in cmd_entries:
+    cmd_md = entry.path
+    name = entry.name[:-3]
     _, cmd_disable = read_frontmatter(cmd_md)
     if name in inv:
       inv[name]["source"] = "skill+command"
@@ -166,25 +184,28 @@ def save_registry(path, registry):
   _atomic_write_text(path, text)
 
 
+_fromisoformat = datetime.datetime.fromisoformat
+
+
 def parse_ts(rec, fallback):
   ts = rec.get("timestamp")
+  if isinstance(ts, str):
+    s = ts.strip()
+    if s.endswith(("Z", "z")):
+      s = s[:-1] + "+00:00"
+    try:
+      val = _fromisoformat(s).timestamp()
+      if math.isfinite(val) and val > 0:
+        return val
+    except ValueError:
+      pass
+    return fallback
   if isinstance(ts, bool):
     return fallback
   if isinstance(ts, (int, float)):
     val = float(ts)
     if math.isfinite(val) and val > 0:
       return val / 1000.0 if val >= 1e11 else val
-    return fallback
-  if isinstance(ts, str):
-    s = ts.strip()
-    if s.endswith(("Z", "z")):
-      s = s[:-1] + "+00:00"
-    try:
-      val = datetime.datetime.fromisoformat(s).timestamp()
-      if math.isfinite(val) and val > 0:
-        return val
-    except ValueError:
-      pass
   return fallback
 
 
@@ -212,6 +233,33 @@ def _record_event(store, name, key, ts):
     bucket[key] = ts
 
 
+def _iter_project_jsonl_files(projects_dir, scan_cut):
+  try:
+    proj_entries = sorted(
+      (e for e in os.scandir(projects_dir) if not e.name.startswith(".") and "-private-var-folders-" not in e.name),
+      key=lambda e: e.name,
+    )
+  except OSError:
+    return
+  for proj_entry in proj_entries:
+    try:
+      if not proj_entry.is_dir():
+        continue
+      file_entries = sorted(
+        (f for f in os.scandir(proj_entry.path) if not f.name.startswith(".") and f.name.endswith(".jsonl")),
+        key=lambda f: f.name,
+      )
+    except OSError:
+      continue
+    for f_entry in file_entries:
+      try:
+        mtime = f_entry.stat().st_mtime
+      except OSError:
+        continue
+      if mtime >= scan_cut:
+        yield f_entry.path, mtime
+
+
 def scan(projects_dir, names, alert_days, dead_days, now, max_remind_days=0):
   alert_cut = now - alert_days * 86400
   dead_cut = now - dead_days * 86400
@@ -219,29 +267,24 @@ def scan(projects_dir, names, alert_days, dead_days, now, max_remind_days=0):
   scan_cut = min(alert_cut, dead_cut, remind_cut)
   auto_ids, manual_uuids = {}, {}
   files = 0
-  for path in sorted(glob.glob(os.path.join(projects_dir, "*", "*.jsonl"))):
-    if "-private-var-folders-" in os.path.basename(os.path.dirname(path)):
-      continue
-    try:
-      mtime = os.path.getmtime(path)
-    except OSError:
-      continue
-    if mtime < scan_cut:
-      continue
+  loads = json.loads
+  cmd_findall = CMD_RE.findall
+  for path, mtime in _iter_project_jsonl_files(projects_dir, scan_cut):
     files += 1
     try:
-      fh = open(path, encoding="utf-8", errors="replace")
+      fh = open(path, "rb", buffering=32768)
     except OSError:
       continue
     with fh:
-      for line_no, line in enumerate(fh, 1):
-        has_cmd = "<command-name>/" in line
-        has_skill = '"Skill"' in line and '"skill"' in line
-        has_wf = '"Workflow"' in line and '"tool_use"' in line
+      for line_no, raw in enumerate(fh, 1):
+        has_tu = b'"tool_use"' in raw
+        has_cmd = b"<command-name>/" in raw
+        has_skill = b'"Skill"' in raw and b'"skill"' in raw and (has_tu or b"\\u" in raw)
+        has_wf = has_tu and b'"Workflow"' in raw
         if not (has_cmd or has_skill or has_wf):
           continue
         try:
-          rec = json.loads(line)
+          rec = loads(raw.decode("utf-8", "replace"))
         except json.JSONDecodeError:
           continue
         if not isinstance(rec, dict):
@@ -277,7 +320,7 @@ def scan(projects_dir, names, alert_days, dead_days, now, max_remind_days=0):
           blob = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
           raw_uuid = rec.get("uuid")
           ev_key = raw_uuid if isinstance(raw_uuid, str) and raw_uuid else f"{path}:{line_no}"
-          for hit in CMD_RE.findall(blob):
+          for hit in cmd_findall(blob):
             if hit in names:
               _record_event(manual_uuids, hit, ev_key, ts)
   def bucket(store):
@@ -306,6 +349,144 @@ def install_date(git_dir, rel_path):
     return None
 
 
+_GIT_PATHSPEC_MAGIC = frozenset("*?[:\\")
+
+
+def _batch_git_log_prefixes(rels):
+  prefixes = set()
+  for rel in rels:
+    top = rel.split("/", 1)[0] if "/" in rel else rel
+    if not top or top == ".":
+      return []
+    prefixes.add(top)
+    if len(prefixes) > 8:
+      return []
+  return sorted(prefixes)
+
+
+def _batch_git_safe(git_dir):
+  if any(f"GIT_{mode}_PATHSPECS" in os.environ for mode in ("LITERAL", "GLOB", "NOGLOB", "ICASE")):
+    return False
+  try:
+    cfg = subprocess.run(
+      ["git", "-C", git_dir, "config", "--type=bool", "--get-regexp", r"^log\.(follow|showsignature)$"],
+      capture_output=True, timeout=15,
+    )
+    if cfg.returncode not in (0, 1) or cfg.stderr or b"true" in cfg.stdout:
+      return False
+  except (OSError, subprocess.SubprocessError):
+    return False
+  return True
+
+
+def batch_install_dates(git_dir, rel_paths):
+  """Batch-resolve install timestamps equivalent to per-file `git log --diff-filter=A --format=%at -1 -- <rel>`."""
+  if not git_dir or not rel_paths:
+    return {}
+  if len(rel_paths) < 2 or not _batch_git_safe(git_dir):
+    return {rel: install_date(git_dir, rel) for rel in rel_paths}
+
+  batch_targets = set()
+  fallback_rels = []
+  for rel in rel_paths:
+    if (
+      not rel
+      or os.path.isabs(rel)
+      or rel in (".", "..")
+      or rel.startswith("../")
+      or any(ch in _GIT_PATHSPEC_MAGIC for ch in rel)
+    ):
+      fallback_rels.append(rel)
+    else:
+      batch_targets.add(rel)
+
+  results = {}
+  ambiguous = set()
+  batch_failed = False
+  if batch_targets:
+    cmd = [
+      "git", "-C", git_dir, "log",
+      "--relative", "--full-history", "-m", "--no-renames",
+      "--diff-filter=AD", "--format=%x1e%at", "--name-status", "-z",
+    ]
+    prefixes = _batch_git_log_prefixes(batch_targets)
+    if prefixes:
+      cmd.append("--")
+      cmd.extend(prefixes)
+    proc = None
+    deadline = time.monotonic() + 15.0
+    try:
+      proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+      cur_ts = None
+      pending_status = None
+      buf = b""
+      stdout_fd = proc.stdout.fileno()
+      while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+          raise subprocess.TimeoutExpired(cmd, 15.0)
+        ready, _, _ = select.select([stdout_fd], [], [], remaining)
+        if not ready:
+          raise subprocess.TimeoutExpired(cmd, 15.0)
+        chunk = os.read(stdout_fd, 32768)
+        if not chunk:
+          break
+        buf += chunk
+        parts = buf.split(b"\x00")
+        buf = parts.pop()
+        for raw_tok in parts:
+          if not raw_tok:
+            continue
+          if pending_status is not None:
+            path = os.fsdecode(raw_tok)
+            st = pending_status
+            pending_status = None
+            if path in batch_targets:
+              if st == "A":
+                if path in results:
+                  ambiguous.add(path)
+                else:
+                  results[path] = cur_ts
+              else:
+                if path not in results:
+                  ambiguous.add(path)
+            continue
+          if raw_tok[0] == 0x1E:
+            try:
+              cur_ts = int(raw_tok[1:])
+            except ValueError:
+              cur_ts = None
+            continue
+          if raw_tok[0] == 0x0A:
+            raw_tok = raw_tok[1:]
+          if raw_tok == b"A":
+            pending_status = "A"
+          elif raw_tok == b"D":
+            pending_status = "D"
+      proc.stdout.close()
+      rc = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+      if rc != 0:
+        batch_failed = True
+    except (OSError, subprocess.SubprocessError):
+      batch_failed = True
+      if proc is not None:
+        try:
+          proc.kill()
+          proc.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+          pass
+    if batch_failed:
+      results.clear()
+      ambiguous.clear()
+      fallback_rels.extend(sorted(batch_targets))
+
+  for rel in ambiguous:
+    results[rel] = install_date(git_dir, rel)
+  for rel in fallback_rels:
+    results[rel] = install_date(git_dir, rel)
+  return results
+
+
 def norm_repo_path(val):
   if not isinstance(val, str) or not val.strip():
     return ""
@@ -332,8 +513,16 @@ def load_deep_check_ledger(state_dir, repo_dir):
   candidates = [
     os.path.join(state_dir, f"{base}.json"),
     os.path.join(state_dir, f"{parent}-{base}.json"),
-    *sorted(glob.glob(os.path.join(state_dir, "*.json"))),
   ]
+  try:
+    candidates.extend(
+      e.path for e in sorted(
+        (e for e in os.scandir(state_dir) if not e.name.startswith(".") and e.name.endswith(".json")),
+        key=lambda e: e.name,
+      )
+    )
+  except OSError:
+    pass
   for cand in candidates:
     if os.path.exists(cand):
       matched = read_matching_ledger(cand, real_repo)
@@ -383,8 +572,56 @@ def iter_candidate_repos(repo_roots):
         yield entry, real_repo
 
 
-def evaluate_repo_candidate(entry, real_repo, state_dir, now, remind_days, since_30d, min_commits):
-  ledger = load_deep_check_ledger(state_dir, real_repo)
+def _index_deep_check_ledgers(state_dir):
+  """Load state_dir/*.json once, preserving load_deep_check_ledger precedence."""
+  by_name = {}
+  first_by_repo = {}
+  if not state_dir or not os.path.isdir(state_dir):
+    return by_name, first_by_repo
+  try:
+    entries = sorted(
+      (e for e in os.scandir(state_dir) if e.name.endswith(".json")),
+      key=lambda e: e.name,
+    )
+  except OSError:
+    return by_name, first_by_repo
+  for entry in entries:
+    try:
+      with open(entry.path, encoding="utf-8") as f:
+        data = json.load(f)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+      continue
+    if not isinstance(data, dict):
+      continue
+    rp = norm_repo_path(data.get("repo_path"))
+    if not rp:
+      continue
+    slim = {
+      "head_sha": data.get("head_sha"),
+      "checked_at": data.get("checked_at"),
+      "skipped_at": data.get("skipped_at"),
+    }
+    by_name[entry.name] = (rp, slim)
+    if not entry.name.startswith(".") and rp not in first_by_repo:
+      first_by_repo[rp] = slim
+  return by_name, first_by_repo
+
+
+def _lookup_indexed_ledger(ledger_index, real_repo):
+  if not real_repo:
+    return None
+  by_name, first_by_repo = ledger_index
+  base = os.path.basename(real_repo)
+  parent = os.path.basename(os.path.dirname(real_repo))
+  for fname in (f"{base}.json", f"{parent}-{base}.json"):
+    hit = by_name.get(fname)
+    if hit is not None and hit[0] == real_repo:
+      return hit[1]
+  return first_by_repo.get(real_repo)
+
+
+def evaluate_repo_candidate(entry, real_repo, state_dir, now, remind_days, since_30d, min_commits, ledger_index=None):
+  ledger = _lookup_indexed_ledger(ledger_index, real_repo) if ledger_index is not None else load_deep_check_ledger(state_dir, real_repo)
   if ledger:
     last_activity = max(parse_iso_date(ledger.get("checked_at")), parse_iso_date(ledger.get("skipped_at")))
     if last_activity > 0 and (now - last_activity) < remind_days * 86400:
@@ -395,12 +632,128 @@ def evaluate_repo_candidate(entry, real_repo, state_dir, now, remind_days, since
   return (count, f"{entry}（+{count} commits，首次健檢）") if count >= min_commits else None
 
 
+def _read_loose_head_sha(repo_dir):
+  git_dir = os.path.join(repo_dir, ".git")
+  if not os.path.isdir(git_dir):
+    return None
+  try:
+    with open(os.path.join(git_dir, "HEAD"), encoding="utf-8") as fh:
+      head = fh.read(256).strip()
+  except OSError:
+    return None
+  if head.startswith("ref: "):
+    ref = head[5:].strip()
+    ref_path = os.path.join(git_dir, *ref.split("/"))
+    try:
+      with open(ref_path, encoding="utf-8") as fh:
+        sha = fh.read(64).strip()
+    except OSError:
+      return None
+    return sha if len(sha) == 40 else None
+  return head if len(head) == 40 else None
+
+
+def _batch_git_rev_list_counts(jobs, max_workers=None):
+  """Run `git -C <repo> rev-list --count <args...>` in bounded concurrent waves with shared deadline & cleanup."""
+  if not jobs:
+    return []
+  if max_workers is None:
+    max_workers = min(16, max(4, (os.cpu_count() or 4) * 2))
+  results = [None] * len(jobs)
+  for start in range(0, len(jobs), max_workers):
+    wave = jobs[start : start + max_workers]
+    procs = []
+    try:
+      for idx, (repo_dir, rev_args) in enumerate(wave, start):
+        try:
+          proc = subprocess.Popen(
+            ["git", "-C", repo_dir, "rev-list", "--count", *rev_args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+          )
+          procs.append((idx, proc, time.monotonic() + 10.0))
+        except OSError:
+          continue
+      for idx, proc, deadline in procs:
+        try:
+          out, _ = proc.communicate(timeout=max(0.05, deadline - time.monotonic()))
+          if proc.returncode == 0:
+            val = out.strip()
+            if val.isdigit():
+              results[idx] = int(val)
+        except (OSError, subprocess.SubprocessError):
+          try:
+            proc.kill()
+            proc.wait(timeout=5)
+          except (OSError, subprocess.SubprocessError):
+            pass
+    finally:
+      for _, proc, _ in procs:
+        if proc.poll() is None:
+          try:
+            proc.kill()
+            proc.wait(timeout=2)
+          except (OSError, subprocess.SubprocessError):
+            pass
+  return results
+
+
+def _ledger_since_arg(ledger, since_30d):
+  since = str(ledger.get("checked_at") or since_30d).strip()
+  if BARE_DATE_RE.match(since):
+    since = f"{since}T00:00:00Z"
+  return since
+
+
 def nominate_deep_check_repos(state_dir, repo_roots, now, remind_days, min_commits=20):
   since_30d = datetime.datetime.fromtimestamp(now - 30 * 86400, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-  candidates = [
-    cand for entry, real_repo in iter_candidate_repos(repo_roots)
-    if (cand := evaluate_repo_candidate(entry, real_repo, state_dir, now, remind_days, since_30d, min_commits))
-  ]
+  ledger_index = _index_deep_check_ledgers(state_dir)
+  candidates = []
+  pending = []
+  primary_jobs = []
+  for entry, real_repo in iter_candidate_repos(repo_roots):
+    ledger = _lookup_indexed_ledger(ledger_index, real_repo)
+    if ledger:
+      last_activity = max(parse_iso_date(ledger.get("checked_at")), parse_iso_date(ledger.get("skipped_at")))
+      if last_activity > 0 and (now - last_activity) < remind_days * 86400:
+        continue
+      head_sha = str(ledger.get("head_sha") or "").strip()
+      if head_sha:
+        if len(head_sha) == 40 and _read_loose_head_sha(real_repo) == head_sha:
+          if 0 >= min_commits:
+            candidates.append((0, f"{entry}（+0 commits）"))
+          continue
+        pending.append((entry, real_repo, ledger, True))
+        primary_jobs.append((real_repo, (f"{head_sha}..HEAD",)))
+      else:
+        since = _ledger_since_arg(ledger, since_30d)
+        pending.append((entry, real_repo, ledger, False))
+        primary_jobs.append((real_repo, (f"--since={since}", "HEAD")))
+    else:
+      pending.append((entry, real_repo, None, False))
+      primary_jobs.append((real_repo, (f"--since={since_30d}", "HEAD")))
+
+  primary_counts = _batch_git_rev_list_counts(primary_jobs)
+  fallback_pending = []
+  fallback_jobs = []
+  for (entry, real_repo, ledger, used_sha), cnt in zip(pending, primary_counts):
+    if cnt is None and used_sha:
+      since = _ledger_since_arg(ledger, since_30d)
+      fallback_pending.append((entry, ledger))
+      fallback_jobs.append((real_repo, (f"--since={since}", "HEAD")))
+      continue
+    count = cnt or 0
+    if count >= min_commits:
+      suffix = "" if ledger else "，首次健檢"
+      candidates.append((count, f"{entry}（+{count} commits{suffix}）"))
+
+  if fallback_jobs:
+    fallback_counts = _batch_git_rev_list_counts(fallback_jobs)
+    for (entry, _ledger), cnt in zip(fallback_pending, fallback_counts):
+      count = cnt or 0
+      if count >= min_commits:
+        candidates.append((count, f"{entry}（+{count} commits）"))
+
   candidates.sort(key=lambda x: (-x[0], x[1]))
   return [label for _, label in candidates[:2]]
 
@@ -477,17 +830,46 @@ def main():
   dead_disabled_excluded = 0
   dead_remind_excluded = 0
   repo_roots = [r for r in args.repo_roots.split(",") if r.strip()]
-  for name, meta in sorted(inventory.items()):
+  sorted_inventory = sorted(inventory.items())
+  needed_rels = []
+  rel_by_name = {}
+  if args.claude_git_dir:
+    for name, meta in sorted_inventory:
+      raw_reg = registry.get(name)
+      reg_entry = raw_reg if isinstance(raw_reg, dict) else {}
+      mode = reg_entry.get("mode") or meta["guess"]
+      remind_days = reg_entry.get("remind_after_days")
+      has_remind = isinstance(remind_days, int) and not isinstance(remind_days, bool) and remind_days > 0
+      a = auto.get(name)
+      m = manual.get(name)
+      need_inst = False
+      if has_remind:
+        last_invoked = max(a["last_ts"] if a else 0.0, m["last_ts"] if m else 0.0)
+        last_skipped = parse_iso_date(reg_entry.get("last_skipped_at"))
+        prior_ts = max(last_invoked, last_skipped)
+        if prior_ts == 0.0 or (now - prior_ts) >= remind_days * 86400:
+          need_inst = True
+      elif ((a["window"] if a else 0) + (m["window"] if m else 0)) == 0:
+        if name not in name_only and mode != "hook-driven" and not meta.get("disable"):
+          need_inst = True
+      if need_inst:
+        rel = os.path.relpath(meta["path"], args.claude_git_dir)
+        rel_by_name[name] = rel
+        needed_rels.append(rel)
+  install_dates = batch_install_dates(args.claude_git_dir, needed_rels)
+
+  empty_stat = {"recent": 0, "window": 0, "last_ts": 0.0}
+  for name, meta in sorted_inventory:
     raw_reg = registry.get(name)
     reg_entry = raw_reg if isinstance(raw_reg, dict) else {}
     mode = reg_entry.get("mode") or meta["guess"]
     decided = reg_entry.get("decided") is True
     remind_days = reg_entry.get("remind_after_days")
     has_remind = isinstance(remind_days, int) and not isinstance(remind_days, bool) and remind_days > 0
-    a = auto.get(name, {"recent": 0, "window": 0, "last_ts": 0.0})
-    m = manual.get(name, {"recent": 0, "window": 0, "last_ts": 0.0})
-    rel = os.path.relpath(meta["path"], args.claude_git_dir) if args.claude_git_dir else meta["path"]
-    inst = install_date(args.claude_git_dir, rel)
+    a = auto.get(name, empty_stat)
+    m = manual.get(name, empty_stat)
+    rel = rel_by_name.get(name)
+    inst = install_dates.get(rel) if rel is not None else None
     if has_remind:
       last_invoked = max(a.get("last_ts", 0.0), m.get("last_ts", 0.0))
       last_skipped = parse_iso_date(reg_entry.get("last_skipped_at"))
