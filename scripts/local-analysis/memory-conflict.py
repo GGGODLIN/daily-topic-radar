@@ -12,16 +12,30 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
+from collections import Counter, defaultdict
+from itertools import chain
 from pathlib import Path
 from urllib.parse import unquote
 
 INDEX_NAME = re.compile(r'(^|/)(_index_[^/]*|_INDEX|MEMORY)\.md$')
 LINK_MD = re.compile(r'\]\((?:<([^>\n#]+\.md)(?:#[^>\n]*)?>|([^)\s#]+\.md)(?:#[^)\s]*)?)\)', re.I)
 LINK_WIKI = re.compile(r'\[\[([^\]|#\n]+)(?:[|#][^\]\n]*)?\]\]')
+FRONT = re.compile(r'\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)', re.S)
 FRONT_NAME = re.compile(r'^name:\s*(.+?)\s*$', re.M)
 FRONT_DESC = re.compile(r'^description:\s*(.+?)\s*$', re.M)
 WORD = re.compile(r'[a-z0-9][a-z0-9._-]{2,}')
 CJK = re.compile(r'[一-鿿]+')
+HAN = r'㐀-䶿一-鿿\U00020000-\U000323af'
+# Start at the first underscore in a run to avoid rescanning Markdown dividers.
+SEARCH_TERM = re.compile(rf'([{HAN}]+)|(?<!_)(?:--)?_*[^{HAN}\W_]+(?:(?:[.-]|_+)[^{HAN}\W_]+)*_*')
+FENCE_LINE = re.compile(r'^[ \t]{0,3}(`{3,}|~{3,})(.*)$')
+HEADING = re.compile(r'^ {0,3}#{1,6}[ \t]+(.+)$', re.M)
+MARKDOWN_TARGET = re.compile(r'\]\((?:<[^<>\n]*>|[^()\n]*)\)')
+INLINE_CODE = re.compile(r'(?<!`)(`{1,2})(?!`)([^`\n]{1,256})\1(?!`)')
+CODE_MARKER = re.compile(r'^--|_|[a-z0-9][A-Z][a-z]')
+BODY_SEARCH_CHARS = 32_768
+CODE_ANCHOR_MIN_SIM = 0.025
 FIRST_RUN_HOURS = 36
 
 
@@ -51,7 +65,7 @@ def scan_tree(root):
 
 
 def frontmatter(text):
-    m = re.match(r'\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)', text, re.S)
+    m = FRONT.match(text)
     return m.group(1) if m else ''
 
 
@@ -112,8 +126,94 @@ def tokens(text):
     return toks
 
 
-def jaccard(a, b):
-    return len(a & b) / len(a | b) if a and b else 0.0
+def search_terms(text):
+    text = unicodedata.normalize('NFKC', text).casefold()
+    for match in SEARCH_TERM.finditer(text):
+        term = match[0]
+        if match[1]:
+            yield from (term[i:i + 2] for i in range(len(term) - 1))
+        elif 2 <= len(term) <= 96 and not term.isdecimal():
+            yield term
+
+
+def _split_prose_and_code(body):
+    """Split markdown body into (prose_text, fenced_code_text) respecting CommonMark fence char & length."""
+    prose, fenced = [], []
+    open_char, open_len = None, 0
+    for line in body.splitlines(keepends=True):
+        m = FENCE_LINE.match(line)
+        if m:
+            marker, rest = m.group(1), m.group(2)
+            ch, length = marker[0], len(marker)
+            if open_char is None:
+                if ch == '`' and '`' in rest:
+                    prose.append(line)
+                else:
+                    open_char, open_len = ch, length
+                continue
+            if ch == open_char and length >= open_len and not rest.strip():
+                open_char, open_len = None, 0
+                continue
+        (prose if open_char is None else fenced).append(line)
+    return ''.join(prose), ''.join(fenced)
+
+
+def note_terms(text, vocabulary):
+    fm = FRONT.match(text)
+    start = fm.end() if fm else 0
+    body = MARKDOWN_TARGET.sub(']', text[start:start + BODY_SEARCH_CHARS])
+    prose, fenced = _split_prose_and_code(body)
+    weights = dict.fromkeys(search_terms(prose), 1)
+    for term in search_terms(fenced):
+        if term not in weights:
+            weights[term] = 1
+    if fm:
+        for field, weight in ((FRONT_NAME, 1), (FRONT_DESC, 2)):
+            match = field.search(fm[1])
+            if match:
+                for term in search_terms(match[1][:4096]):
+                    if weight > weights.get(term, 0):
+                        weights[term] = weight
+    # Only extract headings and inline code anchors from prose, never from fenced code blocks.
+    for heading in HEADING.finditer(prose):
+        for term in search_terms(heading[1]):
+            weights[term] = 3
+    identifiers = {match[0].casefold()
+                   for span in INLINE_CODE.finditer(prose)
+                   for match in SEARCH_TERM.finditer(unicodedata.normalize('NFKC', span[2]))
+                   if 6 <= len(match[0]) <= 96 and CODE_MARKER.search(match[0])
+                   and any(char.isalpha() for char in match[0])}
+    return {vocabulary.setdefault(term, term): weight for term, weight in weights.items()}, identifiers
+
+
+def search_index(terms_by_note):
+    """Normalize field weights in place and build cross-cluster postings."""
+    frequency = Counter(term for terms, _ in terms_by_note.values() for term in terms)
+    corpus_size = len(terms_by_note)
+    idf = {term: math.log((corpus_size + 1) / (count + 1)) + 1
+           for term, count in frequency.items()}
+    rare_limit = max(2, corpus_size // 20)
+    code_limit = max(2, min(8, corpus_size // 8))
+    anchors, code_anchors = defaultdict(set), defaultdict(set)
+    vectors = {}
+    for note, (terms, identifiers) in terms_by_note.items():
+        for term, weight in terms.items():
+            if weight > 1 and 2 <= frequency[term] <= rare_limit:
+                anchors[term].add(note)
+            terms[term] = weight * idf[term]
+        norm = math.sqrt(math.fsum(weight ** 2 for weight in terms.values()))
+        if norm > 0:
+            for term in terms:
+                terms[term] /= norm
+        vectors[note] = terms
+        for term in identifiers:
+            if 2 <= frequency[term] <= code_limit:
+                code_anchors[term].add(note)
+    return vectors, dict(anchors), dict(code_anchors)
+
+
+def similarity(a, b):
+    return math.fsum(a[term] * b[term] for term in a.keys() & b.keys())
 
 
 def build_graph(root):
@@ -146,29 +246,62 @@ def build_graph(root):
     for n, targets in out_links.items():
         for t in targets:
             in_links[t].add(n)
-    toks = {n: tokens(texts[n]) for n in known}
-    size = {n: len(texts[n].encode('utf-8')) for n in known}
+    vocabulary, terms, size = {}, {}, {}
+    for n in sorted(known):
+        text = texts.pop(n)
+        size[n] = len(text.encode('utf-8'))
+        terms[n] = note_terms(text, vocabulary)
+    vectors, anchors, code_anchors = search_index(terms)
     mtime = {n: mtime[n] for n in known}
     return {'known': known, 'clusters': clusters, 'member_of': member_of, 'out': out_links,
-            'in': in_links, 'toks': toks, 'size': size, 'mtime': mtime}
+            'in': in_links, 'vectors': vectors, 'anchors': anchors, 'code_anchors': code_anchors,
+            'size': size, 'mtime': mtime}
 
 
-def candidates(g, note, cap, byte_cap):
-    neighbours = sorted(g['out'][note] | g['in'][note])
+def related_candidates(g, note, neighbours):
     siblings = set()
     for idx in g['member_of'][note]:
         siblings.update(g['clusters'][idx])
-    siblings -= set(neighbours) | {note}
-    ranked = sorted(siblings, key=lambda s: (-jaccard(g['toks'][note], g['toks'][s]), s))
+    excluded = neighbours | {note}
+    siblings -= excluded
+    vectors = g['vectors']
+    query = vectors[note]
+    scores = {s: similarity(query, vectors[s]) for s in siblings}
+    evidence = defaultdict(list)
+    code_hits = set()
+    for term, weight in query.items():
+        matches = g['anchors'].get(term)
+        if matches and note in matches:
+            for candidate in matches:
+                if candidate not in excluded and candidate not in siblings:
+                    evidence[candidate].append(weight * vectors[candidate][term])
+        code_matches = g['code_anchors'].get(term)
+        if code_matches and note in code_matches:
+            code_hits.update(code_matches)
+    outside = {candidate for candidate, overlap in evidence.items()
+               if len(overlap) >= 2 and math.fsum(overlap) >= 0.30}
+    for candidate in code_hits - excluded - siblings - outside:
+        sim = similarity(query, vectors[candidate])
+        if sim >= CODE_ANCHOR_MIN_SIM:
+            scores[candidate] = sim
+    for candidate in outside - excluded - siblings:
+        scores[candidate] = similarity(query, vectors[candidate])
+    yield from sorted(scores, key=lambda c: (-scores[c], c not in siblings, c))
+
+
+def candidates(g, note, cap, byte_cap):
+    if cap <= 0:
+        return []
+    neighbours = g['out'][note] | g['in'][note]
     picked, used = [], 0
-    for c in neighbours + ranked:
-        if len(picked) >= cap:
-            break
-        # One oversized sibling would otherwise crowd out every closer candidate.
+    for c in chain(sorted(neighbours), related_candidates(g, note, neighbours)):
+        # One oversized candidate must not crowd out smaller ones.
         if used + g['size'][c] > byte_cap:
             continue
         picked.append(c)
         used += g['size'][c]
+        if len(picked) >= cap:
+            break
     return picked
 
 
@@ -176,11 +309,18 @@ def primary_cluster(g, note):
     return g['member_of'][note][0] if g['member_of'][note] else '~unindexed/' + note.split('/')[0].split('_')[0]
 
 
-def make_batches(g, focus, context_cap, context_bytes, batch_bytes, batch_files):
+def make_batches(g, focus, context_cap, context_bytes, batch_bytes, batch_files, _ctx_cache=None):
     batches, cur = [], None
+    eff_cap = min(context_cap, max(0, batch_files - 1))
     for note in sorted(focus, key=lambda n: (primary_cluster(g, n), n)):
-        ctx = candidates(g, note, min(context_cap, max(0, batch_files - 1)),
-                         min(context_bytes, max(0, batch_bytes - g['size'][note])))
+        eff_bytes = min(context_bytes, max(0, batch_bytes - g['size'][note]))
+        cache_key = (note, eff_cap, eff_bytes)
+        if _ctx_cache is not None and cache_key in _ctx_cache:
+            ctx = _ctx_cache[cache_key]
+        else:
+            ctx = candidates(g, note, eff_cap, eff_bytes)
+            if _ctx_cache is not None:
+                _ctx_cache[cache_key] = ctx
         if cur is not None:
             files = set(cur['focus']) | set(cur['context']) | {note} | set(ctx)
             if len(files) > batch_files or sum(g['size'][f] for f in files) > batch_bytes:
@@ -244,14 +384,15 @@ def capped_changed_batches(g, focus, context_cap, context_bytes, batch_bytes, ba
     """按 mtime 由舊到新取最大前綴 focus[:k] 使切批數 <= max_batches，避免同 cluster 新筆記被反覆重掃。"""
     if max_batches <= 0 or not focus:
         return [], list(focus)
-    all_batches = make_batches(g, focus, context_cap, context_bytes, batch_bytes, batch_files)
+    ctx_cache = {}
+    all_batches = make_batches(g, focus, context_cap, context_bytes, batch_bytes, batch_files, ctx_cache)
     if len(all_batches) <= max_batches:
         return all_batches, []
     lo, hi = 1, len(focus)
-    best_k, best_batches = 1, make_batches(g, focus[:1], context_cap, context_bytes, batch_bytes, batch_files)[:max_batches]
+    best_k, best_batches = 1, make_batches(g, focus[:1], context_cap, context_bytes, batch_bytes, batch_files, ctx_cache)[:max_batches]
     while lo <= hi:
         mid = (lo + hi) // 2
-        cand = make_batches(g, focus[:mid], context_cap, context_bytes, batch_bytes, batch_files)
+        cand = make_batches(g, focus[:mid], context_cap, context_bytes, batch_bytes, batch_files, ctx_cache)
         if len(cand) <= max_batches:
             best_k, best_batches = mid, cand
             lo = mid + 1
@@ -267,7 +408,7 @@ def capped_changed_batches(g, focus, context_cap, context_bytes, batch_bytes, ba
     else:
         while best_k < len(focus) and g['mtime'][focus[best_k]] <= split_mtime:
             best_k += 1
-    best_batches = make_batches(g, focus[:best_k], context_cap, context_bytes, batch_bytes, batch_files)
+    best_batches = make_batches(g, focus[:best_k], context_cap, context_bytes, batch_bytes, batch_files, ctx_cache)
     best_batches.sort(key=lambda b: min(g['mtime'][n] for n in b['focus']))
     return best_batches, focus[best_k:]
 

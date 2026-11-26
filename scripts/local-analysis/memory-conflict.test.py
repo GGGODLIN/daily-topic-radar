@@ -491,6 +491,40 @@ class MemoryConflictCommitCursor(unittest.TestCase):
         self.assertEqual(len(batches), 1)
         self.assertLessEqual(len(batches[0]['focus']) + len(batches[0]['context']), 2)
 
+    def test_wave35_fenced_code_comments_nfkc_cross_cluster_and_generic_flag_guard(self):
+        mc = load_module()
+        mem = self.state.parent / 'w35-mem'
+        def write_note(rel_path, body):
+            p = mem / rel_path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding='utf-8')
+
+        write_note('_index_c1.md', '- [a1](a1.md)\n- [c_old](c_old.md)\n- [flag_a](flag_a.md)\n' + ''.join(f'- [bg1_{i}](bg1_{i}.md)\n' for i in range(10)))
+        write_note('_index_c2.md', '- [b1](b1.md)\n- [c_new](c_new.md)\n- [flag_b](flag_b.md)\n' + ''.join(f'- [bg2_{i}](bg2_{i}.md)\n' for i in range(10)))
+        for i in range(10):
+            write_note(f'bg1_{i}.md', note(f'bg1-{i}', f'背景筆記甲 {i}', f'一般紀錄甲組項目 {i}。'))
+            write_note(f'bg2_{i}.md', note(f'bg2-{i}', f'背景筆記乙 {i}', f'一般紀錄乙組項目 {i}。'))
+        # 1. Fenced code `# comment` must NOT become weight-3 heading anchor across clusters
+        write_note('a1.md', note('alpha-one', 'alpha proxy gateway settings', '```bash\n# rotate vault-x credentials\necho ok\n```'))
+        write_note('b1.md', note('beta-one', 'beta font rendering cache', '```bash\n# rotate vault-x credentials\necho done\n```'))
+        # 2. Genuine cross-cluster conflict sharing specific heading + identifier MUST be recalled
+        write_note('c_old.md', note('old-port', '中繼連接埠 8317 設定', '# tailscale_serve_8317 舊規範\n\n使用 `tailscale_serve_8317` 只綁本機。'))
+        write_note('c_new.md', note('new-port', '中繼連接埠 8317 改版', '# tailscale_serve_8317 新規範\n\n調整 `tailscale_serve_8317` 改對 tailnet 開放。'))
+        # 3. Unrelated long notes sharing only one generic CLI flag must NOT trigger false cross-cluster match
+        filler_a = ' '.join(f'alpha_unique_word_{i}' for i in range(60))
+        filler_b = ' '.join(f'beta_unique_word_{i}' for i in range(60))
+        write_note('flag_a.md', note('flag-a', '音訊解碼設定', f'# 音訊解碼\n\n{filler_a}\n支援 `--dry-run` 旗標。'))
+        write_note('flag_b.md', note('flag-b', '字型快取建置', f'# 字型快取\n\n{filler_b}\n支援 `--dry-run` 旗標。'))
+        # 4. Unindexed orphan note colliding with indexed note + NFKC fullwidth normalization
+        write_note('orphan.md', note('orphan-port', '中繼連接埠 ８３１７ 補充', '# ｔａｉｌｓｃａｌｅ_ｓｅｒｖｅ_８３１７ 筆記\n\n紀錄 `tailscale_serve_8317` 衝突。'))
+
+        g = mc.build_graph(mem)
+        self.assertNotIn('b1.md', mc.candidates(g, 'a1.md', 6, 50_000))
+        self.assertIn('c_old.md', mc.candidates(g, 'c_new.md', 6, 50_000))
+        self.assertNotIn('flag_b.md', mc.candidates(g, 'flag_a.md', 6, 50_000))
+        orphan_cands = mc.candidates(g, 'orphan.md', 6, 50_000)
+        self.assertTrue('c_old.md' in orphan_cands or 'c_new.md' in orphan_cands)
+
 
 if __name__ == '__main__':
     unittest.main()
