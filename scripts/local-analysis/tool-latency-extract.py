@@ -30,6 +30,7 @@ import shlex
 import statistics
 import sys
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 PROJECTS = Path(os.environ.get("TOOL_LATENCY_PROJECTS", str(Path.home() / ".claude" / "projects")))
@@ -58,6 +59,8 @@ MIN_DELTA_SECONDS = 0.5
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SCRIPT_EXT = re.compile(r"\.(?:py|sh|mjs|cjs|js|ts|rb|pl)$")
 SUBCMD_WORD = re.compile(r"^[a-z][a-z0-9_-]{2,20}$")
+VERSIONED_PYTHON3 = re.compile(r"python3\.\d+")
+SHORT_FLAGS = re.compile(r"-[A-Za-z]+")
 # 帶路徑／參數值的通用選項旗標不當模式分組；其餘長旗標（如 --plan vs --self-repos）代表執行模式，拆開避免雙峰混組失真
 VALUE_FLAGS = {
   "--repo", "--cwd", "--dir", "--directory", "--out", "--out-dir", "--output", "--file", "--path",
@@ -73,6 +76,8 @@ HEREDOC_START = re.compile(r"(?<!<)<<(?!<)-?\s*(?:'([^']+)'|\"([^\"]+)\"|([A-Za-
 
 def strip_heredocs(command):
   lines = command.splitlines()
+  if "<<" not in command:
+    return "\n".join(lines)
   out, i = [], 0
   in_single = False
   in_double = False
@@ -131,28 +136,39 @@ def parse_ts(ts):
   return parsed if parsed.tzinfo is not None else None
 
 
+SUBSTITUTION_START = re.compile(r"\$\(|`")
+
+
 def strip_substitutions(command):
   # `S=$(date +%s)` 不先拿掉會被切成 `+%s)` 這種假分組；內層常有括號（python3 -c "...(...)"），所以要成對計數
-  out, i, n = [], 0, len(command)
-  while i < n:
-    if command.startswith("$(", i):
-      depth, j = 1, i + 2
-      while j < n and depth:
-        depth += {"(": 1, ")": -1}.get(command[j], 0)
-        j += 1
-      out.append("X")
-      i = j
-    elif command[i] == "`":
-      j = command.find("`", i + 1)
-      out.append("X")
-      i = n if j < 0 else j + 1
+  out, end, n = [], 0, len(command)
+  while match := SUBSTITUTION_START.search(command, end):
+    i = match.start()
+    if end < i:
+      out.append(command[end:i])
+    out.append("X")
+    if command[i] == "$":
+      depth, end = 1, match.end()
+      while end < n and depth:
+        depth += {"(": 1, ")": -1}.get(command[end], 0)
+        end += 1
     else:
-      out.append(command[i])
-      i += 1
+      closing = command.find("`", match.end())
+      end = n if closing < 0 else closing + 1
+  if not out:
+    return command
+  out.append(command[end:])
   return "".join(out)
 
 
+SHELL_QUOTING = re.compile(r"[\\'\"]")
+# Match shlex's whitespace even when the command contains Unicode whitespace.
+SHELL_WORD = re.compile(r"[^ \t\r\n]+")
+
+
 def _tokens(segment):
+  if not SHELL_QUOTING.search(segment):
+    return SHELL_WORD.findall(segment)
   try:
     return shlex.split(segment, comments=False, posix=True)
   except ValueError:
@@ -185,7 +201,7 @@ def _program_key(tokens):
   prog = os.path.basename(tokens[0])
   if prog in SKIP_PROGRAMS:
     return None
-  if re.fullmatch(r"python3(?:\.\d+)?", prog):
+  if prog.startswith("python3.") and VERSIONED_PYTHON3.fullmatch(prog):
     prog = "python3"
   if prog in INTERPRETERS:
     if prog in ("bash", "sh", "zsh"):
@@ -199,7 +215,7 @@ def _program_key(tokens):
       tok = rest[0]
       if tok == "-" or tok.startswith("<<"):
         return f"{prog} (inline)"
-      if re.fullmatch(r"-[A-Za-z]+", tok):
+      if SHORT_FLAGS.fullmatch(tok):
         last = tok[-1]
         if last in inline_flags:
           return f"{prog} (inline)"
@@ -232,52 +248,38 @@ def _program_key(tokens):
   return prog
 
 
+STEP_SYNTAX = re.compile(r"[\\'\"&|;\n]")
+
+
 def _split_steps(command):
-  steps, buf = [], []
-  in_single = False
-  in_double = False
-  escaped = False
-  i, n = 0, len(command)
-  while i < n:
+  steps = []
+  start = resume = 0
+  quote = None
+  for match in STEP_SYNTAX.finditer(command):
+    i = match.start()
+    if i < resume:
+      continue
     ch = command[i]
-    if escaped:
-      buf.append(ch)
-      escaped = False
-      i += 1
-      continue
-    if not in_single and ch == "\\":
-      buf.append(ch)
-      escaped = True
-      i += 1
-      continue
-    if not in_double and ch == "'":
-      in_single = not in_single
-      buf.append(ch)
-      i += 1
-      continue
-    if not in_single and ch == '"':
-      in_double = not in_double
-      buf.append(ch)
-      i += 1
-      continue
-    if not in_single and not in_double:
-      if command.startswith("&&", i) or command.startswith("||", i):
-        steps.append("".join(buf))
-        buf = []
-        i += 2
-        continue
-      if ch in (";", "\n"):
-        steps.append("".join(buf))
-        buf = []
-        i += 1
-        continue
-    buf.append(ch)
-    i += 1
-  steps.append("".join(buf))
+    if ch == "\\" and quote != "'":
+      resume = i + 2
+    elif ch == quote:
+      quote = None
+    elif quote is None:
+      if ch in ("'", '"'):
+        quote = ch
+      elif ch in (";", "\n"):
+        steps.append(command[start:i])
+        start = i + 1
+      elif command.startswith(("&&", "||"), i):
+        steps.append(command[start:i])
+        start = resume = i + 2
+  steps.append(command[start:])
   return steps
 
 
 def _split_pipes(step):
+  if "|" not in step:
+    return [step]
   parts, buf = [], []
   in_single = False
   in_double = False
@@ -322,6 +324,8 @@ def _split_pipes(step):
 
 
 def _strip_comment(step):
+  if "#" not in step:
+    return step
   in_single = False
   in_double = False
   escaped = False
@@ -360,13 +364,12 @@ def _step_key(step):
   return prefix
 
 
-def group_key(tool, tool_input):
-  if tool != "Bash":
-    return tool
-  cmd = tool_input.get("command") if isinstance(tool_input, dict) else ""
-  raw = strip_heredocs(cmd if isinstance(cmd, str) else "")
+@lru_cache(maxsize=1024)
+def _bash_group_key(cmd):
+  raw = strip_heredocs(cmd)
   command = strip_substitutions(raw.replace("\\\n", " "))
-  step_keys, prefixes = [], []
+  first_key = prefix = None
+  compound = False
   for step in _split_steps(command):
     step = _strip_comment(step).strip().lstrip("(").rstrip(")").strip()
     if not step:
@@ -375,15 +378,23 @@ def group_key(tool, tool_input):
     if not key:
       continue
     if key == "(loop/control)":
-      return "(loop/control)"
+      return key
     if key in PREFIX_PROGRAMS:
-      prefixes.append(key)
-      continue
-    step_keys.append(key)
-  if not step_keys:
-    return prefixes[0] if prefixes else "bash (empty)"
-  distinct = list(dict.fromkeys(step_keys))
-  return distinct[0] if len(distinct) == 1 else "(compound)"
+      prefix = prefix or key
+    elif first_key is None:
+      first_key = key
+    elif key != first_key:
+      compound = True
+  if compound:
+    return "(compound)"
+  return first_key or prefix or "bash (empty)"
+
+
+def group_key(tool, tool_input):
+  if tool != "Bash":
+    return tool
+  cmd = tool_input.get("command") if isinstance(tool_input, dict) else ""
+  return _bash_group_key(cmd if isinstance(cmd, str) else "")
 
 
 def _result_text(content):
@@ -398,7 +409,15 @@ def _result_text(content):
   return ""
 
 
-def scan_file(path):
+def _is_skipped(content):
+  text = _result_text(content)
+  # Every SKIP_RESULT_RE alternative requires one of these case-sensitive literals.
+  if "skip" in text or "__SILENT__" in text or "Unreviewed" in text:
+    return SKIP_RESULT_RE.search(text) is not None
+  return False
+
+
+def _scan_file_raw(path):
   uses = {}
   per_message = defaultdict(set)
   results = defaultdict(list)
@@ -406,7 +425,8 @@ def scan_file(path):
   try:
     with open(path, encoding="utf-8", errors="replace") as handle:
       for index, line in enumerate(handle):
-        if '"tool_use"' not in line and '"tool_result"' not in line:
+        # Result lines can carry large payloads after the type marker.
+        if '"tool_result"' not in line and '"tool_use"' not in line:
           continue
         try:
           obj = json.loads(line)
@@ -430,14 +450,16 @@ def scan_file(path):
             tid = block.get("id")
             if isinstance(tid, str) and tid:
               per_message[message_id].add(tid)
-              uses.setdefault(tid, (ts, block.get("name"), block.get("input") or {}, message_id))
+              name = block.get("name")
+              tool_input = block.get("input") if name == "Bash" else None
+              uses.setdefault(tid, (ts, name, tool_input, message_id))
           elif block.get("type") == "tool_result":
             tid = block.get("tool_use_id")
             if isinstance(tid, str) and tid:
               parsed_res = parse_ts(ts)
               if parsed_res is not None:
                 results[tid].append(parsed_res)
-              if block.get("is_error") or SKIP_RESULT_RE.search(_result_text(block.get("content"))):
+              if block.get("is_error") or _is_skipped(block.get("content")):
                 skipped_or_errored.add(tid)
   except OSError:
     return []
@@ -452,12 +474,22 @@ def scan_file(path):
     start = parse_ts(ts)
     if not start:
       continue
-    end = min((stamp for stamp in results.get(tool_id, ()) if stamp >= start), default=None)
+    end = None
+    for stamp in results.get(tool_id, ()):
+      if stamp >= start and (end is None or stamp < end):
+        end = stamp
     if end is None:
       continue
     seconds = (end - start).total_seconds()
-    out.append((tool_id, start, min(seconds, CAP_SECONDS), group_key(name, tool_input)))
+    out.append((tool_id, start, min(seconds, CAP_SECONDS), name, tool_input))
   return out
+
+
+def scan_file(path):
+  return [
+    (tool_id, start, seconds, group_key(name, tool_input))
+    for tool_id, start, seconds, name, tool_input in _scan_file_raw(path)
+  ]
 
 
 def collect(projects, day):
@@ -487,14 +519,14 @@ def collect(projects, day):
           continue
       except OSError:
         continue
-      for tool_id, began, seconds, key in scan_file(path):
+      for tool_id, began, seconds, name, tool_input in _scan_file_raw(path):
         if tool_id in seen:
           continue
         seen.add(tool_id)
         if mid <= began < end:
-          windows["cur"][key].append(seconds)
+          windows["cur"][group_key(name, tool_input)].append(seconds)
         elif start <= began < mid:
-          windows["prev"][key].append(seconds)
+          windows["prev"][group_key(name, tool_input)].append(seconds)
   return windows, dates
 
 

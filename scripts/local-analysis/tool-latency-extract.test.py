@@ -363,5 +363,62 @@ empty_bucket_windows = {
 empty_report = tlx.render(empty_bucket_windows, tie_bounds)
 check("Sol T06 有變慢項時空桶不破壞 render", True, "slow.py" in empty_report and "| empty.py |" not in empty_report)
 
+# Wave 35 回歸防護：壞格式 JSON、裸 CR、Unicode 空白與 collect/scan_file 窗內惰性分組等價
+with tempfile.TemporaryDirectory() as td:
+  tdp = Path(td)
+  # 1. 6KB tool_result 尾端含非法跳脫 \q 必整行拒收
+  f_bad = tdp / "bad_escape.jsonl"
+  f_bad.write_text(
+    '{"timestamp":"2026-11-08T10:00:00Z","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}\n'
+    + '{"timestamp":"2026-11-08T10:00:05Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"' + ("a" * 6000) + r'\q"}]}}' + "\n",
+    encoding="utf-8",
+  )
+  check("W35 6KB tool_result 含非法跳脫拒收", [], tlx.scan_file(f_bad))
+
+  # 2. 兩行壞 JSON 不可跨行拼成合法紀錄
+  f_splice = tdp / "splice.jsonl"
+  f_splice.write_text(
+    '{"a":"tool_use","b":[1\n'
+    '2]},{"timestamp":"2026-11-08T10:00:00Z","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}\n'
+    '{"timestamp":"2026-11-08T10:00:05Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}\n',
+    encoding="utf-8",
+  )
+  check("W35 兩行壞 JSON 不跨行錯位拼裝", [], tlx.scan_file(f_splice))
+
+  # 3. 裸 \r 換行仍照通用換行解析
+  f_cr = tdp / "bare_cr.jsonl"
+  f_cr.write_bytes((
+    '{"timestamp":"2026-11-08T10:00:00Z","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}\r'
+    '{"timestamp":"2026-11-08T10:00:05Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}\r'
+  ).encode("utf-8"))
+  check("W35 裸 CR 換行維持等價解析", [5.0], [r[2] for r in tlx.scan_file(f_cr)])
+
+  # 4. Unicode 空白 (\xa0 / 　) 與未閉合引號在 _tokens 與 shlex 一致
+  check("W35 _tokens 保留 NBSP 不誤切", ["python3", "foo\xa0bar.py"], tlx._tokens("python3 foo\xa0bar.py"))
+  check("W35 _tokens 保留全形空白不誤切", ["python3", "foo　bar.py"], tlx._tokens("python3 foo　bar.py"))
+  check("W35 未閉合引號安全退回", ["echo", "'unclosed"], tlx._tokens("echo 'unclosed"))
+
+  # 5. collect() 與 scan_file() 分桶等價（含 mtime 新但窗外事件＋跨檔重複 tid）
+  proj = tdp / "proj"
+  old_ev = call(dt.date(2026, 10, 1), 10, "old1", 3, "python3 /x/old.py")
+  cur_ev = call(CUR_DAY, 10, "dup1", 6, "python3 /x/cur.py --fast")
+  prev_ev = call(PREV_DAY, 10, "prev1", 2, "python3 /x/cur.py --fast")
+  write(proj / "a" / "s1.jsonl", old_ev + cur_ev + prev_ev)
+  write(proj / "b" / "s2.jsonl", cur_ev)
+  win_c, bounds_c = tlx.collect(proj, DAY)
+  start_dt, mid_dt, end_dt = (dt.datetime.combine(d, dt.time.min).astimezone(dt.timezone.utc) for d in bounds_c)
+  expected_cur, expected_prev, seen_t = {}, {}, set()
+  for fp in sorted(proj.rglob("*.jsonl")):
+    for tid, began, secs, key in tlx.scan_file(fp):
+      if tid in seen_t:
+        continue
+      seen_t.add(tid)
+      if mid_dt <= began < end_dt:
+        expected_cur.setdefault(key, []).append(secs)
+      elif start_dt <= began < mid_dt:
+        expected_prev.setdefault(key, []).append(secs)
+  check("W35 collect 與 scan_file 分桶等價(cur)", expected_cur, dict(win_c["cur"]))
+  check("W35 collect 與 scan_file 分桶等價(prev)", expected_prev, dict(win_c["prev"]))
+
 print(f"\n{PASS} PASS / {FAIL} FAIL")
 sys.exit(1 if FAIL else 0)
