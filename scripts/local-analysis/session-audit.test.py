@@ -3422,6 +3422,36 @@ class SessionAuditCliTest(unittest.TestCase):
     ):
       self.assertEqual(mod.redact_text(keep), keep, f"non-secret flag over-redacted: {keep}")
 
+  def test_redaction_fast_paths_preserve_cross_part_otp_and_edge_parity(self):
+    spec = importlib.util.spec_from_file_location("session_audit_fast_mod", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # 跨段瀏覽器輸入：前段有 login/verification 語境、後段只有 page.typeText，全文第二輪不得略過以免外洩驗證碼。
+    p = self.projects / "work" / "cross_part_otp.jsonl"
+    write_jsonl(
+      p,
+      user_line("Check the login verification email I received.")
+      + json.dumps({"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": [{"type": "text", "text": "Running page.typeText(3, '482913') now."}]}})
+      + "\n",
+    )
+    doc = mod.build_document(mod.Transcript(p))[0]
+    self.assertNotIn("482913", doc)
+    self.assertIn("page.typeText(3, '[REDACTED]')", doc)
+    # 跨窗口邊界的 10 位長數字（例如 QQ 群號）不得因 endpos 截斷被誤遮前段。
+    qq_edge = "verification code " + ("x" * 55) + "1234567890"
+    self.assertIn("1234567890", mod.redact_text(qq_edge))
+    # Unicode 大小寫與 UUID 緊鄰電話／SVG 保護／行尾表達式賦值／CJK＋emoji 邊界。
+    self.assertNotIn("hunter2secret99", mod.redact_text('{"paſsword":"hunter2secret99"}'))
+    self.assertNotIn("sk_test_1234567890abcdef", mod.redact_text("APİ_KEY=sk_test_1234567890abcdef"))
+    self.assertEqual(
+      mod.redact_text("12345678-1234-1234-1234-123456789abc+886912345678"),
+      "12345678-1234-1234-1234-123456789abc[PHONE]",
+    )
+    svg = '<svg><path d="M0912345678 10" /> data:image/svg+xml,+886912345678</svg>'
+    self.assertEqual(mod.redact_text(svg), svg)
+    self.assertEqual(mod.redact_text("TOKEN=await fetchToken()"), "TOKEN=await fetchToken()")
+    self.assertNotIn("MySecret99!", mod.redact_text("🔐 初始密碼：MySecret99!"))
+
 
 def analysis_with_media(media):
   return openai(
