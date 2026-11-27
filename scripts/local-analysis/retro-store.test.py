@@ -2295,6 +2295,32 @@ class StoreCLI(unittest.TestCase):
     self.cli(*args, "--auto-decision", f"{key}:D1", env=env)
     self.assertNotEqual(self.auto_proposal_rows(), before)
 
+  def test_auto_governance_requires_a_human_quote_after_a_changed_reply(self):
+    self.ready()
+    self.propose("retract", "accepted", change="fix-2")
+    env, key, _mode, records = self.auto_mode_fixture()
+    dump(records, [self.auto_decision(reply="changed", changed_value="保留原文"),
+                   self.auto_decision("D2", reply="kept")])
+    records.chmod(0o600)
+    ledger = self.store / "records.jsonl"
+    before = ledger.read_bytes()
+    args = ("proposal", "--kind", "modify", "--decision", "accepted", "--change", "fix-1", "--apply")
+    changed = (*args, "--auto-decision", f"{key}:D1")
+    error = self.cli(*changed, env=env, code=2)
+    self.assertIn("verified human quote is required", error["error"])
+    self.assertEqual(ledger.read_bytes(), before)
+
+    kept = self.cli(*args, "--auto-decision", f"{key}:D2", env=env)
+    self.assertNotEqual(ledger.read_bytes(), before)
+    row = next(row for row in self.auto_proposal_rows() if row["id"] == kept["id"])
+    self.assertEqual(row["source"], {"kind": "auto_mode_decision", "key": key, "id": "D2"})
+
+    human = self.human("yes, revise it after all", uuid="changed-human-control")
+    applied = self.cli(*changed, "--source", human, "--line", 1, "--quote", "yes, revise it after all", env=env)
+    row = next(row for row in self.auto_proposal_rows() if row["id"] == applied["id"])
+    self.assertEqual(row["event_uuid"], "changed-human-control")
+    self.assertEqual(row["source"], {"path": str(human), "line": 1, "quote": "yes, revise it after all"})
+
   def test_auto_governance_bad_reference_or_unreadable_record_needs_a_verified_human_quote(self):
     self.ready()
     self.propose("retract", "accepted", change="fix-2")

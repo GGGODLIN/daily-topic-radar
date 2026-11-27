@@ -1484,7 +1484,7 @@ def auto_decision_source(reference, session, stop):
     return None
 
   if any(row["id"] == decision_id and row["disposition"] == "followed" and row["stop"] == stop
-         for row in rows):
+         and row["reply"] != "changed" for row in rows):
     return {"kind": "auto_mode_decision", "key": key, "id": decision_id}
   return None
 
