@@ -8,13 +8,15 @@ payload is a no-op; a different payload is a conflict. Content is never hashed.
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -1446,6 +1448,47 @@ def proposal_target(args):
   return {"rule": point}, "rule:" + point["path"] + "|" + point["quote"]
 
 
+def auto_decision_source(reference, session, stop):
+  if reference is None:
+    return None
+  key, _, decision_id = reference.rpartition(":")
+  if not key or not re.fullmatch(r"D[1-9][0-9]*", decision_id):
+    return None
+
+  path = Path.home() / ".claude" / "scripts" / "auto-mode" / "records.py"
+  try:
+    spec = importlib.util.spec_from_file_location("auto_mode_records", path)
+    if spec is None or spec.loader is None:
+      return None
+    records = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(records)
+    mode = records.load_mode()
+  except (OSError, ImportError, SyntaxError):
+    return None
+  try:
+    pi = mode.load_pi_mode()
+  except (OSError, ImportError, SyntaxError, mode.PiModeUnavailable):
+    return None
+  try:
+    if mode.state_key(pi, session) != key or mode.status(pi, key)["enabled"] is not True:
+      return None
+    dirfd = mode.open_root(pi, False, root=records.RECORDS_DIR)
+    if dirfd is None:
+      return None
+    try:
+      # The shared CLI lock can create a lock file. Read the atomic snapshot instead.
+      rows = records.read_records(mode, pi, dirfd, f"{key}.json")
+    finally:
+      os.close(dirfd)
+  except (OSError, pi.Blocked, pi.UsageError, records.RecordsUnreadable):
+    return None
+
+  if any(row["id"] == decision_id and row["disposition"] == "followed" and row["stop"] == stop
+         for row in rows):
+    return {"kind": "auto_mode_decision", "key": key, "id": decision_id}
+  return None
+
+
 def proposal(args):
   require(args.kind in PROPOSAL_KINDS, "kind must be one of " + ", ".join(PROPOSAL_KINDS))
   require(
@@ -1457,26 +1500,32 @@ def proposal(args):
     require("rule" in target, "make_hook needs a rule anchor (--rule-path --rule-line --rule-quote) as its target")
   else:
     require("change_id" in target, args.kind + " needs a change as its target")
-  source = anchor({"path": args.source, "line": args.line, "quote": args.quote}, "source")
-  # 真人原話沿用 decide 的驗證；決定時間取自那筆 session 紀錄。
-  found = human_row(source["path"], source["line"], source["quote"])
-  decided_at = found["timestamp"]
-  moment(decided_at, "decision source timestamp")
-  uuid = found["uuid"]
-  body = {
-    "proposal": args.kind,
-    "target": target,
-    "target_key": key,
-    "decision": args.decision,
-    "source": source,
-    "event_uuid": uuid,
-    "decided_at": decided_at,
-  }
-  entry_id = "proposal-decision:" + uuid + ":" + args.kind + ":" + key
+  # Bind the recommendation to this target and outcome, not just to a step number.
+  stop = f"retro-step-7-governance:{args.kind}:{args.decision}:{key}"
+  auto_source = auto_decision_source(
+    args.auto_decision, os.environ.get("CLAUDE_SESSION_ID") or args.auto_session, stop
+  )
+  body = {"proposal": args.kind, "target": target, "target_key": key, "decision": args.decision}
+  if auto_source is not None:
+    body["source"] = auto_source
+    entry_id = f"proposal-auto-decision:{auto_source['key']}:{auto_source['id']}"
+  else:
+    require(all(value is not None for value in (args.source, args.line, args.quote)),
+            "a verified human quote is required (--source --line --quote)")
+    source = anchor({"path": args.source, "line": args.line, "quote": args.quote}, "source")
+    # 真人原話沿用 decide 的驗證；決定時間取自那筆 session 紀錄。
+    found = human_row(source["path"], source["line"], source["quote"])
+    moment(found["timestamp"], "decision source timestamp")
+    body.update(source=source, event_uuid=found["uuid"], decided_at=found["timestamp"])
+    entry_id = f"proposal-decision:{found['uuid']}:{args.kind}:{key}"
 
   def build(existing):
     if "change_id" in target:
       body["issue_id"] = find_change(existing, target["change_id"])["issue_id"]
+    if auto_source is not None:
+      # Records have no timestamp. Anchor to the first ledger write, including on replay.
+      previous = next((row for row in existing if row["id"] == entry_id), None)
+      body["decided_at"] = previous["decided_at"] if previous else datetime.now(timezone.utc).isoformat()
     return entry("proposal_decision", entry_id, body)
 
   return append_one(args, build)
@@ -2164,9 +2213,11 @@ def build():
   proposed.add_argument("--rule-path")
   proposed.add_argument("--rule-line", type=int)
   proposed.add_argument("--rule-quote")
-  proposed.add_argument("--source", required=True)
-  proposed.add_argument("--line", required=True, type=int)
-  proposed.add_argument("--quote", required=True)
+  proposed.add_argument("--source")
+  proposed.add_argument("--line", type=int)
+  proposed.add_argument("--quote")
+  proposed.add_argument("--auto-decision", metavar="KEY:D_ID", help="auto mode decision record reference")
+  proposed.add_argument("--auto-session", metavar="UUID", help="session ID if no terminal or session ID is set")
   proposed.add_argument("--apply", action="store_true")
   return parser
 

@@ -5,6 +5,7 @@ import concurrent.futures
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -36,13 +37,16 @@ class StoreCLI(unittest.TestCase):
     path = Path(name)
     return self.root / f"{path.stem}-{self.serial}{path.suffix}"
 
-  def cli(self, *args, code=0):
+  def run_cli(self, *args, env=None):
     # 呼叫端再帶 --store 時，用它覆寫 fixture store。
     passed = [str(arg) for arg in args]
     prefix = [] if "--store" in passed else ["--store", str(self.store)]
-    result = subprocess.run(
-      [sys.executable, "-I", str(SCRIPT), *prefix, *passed], text=True, capture_output=True
+    return subprocess.run(
+      [sys.executable, "-I", str(SCRIPT), *prefix, *passed], text=True, capture_output=True, env=env
     )
+
+  def cli(self, *args, code=0, env=None):
+    result = self.run_cli(*args, env=env)
     self.assertEqual(result.returncode, code, result.stdout + result.stderr)
     if code == 0:
       self.assertEqual(result.stderr, "")
@@ -2195,6 +2199,187 @@ class StoreCLI(unittest.TestCase):
     self.propose("retract", "rejected", code=2)
     self.propose("retract", "rejected", rule=rule, code=2)
     self.assertEqual((self.store / "records.jsonl").read_bytes(), before)
+
+  def auto_mode_fixture(self, *, enabled=True, terminal=False):
+    home = self.root / "auto-home"
+    config = home / ".claude"
+    modules = ("scripts/auto-mode/records.py", "scripts/auto-mode/mode.py",
+               "scripts/pi-subtask/mode.py", "hooks/skill-verify-once-gate.py")
+    for name in modules:
+      target = config / name
+      target.parent.mkdir(parents=True, exist_ok=True)
+      shutil.copyfile(Path.home() / ".claude" / name, target)
+    env = {**os.environ, "HOME": str(home), "CLAUDE_CONFIG_DIR": str(config)}
+    for name in ("HC_TERMINAL_ID", "CLAUDE_SESSION_ID", "AUTO_MODE_PI_MODULE"):
+      env.pop(name, None)
+    key = "session-3bdbeb7c-a77b-4454-ae7f-3070338b1cbc"
+    env["CLAUDE_SESSION_ID"] = key.removeprefix("session-")
+    if terminal:
+      env["HC_TERMINAL_ID"] = "fixture/retro"
+      key = "terminal-fixture%2Fretro"
+    root = config / "logs" / "auto-mode"
+    for directory in (root / "modes", root / "records"):
+      directory.mkdir(mode=0o700, parents=True)
+    mode = root / "modes" / f"{key}.json"
+    dump(mode, {"enabled": enabled, "applied_events": []})
+    mode.chmod(0o600)
+    return env, key, mode, root / "records" / f"{key}.json"
+
+  def auto_decision(self, decision_id="D1", **overrides):
+    return {
+      "id": decision_id, "task": "retro fixture", "stop": "retro-step-7-governance:modify:accepted:change:fix-1",
+      "recommendation": "改寫", "adopted": "改寫", "reason": "現行寫法漏掉條件", "undo": None,
+      "disposition": "followed", "reply": "unreviewed", "changed_value": None, **overrides,
+    }
+
+  def auto_proposal_rows(self):
+    return self.cli("list", "--issue", "issue-1")["issues"][0]["records"]["proposal_decisions"]
+
+  def test_auto_governance_keeps_provenance_and_replay_without_changing_records(self):
+    self.ready()
+    self.propose("retract", "rejected", change="fix-1", uuid="governance-human-control")
+    env, key, mode, records = self.auto_mode_fixture()
+    session = env.pop("CLAUDE_SESSION_ID")
+    dump(records, [self.auto_decision()])
+    records.chmod(0o600)
+    def auto_snapshot():
+      return mode.read_bytes(), {path.name: path.read_bytes() for path in records.parent.iterdir()}
+
+    auto_before = auto_snapshot()
+    args = ("proposal", "--kind", "modify", "--decision", "accepted", "--change", "fix-1",
+            "--auto-decision", f"{key}:D1", "--auto-session", session)
+    before = self.auto_proposal_rows()
+    dry = self.cli(*args, env=env)
+    self.assertEqual((dry["apply"], dry["appended"]), (False, 1))
+    self.assertEqual(self.auto_proposal_rows(), before)
+    applied = self.cli(*args, "--apply", env=env)
+    after = self.auto_proposal_rows()
+    self.assertNotEqual(after, before)
+    row = after[-1]
+    self.assertEqual((row["id"], row["proposal"], row["decision"], row["target"]),
+                     (applied["id"], "modify", "accepted", {"change_id": "fix-1"}))
+    self.assertEqual(row["source"], {"kind": "auto_mode_decision", "key": key, "id": "D1"})
+    self.assertEqual((before[0]["event_uuid"], row.get("event_uuid")), ("governance-human-control", None))
+    replay = self.cli(*args, "--apply", env=env)
+    self.assertEqual((replay["appended"], replay["noop"]), (0, 1))
+    self.assertEqual(self.auto_proposal_rows(), after)
+    self.assertEqual(auto_snapshot(), auto_before)
+    # The real record writer changes the same snapshot, unlike ledger dry-run and apply.
+    writer = Path(env["HOME"]) / ".claude/scripts/auto-mode/records.py"
+    wrote = subprocess.run(
+      [sys.executable, "-I", str(writer), "append", "--session", session, "--task", "fixture control",
+       "--stop", "separate stop", "--recommendation", "keep", "--adopted", "keep",
+       "--reason", "fixture control", "--disposition", "followed"],
+      env=env, capture_output=True, text=True, check=True,
+    )
+    self.assertEqual(json.loads(wrote.stdout)["id"], "D2")
+    self.assertNotEqual(auto_snapshot(), auto_before)
+
+  def test_auto_governance_rejects_missing_downweighted_and_wrong_stops(self):
+    self.ready()
+    self.propose("retract", "accepted", change="fix-2")
+    env, key, _mode, records = self.auto_mode_fixture()
+    dump(records, [self.auto_decision(), self.auto_decision("D2", disposition="downweighted",
+                                                           reply="changed", changed_value="改寫"),
+                   self.auto_decision("D3", stop="retro-step-5:main-item:fix-1"),
+                   self.auto_decision("D4", stop="retro-step-7-governance:modify:rejected:change:fix-1"),
+                   self.auto_decision("D5", stop="retro-step-7-governance:modify:accepted:change:fix-2")])
+    records.chmod(0o600)
+    args = ("proposal", "--kind", "modify", "--decision", "accepted", "--change", "fix-1", "--apply")
+    before = self.auto_proposal_rows()
+    for decision_id in ("D99", "D2", "D3", "D4", "D5"):
+      with self.subTest(decision_id=decision_id):
+        error = self.cli(*args, "--auto-decision", f"{key}:{decision_id}", env=env, code=2)
+        self.assertIn("verified human quote is required", error["error"])
+        self.assertEqual(self.auto_proposal_rows(), before)
+    self.cli(*args, "--auto-decision", f"{key}:D1", env=env)
+    self.assertNotEqual(self.auto_proposal_rows(), before)
+
+  def test_auto_governance_bad_reference_or_unreadable_record_needs_a_verified_human_quote(self):
+    self.ready()
+    self.propose("retract", "accepted", change="fix-2")
+    env, key, _mode, records = self.auto_mode_fixture()
+    valid = json.dumps([self.auto_decision()])
+    args = ("proposal", "--kind", "modify", "--decision", "accepted", "--change", "fix-1", "--apply")
+    for name, ref, raw, permissions in (
+      ("malformed ID", f"{key}:D01", valid, 0o600),
+      ("unreadable JSON", f"{key}:D1", "{", 0o600),
+      ("unsafe permissions", f"{key}:D1", valid, 0o644),
+    ):
+      with self.subTest(name=name):
+        records.write_text(raw, encoding="utf-8")
+        records.chmod(permissions)
+        before = self.auto_proposal_rows()
+        flags = (*args, "--auto-decision", ref)
+        error = self.cli(*flags, env=env, code=2)
+        self.assertIn("verified human quote is required", error["error"])
+        human = self.human("yes, revise it", uuid=name)
+        error = self.cli(*flags, "--source", human, "--line", 1, "--quote", "made-up quote", env=env, code=2)
+        self.assertIn("quote is not in the user text", error["error"])
+        self.assertEqual(self.auto_proposal_rows(), before)
+        self.cli(*flags, "--source", human, "--line", 1, "--quote", "yes, revise it", env=env)
+        after = self.auto_proposal_rows()
+        self.assertNotEqual(after, before)
+        row = after[-1]
+        self.assertEqual(row["event_uuid"], name)
+        self.assertEqual(row["source"], {"path": str(human), "line": 1, "quote": "yes, revise it"})
+
+  def test_auto_mode_on_does_not_change_step_five_decide(self):
+    self.ready()
+    env, key, _mode, records = self.auto_mode_fixture()
+    dump(records, [self.auto_decision()])
+    records.chmod(0o600)
+    args = ("decide", "--issue", "issue-1", "--action", "decline", "--apply")
+    before = self.cli("list", "--issue", "issue-1")["issues"][0]["decision"]
+    result = self.run_cli(*args, "--auto-decision", f"{key}:D1", env=env)
+    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+    self.assertIn("--source, --line, --quote", result.stderr)
+    self.assertEqual(self.cli("list", "--issue", "issue-1")["issues"][0]["decision"], before)
+    human = self.human("decline the issue", uuid="real-decline")
+    done = self.cli(*args, "--source", human, "--line", 1, "--quote", "decline the issue", env=env)
+    after = self.cli("list", "--issue", "issue-1")["issues"][0]["decision"]
+    self.assertNotEqual(after, before)
+    self.assertEqual(after, {"action": "decline", "id": done["id"]})
+
+  def test_auto_governance_off_keeps_human_behavior_and_rejects_valid_record(self):
+    self.ready()
+    env, key, mode, records = self.auto_mode_fixture(enabled=False)
+    dump(records, [self.auto_decision()])
+    records.chmod(0o600)
+    human = self.human("no, do not retract", uuid="off-human")
+    human_flags = ("--source", human, "--line", 1, "--quote", "no, do not retract")
+    base = ("proposal", "--kind", "retract", "--decision", "rejected", "--change", "fix-1", *human_flags)
+    self.cli(*base, "--apply", env=env)
+    before = self.auto_proposal_rows()
+    self.assertEqual((before[0]["event_uuid"], before[0]["source"]["quote"]), ("off-human", "no, do not retract"))
+    args = ("proposal", "--kind", "modify", "--decision", "accepted", "--change", "fix-1", "--apply",
+            "--auto-decision", f"{key}:D1")
+    error = self.cli(*args, env=env, code=2)
+    self.assertIn("verified human quote is required", error["error"])
+    self.assertEqual(self.auto_proposal_rows(), before)
+    dump(mode, {"enabled": True, "applied_events": []})
+    self.cli(*args, env=env)
+    self.assertNotEqual(self.auto_proposal_rows(), before)
+
+  def test_auto_governance_accepts_a_rule_target_only_in_the_matching_terminal(self):
+    self.ready()
+    self.propose("retract", "accepted", change="fix-2")
+    env, key, _mode, records = self.auto_mode_fixture(terminal=True)
+    rule = self.pointer("standalone rule paragraph")
+    stop = f"retro-step-7-governance:make_hook:rejected:rule:{rule['path']}|standalone rule paragraph"
+    dump(records, [self.auto_decision(stop=stop)])
+    records.chmod(0o600)
+    args = ("proposal", "--kind", "make_hook", "--decision", "rejected", "--rule-path", rule["path"],
+            "--rule-line", 1, "--rule-quote", rule["quote"], "--auto-decision", f"{key}:D1", "--apply")
+    before = self.rows()
+    error = self.cli(*args, env={**env, "HC_TERMINAL_ID": "other"}, code=2)
+    self.assertIn("verified human quote is required", error["error"])
+    self.assertEqual(self.rows(), before)
+    done = self.cli(*args, env=env)
+    self.assertNotEqual(self.rows(), before)
+    row = next(row for row in self.rows() if row["id"] == done["id"])
+    self.assertEqual((row["decision"], row["target"], row["source"]),
+                     ("rejected", {"rule": rule}, {"kind": "auto_mode_decision", "key": key, "id": "D1"}))
 
   def test_make_hook_takes_a_rule_anchor_only_because_a_change_target_would_never_take_effect(self):
     self.ready()
