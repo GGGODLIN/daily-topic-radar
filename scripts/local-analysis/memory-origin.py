@@ -287,6 +287,14 @@ def excerpt(events, write_line, mode, user_cap=12000, near_cap=12000, near_turns
 
 RELAY = 'http://127.0.0.1:8317/v1'
 KEYS_ENV = Path.home() / '.cli-proxy-api' / 'keys.env'
+CLAUDE_BIN = Path.home() / '.local' / 'bin' / 'claude'
+NATIVE_CONFIG_DIRS = (
+    Path.home() / '.claude',
+    Path.home() / '.claude-team-s',
+    Path.home() / '.claude-team-p',
+)
+QUOTA_CACHE_DIR = Path.home() / '.claude' / 'cache'
+NATIVE_STRIP_PREFIXES = ('ANTHROPIC_', 'CLAUDE_CODE_', 'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT')
 
 JUDGE_PROMPT = """你是記憶筆記的核對員。下面有一條 AI 助理寫的記憶筆記，以及它當初寫成的那段對話的摘錄（每段前面是對話紀錄的行號與角色）。
 
@@ -336,8 +344,96 @@ def relay_key():
     raise SystemExit(f'CLIPROXY_KEY_CC not found in {KEYS_ENV}')
 
 
-def call_model(alias, prompt, key, timeout=600, max_tokens=16000):
-    """呼叫 relay 上一對一的 alias；回傳 (content, usage, model, error)。"""
+def _native_email_of(config_dir):
+    meta = Path.home() / '.claude.json' if config_dir == Path.home() / '.claude' else config_dir / '.claude.json'
+    if not meta.exists():
+        return None
+    try:
+        data = json.loads(meta.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    acct = data.get('oauthAccount')
+    return acct.get('emailAddress') if isinstance(acct, dict) else None
+
+
+def _native_quota_blocked(email):
+    if not email:
+        return None
+    safe = email.replace('@', '_at_').replace('/', '_')
+    cache = QUOTA_CACHE_DIR / f'quota-{safe}.json'
+    if not cache.exists():
+        return None
+    try:
+        data = json.loads(cache.read_text(encoding='utf-8')).get('data') or {}
+    except (OSError, json.JSONDecodeError):
+        return None
+    now = dt.datetime.now(dt.timezone.utc)
+    for win, limit in (('five_hour', 95), ('seven_day', 99)):
+        entry = data.get(win)
+        if not isinstance(entry, dict):
+            continue
+        util = entry.get('utilization')
+        if not isinstance(util, (int, float)) or util < limit:
+            continue
+        resets_at = entry.get('resets_at')
+        if isinstance(resets_at, str):
+            try:
+                if dt.datetime.fromisoformat(resets_at.replace('Z', '+00:00')) <= now:
+                    continue
+            except ValueError:
+                pass
+        return f'{email} {win}={util}%'
+    return None
+
+
+def _call_native_claude(model, prompt, timeout=600):
+    """走本機原生 Claude 訂閱（輪詢有餘額的 config dir），失敗或全額滿時回傳錯誤供呼叫端退回 relay。"""
+    if not CLAUDE_BIN.exists():
+        return '', None, None, f'native claude missing: {CLAUDE_BIN}'
+    base_env = {k: v for k, v in os.environ.items() if not k.startswith(NATIVE_STRIP_PREFIXES)}
+    base_env['CC_VENDOR'] = 'headless-channel'
+    base_env['CLAUDE_CODE_MAX_RETRIES'] = '0'
+    default_dir = Path.home() / '.claude'
+    seen_emails = set()
+    errors = []
+    for cfg_dir in NATIVE_CONFIG_DIRS:
+        if not cfg_dir.exists():
+            continue
+        email = _native_email_of(cfg_dir)
+        if email:
+            if email in seen_emails:
+                continue
+            seen_emails.add(email)
+            blocked = _native_quota_blocked(email)
+            if blocked:
+                errors.append(f'quota_blocked({blocked})')
+                continue
+        env = dict(base_env)
+        if cfg_dir != default_dir:
+            env['CLAUDE_CONFIG_DIR'] = str(cfg_dir)
+        cmd = [str(CLAUDE_BIN), '--model', model, '--output-format', 'json',
+               '--no-session-persistence', '--tools', '', '--setting-sources', '', '-p']
+        try:
+            proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, timeout=timeout)
+        except Exception as exc:
+            errors.append(f'{cfg_dir.name}: {type(exc).__name__}: {exc}')
+            continue
+        try:
+            payload = json.loads(proc.stdout) if proc.stdout.strip() else None
+        except json.JSONDecodeError:
+            payload = None
+        if proc.returncode == 0 and isinstance(payload, dict) and payload.get('is_error') is False \
+                and payload.get('subtype') == 'success' and isinstance(payload.get('result'), str) \
+                and payload['result'].strip():
+            served = next(iter((payload.get('modelUsage') or {}).keys()), model)
+            tag = f'native:{served}@{email}' if email else f'native:{served}'
+            return payload['result'], payload.get('usage'), tag, None
+        reason = (payload.get('result') if isinstance(payload, dict) else '') or proc.stderr.strip() or f'exit {proc.returncode}'
+        errors.append(f'{email or cfg_dir.name}: {str(reason)[:160]}')
+    return '', None, None, 'native failed: ' + '; '.join(errors or ['no config dir'])
+
+
+def _call_relay(alias, prompt, key, timeout=600, max_tokens=16000):
     import urllib.error
     import urllib.request
     body = json.dumps({'model': alias, 'max_tokens': max_tokens,
@@ -355,6 +451,21 @@ def call_model(alias, prompt, key, timeout=600, max_tokens=16000):
     choice = (data.get('choices') or [{}])[0]
     content = (choice.get('message') or {}).get('content') or ''
     return content, data.get('usage'), data.get('model'), None
+
+
+def call_model(alias, prompt, key, timeout=600, max_tokens=16000):
+    """呼叫模型或逗號分隔的備援鏈（支援 native:<model> 走本機訂閱，失敗自動退下一棒）；回傳 (content, usage, model, error)。"""
+    parts = [p.strip() for p in alias.split(',') if p.strip()]
+    errors = []
+    for part in parts:
+        if part.startswith('native:'):
+            content, usage, model, err = _call_native_claude(part.split(':', 1)[1], prompt, timeout=timeout)
+        else:
+            content, usage, model, err = _call_relay(part, prompt, key, timeout=timeout, max_tokens=max_tokens)
+        if not err and content.strip():
+            return content, usage, model, None
+        errors.append(f'{part} -> {err or "empty reply"}')
+    return '', None, None, ' | '.join(errors)
 
 
 def first_json(content, accept):
@@ -874,7 +985,7 @@ def load_scan(run_dir):
     return labels, notes
 
 
-FIXERS = ('sol-high=group/legacy-codex-gpt-6-1-sol-high', 'swe2max=group/swe2max-pool', 'opus=group/claude-opus-5-5')
+FIXERS = ('sol-high=group/legacy-codex-gpt-6-1-sol-high', 'swe2max=group/swe2max-pool', 'opus=native:opus,group/claude-opus-5-5')
 
 
 def fix_steps(run_dir, date):

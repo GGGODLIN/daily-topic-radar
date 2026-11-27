@@ -954,5 +954,60 @@ class RegressionTest(unittest.TestCase):
         self.assertIn('%E6%9C%89%E7%A9%BA%E6%A0%BC/%5B%E4%BE%8B%5D%231.md)', md)
 
 
+class NativeClaudeFallbackTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_native_succeeds_without_calling_relay(self):
+        with mock.patch.object(mo, '_call_native_claude', return_value=('{"edits":[]}', {'input_tokens': 10}, 'native:claude-opus-5-5@a', None)) as nat, \
+             mock.patch.object(mo, '_call_relay') as rel:
+            content, usage, model, err = mo.call_model('native:opus,group/claude-opus-5-5', 'hi', 'k')
+        self.assertIsNone(err)
+        self.assertEqual(content, '{"edits":[]}')
+        self.assertEqual(model, 'native:claude-opus-5-5@a')
+        nat.assert_called_once()
+        rel.assert_not_called()
+
+    def test_native_failure_falls_back_to_relay(self):
+        with mock.patch.object(mo, '_call_native_claude', return_value=('', None, None, 'native failed: quota_blocked')) as nat, \
+             mock.patch.object(mo, '_call_relay', return_value=('{"edits":[]}', {'prompt_tokens': 5}, 'group/claude-opus-5-5', None)) as rel:
+            content, usage, model, err = mo.call_model('native:opus,group/claude-opus-5-5', 'hi', 'k')
+        self.assertIsNone(err)
+        self.assertEqual(model, 'group/claude-opus-5-5')
+        nat.assert_called_once()
+        rel.assert_called_once()
+
+    def test_native_skips_quota_blocked_account_and_uses_next_dir(self):
+        cfg_a = self.tmp / 'cfg-a'
+        cfg_b = self.tmp / 'cfg-b'
+        cache = self.tmp / 'cache'
+        for d in (cfg_a, cfg_b, cache):
+            d.mkdir()
+        (cfg_a / '.claude.json').write_text(json.dumps({'oauthAccount': {'emailAddress': 'full@example.com'}}), encoding='utf-8')
+        (cfg_b / '.claude.json').write_text(json.dumps({'oauthAccount': {'emailAddress': 'ok@example.com'}}), encoding='utf-8')
+        future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat().replace('+00:00', 'Z')
+        (cache / 'quota-full_at_example.com.json').write_text(json.dumps({'data': {'seven_day': {'utilization': 100, 'resets_at': future}}}), encoding='utf-8')
+        (cache / 'quota-ok_at_example.com.json').write_text(json.dumps({'data': {'seven_day': {'utilization': 30, 'resets_at': future}}}), encoding='utf-8')
+        fake_bin = self.tmp / 'claude'
+        fake_bin.write_text('#!/bin/sh\n', encoding='utf-8')
+
+        seen_cfg = []
+        def fake_run(cmd, **kwargs):
+            seen_cfg.append(kwargs['env'].get('CLAUDE_CONFIG_DIR'))
+            out = json.dumps({'is_error': False, 'subtype': 'success', 'result': '{"edits":[]}', 'modelUsage': {'claude-opus-5-5': {}}})
+            return type('P', (), {'returncode': 0, 'stdout': out, 'stderr': ''})()
+
+        with mock.patch.object(mo, 'CLAUDE_BIN', fake_bin), \
+             mock.patch.object(mo, 'NATIVE_CONFIG_DIRS', (cfg_a, cfg_b)), \
+             mock.patch.object(mo, 'QUOTA_CACHE_DIR', cache), \
+             mock.patch.object(mo.subprocess, 'run', side_effect=fake_run):
+            content, _, model, err = mo._call_native_claude('opus', 'prompt')
+        self.assertIsNone(err)
+        self.assertEqual(content, '{"edits":[]}')
+        self.assertEqual(model, 'native:claude-opus-5-5@ok@example.com')
+        self.assertEqual(seen_cfg, [str(cfg_b)])
+
+
 if __name__ == '__main__':
     unittest.main()
