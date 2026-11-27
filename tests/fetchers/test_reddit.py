@@ -6,7 +6,8 @@ import pytest
 
 from social_info.config import SourceConfig
 from social_info.fetchers import reddit
-from social_info.fetchers.reddit import fetch
+from social_info.fetchers.reddit import ArcticShiftOverloadError, fetch
+from social_info.pipeline import classify_error
 
 
 @pytest.fixture(autouse=True)
@@ -224,3 +225,69 @@ async def test_non_json_error_page_yields_no_items(httpx_mock):
         items = await fetch(_cfg(), client)
 
     assert items == []
+
+
+@pytest.mark.asyncio
+async def test_retries_after_422_halving_limit_and_carries_reduced_limit_to_next_page(
+    httpx_mock, monkeypatch
+):
+    now_ts = int(datetime(2026, 11, 27, 4, 0, 0).timestamp())
+    monkeypatch.setattr(reddit, "utcnow", lambda: datetime(2026, 11, 27, 4, 0, 0))
+
+    page1 = [
+        {
+            "id": f"p1_{i}",
+            "title": f"Page 1 post {i}",
+            "permalink": f"/r/LocalLLaMA/comments/p1_{i}/a/",
+            "created_utc": now_ts - 600 - i * 60,
+            "score": 10 + i,
+            "num_comments": 1,
+        }
+        for i in range(50)
+    ]
+    page2 = [
+        {
+            "id": "p2_top",
+            "title": "Earlier top post",
+            "permalink": "/r/LocalLLaMA/comments/p2_top/b/",
+            "created_utc": now_ts - 20000,
+            "score": 999,
+            "num_comments": 42,
+        }
+    ]
+    _add_search(
+        httpx_mock,
+        status_code=422,
+        text='{"data":null,"error":"Timeout. Maybe slow down a bit"}',
+    )
+    _add_search(httpx_mock, json={"data": page1})
+    _add_search(httpx_mock, json={"data": page2})
+
+    async with httpx.AsyncClient() as client:
+        items = await fetch(_cfg(limit=2, max_pages=5), client)
+
+    reqs = httpx_mock.get_requests()
+    assert [r.url.params["limit"] for r in reqs] == ["100", "50", "50"]
+    assert "before" not in reqs[1].url.params
+    assert "before" in reqs[2].url.params
+    assert items[0].title == "Earlier top post"
+
+
+@pytest.mark.asyncio
+async def test_persistent_422_raises_transient_overload_error_with_body_preview(httpx_mock):
+    _add_search(
+        httpx_mock,
+        status_code=422,
+        text='{"data":null,"error":"Timeout. Maybe slow down a bit"}',
+        is_reusable=True,
+    )
+
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(ArcticShiftOverloadError) as exc:
+            await fetch(_cfg(), client)
+
+    reqs = httpx_mock.get_requests()
+    assert [r.url.params["limit"] for r in reqs] == ["100", "50", "25"]
+    assert "HTTP 422" in str(exc.value)
+    assert "Timeout. Maybe slow down a bit" in str(exc.value)
+    assert classify_error(exc.value) == "transient"

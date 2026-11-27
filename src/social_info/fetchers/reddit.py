@@ -34,6 +34,7 @@ ARCTIC_SHIFT_SEARCH_URL = "https://arctic-shift.photon-reddit.com/api/posts/sear
 USER_AGENT = "social-info/0.1 (daily AI raw aggregator; personal use)"
 
 PAGE_LIMIT = 100
+MIN_PAGE_LIMIT = 25
 MAX_PAGES_PER_SUBREDDIT = 5
 DEFAULT_DAY_LOOKBACK_HOURS = 30
 _TIME_WINDOW_HOURS: dict[str, int] = {
@@ -49,6 +50,15 @@ MAX_RETRY_WAIT_SECONDS = 30.0
 MAX_THROTTLED_RETRIES = 2
 TOTAL_BUDGET_SECONDS = 120.0
 EXCERPT_MAX_CHARS = 200
+ERROR_BODY_PREVIEW_CHARS = 200
+
+
+class ArcticShiftOverloadError(TimeoutError):
+    """Arctic Shift returns HTTP 422 for query timeouts and server overload
+    (ArthurHeitmann/arctic_shift#66). Subclassing TimeoutError lets pipeline
+    classify_error treat exhausted 422s as transient without relaxing 422 for
+    other fetchers.
+    """
 
 _REDDIT_INTERNAL_PREFIXES = (
     "https://www.reddit.com",
@@ -170,28 +180,57 @@ async def _get_serialised(http: httpx.AsyncClient, url: str, params: dict) -> ht
             _last_request_finished_at = time.monotonic()
 
 
-async def _fetch_search_page(http: httpx.AsyncClient, params: dict[str, Any]) -> list[dict[str, Any]]:
-    resp = await _get_serialised(http, ARCTIC_SHIFT_SEARCH_URL, params)
+def _error_body_preview(resp: httpx.Response) -> str:
+    try:
+        raw = resp.text or ""
+    except Exception:
+        return ""
+    return _WS_RE.sub(" ", raw).strip()[:ERROR_BODY_PREVIEW_CHARS]
+
+
+async def _fetch_search_page(
+    http: httpx.AsyncClient,
+    params: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    req_params = dict(params)
+    current_limit = _safe_int(req_params.get("limit")) or PAGE_LIMIT
+    req_params["limit"] = current_limit
+
+    resp = await _get_serialised(http, ARCTIC_SHIFT_SEARCH_URL, req_params)
     for _ in range(MAX_THROTTLED_RETRIES):
-        if resp.status_code != httpx.codes.TOO_MANY_REQUESTS:
+        if resp.status_code not in (
+            httpx.codes.TOO_MANY_REQUESTS,
+            httpx.codes.UNPROCESSABLE_ENTITY,
+        ):
             break
         wait = _retry_delay(resp)
         if _budget_left() < wait:
             break
+        if resp.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            floor = min(current_limit, MIN_PAGE_LIMIT)
+            current_limit = max(floor, current_limit // 2)
+            req_params["limit"] = current_limit
         if wait > 0:
             await asyncio.sleep(wait)
-        resp = await _get_serialised(http, ARCTIC_SHIFT_SEARCH_URL, params)
+        resp = await _get_serialised(http, ARCTIC_SHIFT_SEARCH_URL, req_params)
+
+    if resp.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+        preview = _error_body_preview(resp)
+        detail = f" ({preview})" if preview else ""
+        raise ArcticShiftOverloadError(
+            f"HTTP 422 from Arctic Shift for {resp.url}{detail}"
+        )
     resp.raise_for_status()
     try:
         payload = resp.json()
     except ValueError:
-        return []
+        return [], current_limit
     if not isinstance(payload, dict):
-        return []
+        return [], current_limit
     data = payload.get("data")
     if not isinstance(data, list):
-        return []
-    return [row for row in data if isinstance(row, dict)]
+        return [], current_limit
+    return [row for row in data if isinstance(row, dict)], current_limit
 
 
 async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
@@ -208,18 +247,19 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
     seen_ids: set[str] = set()
     candidates: list[dict[str, Any]] = []
     before_ts: int | None = None
+    page_limit = PAGE_LIMIT
 
     for _ in range(max(1, max_pages)):
         params: dict[str, Any] = {
             "subreddit": subreddit,
             "after": after_ts,
-            "limit": PAGE_LIMIT,
+            "limit": page_limit,
             "sort": "desc",
         }
         if before_ts is not None:
             params["before"] = before_ts
 
-        batch = await _fetch_search_page(http, params)
+        batch, page_limit = await _fetch_search_page(http, params)
         if not batch:
             break
 
@@ -235,7 +275,7 @@ async def fetch(source: SourceConfig, http: httpx.AsyncClient) -> list[Item]:
                 seen_ids.add(post_id)
             candidates.append(post)
 
-        if len(batch) < PAGE_LIMIT or oldest_ts is None:
+        if len(batch) < page_limit or oldest_ts is None:
             break
         next_before = oldest_ts - 1
         if next_before <= after_ts or (before_ts is not None and next_before >= before_ts):

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
+from social_info.fetchers.reddit import ArcticShiftOverloadError
 from social_info.pipeline import classify_error
 
 
@@ -30,6 +31,8 @@ def _http_status_error(code: int, headers: dict[str, str] | None = None) -> http
         (_http_status_error(403), "user_action_required"),
         (_http_status_error(400), "persistent_error"),
         (_http_status_error(404), "persistent_error"),
+        (_http_status_error(422), "persistent_error"),
+        (ArcticShiftOverloadError("HTTP 422 from Arctic Shift"), "transient"),
         (_http_status_error(429), "transient"),
         (_http_status_error(429, {"x-vercel-mitigated": "challenge"}), "persistent_error"),
         (_http_status_error(429, {"cf-mitigated": "challenge"}), "persistent_error"),
