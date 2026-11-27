@@ -572,9 +572,12 @@ def main():
             size_metric = effective_threshold["metric"] in {"size", "size_bytes", "main_size", "state_size", "index_size"}
             size_target = index_path if effective_threshold["metric"] == "index_size" else path
             hard_failure = size_metric and size_target is not None and size_target.is_file() and size_target.stat().st_size > 256 * 1024
+            hit_key = source_key(identity)
+            if effective_threshold["metric"] == "index_size":
+                hit_key = f"{hit_key}:index-size"
             hits.append({
                 "title": f"超過門檻：{stable_identity(identity)}",
-                "source_key": source_key(identity),
+                "source_key": hit_key,
                 "kind": entry["kind"],
                 "path": logical_path(path, root),
                 "metric": effective_threshold["metric"],

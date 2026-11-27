@@ -711,3 +711,39 @@ PY
 bash "$SCRIPT" --root "$FRICTION_ROOT" --registry "$FRICTION_BOUNDARY_REGISTRY" --date 2026-08-23 --out "$FRICTION_BOUNDARY_OUT"
 test "$(<"$FRICTION_BOUNDARY_OUT")" = '__SILENT__'
 printf '%s\n' 'ledger-lifecycle daily friction 90-day boundary slice: PASS'
+
+IDX_SIZE_ROOT="$TMP/idx-size-home"
+mkdir -p "$IDX_SIZE_ROOT"
+python3 - "$IDX_SIZE_ROOT/big.md" "$IDX_SIZE_ROOT/big.index.md" <<'PY'
+import sys
+from pathlib import Path
+Path(sys.argv[1]).write_text('### A (2026-08-01)\n' + ('x' * 2048) + '\n', encoding='utf-8')
+Path(sys.argv[2]).write_text('a｜OK｜2026-08-01｜' + ('y' * 2048) + '｜### A (2026-08-01)\n', encoding='utf-8')
+PY
+IDX_SIZE_REGISTRY="$TMP/idx-size-registry.json"
+IDX_SIZE_OUT="$TMP/idx-size-report.md"
+python3 - "$IDX_SIZE_REGISTRY" <<'PY'
+import json
+import sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({
+    "schema_version": 1,
+    "scan_roots": [],
+    "entries": [{
+        "path": "~/big.md",
+        "index_path": "~/big.index.md",
+        "kind": "append",
+        "threshold": [
+            {"metric": "main_size", "unit": "KB", "operator": ">", "value": 1},
+            {"metric": "index_size", "unit": "KB", "operator": ">", "value": 1},
+        ],
+        "action": "建立索引",
+    }],
+}, ensure_ascii=False), encoding="utf-8")
+PY
+bash "$SCRIPT" --root "$IDX_SIZE_ROOT" --registry "$IDX_SIZE_REGISTRY" --date 2026-08-23 --out "$IDX_SIZE_OUT"
+MAIN_KEY="$(grep '| main_size |' "$IDX_SIZE_OUT" | grep -o 'ledger-lifecycle:[^`]*' | head -1)"
+IDX_KEY="$(grep '| index_size |' "$IDX_SIZE_OUT" | grep -o 'ledger-lifecycle:[^`]*' | head -1)"
+test -n "$MAIN_KEY"
+test "$IDX_KEY" = "${MAIN_KEY}:index-size"
+printf '%s\n' 'ledger-lifecycle daily distinct index_size source key slice: PASS'
