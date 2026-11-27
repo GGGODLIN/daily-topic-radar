@@ -142,6 +142,10 @@ TOKEN_RE = re.compile(
   r"|\bABSK[A-Za-z0-9+/=_-]{20,}(?![A-Za-z0-9+/=_-])"
   r"|\bbW9kYWwgdG9rZW4gc2V0[A-Za-z0-9+/=]{16,}(?![A-Za-z0-9+/=_-]))"
 )
+# 其他廠商沿用 `sk-<廠商>-` 字首（2026-11-27 retro P4：新手引導頁金鑰在頁面文字與寫檔字面值原樣留下）。
+# 前面接英數、`/`、`.`、`-` 的是分支名或路徑片段；後面接 `/` 的是目錄名，都不算。
+# 是不是金鑰由 _generic_sk_key 再看尾段有沒有亂碼狀的長段，一般連字詞（`super-resolution-v2026`）過不了。
+GENERIC_SK_KEY_RE = re.compile(r"(?<![A-Za-z0-9_./-])sk-[a-z][a-z0-9]{2,}-([A-Za-z0-9_-]{20,})(?![A-Za-z0-9_/-])")
 JSON_SECRET_RE = re.compile(
   r"(?i)(([\"'])([A-Za-z0-9_.-]*(?:password|passwd|api[_-]?key|apikey|active[_-]?key|management[_-]?key|token|secret"
   r"|private[_-]?key|privatekey|vapid[_-]?private|cookie|authorization"
@@ -1058,6 +1062,8 @@ def redact_text(value):
   text = _redact_show_once_rows(text)
   if any(p in text for p in _TOKEN_PREFIXES):
     text = TOKEN_RE.sub("[REDACTED]", text)
+  if "sk-" in text:
+    text = GENERIC_SK_KEY_RE.sub(_generic_sk_key, text)
   if "." in text and ("ey" in text or "ew" in text):
     text = JWT_RE.sub("[JWT_REDACTED]", text)
   if "." in text and ("@" in text or "%40" in text):
@@ -1067,6 +1073,13 @@ def redact_text(value):
     text = LABELED_PHONE_RE.sub(r"\1[PHONE]", text)
   text = _redact_unlabeled_phones(text)
   return text
+
+
+def _generic_sk_key(match):
+  for run in match.group(1).split("-"):
+    if len(run) >= 12 and any(ch.isdigit() for ch in run) and any(ch.isalpha() for ch in run):
+      return "[REDACTED]"
+  return match.group(0)
 
 
 def _redact_show_once_rows(text):

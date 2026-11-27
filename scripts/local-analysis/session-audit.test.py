@@ -3350,6 +3350,36 @@ class SessionAuditCliTest(unittest.TestCase):
       self.assertNotIn(code, out, f"meeting passcode leaked: {leak!r}")
       self.assertIn("812 3456 7890", out, "meeting ID must stay readable")
 
+  def test_redaction_generic_vendor_sk_key(self):
+    spec = importlib.util.spec_from_file_location("session_audit_mod_vendor_sk", str(SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # 2026-11-27 retro P4：新手引導頁的 `sk-<廠商>-` 金鑰在頁面文字與寫檔字面值兩處原樣進分析副本（1f9c7f76:998、1007）。
+    key = "sk-acmefish-Q7w9E2r4T6y8U0i1O3p5A7s9D1f3G5h7"
+    for leak, secret in (
+      (f"15 text Set up AcmeFish for yourself. My API key is {key}.", key),
+      (f"p=os.path.expanduser(\"~/.config/acmefish/api-key\")\nopen(p,\"w\").write(\"{key}\")", key),
+      (f"先使用{key}", key),
+      ("Received sk-acme-Ab1-CD2efghijklmnopqrstuv.", "CD2efghijklmnopqrstuv"),
+    ):
+      out = mod.redact_text(leak)
+      self.assertNotIn(secret, out, f"vendor key leaked: {leak!r}")
+      self.assertEqual(mod.redact_text(out), out, "redaction must be idempotent")
+    # 分支名、路徑與一般連字詞沒有亂碼狀的長段，不能被當成金鑰。
+    for keep in (
+      "git switch fix-sk-video-super-resolution-weights",
+      "git switch feature/sk-video-super-resolution-v2026",
+      "See /srv/docs/sk-video-super-resolution-v2026/README.md.",
+      "sk-video-super-resolution-v2026 is the model folder",
+      "pip install scikit-learn sk-video",
+      "task-force-alpha-2026-11-27-meeting-notes",
+    ):
+      self.assertEqual(mod.redact_text(keep), keep, f"non-secret over-redacted: {keep!r}")
+    started = time.monotonic()
+    mod.redact_text("sk-abc-" * 40000)
+    mod.redact_text("x sk-abcd-" + "a1" * 100000 + "/")
+    self.assertLess(time.monotonic() - started, 2.0, "vendor sk scan must stay linear")
+
   def test_redaction_copula_password_compact_mobile_and_plural_token_keys(self):
     spec = importlib.util.spec_from_file_location("session_audit_mod_c8_step7", str(SCRIPT))
     mod = importlib.util.module_from_spec(spec)
