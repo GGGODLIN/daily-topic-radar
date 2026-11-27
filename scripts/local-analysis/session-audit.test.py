@@ -3375,6 +3375,9 @@ class SessionAuditCliTest(unittest.TestCase):
       "task-force-alpha-2026-11-27-meeting-notes",
     ):
       self.assertEqual(mod.redact_text(keep), keep, f"non-secret over-redacted: {keep!r}")
+    # 信箱別名裡的 sk- 段不能先被遮掉，否則信箱變不成 [EMAIL]，後面的「帳號 / 密碼」規則就看不到密碼。
+    out = mod.redact_text("alice+sk-build-deadbeef0123456789abcdef@example.com / DemoPass9!x 密碼勿外流")
+    self.assertNotIn("DemoPass9!x", out)
     started = time.monotonic()
     mod.redact_text("sk-abc-" * 40000)
     mod.redact_text("x sk-abcd-" + "a1" * 100000 + "/")

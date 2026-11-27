@@ -1062,13 +1062,14 @@ def redact_text(value):
   text = _redact_show_once_rows(text)
   if any(p in text for p in _TOKEN_PREFIXES):
     text = TOKEN_RE.sub("[REDACTED]", text)
-  if "sk-" in text:
-    text = GENERIC_SK_KEY_RE.sub(_generic_sk_key, text)
   if "." in text and ("ey" in text or "ew" in text):
     text = JWT_RE.sub("[JWT_REDACTED]", text)
   if "." in text and ("@" in text or "%40" in text):
     text = EMAIL_RE.sub("[EMAIL]", text)
   text = _redact_slash_credentials(text)
+  # 放在信箱與「帳號 / 密碼」之後：信箱別名裡的 sk- 段先被遮掉，信箱就變不成 [EMAIL]，密碼會跟著漏。
+  if "sk-" in text:
+    text = GENERIC_SK_KEY_RE.sub(_generic_sk_key, text)
   if _LABELED_PHONE_HINT_RE.search(text):
     text = LABELED_PHONE_RE.sub(r"\1[PHONE]", text)
   text = _redact_unlabeled_phones(text)
