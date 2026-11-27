@@ -3205,6 +3205,84 @@ class EventEvidenceCLI(unittest.TestCase):
     for safe in ("SAFE_TEXT", "SAFE_NESTED"):
       self.assertIn(safe, joined)
 
+  def test_w40_streaming_parallel_window_and_hardening(self):
+    # W40 BF3 regressions: prior-human window page count with thinking-only in-window row (B1),
+    # ISO week-date normalization (B4), unhashable entrypoint hardening (A1), 0600 snapshot mode (M3),
+    # and parallel fork scan (>= 8 sessions) with duplicate stems and dual-window last-success.
+    with tempfile.TemporaryDirectory() as td:
+      root = Path(td)
+      projects = root / "projects"
+      reports = root / "reports"
+      (reports / "prev-run").mkdir(parents=True)
+      (reports / "prev-run" / "completion.json").write_text(json.dumps({
+        "schema_version": 1, "scope": "all", "status": "complete", "validation_pass": True,
+        "run_id": "prev-run", "window_start": "2026-11-24T00:00:00Z", "cutoff": "2026-11-25T12:00:00Z",
+      }), encoding="utf-8")
+
+      # Session 1 (B1): 300k prior human + in-window thinking-only assistant row -> window_estimated_pages == 2
+      p1 = projects / "proj-a"
+      p1.mkdir(parents=True)
+      (p1 / "s-b1.jsonl").write_text(
+        json.dumps({"type": "user", "promptSource": "typed", "timestamp": "2026-11-25T00:00:00.000Z",
+                    "message": {"content": "a" * 300000}}) + "\n" +
+        json.dumps({"type": "assistant", "timestamp": "2026-11-26T12:00:00.000Z",
+                    "message": {"id": "m1", "content": [{"type": "thinking", "thinking": "x"}]}}) + "\n",
+        encoding="utf-8",
+      )
+
+      # Session 2 (B4 + A1): ISO week-date timestamp + unhashable entrypoint list
+      (p1 / "s-b4-a1.jsonl").write_text(
+        json.dumps({"type": "assistant", "entrypoint": ["x"], "timestamp": "2025-W01-1T00:00:00Z",
+                    "message": {"content": "ok"}}) + "\n",
+        encoding="utf-8",
+      )
+
+      # Sessions 3..10 (including duplicate stem across proj-a and proj-b to exercise parallel fork + dup-stem path)
+      p2 = projects / "proj-b"
+      p2.mkdir(parents=True)
+      for idx in range(6):
+        (p1 / f"s-par-{idx:02d}.jsonl").write_text(
+          json.dumps({"type": "user", "promptSource": "typed", "timestamp": "2026-11-26T10:00:00.000Z",
+                      "message": {"content": f"hello {idx}"}}) + "\n",
+          encoding="utf-8",
+        )
+      (p1 / "dup-stem.jsonl").write_text(
+        json.dumps({"type": "user", "promptSource": "typed", "timestamp": "2026-11-26T08:00:00.000Z",
+                    "message": {"content": "short"}}) + "\n",
+        encoding="utf-8",
+      )
+      (p2 / "dup-stem.jsonl").write_text(
+        json.dumps({"type": "user", "promptSource": "typed", "timestamp": "2026-11-26T09:00:00.000Z",
+                    "message": {"content": "z" * 260000}}) + "\n",
+        encoding="utf-8",
+      )
+
+      inv_out = root / "inv"
+      inv = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), "inventory",
+         "--projects-root", str(projects), "--reports-root", str(reports),
+         "--out", str(inv_out), "--now", "2026-11-27T00:00:00Z"],
+        text=True, capture_output=True,
+      )
+      self.assertEqual(inv.returncode, 0, inv.stdout + inv.stderr)
+      data = json.loads((inv_out / "inventory.json").read_text(encoding="utf-8"))
+      self.assertEqual(len(data["sessions"]), 10)
+      by_name = {s["session"]: s for s in data["sessions"]}
+
+      # B4 + A1 verified
+      self.assertEqual(by_name["s-b4-a1"]["classification"], "unknown")
+      self.assertEqual(by_name["s-b4-a1"]["activity"], ["2024-12-30T00:00:00Z"])
+
+      # B1 verified: s-b1 (2 pages) + 6*1 + dup-stem (2 entries both using last eligible snapshot = 2*2=4) = 12 pages
+      self.assertEqual(data["options"]["day"]["window_estimated_pages"], 12)
+      self.assertEqual(data["options"]["last-success"]["window_estimated_pages"], 12)
+
+      # M3 verified: all snapshots are 0600 and no .worker-*.pkl artifacts remain
+      private_files = sorted(p.name for p in (inv_out / "private").iterdir())
+      self.assertEqual(private_files, [f"s{i:02d}.jsonl" for i in range(1, 11)])
+      for p in (inv_out / "private").iterdir():
+        self.assertEqual(p.stat().st_mode & 0o777, 0o600, p)
+
 
 if __name__ == "__main__":
   unittest.main(verbosity=2)

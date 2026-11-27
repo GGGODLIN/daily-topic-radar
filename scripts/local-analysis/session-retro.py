@@ -7,10 +7,14 @@ import copy
 import importlib.util
 import json
 import math
+import os
+import pickle
 import re
+import signal
 import sys
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -78,21 +82,22 @@ def new_dir(path):
 
 
 def records(path):
-  for number, encoded in enumerate(Path(path).read_bytes().split(b"\n"), 1):
-    try:
-      line = encoded.decode("utf-8")
-    except UnicodeDecodeError:
-      yield number, None, "invalid-utf8"
-      continue
-    if not line.strip():
-      continue
-    try:
-      row = json.loads(line)
-      require(isinstance(row, dict), "record is not an object")
-    except (ValueError, TypeError) as error:
-      yield number, None, str(error)
-      continue
-    yield number, row, None
+  with Path(path).open("rb") as handle:
+    for number, encoded in enumerate(handle, 1):
+      try:
+        line = encoded.removesuffix(b"\n").decode("utf-8")
+      except UnicodeDecodeError:
+        yield number, None, "invalid-utf8"
+        continue
+      if not line or line.isspace():
+        continue
+      try:
+        row = json.loads(line)
+        require(isinstance(row, dict), "record is not an object")
+      except (ValueError, TypeError) as error:
+        yield number, None, str(error)
+        continue
+      yield number, row, None
 
 
 def row_message(row):
@@ -131,64 +136,67 @@ def forwarded_input(row):
 def human_input(row):
   if row.get("isSidechain") or row.get("isMeta"):
     return False
-  origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
-  if origin.get("kind") not in (None, "human"):
+  origin = row.get("origin")
+  kind = origin.get("kind") if isinstance(origin, dict) else None
+  if kind not in (None, "human"):
     return False
   if queued(row):
-    text = content_text(row["attachment"].get("prompt", "")).strip()
+    text = content_text(row["attachment"].get("prompt", "")).lstrip()
     return bool(text) and not text.startswith(SKIP_PREFIXES)
   if row.get("type") != "user":
     return False
-  text = content_text(row_message(row).get("content", row.get("content", ""))).strip()
-  if not text or text.startswith(SKIP_PREFIXES):
+  typed = row.get("promptSource") == "typed"
+  if not typed and kind != "human":
     return False
-  return row.get("promptSource") == "typed" or (origin.get("kind") == "human" and text.startswith(("<command-name>", "<command-message>")))
+  text = content_text(row_message(row).get("content", row.get("content", ""))).lstrip()
+  return bool(text) and not text.startswith(SKIP_PREFIXES) and (typed or text.startswith(("<command-name>", "<command-message>")))
+
+
+def local_command_row(row):
+  return row.get("type") == "user" and not queued(row) and (
+    row.get("isMeta") is True or content_text(row_message(row).get("content", row.get("content", ""))).lstrip().startswith(
+      ("<local-command-caveat>", "<local-command-stdout>", "<command-name>", "<command-message>")
+    )
+  )
 
 
 def local_command_only_rows(rows):
   active_rows = [row for row in rows if active(row)]
-  return bool(active_rows) and all(
-    row.get("type") == "user" and not queued(row) and (
-      row.get("isMeta") is True or content_text(row_message(row).get("content", row.get("content", ""))).lstrip().startswith(
-        ("<local-command-caveat>", "<local-command-stdout>", "<command-name>", "<command-message>")
-      )
-    )
-    for row in active_rows
-  )
+  return bool(active_rows) and all(local_command_row(row) for row in active_rows)
 
 
 def sdk_origin_row(row):
   # Newer non-interactive `claude -p` runs record turnOrigin/entrypoint instead of promptSource="sdk".
+  # Tuple membership avoids TypeError when malformed logs store unhashable types (e.g. list) in entrypoint.
   return (row.get("promptSource") == "sdk"
           or row.get("turnOrigin") == "sdk"
-          or row.get("entrypoint") in {"sdk-cli", "sdk-ts", "sdk-py"})
+          or row.get("entrypoint") in ("sdk-cli", "sdk-ts", "sdk-py"))
 
 
-def classify(rows, source, limits=None):
-  human = any(human_input(row) for row in rows)
-  reasons = set()
-  for row in rows:
-    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
-    if row.get("isSidechain") is True or row.get("agentId"):
-      reasons.add("sidechain-or-agent")
-    if any(row.get(key) is True for key in ("isSynthetic", "synthetic", "isEvaluation", "isTest")) or row.get("sessionKind") in {"synthetic", "evaluation", "eval"} or row.get("promptSource") in {"synthetic", "evaluation", "eval"}:
-      reasons.add("evaluation")
-    if row.get("sessionKind") in {"worker", "terminal-worker", "terminal_worker"} or origin.get("kind") in {"worker", "terminal-worker", "terminal_worker", "agent", "forwarded", "dispatch", "subagent"}:
-      reasons.add("worker-or-forwarded")
-    if forwarded_input(row):
-      reasons.add("forwarded")
-  if any(part in {"eval-roots", "synthetic-eval"} or "-T-skill-up-" in part or "-collie-canary-project" in part for part in source.parts):
-    reasons.add("evaluation-path")
+def add_exclusion_reasons(reasons, row):
+  origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+  if row.get("isSidechain") is True or row.get("agentId"):
+    reasons.add("sidechain-or-agent")
+  if any(row.get(key) is True for key in ("isSynthetic", "synthetic", "isEvaluation", "isTest")) or row.get("sessionKind") in {"synthetic", "evaluation", "eval"} or row.get("promptSource") in {"synthetic", "evaluation", "eval"}:
+    reasons.add("evaluation")
+  if row.get("sessionKind") in {"worker", "terminal-worker", "terminal_worker"} or origin.get("kind") in {"worker", "terminal-worker", "terminal_worker", "agent", "forwarded", "dispatch", "subagent"}:
+    reasons.add("worker-or-forwarded")
+  if forwarded_input(row):
+    reasons.add("forwarded")
+
+
+def classify(reasons, human, sdk, activities, local_only, limits):
   if reasons:
     return "excluded", sorted(reasons)
   if human:
     return "human", []
-  if any(sdk_origin_row(row) for row in rows):
+  if sdk:
     return "excluded", ["sdk-without-human"]
-  if not any(active(row) for row in rows) and not limits:
-    return "excluded", ["no-active-messages"]
-  if local_command_only_rows(rows) and not limits:
-    return "excluded", ["local-command-only"]
+  if not limits:
+    if not activities:
+      return "excluded", ["no-active-messages"]
+    if local_only:
+      return "excluded", ["local-command-only"]
   return "unknown", ["human-origin-unconfirmed"]
 
 
@@ -280,46 +288,46 @@ def visible_blocks(row, audit=None):
   return blocks, media
 
 
+def page_line_parts(line, line_bytes, cur_bytes, cur_lines):
+  # None marks the end of a page before the next piece.
+  if line_bytes <= MAX_PAGE_BYTES:
+    if cur_bytes + line_bytes > MAX_PAGE_BYTES or cur_lines + 1 > MAX_PAGE_LINES:
+      yield None, 0
+    yield line, line_bytes
+    return
+  start = 0
+  while start < len(line):
+    budget = MAX_PAGE_BYTES - cur_bytes
+    if len(line[start:start + 1].encode("utf-8")) > budget:
+      yield None, 0
+      budget = MAX_PAGE_BYTES
+    end = min(len(line), start + budget)
+    piece_bytes = len(line[start:end].encode("utf-8"))
+    while piece_bytes > budget and end > start + 1:
+      end = start + max(1, (end - start) * budget // piece_bytes)
+      piece_bytes = len(line[start:end].encode("utf-8"))
+    yield line[start:end], piece_bytes
+    start = end
+    if start < len(line):
+      yield None, 0
+      cur_bytes = 0
+
+
 def slice_page_chunks(text):
-  if not text:
-    return [""]
   chunks = []
   cur = []
   cur_bytes = 0
-  cur_lines = 0
   for line in text.splitlines(keepends=True):
-    line_bytes = len(line.encode("utf-8"))
-    if cur_bytes + line_bytes <= MAX_PAGE_BYTES and cur_lines + 1 <= MAX_PAGE_LINES:
-      cur.append(line)
-      cur_bytes += line_bytes
-      cur_lines += 1
-      continue
-    if line_bytes <= MAX_PAGE_BYTES:
-      if cur:
+    for piece, size in page_line_parts(line, len(line.encode("utf-8")), cur_bytes, len(cur)):
+      if piece is None:
         chunks.append("".join(cur))
-      cur, cur_bytes, cur_lines = [line], line_bytes, 1
-      continue
-    start = 0
-    while start < len(line):
-      budget = MAX_PAGE_BYTES - cur_bytes if cur else MAX_PAGE_BYTES
-      if cur and len(line[start:start + 1].encode("utf-8")) > budget:
-        chunks.append("".join(cur))
-        cur, cur_bytes, cur_lines = [], 0, 0
-        budget = MAX_PAGE_BYTES
-      end = min(len(line), start + budget)
-      while len(line[start:end].encode("utf-8")) > budget and end > start + 1:
-        end = start + max(1, (end - start) * budget // len(line[start:end].encode("utf-8")))
-      piece = line[start:end]
-      cur.append(piece)
-      cur_bytes += len(piece.encode("utf-8"))
-      cur_lines += 1
-      start = end
-      if start < len(line):
-        chunks.append("".join(cur))
-        cur, cur_bytes, cur_lines = [], 0, 0
+        cur, cur_bytes = [], 0
+      else:
+        cur.append(piece)
+        cur_bytes += size
   if cur:
     chunks.append("".join(cur))
-  return chunks
+  return chunks or [""]
 
 
 def shard_page_chunks(text):
@@ -330,41 +338,276 @@ def shard_page_chunks(text):
   return groups
 
 
-def count_body_pages_and_units(body):
-  groups = shard_page_chunks(body)
-  return sum(len(group) for group in groups), len(groups)
+class PageCounter:
+  def __init__(self):
+    self.complete = self.cur_bytes = self.cur_lines = 0
+
+  def add_line(self, line, size):
+    for piece, part_bytes in page_line_parts(line, size, self.cur_bytes, self.cur_lines):
+      if piece is None:
+        self.complete += 1
+        self.cur_bytes = self.cur_lines = 0
+      else:
+        self.cur_bytes += part_bytes
+        self.cur_lines += 1
+
+  def counts(self):
+    pages = self.complete + 1
+    units, tail = divmod(pages, MAX_SHARD_PAGES)
+    if tail and not (tail == 1 and units and self.cur_bytes < SHARD_TAIL_MERGE_BYTES):
+      units += 1
+    return pages, units
 
 
-def build_visible_events(numbered_rows, start=None, include_forwarded=True, audit=None):
-  events = []
+class _WindowTracker:
+  def __init__(self, start):
+    self.start = start
+    self.full = PageCounter()
+    self.window = None
+    self.window_started = False
+    self.chars = 0
+
+  def add_event(self, line, stamp, event_time, label, text_len_plus_1, body_lines, human):
+    in_window = self.start <= stamp
+    if not self.window_started:
+      # Keep the last preceding human event and all events after it.
+      if (in_window and self.window is None) or (not in_window and human):
+        self.window = PageCounter() if self.chars else self.full
+      self.window_started = in_window
+    separate_window = self.window is not None and self.window is not self.full
+    if self.chars:
+      self.full.add_line("\n", 1)
+      self.chars += 1
+      if separate_window and (self.window.complete or self.window.cur_lines):
+        self.window.add_line("\n", 1)
+    scope = "window" if in_window else "older"
+    header = f"[line={line} timestamp={event_time} {scope} {label}]\n"
+    self.chars += len(header) + text_len_plus_1
+    for rendered_line in header.splitlines(keepends=True):
+      size = len(rendered_line.encode("utf-8"))
+      self.full.add_line(rendered_line, size)
+      if separate_window:
+        self.window.add_line(rendered_line, size)
+    for rendered_line, size in body_lines:
+      self.full.add_line(rendered_line, size)
+      if separate_window:
+        self.window.add_line(rendered_line, size)
+
+  def result(self):
+    window_counts = self.window.counts() if self.window is not None else (1, 1)
+    return (self.chars, *self.full.counts(), *window_counts)
+
+
+def snapshot_events(snapshot):
   seen = set()
-  total_media = 0
-  for line, stamp, obj in numbered_rows:
-    blocks, media = visible_blocks(obj, audit)
-    total_media += media
-    message_id = row_message(obj).get("id")
+  for line, row, error in records(snapshot):
+    if error or not active(row):
+      continue
+    blocks, _ = visible_blocks(row)
+    if not blocks:
+      continue
+    stamp = moment(row["timestamp"])
+    event_time = iso(stamp)
+    human = human_input(row) or forwarded_input(row)
+    message_id = row_message(row).get("id")
     for index, (label, text) in enumerate(blocks):
-      key = (message_id, label, index, text)
-      if label.startswith("assistant") and message_id and key in seen:
-        continue
-      seen.add(key)
-      scope = "window" if (start is None or start <= stamp) else "older"
-      events.append({"source_line": line, "event_time": iso(stamp), "label": label, "text": text,
-                     "human": human_input(obj) or (include_forwarded and forwarded_input(obj)), "scope": scope})
-  return events, total_media
+      if label.startswith("assistant") and message_id:
+        key = (message_id, label, index, text)
+        if key in seen:
+          continue
+        seen.add(key)
+      yield line, stamp, event_time, label, text, human
 
 
-def slice_window_events(events):
-  current = [i for i, event in enumerate(events) if event["scope"] == "window"]
-  first = min(current) if current else len(events)
-  prior_humans = [i for i, event in enumerate(events[:first]) if event["human"]]
-  context_start = prior_humans[-1] if prior_humans else first
-  return events[context_start:]
+def estimate_snapshot_windows(snapshot, start_items):
+  trackers = [(key, _WindowTracker(start)) for key, start in start_items]
+  for line, stamp, event_time, label, text, human in snapshot_events(snapshot):
+    body_lines = [(rl, len(rl.encode("utf-8"))) for rl in (text + "\n").splitlines(keepends=True)]
+    text_len_plus_1 = len(text) + 1
+    for _, tracker in trackers:
+      tracker.add_event(line, stamp, event_time, label, text_len_plus_1, body_lines, human)
+  return {key: tracker.result() for key, tracker in trackers}
 
 
 def render_events_body(events):
   return "\n".join(f"[line={event['source_line']} timestamp={event['event_time']} {event['scope']} {event['label']}]\n{event['text']}\n"
                    for event in events)
+
+
+def inventory_record(encoded, cutoff):
+  try:
+    line = encoded.decode("utf-8")
+  except UnicodeDecodeError:
+    return None, None, False, 0, "invalid-utf8"
+  if line.isspace():
+    return None, None, False, 0, None
+  try:
+    row = json.loads(line)
+    require(isinstance(row, dict), "record is not an object")
+    stamp = moment(row["timestamp"]) if row.get("timestamp") else None
+  except (ValueError, TypeError):
+    return None, None, False, 0, "invalid-record-or-timestamp"
+  if stamp and stamp > cutoff:
+    return None, None, False, 0, None
+  is_active = active(row)
+  if is_active and stamp is None:
+    return None, None, False, 0, "activity-without-timestamp"
+  return row, stamp, is_active, len(line) - encoded.endswith(b"\n"), None
+
+
+def scan_session(source, snapshot, cutoff):
+  activities = []
+  latest_activity = None
+  limits = []
+  reasons = set()
+  human = sdk = False
+  slash_only = local_only = True
+  last_cwd = str(source.parent)
+  human_cwd = None
+  estimated_chars = 0
+  buffer_size = 128 * 1024
+  # Create the private snapshot with 0600 atomically so there is no wider-mode window before chmod.
+  snap_fd = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+  with source.open("rb", buffering=buffer_size) as lines, os.fdopen(snap_fd, "wb", buffering=buffer_size) as kept:
+    for number, encoded in enumerate(lines, 1):
+      row, stamp, is_active, chars, reason = inventory_record(encoded, cutoff)
+      if row is None:
+        # Preserve the LF at every skipped row so snapshot line numbers stay stable.
+        if encoded.endswith(b"\n"):
+          kept.write(b"\n")
+        if reason:
+          limits.append({"line": number, "reason": reason})
+        continue
+      kept.write(encoded)
+      estimated_chars += chars
+      is_human = human_input(row)
+      if is_human:
+        human = True
+        slash_only = slash_only and not queued(row) and content_text(row_message(row).get("content", "")).lstrip().startswith(("<command-name>", "<command-message>"))
+      cwd = row.get("cwd")
+      if isinstance(cwd, str):
+        last_cwd = cwd
+        if is_human:
+          human_cwd = cwd
+      sdk = sdk or sdk_origin_row(row)
+      add_exclusion_reasons(reasons, row)
+      if is_active:
+        activities.append(iso(stamp))
+        if latest_activity is None or stamp > latest_activity:
+          latest_activity = stamp
+        local_only = local_only and local_command_row(row)
+  if any(part in {"eval-roots", "synthetic-eval"} or "-T-skill-up-" in part or "-collie-canary-project" in part for part in source.parts):
+    reasons.add("evaluation-path")
+  category, reasons = classify(reasons, human, sdk, activities, local_only, limits)
+  project = human_cwd if human_cwd is not None else last_cwd
+  row = {"session": source.stem, "source": str(source), "project": str(Path(project).expanduser().resolve()),
+         "snapshot": str(snapshot), "classification": category, "reasons": reasons,
+         "activity": activities, "slash_only": human and slash_only, "limitations": limits,
+         "estimated_chars": estimated_chars}
+  return row, latest_activity
+
+
+def _run_scan_batch(batch, cutoff, option_starts, duplicate_stems):
+  results = []
+  for job_idx, source, snapshot in batch:
+    row, latest_activity = scan_session(source, snapshot, cutoff)
+    estimates = None
+    if (latest_activity is not None
+        and (row["classification"] == "human" or row["reasons"] == ["forwarded"])
+        and row["session"] not in duplicate_stems):
+      active_starts = [(key, start) for key, start in option_starts if start <= latest_activity]
+      if active_starts:
+        estimates = estimate_snapshot_windows(snapshot, active_starts)
+    results.append((job_idx, row, latest_activity, estimates))
+  return results
+
+
+def _scan_jobs(jobs, private, cutoff, option_starts, duplicate_stems):
+  if len(jobs) < 8 or not hasattr(os, "fork"):
+    return _run_scan_batch(jobs, cutoff, option_starts, duplicate_stems)
+  worker_count = min(8, os.cpu_count() or 1, len(jobs))
+  if worker_count <= 1:
+    return _run_scan_batch(jobs, cutoff, option_starts, duplicate_stems)
+  # Balance buckets by descending file size (LPT) so large transcripts do not pile onto one worker.
+  buckets = [[] for _ in range(worker_count)]
+  loads = [0] * worker_count
+  sized_jobs = []
+  for job in jobs:
+    try:
+      size = job[1].stat().st_size
+    except OSError:
+      size = 0
+    sized_jobs.append((size, job))
+  sized_jobs.sort(key=lambda item: item[0], reverse=True)
+  for size, job in sized_jobs:
+    target = min(range(worker_count), key=loads.__getitem__)
+    buckets[target].append(job)
+    loads[target] += size
+  sys.stdout.flush()
+  sys.stderr.flush()
+  children = []
+  result_paths = []
+  parent_exc = None
+  collected = []
+  try:
+    for idx in range(1, worker_count):
+      if not buckets[idx]:
+        continue
+      res_path = private / f".worker-{idx}.pkl"
+      result_paths.append(res_path)
+      pid = os.fork()
+      if pid == 0:
+        rc = 1
+        try:
+          batch_out = _run_scan_batch(buckets[idx], cutoff, option_starts, duplicate_stems)
+          fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          with os.fdopen(fd, "wb") as handle:
+            pickle.dump((True, batch_out), handle, protocol=pickle.HIGHEST_PROTOCOL)
+          rc = 0
+        except BaseException as exc:
+          with suppress(Exception):
+            fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+              pickle.dump((False, f"{type(exc).__name__}: {exc}"), handle, protocol=pickle.HIGHEST_PROTOCOL)
+          rc = 1
+        finally:
+          os._exit(rc)
+      children.append((pid, res_path))
+    collected.extend(_run_scan_batch(buckets[0], cutoff, option_starts, duplicate_stems))
+  except BaseException as exc:
+    parent_exc = exc
+    for pid, _ in children:
+      with suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
+  finally:
+    child_errors = []
+    for pid, res_path in children:
+      status = 0
+      with suppress(OSError):
+        _, status = os.waitpid(pid, 0)
+      if parent_exc is not None:
+        continue
+      if res_path.exists():
+        try:
+          with res_path.open("rb") as handle:
+            ok, payload = pickle.load(handle)
+          if ok and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0:
+            collected.extend(payload)
+          else:
+            child_errors.append(str(payload) if not ok else f"worker exited with status {status}")
+        except Exception as load_exc:
+          child_errors.append(f"worker result load failed: {load_exc}")
+      else:
+        child_errors.append(f"worker pid {pid} exited without result (status {status})")
+    for res_path in result_paths:
+      with suppress(OSError):
+        res_path.unlink()
+  if parent_exc is not None:
+    raise parent_exc
+  if child_errors:
+    raise RuntimeError("; ".join(child_errors))
+  collected.sort(key=lambda item: item[0])
+  return collected
 
 
 def inventory(args):
@@ -373,72 +616,59 @@ def inventory(args):
   out = new_dir(args.out)
   private = out / "private"
   private.mkdir(mode=0o700)
+  last = latest_success(args.reports_root, cutoff)
+  option_starts = [("day", cutoff - timedelta(days=1))]
+  if last is not None:
+    option_starts.append(("last-success", last))
   found = set()
-  sessions = []
-  active_rows_by_session = {}
+  jobs = []
+  stem_counts = {}
   for alias in sorted(root.glob("*/*.jsonl")):
     source = alias.resolve()
     if source in found or not source.is_file():
       continue
     found.add(source)
-    raw = source.read_bytes()
-    selected = []
-    numbered_active = []
-    kept = []
-    activities = []
-    limits = []
-    for number, encoded_line in enumerate(raw.split(b"\n"), 1):
-      try:
-        line = encoded_line.decode("utf-8")
-      except UnicodeDecodeError:
-        kept.append("")
-        limits.append({"line": number, "reason": "invalid-utf8"})
-        continue
-      if not line.strip():
-        kept.append("")
-        continue
-      try:
-        row = json.loads(line)
-        require(isinstance(row, dict), "record is not an object")
-        stamp = moment(row["timestamp"]) if row.get("timestamp") else None
-      except (ValueError, TypeError):
-        kept.append("")
-        limits.append({"line": number, "reason": "invalid-record-or-timestamp"})
-        continue
-      if stamp and stamp > cutoff:
-        kept.append("")
-        continue
-      if active(row) and stamp is None:
-        kept.append("")
-        limits.append({"line": number, "reason": "activity-without-timestamp"})
-        continue
-      kept.append(line)
-      selected.append(row)
-      if active(row):
-        activities.append(iso(stamp))
-        numbered_active.append((number, stamp, row))
-    category, reasons = classify(selected, source, limits)
-    snapshot = private / f"s{len(sessions) + 1:02d}.jsonl"
-    snapshot.write_text("\n".join(kept), encoding="utf-8")
-    snapshot.chmod(0o600)
-    inputs = [row for row in selected if human_input(row)]
-    slash_only = bool(inputs) and all(not queued(row) and content_text(row_message(row).get("content", "")).lstrip().startswith(("<command-name>", "<command-message>")) for row in inputs)
-    project = next((row["cwd"] for row in reversed(selected) if human_input(row) and isinstance(row.get("cwd"), str)),
-                   next((row["cwd"] for row in reversed(selected) if isinstance(row.get("cwd"), str)), str(source.parent)))
-    if category == "human" or (category == "excluded" and reasons == ["forwarded"]):
-      active_rows_by_session[source.stem] = numbered_active
-    sessions.append({"session": source.stem, "source": str(source), "project": str(Path(project).expanduser().resolve()),
-                     "snapshot": str(snapshot), "classification": category, "reasons": reasons,
-                     "activity": activities, "slash_only": slash_only, "limitations": limits,
-                     "estimated_chars": sum(len(line) for line in kept)})
-  last = latest_success(args.reports_root, cutoff)
+    job_idx = len(jobs)
+    snapshot = private / f"s{job_idx + 1:02d}.jsonl"
+    jobs.append((job_idx, source, snapshot))
+    stem_counts[source.stem] = stem_counts.get(source.stem, 0) + 1
+  duplicate_stems = {stem for stem, count in stem_counts.items() if count > 1}
+  scanned = _scan_jobs(jobs, private, cutoff, option_starts, duplicate_stems)
+  sessions = []
+  eligible = []
+  snapshots = {}
+  precomputed = {}
+  for _, row, latest_activity, estimates in scanned:
+    if row["classification"] == "human" or row["reasons"] == ["forwarded"]:
+      # Estimates use the last eligible snapshot for each stem, including duplicate stems.
+      snapshots[row["session"]] = Path(row["snapshot"])
+      if latest_activity is not None:
+        eligible.append((row, latest_activity))
+      if estimates is not None:
+        precomputed[row["snapshot"]] = estimates
+    sessions.append(row)
+  dup_estimates = {}
+  if duplicate_stems:
+    needed_by_stem = {}
+    for key, start in option_starts:
+      for row, latest_activity in eligible:
+        if row["session"] in duplicate_stems and start <= latest_activity:
+          needed_by_stem.setdefault(row["session"], []).append((key, start))
+    for stem, starts in needed_by_stem.items():
+      # Deduplicate starts while preserving order.
+      unique_starts = list(dict.fromkeys(starts))
+      dup_estimates[stem] = estimate_snapshot_windows(snapshots[stem], unique_starts)
   options = {}
   for key, start in (("day", cutoff - timedelta(days=1)), ("last-success", last)):
     if start is None:
       options[key] = None
       continue
-    selected = [row for row in sessions if row["classification"] == "human" and any(start <= moment(t) <= cutoff for t in row["activity"])]
-    forwarded = [row for row in sessions if row["classification"] == "excluded" and row.get("reasons") == ["forwarded"] and any(start <= moment(t) <= cutoff for t in row["activity"])]
+    selected = []
+    forwarded = []
+    # The scan already discarded activity after the cutoff.
+    for row, latest_activity in eligible:
+      if start <= latest_activity:
+        (selected if row["classification"] == "human" else forwarded).append(row)
     projects = {}
     for row in selected:
       projects[row["project"]] = projects.get(row["project"], 0) + 1
@@ -446,11 +676,12 @@ def inventory(args):
     def_full_pages = def_full_units = def_win_pages = def_win_units = 0
     long_sessions = []
     for row in selected + forwarded:
-      events, _ = build_visible_events(active_rows_by_session.get(row["session"], []), start=start)
-      full_body = render_events_body(events)
-      row["estimated_chars"] = len(full_body)
-      fp, fu = count_body_pages_and_units(full_body)
-      wp, wu = count_body_pages_and_units(render_events_body(slice_window_events(events)))
+      est_map = dup_estimates.get(row["session"]) if row["session"] in duplicate_stems else precomputed.get(row["snapshot"])
+      if est_map is not None and key in est_map:
+        chars, fp, fu, wp, wu = est_map[key]
+      else:
+        chars, fp, fu, wp, wu = estimate_snapshot_windows(snapshots[row["session"]], [(key, start)])[key]
+      row["estimated_chars"] = chars
       def_full_pages += fp
       def_full_units += fu
       def_win_pages += wp
@@ -490,8 +721,13 @@ def inventory(args):
           "last_success": iso(last) if last else None, "options": options, "sessions": sessions,
           "unknown": [s for s in sessions if s["classification"] == "unknown"],
           "excluded": [s for s in sessions if s["classification"] == "excluded"], "default_model": read_model()}
-  save(out / "inventory.json", data)
-  return {"inventory_path": str(out / "inventory.json"), "options": options, "unknown_count": len(data["unknown"]), "excluded_count": len(data["excluded"]), "model": data["default_model"]}
+  inventory_path = out / "inventory.json"
+  chunks = json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(data)
+  with inventory_path.open("w", encoding="utf-8") as handle:
+    while batch := "".join(islice(chunks, 4096)):
+      handle.write(batch)
+    handle.write("\n")
+  return {"inventory_path": str(inventory_path), "options": options, "unknown_count": len(data["unknown"]), "excluded_count": len(data["excluded"]), "model": data["default_model"]}
 
 
 def write_page_chunks(chunks, directory, prefix):
