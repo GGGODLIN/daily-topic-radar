@@ -12,8 +12,8 @@ import argparse
 import fcntl
 import functools
 import hashlib
-import http.client
 import contextvars
+import io
 import json
 import os
 import re
@@ -22,16 +22,11 @@ import stat
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import weakref
 from collections import deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-
-import yaml
 
 # 工程預設，不是容量實測。輸出預留不放進請求本文。
 REQUEST_UTF8_BUDGET = 24000
@@ -1513,6 +1508,8 @@ def env_value(path, name):
 def choose_model(path):
   if not path or not Path(path).is_file():
     return "relay-config-unreadable", None
+  import yaml
+
   try:
     loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
   except (OSError, yaml.YAMLError):
@@ -1558,14 +1555,25 @@ def endpoint_for(url):
   return f"http://{host}:{parsed.port}{path}"
 
 
-class RefuseRedirect(urllib.request.HTTPRedirectHandler):
-  def redirect_request(self, req, fp, code, msg, headers, newurl):
-    raise urllib.error.HTTPError(req.full_url, code, "redirect-refused", headers, fp)
+@functools.lru_cache(maxsize=1)
+def refuse_redirect_handler():
+  from urllib.error import HTTPError
+  from urllib.request import HTTPRedirectHandler
+
+  class RefuseRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+      raise HTTPError(req.full_url, code, "redirect-refused", headers, fp)
+
+  return RefuseRedirect
 
 
 def post_json(url, key, payload, timeout=None):
+  from http.client import HTTPException
+  from urllib.error import HTTPError, URLError
+  from urllib.request import Request, build_opener
+
   body = json.dumps(payload).encode()
-  request = urllib.request.Request(
+  request = Request(
     url,
     data=body,
     method="POST",
@@ -1575,18 +1583,18 @@ def post_json(url, key, payload, timeout=None):
       "User-Agent": "session-audit",
     },
   )
-  opener = urllib.request.build_opener(RefuseRedirect)
+  opener = build_opener(refuse_redirect_handler())
   try:
     with opener.open(request, timeout=timeout) as response:
       raw = response.read(MAX_RESPONSE_BYTES + 1)
       code = response.status
-  except urllib.error.HTTPError as exc:
+  except HTTPError as exc:
     print(f"session-audit: http-{exc.code}", file=sys.stderr)
     return exc.code, b""
-  except urllib.error.URLError:
+  except URLError:
     print("session-audit: relay-unreachable", file=sys.stderr)
     return 0, b""
-  except (OSError, http.client.HTTPException):
+  except (OSError, HTTPException):
     # 讀回應時逾時或被斷線，urllib 不包成 URLError；不接住會讓整輪 run 當掉，其餘來源也分析不到。
     print("session-audit: relay-dropped", file=sys.stderr)
     return 0, b""
@@ -2262,10 +2270,11 @@ def request_payload(model, continuity, chunk, images, rules_block=None):
   return payload, piece, used, skipped
 
 
-def run_git(repo, *args):
+def run_git(repo, *args, input_data=None):
   try:
     done = subprocess.run(
       ["git", "-C", str(repo), *args],
+      input=input_data,
       capture_output=True,
       timeout=GIT_TIMEOUT_SECONDS,
       check=False,
@@ -2597,29 +2606,47 @@ def rules_block(rules):
   return "\n".join(lines)
 
 
-@functools.lru_cache(maxsize=8)
-def load_rules(repo, sha):
+def git_batch_objects(repo, names):
+  if not names:
+    return {}
+  data = run_git(repo, "cat-file", "--batch", "--buffer", input_data=b"\n".join(names) + b"\n")
+  if data is None:
+    return None
+  stream = io.BytesIO(data)
+  objects = {}
+  for name in names:
+    header = stream.readline().split()
+    if header == [name, b"missing"]:
+      continue
+    if len(header) != 3 or not header[2].isdigit():
+      return None
+    size = int(header[2])
+    if size > len(data) - stream.tell():
+      return None
+    content = stream.read(size)
+    if stream.read(1) != b"\n":
+      return None
+    objects[name] = (header[0], header[1], content)
+  return None if stream.read(1) else objects
+
+
+def list_rule_files(repo, sha):
   listing = run_git(repo, "ls-tree", "-z", sha, "CLAUDE.md", RULES_DIR)
   if listing is None:
-    return None
+    return []
   names = []
   for entry in listing.split(b"\0"):
     meta, _tab, raw_name = entry.partition(b"\t")
-    name = raw_name.decode("utf-8", "replace")
     fields = meta.split()
     if len(fields) != 3 or fields[1] != b"blob" or fields[0] == b"120000":
       continue
+    name = raw_name.decode("utf-8", "replace")
     if name == "CLAUDE.md" or (name.startswith(RULES_DIR) and name.endswith(".md") and "/" not in name[len(RULES_DIR):]):
       names.append(name)
-  rules = []
-  legacy = []
-  for name in sorted(names, key=lambda item: (item != "CLAUDE.md", item)):
-    content = run_git(repo, "show", f"{sha}:{name}")
-    if content is None:
-      return None
-    active, old = split_rules(name, content.decode("utf-8", "replace"), include_legacy=True)
-    rules.extend(active)
-    legacy.extend(old)
+  return sorted(names, key=lambda name: (name != "CLAUDE.md", name))
+
+
+def rule_roster(rules, legacy):
   if not rules:
     return None
   unique = []
@@ -2634,6 +2661,142 @@ def load_rules(repo, sha):
     by_id.setdefault(rule["id"], rule)
   labels = {f"R{number}": rule for number, rule in enumerate(unique, 1)}
   return {"labels": labels, "by_id": by_id, "legacy_labels": legacy_labels, "block": rules_block(unique)}
+
+
+def read_rule_roster(repo, sha, files, objects, parsed):
+  rules = []
+  legacy = []
+  for name, ref in files:
+    obj = objects.get(ref)
+    if obj is not None and obj[1] == b"blob":
+      key = (name, ref)
+      if key not in parsed:
+        parsed[key] = split_rules(name, obj[2].decode("utf-8", "replace"), include_legacy=True)
+      active, old = parsed[key]
+    else:
+      content = run_git(repo, "show", f"{sha}:{name}")
+      if content is None:
+        return None
+      active, old = split_rules(name, content.decode("utf-8", "replace"), include_legacy=True)
+    rules.extend(active)
+    legacy.extend(old)
+  return rule_roster(rules, legacy)
+
+
+@functools.lru_cache(maxsize=8)
+def load_rules(repo, sha):
+  # ls-tree paths may be relative to a subdirectory, while rev:path is root-relative.
+  files = []
+  for name in list_rule_files(repo, sha):
+    ref = os.fsencode(f"{sha}:{name}")
+    files.append((name, None if b"\n" in ref else ref))
+  if not files:
+    return None
+  refs = dict.fromkeys(ref for _name, ref in files if ref is not None)
+  return read_rule_roster(repo, sha, files, git_batch_objects(repo, refs) or {}, {})
+
+
+def rule_tree_entries(obj, wanted):
+  oid, kind, data = obj
+  if kind != b"tree" or len(oid) not in (40, 64):
+    return None
+  oid_bytes = len(oid) // 2
+  entries = {}
+  offset = 0
+  # A raw tree entry is mode, space, name, NUL, then the binary object ID.
+  while offset < len(data):
+    end = data.find(b"\0", offset)
+    if end < 0 or end + 1 + oid_bytes > len(data):
+      return None
+    mode, _, name = data[offset:end].partition(b" ")
+    if not name or b"/" in name or mode not in (b"40000", b"100644", b"100755", b"120000", b"160000"):
+      return None
+    offset = end + 1 + oid_bytes
+    if (name.endswith(b".md") if wanted is None else name in wanted):
+      if name in entries:
+        return None
+      entries[name] = (mode, data[end + 1:offset].hex().encode("ascii"))
+  return entries
+
+
+def batch_rule_trees(repo, names, wanted):
+  objects = git_batch_objects(repo, names) or {}
+  parsed = {}
+  trees = {}
+  for name, obj in objects.items():
+    oid = obj[0]
+    if oid not in parsed:
+      parsed[oid] = rule_tree_entries(obj, wanted)
+    trees[name] = parsed[oid]
+  return trees
+
+
+def rule_subtree(tree, name):
+  mode, oid = tree.get(name, (None, None))
+  return oid if mode == b"40000" else None
+
+
+def batch_rule_files(repo, shas):
+  # Other revision syntax still goes through ls-tree, including refs and paths.
+  roots = {
+    sha: sha.encode("ascii") + b"^{tree}"
+    for sha in shas if isinstance(sha, str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha)
+  }
+  root_trees = batch_rule_trees(repo, roots.values(), {b"CLAUDE.md", b"rules"})
+  rule_dirs = dict.fromkeys(rule_subtree(tree, b"rules") for tree in root_trees.values() if tree is not None)
+  rule_dirs.pop(None, None)
+  rule_trees = batch_rule_trees(repo, rule_dirs, {b"common"})
+  common_dirs = dict.fromkeys(rule_subtree(tree, b"common") for tree in rule_trees.values() if tree is not None)
+  common_dirs.pop(None, None)
+  common_trees = batch_rule_trees(repo, common_dirs, None)
+  # An absent directory is empty. A referenced but unreadable tree needs the fallback.
+  rule_trees[None] = common_trees[None] = {}
+  listings = {}
+  for sha, ref in roots.items():
+    root = root_trees.get(ref)
+    if root is None:
+      continue
+    rules = rule_trees.get(rule_subtree(root, b"rules"))
+    if rules is None:
+      continue
+    common = common_trees.get(rule_subtree(rules, b"common"))
+    if common is None:
+      continue
+    files = []
+    mode, oid = root.get(b"CLAUDE.md", (None, None))
+    if mode in (b"100644", b"100755"):
+      files.append(("CLAUDE.md", oid))
+    for raw_name, (mode, oid) in common.items():
+      if mode in (b"100644", b"100755"):
+        name = raw_name.decode("utf-8", "replace")
+        files.append((RULES_DIR + name, oid if name.encode() == raw_name else None))
+    files.sort(key=lambda item: (item[0] != "CLAUDE.md", item[0]))
+    listings[sha] = tuple(files)
+  return listings
+
+
+def historical_rule_rosters(repo, shas):
+  shas = list(dict.fromkeys(shas))
+  # ls-tree uses paths relative to the current directory when run from a subdirectory.
+  if not shas:
+    return
+  at_root = run_git(repo, "rev-parse", "--show-prefix") == b"\n"
+  batch_size = 128
+  for start in range(0, len(shas), batch_size):
+    batch = shas[start:start + batch_size]
+    files_by_sha = batch_rule_files(repo, batch) if at_root else {}
+    oids = dict.fromkeys(oid for files in files_by_sha.values() for _path, oid in files if oid is not None)
+    objects = git_batch_objects(repo, oids) or {}
+    parsed = {}
+    rosters = {}
+    for sha in batch:
+      files = files_by_sha.get(sha)
+      if files is None or any(oid not in objects or objects[oid][1] != b"blob" for _path, oid in files):
+        yield sha, load_rules(repo, sha)
+        continue
+      if files not in rosters:
+        rosters[files] = read_rule_roster(repo, sha, files, objects, parsed)
+      yield sha, rosters[files]
 
 
 def session_rules(connection, row, raw, repo):
@@ -3396,14 +3559,18 @@ def hydrogen_should_yield(connection, concurrency_url, cap_10m):
   sent_count = connection.execute("SELECT COUNT(*) FROM hydrogen_sends").fetchone()[0]
   if sent_count >= cap_10m:
     return True
-  opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirect)
-  request = urllib.request.Request(concurrency_url, method="GET", headers={"User-Agent": "session-audit"})
+  from http.client import HTTPException
+  from urllib.error import URLError
+  from urllib.request import ProxyHandler, Request, build_opener
+
+  opener = build_opener(ProxyHandler({}), refuse_redirect_handler())
+  request = Request(concurrency_url, method="GET", headers={"User-Agent": "session-audit"})
   try:
     with opener.open(request, timeout=2.5) as response:
       if response.status != 200:
         return False
       data = json.loads(response.read(MAX_RESPONSE_BYTES))
-  except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
+  except (OSError, ValueError, URLError, HTTPException):
     return False
   if not isinstance(data, dict):
     return False
@@ -3529,9 +3696,11 @@ def eligible_legs(legs, quota_file):
 
 def read_pool_health(spec, cli2api_key):
   """回 (可用帳號數, 帳號總數)；讀不到或格式不對回 None，呼叫端當成「不知道」。只數數，不保留任何帳號內容。"""
+  from urllib.request import Request, urlopen
+
   headers = {"Authorization": f"Bearer {cli2api_key}"} if spec.get("kind") == "cli2api" and cli2api_key else {}
   try:
-    with urllib.request.urlopen(urllib.request.Request(spec["url"], headers=headers), timeout=3) as response:
+    with urlopen(Request(spec["url"], headers=headers), timeout=3) as response:
       payload = json.loads(response.read(MAX_RESPONSE_BYTES * 16))
   except (OSError, ValueError, KeyError):
     return None
@@ -3615,6 +3784,8 @@ def cmd_scan(args):
 
 
 def cmd_run(args):
+  from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
   requested_window = history_window(args)
   state = Path(args.state)
   guard_state(state, write=True)
@@ -3709,6 +3880,8 @@ def cmd_run(args):
       print(reason or key_error)
       connection.close()
       return 0
+    # Initialize the HTTP stack before worker threads start sending requests.
+    refuse_redirect_handler()
     rules_repo = Path(args.rules_repo).expanduser()
     fragments = {"new": 0, "shadow": 0}
     lifetime = time.monotonic() + args.max_run_seconds
@@ -4515,13 +4688,13 @@ def previous_week(week):
   return iso_week(date.fromisocalendar(int(year), int(number), 1) - timedelta(days=7))
 
 
-def zero_use_facts(connection, repo):
+def _zero_use_facts_and_roster(connection, repo, include_head=False):
   # 只讀 05 的三張表；每條規則只取 last_seen，不看逐筆標記。
   covering = {}
   last_seen = {}
   needed = ("rule_sessions", "rule_coverage", "rule_last_seen")
   if not all(table_exists(connection, name) for name in needed):
-    return covering, last_seen
+    return covering, last_seen, None
   query = """
     SELECT DISTINCT rule_coverage.week AS week, rule_sessions.commit_sha AS sha
     FROM rule_coverage
@@ -4529,19 +4702,30 @@ def zero_use_facts(connection, repo):
     JOIN rule_sessions ON rule_sessions.inode = rule_coverage.inode
     WHERE sources.included = 1 AND rule_sessions.unavailable = '' AND rule_sessions.commit_sha != ''
   """
-  identities = {}
-  legacy_parents = {}
+  weeks_by_sha = {}
   for row in connection.execute(query):
-    if row["sha"] not in identities:
-      loaded = load_rules(str(repo), row["sha"])
-      # commit 讀不到（被 gc、repo 換了）就無法知道它含哪些規則，該週對所有規則都當沒覆蓋。
-      identities[row["sha"]] = set() if loaded is None else {rule["id"] for rule in loaded["labels"].values()}
-      if loaded is not None:
-        for rule in loaded["labels"].values():
-          if rule.get("legacy_id"):
-            legacy_parents[rule["id"]] = rule["legacy_id"]
-    for rule_id in identities[row["sha"]]:
-      covering.setdefault(rule_id, {}).setdefault(row["week"], set()).add(row["sha"])
+    weeks_by_sha.setdefault(row["sha"], []).append(row["week"])
+  batch_shas = list(weeks_by_sha)
+  if include_head and batch_shas and "HEAD" not in weeks_by_sha:
+    batch_shas.append("HEAD")
+  legacy_parents = {}
+  head_roster = None
+  for sha, loaded in historical_rule_rosters(str(repo), batch_shas):
+    if sha == "HEAD" and "HEAD" not in weeks_by_sha:
+      head_roster = loaded
+      continue
+    # commit 讀不到（被 gc、repo 換了）就無法知道它含哪些規則，該週對所有規則都當沒覆蓋。
+    if loaded is None:
+      continue
+    if sha == "HEAD":
+      head_roster = loaded
+    for rule in loaded["labels"].values():
+      rule_id = rule["id"]
+      if rule.get("legacy_id"):
+        legacy_parents[rule_id] = rule["legacy_id"]
+      weeks = covering.setdefault(rule_id, {})
+      for week in weeks_by_sha[sha]:
+        weeks.setdefault(week, set()).add(sha)
   query = "SELECT rule_id, conversation_time AS time FROM rule_last_seen"
   for row in connection.execute(query):
     if row["rule_id"] not in last_seen or row["time"] > last_seen[row["rule_id"]]:
@@ -4549,6 +4733,11 @@ def zero_use_facts(connection, repo):
   for child_id, parent_id in legacy_parents.items():
     if parent_id in last_seen and (child_id not in last_seen or last_seen[parent_id] > last_seen[child_id]):
       last_seen[child_id] = last_seen[parent_id]
+  return covering, last_seen, head_roster
+
+
+def zero_use_facts(connection, repo):
+  covering, last_seen, _roster = _zero_use_facts_and_roster(connection, repo, include_head=False)
   return covering, last_seen
 
 
@@ -4585,11 +4774,10 @@ def cmd_zero_use(args):
   items = []
   if connection is not None:
     repo = Path(args.rules_repo).expanduser()
-    covering, last_seen = zero_use_facts(connection, repo)
+    covering, last_seen, roster = _zero_use_facts_and_roster(connection, repo, include_head=True)
     connection.close()
     newest = max((week for weeks in covering.values() for week in weeks), default=None)
     if newest is not None:
-      roster = load_rules(str(repo), "HEAD")
       if roster is None:
         fail("rules-roster-unavailable")
       for rule in roster["labels"].values():

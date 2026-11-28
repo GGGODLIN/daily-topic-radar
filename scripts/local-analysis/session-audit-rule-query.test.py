@@ -552,5 +552,93 @@ class FrictionRoutingTest(StoreBase):
     self.assertTrue("BETA_RULE" in text2)
 
 
+class LoadRulesBatchRegressionTest(unittest.TestCase):
+  def _load_module(self):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("session_audit_mod", str(AUDIT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+  def test_historical_rosters_respects_git_timeout_on_hanging_cat_file(self):
+    import shutil
+    import tempfile
+    import time
+
+    mod = self._load_module()
+    real_git = shutil.which("git")
+    with tempfile.TemporaryDirectory() as td:
+      root = Path(td)
+      repo = root / "repo"
+      (repo / "rules/common").mkdir(parents=True)
+      subprocess.run([real_git, "init", "-q", str(repo)], check=True)
+      subprocess.run([real_git, "-C", str(repo), "config", "user.email", "t@t.t"], check=True)
+      subprocess.run([real_git, "-C", str(repo), "config", "user.name", "t"], check=True)
+      (repo / "CLAUDE.md").write_text("# Root\n- Always verify things properly\n")
+      subprocess.run([real_git, "-C", str(repo), "add", "."], check=True)
+      subprocess.run([real_git, "-C", str(repo), "commit", "-q", "-m", "c1"], check=True)
+      sha = subprocess.check_output([real_git, "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+      shim_dir = root / "shim"
+      shim_dir.mkdir()
+      shim = shim_dir / "git"
+      shim.write_text(f'#!/bin/bash\nfor a in "$@"; do if [ "$a" = "cat-file" ] || [ "$a" = "ls-tree" ]; then sleep 20; fi; done\nexec "{real_git}" "$@"\n')
+      shim.chmod(0o755)
+      old_path = os.environ.get("PATH", "")
+      old_timeout = mod.GIT_TIMEOUT_SECONDS
+      try:
+        os.environ["PATH"] = f"{shim_dir}:{old_path}"
+        mod.GIT_TIMEOUT_SECONDS = 1
+        t0 = time.monotonic()
+        rows = list(mod.historical_rule_rosters(str(repo), [sha]))
+        elapsed = time.monotonic() - t0
+      finally:
+        os.environ["PATH"] = old_path
+        mod.GIT_TIMEOUT_SECONDS = old_timeout
+      self.assertLess(elapsed, 6.0)
+      self.assertEqual(rows, [(sha, None)])
+
+  def test_subdir_rules_repo_does_not_silently_read_parent_root_claude_md(self):
+    import tempfile
+
+    mod = self._load_module()
+    with tempfile.TemporaryDirectory() as td:
+      repo = Path(td) / "repo"
+      (repo / "nested/rules/common").mkdir(parents=True)
+      subprocess.run(["git", "init", "-q", str(repo)], check=True)
+      subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t.t"], check=True)
+      subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+      (repo / "CLAUDE.md").write_text("# Root\n- Root only rule\n")
+      (repo / "nested/rules/common/n.md").write_text("# N\n- Nested rule\n")
+      subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+      subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c1"], check=True)
+      sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+      self.assertIsNone(mod.load_rules(str(repo / "nested"), sha))
+
+  def test_loaded_rosters_do_not_alias_mutable_dicts_across_commits(self):
+    import tempfile
+
+    mod = self._load_module()
+    with tempfile.TemporaryDirectory() as td:
+      repo = Path(td) / "repo"
+      (repo / "rules/common").mkdir(parents=True)
+      subprocess.run(["git", "init", "-q", str(repo)], check=True)
+      subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t.t"], check=True)
+      subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+      (repo / "CLAUDE.md").write_text("# Root\n- Always verify things properly\n")
+      subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+      subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c1"], check=True)
+      sha1 = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+      (repo / "bump.txt").write_text("2\n")
+      subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+      subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "c2"], check=True)
+      sha2 = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+      r1 = mod.load_rules(str(repo), sha1)
+      r2 = mod.load_rules(str(repo), sha2)
+      first_id = next(iter(r1["by_id"]))
+      r1["by_id"][first_id]["__mutated__"] = True
+      self.assertNotIn("__mutated__", r2["by_id"][first_id])
+
+
 if __name__ == "__main__":
   unittest.main()
