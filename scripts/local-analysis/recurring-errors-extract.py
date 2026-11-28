@@ -24,7 +24,6 @@ bug 內生於它的結構：`jq ... | while IFS= read -r err` 按**行**迭代�
 """
 
 import argparse
-import datetime as dt
 import json
 import marshal
 import math
@@ -36,6 +35,11 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+if sys.flags.safe_path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from session_jsonl import discover_session_jsonl_files, parse_iso_utc
 
 HOME = Path.home()
 PROJECTS = HOME / ".claude" / "projects"
@@ -88,17 +92,8 @@ def error_text(block):
 
 
 def _extract_date(ts):
-    if not isinstance(ts, str) or not (s := ts.strip()):
-        return ""
-    if s.endswith(("Z", "z")):
-        s = s[:-1] + "+00:00"
-    try:
-        d = dt.datetime.fromisoformat(s)
-        if d.tzinfo is not None:
-            d = d.astimezone(dt.timezone.utc)
-    except (ValueError, OverflowError):
-        return ""
-    return d.date().isoformat()
+    d = parse_iso_utc(ts)
+    return "" if d is None else d.date().isoformat()
 
 
 def _yield_from_line(raw_line):
@@ -402,39 +397,7 @@ def _session_stem(path_str):
 
 
 def _discover_jsonl_files(root, cutoff):
-    root_s = os.fspath(root)
-    if "/subagents/" in (root_s + "/"):
-        return []
-    found = []
-    stack = [root_s]
-    while stack:
-        d = stack.pop()
-        try:
-            with os.scandir(d) as it:
-                for entry in it:
-                    name = entry.name
-                    if name.endswith(".jsonl"):
-                        try:
-                            # 檔案可能在游標所記錄的同一秒內追加資料，等於游標時也要重掃。
-                            if cutoff is None or entry.stat().st_mtime >= cutoff:
-                                found.append(entry.path)
-                        except OSError:
-                            pass
-                        try:
-                            if entry.is_dir(follow_symlinks=False):
-                                stack.append(entry.path)
-                        except OSError:
-                            pass
-                    elif name != "subagents":
-                        try:
-                            if entry.is_dir(follow_symlinks=False):
-                                stack.append(entry.path)
-                        except OSError:
-                            pass
-        except OSError:
-            continue
-    found.sort(key=lambda s: s.split(os.sep))
-    return found
+    return discover_session_jsonl_files(root, cutoff)
 
 
 def main(argv=None, *, record_iter=None):

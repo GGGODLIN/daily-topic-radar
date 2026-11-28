@@ -46,6 +46,11 @@ from contextlib import ExitStack
 from fractions import Fraction
 from pathlib import Path
 
+if sys.flags.safe_path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from session_jsonl import discover_session_jsonl_files, parse_iso_utc
+
 HOME = Path.home()
 PROJECTS = Path(os.environ.get("TOOL_RELIABILITY_PROJECTS_DIR") or (HOME / ".claude" / "projects"))
 OUT = Path(
@@ -154,17 +159,7 @@ def _ts_to_week(ts, cutoff=None):
 
 
 def _parse_ts_dt(ts):
-    if not isinstance(ts, str) or not (s := ts.strip()):
-        return None
-    if s.endswith(("Z", "z")):
-        s = s[:-1] + "+00:00"
-    try:
-        d = dt.datetime.fromisoformat(s)
-        if d.tzinfo is not None:
-            d = d.astimezone(dt.timezone.utc)
-    except (ValueError, OverflowError):
-        return None
-    return d
+    return parse_iso_utc(ts)
 
 
 def iso_week(ts):
@@ -460,39 +455,7 @@ def report():
 
 
 def _collect_jsonl_files(root, cutoff):
-    root_str = str(root)
-    if "/subagents/" in (root_str + "/"):
-        return []
-    found = []
-    stack = [root_str]
-    while stack:
-        cur = stack.pop()
-        try:
-            with os.scandir(cur) as it:
-                for entry in it:
-                    name = entry.name
-                    try:
-                        is_dir = entry.is_dir(follow_symlinks=False)
-                    except OSError:
-                        continue
-                    if is_dir:
-                        if name == "subagents":
-                            continue
-                        stack.append(entry.path)
-                        if not name.endswith(".jsonl"):
-                            continue
-                    elif not name.endswith(".jsonl"):
-                        continue
-                    try:
-                        st = entry.stat(follow_symlinks=True)
-                    except OSError:
-                        continue
-                    if st.st_mtime >= cutoff:
-                        found.append(entry.path)
-        except OSError:
-            continue
-    found.sort(key=lambda p: p.split(os.sep))
-    return found
+    return discover_session_jsonl_files(str(root), cutoff, check_dir_first=True)
 
 
 def main():
