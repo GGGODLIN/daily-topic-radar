@@ -81,6 +81,46 @@ class RepairTemplateTest(unittest.TestCase):
             self.assertTrue((root / name).is_symlink())
             self.assertEqual((root / name).resolve(), (default / name).resolve())
 
+  def test_detects_missing_required_and_asymmetric_shared_symlinks(self):
+    with tempfile.TemporaryDirectory() as temporary:
+      home = Path(temporary)
+      default = home / ".claude"
+      team_s = home / ".claude-team-s"
+      team_p = home / ".claude-team-p"
+      for d in (default, team_s, team_p):
+        d.mkdir()
+      (default / "workflows").mkdir()
+      (default / "references").mkdir()
+      (default / "custom-shared").mkdir()
+      # team-p has references and custom-shared, both miss workflows, team-s misses references & custom-shared
+      (team_p / "references").symlink_to(default / "references")
+      (team_p / "custom-shared").symlink_to(default / "custom-shared")
+
+      script = home / "scan.sh"
+      source = SCRIPT.read_text()
+      setting = 'REPO_DIR="/Users/linhancheng/code/social-info"'
+      script.write_text(source.replace(setting, f'REPO_DIR="{home}"'))
+      env = {**os.environ, "HOME": str(home), "LOCAL_ANALYSIS_DATE": "fixture-missing"}
+      result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+      self.assertEqual(result.returncode, 0, result.stderr)
+      report = (home / "reports/local-analysis/fixture-missing-symlink-drift.md").read_text()
+      self.assertIn("Missing shared symlink count: **4**", report)
+      self.assertIn(f"`{team_s / 'workflows'}`", report)
+      self.assertIn(f"`{team_p / 'workflows'}`", report)
+      self.assertIn(f"`{team_s / 'references'}`", report)
+      self.assertIn(f"`{team_s / 'custom-shared'}`", report)
+
+      repair = report.split("## 補建指令\n\n```bash\n", 1)[1].split("```", 1)[0]
+      result = subprocess.run(["bash", "-e", "-c", repair], env=env, capture_output=True, text=True)
+      self.assertEqual(result.returncode, 0, result.stderr)
+
+      # Re-run: missing should now be 0
+      result2 = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+      self.assertEqual(result2.returncode, 0, result2.stderr)
+      report2 = (home / "reports/local-analysis/fixture-missing-symlink-drift.md").read_text()
+      self.assertIn("Missing shared symlink count: **0**", report2)
+      self.assertIn("✅ 無 drift 且無缺漏", report2)
+
 
 if __name__ == "__main__":
   unittest.main()

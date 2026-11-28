@@ -17,6 +17,23 @@ log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$LOG"; }
 
 CLAUDE_ROOT="$HOME/.claude"
 LOCK_DIRS=("$HOME/.claude-team-s" "$HOME/.claude-team-p")
+# 必備共享項目（只要 ~/.claude 底下存在，雙 Team 目錄就必須有 symlink；缺席會讓 CC 或驗證器靜默找不到檔）
+REQUIRED_SHARED=(
+  CLAUDE.md
+  settings.json
+  agents
+  commands
+  hooks
+  logs
+  plugins
+  projects
+  references
+  rules
+  scripts
+  skills
+  wiki
+  workflows
+)
 
 # 白名單分兩族，理由不同、不要混談：
 #   (1) updater / OS ephemeral state：atomic write 必拆 symlink
@@ -51,9 +68,43 @@ is_whitelisted() {
 log "═══ claude symlink drift check ($DATE) ═══"
 
 DRIFT_COUNT=0
+MISSING_COUNT=0
 LOCAL_ONLY_COUNT=0
 DRIFT_LINES=""
+MISSING_LINES=""
+MISSING_REPAIR_LINES=""
 LOCAL_ONLY_LINES=""
+
+# 收集期望共享清單 = REQUIRED_SHARED（~/.claude 有就必檢）∪ 任一 lock dir 已建為 symlink 的項目（抓單邊漏建）
+EXPECTED_SHARED=()
+add_expected_shared() {
+  local candidate="$1"
+  local existing
+  for existing in "${EXPECTED_SHARED[@]+"${EXPECTED_SHARED[@]}"}"; do
+    [[ "$existing" == "$candidate" ]] && return 0
+  done
+  EXPECTED_SHARED+=("$candidate")
+}
+
+for name in "${REQUIRED_SHARED[@]}"; do
+  if [[ -e "$CLAUDE_ROOT/$name" || -L "$CLAUDE_ROOT/$name" ]]; then
+    add_expected_shared "$name"
+  fi
+done
+
+for lock in "${LOCK_DIRS[@]}"; do
+  [[ -d "$lock" ]] || continue
+  shopt -s nullglob dotglob
+  for entry in "$lock"/*; do
+    name=$(basename "$entry")
+    [[ "$name" == "." || "$name" == ".." ]] && continue
+    is_whitelisted "$name" && continue
+    if [[ -L "$entry" && ( -e "$CLAUDE_ROOT/$name" || -L "$CLAUDE_ROOT/$name" ) ]]; then
+      add_expected_shared "$name"
+    fi
+  done
+  shopt -u nullglob dotglob
+done
 
 for lock in "${LOCK_DIRS[@]}"; do
   if [[ ! -d "$lock" ]]; then
@@ -88,12 +139,22 @@ for lock in "${LOCK_DIRS[@]}"; do
     fi
   done
   shopt -u nullglob dotglob
+
+  for name in "${EXPECTED_SHARED[@]+"${EXPECTED_SHARED[@]}"}"; do
+    entry="$lock/$name"
+    if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+      MISSING_COUNT=$((MISSING_COUNT + 1))
+      MISSING_LINES+=$'\n'"- \`$entry\` — missing symlink to \`$CLAUDE_ROOT/$name\`"
+      MISSING_REPAIR_LINES+=$'\n'"ln -s \"$CLAUDE_ROOT/$name\" \"$entry\""
+      log "MISSING: $entry -> $CLAUDE_ROOT/$name"
+    fi
+  done
 done
 
 {
   echo "# Claude symlink drift report ($DATE)"
   echo ""
-  echo "**目標**：偵測 \`~/.claude-team-s\` / \`~/.claude-team-p\` 內被 claude binary atomic write 拆 symlink 變 real file/dir 的 entries。"
+  echo "**目標**：偵測 \`~/.claude-team-s\` / \`~/.claude-team-p\` 內被 claude binary atomic write 拆 symlink 變 real file/dir 的 entries，以及必備或跨帳號不對稱的缺失共享 symlink。"
   echo ""
   echo "**Whitelist（不算 drift）**："
   echo "- **updater / OS ephemeral state**（atomic write 必拆 symlink，2026-07-31 拍板）：\`.claude.json\` / \`.claude.json.backup.*\` / \`backups/\` / \`.DS_Store\` / \`.last-update-result.json\`"
@@ -106,6 +167,7 @@ done
   echo "## 結果"
   echo ""
   echo "- Drift count: **${DRIFT_COUNT}**"
+  echo "- Missing shared symlink count: **${MISSING_COUNT}**"
   echo "- Lock-only count: ${LOCAL_ONLY_COUNT}（默默存在的 lock-dir-only entries，不一定是 bug）"
 
   if (( DRIFT_COUNT > 0 )); then
@@ -135,9 +197,24 @@ done
     echo '  done'
     echo 'done'
     echo '```'
-  else
+  fi
+
+  if (( MISSING_COUNT > 0 )); then
     echo ""
-    echo "✅ 無 drift。三個 dir symlink layer 對齊。"
+    echo "## 缺失共享 symlink（要補建）"
+    printf '%s' "$MISSING_LINES"
+    echo ""
+    echo ""
+    echo "## 補建指令"
+    echo ""
+    echo '```bash'
+    printf '%s\n' "${MISSING_REPAIR_LINES#$'\n'}"
+    echo '```'
+  fi
+
+  if (( DRIFT_COUNT == 0 && MISSING_COUNT == 0 )); then
+    echo ""
+    echo "✅ 無 drift 且無缺漏。三個 dir symlink layer 對齊。"
   fi
 
   if (( LOCAL_ONLY_COUNT > 0 )); then
@@ -148,4 +225,4 @@ done
   fi
 } > "$OUT"
 
-log "═══ done. drift=$DRIFT_COUNT  local-only=$LOCAL_ONLY_COUNT  report=$OUT ═══"
+log "═══ done. drift=$DRIFT_COUNT  missing=$MISSING_COUNT  local-only=$LOCAL_ONLY_COUNT  report=$OUT ═══"
