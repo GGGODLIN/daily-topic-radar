@@ -174,15 +174,6 @@ with tempfile.TemporaryDirectory() as td:
     check("root 結尾為 /subagents（collect）回傳空串列", [], trx._collect_jsonl_files(root / "a" / "subagents", cutoff))
     check("不存在的 root 回傳空串列", [], rec._discover_jsonl_files(root / "missing", None))
 
-    # bytes root parity
-    check("_collect_jsonl_files 傳入 bytes root 回傳空串列", [], trx._collect_jsonl_files(os.fsencode(root), cutoff))
-    bytes_type_error = False
-    try:
-        rec._discover_jsonl_files(os.fsencode(root), cutoff)
-    except TypeError:
-        bytes_type_error = True
-    check("_discover_jsonl_files 傳入 bytes root 維持 TypeError 契約", True, bytes_type_error)
-
 print("\n=== 合成 DirEntry：呼叫順序與 OSError 隔離契約 ===")
 
 

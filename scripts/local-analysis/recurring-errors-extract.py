@@ -36,6 +36,7 @@ import tempfile
 import time
 from pathlib import Path
 
+# Isolated mode (-I) leaves the script directory off sys.path.
 if sys.flags.safe_path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -397,7 +398,7 @@ def _session_stem(path_str):
 
 
 def _discover_jsonl_files(root, cutoff):
-    return discover_session_jsonl_files(root, cutoff)
+    return discover_session_jsonl_files(root, cutoff, check_dir_first=False)
 
 
 def main(argv=None, *, record_iter=None):

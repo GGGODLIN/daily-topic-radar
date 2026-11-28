@@ -46,10 +46,11 @@ from contextlib import ExitStack
 from fractions import Fraction
 from pathlib import Path
 
+# Isolated mode (-I) leaves the script directory off sys.path.
 if sys.flags.safe_path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from session_jsonl import discover_session_jsonl_files, parse_iso_utc
+from session_jsonl import discover_session_jsonl_files, parse_iso_utc as _parse_ts_dt
 
 HOME = Path.home()
 PROJECTS = Path(os.environ.get("TOOL_RELIABILITY_PROJECTS_DIR") or (HOME / ".claude" / "projects"))
@@ -156,10 +157,6 @@ def _ts_to_week(ts, cutoff=None):
         if ev_dt.timestamp() < cutoff:
             return None
     return _week_for_dt(d_ts)
-
-
-def _parse_ts_dt(ts):
-    return parse_iso_utc(ts)
 
 
 def iso_week(ts):

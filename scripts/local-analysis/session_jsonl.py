@@ -1,9 +1,4 @@
-"""Shared helpers for Claude session JSONL discovery and UTC timestamp parsing.
-
-Single source of truth for:
-- scripts/local-analysis/tool-reliability-extract.py
-- scripts/local-analysis/recurring-errors-extract.py
-"""
+"""Shared helpers for Claude session JSONL discovery and UTC timestamp parsing."""
 
 import datetime as dt
 import os
@@ -28,11 +23,12 @@ def parse_iso_utc(ts):
     return d
 
 
-def discover_session_jsonl_files(root, cutoff=None, *, check_dir_first=False):
+def discover_session_jsonl_files(root, cutoff=None, *, check_dir_first):
     """Return sorted .jsonl paths under root, skipping subagents directories.
 
-    Matches Path.rglob component-wise path ordering via p.split(os.sep).
-    When check_dir_first is False (default), cutoff=None skips stat(), .jsonl
+    Sorted component-wise via p.split(os.sep), the same order as sorting the
+    equivalent Path objects.
+    When check_dir_first is False, cutoff=None skips stat(), .jsonl
     stat/is_dir errors are isolated, and entries named "subagents" skip is_dir().
     When check_dir_first is True, is_dir(follow_symlinks=False) gates every
     entry before stat(follow_symlinks=True) and st_mtime >= cutoff (passing
