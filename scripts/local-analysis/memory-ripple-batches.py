@@ -31,21 +31,34 @@ def load_runtime(runtime_path: Path):
   return module
 
 
-def load_since(state_path: Path) -> str:
-  if not state_path.is_file():
-    return DEFAULT_SINCE
+def load_since(state_path: Path):
+  """Return (since_ts, state_existed). Fail closed if state file exists but is unreadable/corrupt."""
+  if not state_path.exists():
+    return DEFAULT_SINCE, False
   try:
     data = json.loads(state_path.read_text(encoding="utf-8"))
-  except (OSError, json.JSONDecodeError):
-    return DEFAULT_SINCE
-  since = data.get("last_ripple_ts") if isinstance(data, dict) else None
-  return since if isinstance(since, str) and since.strip() else DEFAULT_SINCE
+  except (OSError, json.JSONDecodeError) as exc:
+    raise RuntimeError(f"corrupt_or_unreadable_state_file: {state_path}: {exc}") from exc
+  if not isinstance(data, dict):
+    raise RuntimeError(f"invalid_state_root_type: {state_path}")
+  since = data.get("last_ripple_ts")
+  if since is None or (isinstance(since, str) and not since.strip()):
+    return DEFAULT_SINCE, True
+  if not isinstance(since, str):
+    raise RuntimeError(f"invalid_last_ripple_ts_type: {state_path}")
+  return since.strip(), True
 
 
-def collect_pending_events(log_path: Path, since: str):
-  events = []
+def collect_pending_events(log_path: Path, since: str, state_existed: bool):
+  """Return (events, malformed_lines). Fail closed if state exists yet audit log is missing."""
+  if not log_path.exists():
+    if state_existed:
+      raise RuntimeError(f"audit_log_missing_with_existing_state: {log_path}")
+    return [], 0
   if not log_path.is_file():
-    return events
+    raise RuntimeError(f"audit_log_not_regular_file: {log_path}")
+  events = []
+  malformed_lines = 0
   with log_path.open("r", encoding="utf-8", errors="replace") as handle:
     for line in handle:
       line = line.strip()
@@ -54,24 +67,34 @@ def collect_pending_events(log_path: Path, since: str):
       try:
         ev = json.loads(line)
       except json.JSONDecodeError:
+        malformed_lines += 1
         continue
       if not isinstance(ev, dict):
+        malformed_lines += 1
         continue
       ts = ev.get("ts") or ""
       if ev.get("fired") is True and isinstance(ts, str) and ts > since:
         events.append(ev)
   events.sort(key=lambda item: (str(item.get("ts") or ""), str(item.get("file") or "")))
-  return events
+  return events, malformed_lines
 
 
 def load_corpus(memory_dir: Path, mr):
-  root_str = os.path.realpath(os.path.expanduser(str(memory_dir)))
+  """Load all memory .md files once. Fail closed if memory_dir is missing or traversal fails."""
+  expanded = os.path.expanduser(str(memory_dir))
+  if not os.path.isdir(expanded):
+    raise RuntimeError(f"memory_dir_unavailable: {expanded}")
+  root_str = os.path.realpath(expanded)
+  if not os.path.isdir(root_str) or not os.access(root_str, os.R_OK | os.X_OK):
+    raise RuntimeError(f"memory_dir_unreadable: {root_str}")
+
   corpus = []
   by_basename = {}
-  by_rel = {}
-  if not Path(root_str).is_dir():
-    return root_str, corpus, by_basename, by_rel
-  for current_root, dirnames, filenames in os.walk(root_str, followlinks=False):
+
+  def on_walk_error(err):
+    raise RuntimeError(f"memory_dir_walk_error: {err}") from err
+
+  for current_root, dirnames, filenames in os.walk(root_str, followlinks=False, onerror=on_walk_error):
     dirnames[:] = sorted(
       d for d in dirnames
       if d not in mr.EXCLUDED_DIRS and not os.path.islink(os.path.join(current_root, d))
@@ -80,9 +103,11 @@ def load_corpus(memory_dir: Path, mr):
       if not filename.endswith(".md") or filename in mr.EXCLUDED_FILES:
         continue
       full_path = os.path.join(current_root, filename)
+      if os.path.islink(full_path):
+        continue
       real_candidate, text = mr._safe_read_regular_md(full_path, root_str)
       if real_candidate is None:
-        continue
+        raise RuntimeError(f"memory_file_unreadable: {full_path}")
       candidate = Path(real_candidate)
       rel_path = os.path.relpath(real_candidate, root_str)
       rel_stem = os.path.splitext(rel_path)[0].replace("/", " ").replace("_", " ").replace("-", " ")
@@ -103,8 +128,7 @@ def load_corpus(memory_dir: Path, mr):
       }
       corpus.append(doc)
       by_basename.setdefault(filename, []).append(doc)
-      by_rel[rel_path] = doc
-  return root_str, corpus, by_basename, by_rel
+  return root_str, corpus, by_basename
 
 
 def rank_siblings_from_corpus(target_file: Path, corpus, mr):
@@ -174,9 +198,20 @@ def cmd_prepare(args):
   batch_size = max(1, int(args.batch_size))
   warn_threshold = max(1, int(args.warn_threshold))
 
-  since = args.since if args.since else load_since(state_path)
-  events = collect_pending_events(log_path, since)
+  try:
+    if args.since:
+      since, state_existed = args.since, state_path.exists()
+    else:
+      since, state_existed = load_since(state_path)
+    events, malformed_lines = collect_pending_events(log_path, since, state_existed)
+    mr = load_runtime(runtime_path)
+    _, corpus, by_basename = load_corpus(memory_dir, mr)
+  except (RuntimeError, OSError) as exc:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    return 1
+
   work_dir.mkdir(parents=True, exist_ok=True)
+  manifest_path = work_dir / "manifest.json"
 
   if not events:
     summary = {
@@ -187,38 +222,31 @@ def cmd_prepare(args):
       "oldest_ts": "",
       "total_events": 0,
       "unique_targets": 0,
+      "malformed_lines": malformed_lines,
       "missing_files": [],
       "warn_large": False,
       "warn_threshold": warn_threshold,
+      "manifest_path": str(manifest_path),
       "batches": [],
     }
-    (work_dir / "manifest.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False))
     return 0
 
-  mr = load_runtime(runtime_path)
-  _, corpus, by_basename, by_rel = load_corpus(memory_dir, mr)
-
-  # Group events by resolved relative path (or basename fallback when relative_path missing).
-  # Keeps deterministic oldest-first ordering by latest_ts, then target rel_path.
+  # Real memory-ripple.sh audit entries only write basename `file` (no relative_path).
+  # Match all corpus files with that basename so same-named files across domains are all covered.
   grouped = {}
   missing_files = []
   missing_seen = set()
 
   for ev in events:
     ts = str(ev.get("ts") or "")
-    rel_hint = str(ev.get("relative_path") or "").strip()
     fname = str(ev.get("file") or "").strip()
     kind = str(ev.get("gemini_kind") or ev.get("kind") or "unknown")
 
-    matched_docs = []
-    if rel_hint and rel_hint in by_rel:
-      matched_docs = [by_rel[rel_hint]]
-    elif fname and fname in by_basename:
-      matched_docs = by_basename[fname]
-
+    matched_docs = by_basename.get(fname, []) if fname else []
     if not matched_docs:
-      miss_key = rel_hint or fname or "(empty)"
+      miss_key = fname or "(empty)"
       if miss_key not in missing_seen:
         missing_seen.add(miss_key)
         missing_files.append(miss_key)
@@ -287,12 +315,14 @@ def cmd_prepare(args):
     "oldest_ts": oldest_ts,
     "total_events": len(events),
     "unique_targets": len(items),
+    "malformed_lines": malformed_lines,
     "missing_files": sorted(missing_files),
     "warn_large": len(items) >= warn_threshold,
     "warn_threshold": warn_threshold,
+    "manifest_path": str(manifest_path),
     "batches": batches,
   }
-  (work_dir / "manifest.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+  manifest_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
   print(json.dumps(summary, ensure_ascii=False))
   return 0
 
@@ -309,12 +339,26 @@ def cmd_commit_cursor(args):
     print(f"ERROR: report missing or empty: {report_path}", file=sys.stderr)
     return 1
 
+  if args.manifest:
+    manifest_path = Path(args.manifest).expanduser()
+    try:
+      manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+      print(f"ERROR: failed to read manifest: {exc}", file=sys.stderr)
+      return 1
+    expected_ts = str(manifest.get("cutoff_ts") or "").strip() if isinstance(manifest, dict) else ""
+    if not expected_ts or new_ts != expected_ts:
+      print(f"ERROR: ts mismatch against manifest ({new_ts} != {expected_ts})", file=sys.stderr)
+      return 1
+
   existing = {}
-  if state_path.is_file():
+  if state_path.exists():
     try:
       loaded = json.loads(state_path.read_text(encoding="utf-8"))
-      if isinstance(loaded, dict):
-        existing = loaded
+      if not isinstance(loaded, dict):
+        print(f"ERROR: state file root must be object: {state_path}", file=sys.stderr)
+        return 1
+      existing = loaded
     except (OSError, json.JSONDecodeError) as exc:
       print(f"ERROR: failed to read state file: {exc}", file=sys.stderr)
       return 1
@@ -353,6 +397,7 @@ def main(argv=None):
   p_commit.add_argument("--state", default=str(DEFAULT_STATE))
   p_commit.add_argument("--ts", required=True)
   p_commit.add_argument("--report", required=True)
+  p_commit.add_argument("--manifest", default="")
   p_commit.set_defaults(func=cmd_commit_cursor)
 
   parsed = parser.parse_args(argv)

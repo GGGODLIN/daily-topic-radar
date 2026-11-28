@@ -17,6 +17,7 @@ cat <<'EOF'
 python3 /Users/linhancheng/code/social-info/scripts/local-analysis/memory-ripple-batches.py commit-cursor \
   --state '/Users/linhancheng/.claude/logs/memory-channel-state.json' \
   --ts '<本次 prepare 回傳的 cutoff_ts>' \
+  --manifest '/Users/linhancheng/code/social-info/reports/local-analysis/memory-ripple/work-<date>/manifest.json' \
   --report '/Users/linhancheng/code/social-info/reports/local-analysis/<date>-memory-ripple.md'
 ```
 
