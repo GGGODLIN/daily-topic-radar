@@ -257,5 +257,83 @@ with tempfile.TemporaryDirectory() as td:
     check("29% → 26% 恰差 -3% 觸發告警", True, "- `Decrease` 29% → 26%（-3%" in rep.stdout)
     check("未達三個百分點仍僅列全量表", (False, True), ("- `Below`" in rep.stdout, "| Below |" in rep.stdout))
 
+print("\n=== Wave 44 盲審與 Step D 邊界回歸（_ts_to_week / fork 退回 / 跨分片去重）===")
+import datetime as _dt
+
+def _ref_ts_to_week(ts, cutoff=None):
+    d = trx._parse_ts_dt(ts)
+    if d is None:
+        return None
+    if cutoff is not None:
+        ev = d if d.tzinfo is not None else d.replace(tzinfo=_dt.timezone.utc)
+        if ev.timestamp() < cutoff:
+            return None
+    y, w, _ = d.isocalendar()
+    return f"{y:04d}-W{w:02d}"
+
+_cutoff_mid = _dt.datetime(2026, 11, 1, 12, 0, 0, tzinfo=_dt.timezone.utc).timestamp()
+_ts_cases = [
+    "2026-11-01T12:00:00Z",
+    "2026-11-01T12:00:00.000001Z",
+    "2026-11-01T11:59:59.999999Z",
+    "2026-11-01T12:00:00z",
+    "2026-11-01T12:00:00.1Z",
+    "2026-11-01T12:00:00.12Z",
+    "2026-11-01T12:00:00.123456Z",
+    "2026-11-01T12:00:00.123456789Z",
+    "2026-11-01T20:00:00+08:00",
+    "2026-10-31T23:59:59Z",
+    "2026-11-02T00:00:00Z",
+    "2026-02-30T00:00:00Z",
+    "2026-11-01T24:00:00Z",
+    "2026-11-01T12:00:60Z",
+    "2026-11-01T２３:00:00Z",
+    "",
+    None,
+    12345,
+]
+_ts_mismatch = [
+    (ts, c, trx._ts_to_week(ts, c), _ref_ts_to_week(ts, c))
+    for ts in _ts_cases
+    for c in (None, _cutoff_mid)
+    if trx._ts_to_week(ts, c) != _ref_ts_to_week(ts, c)
+]
+check("_ts_to_week 全量對拍 _parse_ts_dt + cutoff", [], _ts_mismatch)
+
+_orig_py311 = trx._PY311_PLUS
+try:
+    trx._PY311_PLUS = False
+    check("Python <3.11 守門關閉快路徑仍與 _parse_ts_dt 一致", _ref_ts_to_week("2026-11-01T12:00:00.12Z", _cutoff_mid), trx._ts_to_week("2026-11-01T12:00:00.12Z", _cutoff_mid))
+finally:
+    trx._PY311_PLUS = _orig_py311
+
+with tempfile.TemporaryDirectory() as td:
+    pdir = Path(td) / "projects"
+    pdir.mkdir()
+    paths = []
+    for i in range(20):
+        fp = pdir / f"s_{i:02d}.jsonl"
+        mkfile(fp, [
+            {"type": "assistant", "timestamp": f"2026-11-{10 + (i % 5):02d}T00:00:00Z",
+             "message": {"content": [{"type": "tool_use", "id": "shared-tid", "name": f"Tool{i:02d}"}]}},
+            {"type": "user", "timestamp": f"2026-11-{10 + (i % 5):02d}T00:00:01Z",
+             "message": {"content": [{"type": "tool_result", "tool_use_id": "shared-tid", "is_error": i == 0}]}},
+        ])
+        paths.append(str(fp))
+    par_rows = list(trx._unique_pairs(trx._scan_parallel(paths, cutoff=None), set()))
+    seq_rows = list(trx._unique_pairs(trx._scan_files(paths, cutoff=None), set()))
+    check("20 檔平行掃描跨分片去重與單行程完全一致", seq_rows, par_rows)
+    check("跨分片去重保留首檔 Tool00", [("2026-W46", "Tool00", True)], par_rows)
+
+    _orig_fork = os.fork
+    def _fail_fork():
+        raise OSError("simulated fork EAGAIN")
+    os.fork = _fail_fork
+    try:
+        fb_rows = list(trx._unique_pairs(trx._scan_parallel(paths, cutoff=None), set()))
+    finally:
+        os.fork = _orig_fork
+    check("os.fork 失敗安全退回單行程且結果一致", seq_rows, fb_rows)
+
 print(f"\n---- {PASS} passed, {FAIL} failed ----")
 sys.exit(1 if FAIL else 0)

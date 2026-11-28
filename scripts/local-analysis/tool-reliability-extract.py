@@ -36,10 +36,13 @@ import argparse
 import datetime as dt
 import json
 import os
+import pickle
+import signal
 import sys
 import tempfile
 import time
 from collections import defaultdict
+from contextlib import ExitStack
 from fractions import Fraction
 from pathlib import Path
 
@@ -54,6 +57,100 @@ MIN_CALLS_FOR_RATE = 20
 DELTA_ALERT = Fraction(3, 100)
 HIGH_RATE = 0.15
 TOP_NOTABLE = 5
+
+_JSON_SCAN_ONCE = json.JSONDecoder().scan_once
+_STRIP_WS = b" \t\r\n"
+_TOOL_MARKERS = (b'"tool_use"', b'"tool_result"')
+_VALID_24 = frozenset(f"{i:02d}" for i in range(24))
+_VALID_60 = frozenset(f"{i:02d}" for i in range(60))
+_PY311_PLUS = sys.version_info >= (3, 11)
+_UTC_DATE_CACHE = {}
+_YMD_WEEK_CACHE = {}
+
+
+def _utc_date_info(date_key):
+    info = _UTC_DATE_CACHE.get(date_key)
+    if info is not None:
+        return info
+    if (
+        len(date_key) == 10
+        and date_key[4] == "-"
+        and date_key[7] == "-"
+        and date_key[:4].isascii()
+        and date_key[:4].isdigit()
+        and date_key[5:7].isascii()
+        and date_key[5:7].isdigit()
+        and date_key[8:10].isascii()
+        and date_key[8:10].isdigit()
+    ):
+        try:
+            d0 = dt.datetime(
+                int(date_key[:4]),
+                int(date_key[5:7]),
+                int(date_key[8:10]),
+                tzinfo=dt.timezone.utc,
+            )
+        except (ValueError, OverflowError):
+            return None
+        y, w, _ = d0.isocalendar()
+        info = (d0.timestamp(), f"{y:04d}-W{w:02d}")
+        if len(_UTC_DATE_CACHE) < 4096:
+            _UTC_DATE_CACHE[date_key] = info
+        return info
+    return None
+
+
+def _week_for_dt(d):
+    key = (d.year, d.month, d.day)
+    wk = _YMD_WEEK_CACHE.get(key)
+    if wk is None:
+        y, w, _ = d.isocalendar()
+        wk = f"{y:04d}-W{w:02d}"
+        if len(_YMD_WEEK_CACHE) < 4096:
+            _YMD_WEEK_CACHE[key] = wk
+    return wk
+
+
+def _ts_to_week(ts, cutoff=None):
+    if not isinstance(ts, str):
+        return None
+    # Python <3.11 fromisoformat rejects non-3/6-digit fractional seconds; gate fast path to >=3.11.
+    if _PY311_PLUS:
+        n = len(ts)
+        if (
+            n >= 20
+            and ts[10] == "T"
+            and (ts[-1] == "Z" or ts[-1] == "z")
+            and ts[13] == ":"
+            and ts[16] == ":"
+            and ts[11:13] in _VALID_24
+            and ts[14:16] in _VALID_60
+            and ts[17:19] in _VALID_60
+            and (
+                n == 20
+                or (
+                    ts[19] == "."
+                    and 21 < n <= 29
+                    and ts[20:-1].isascii()
+                    and ts[20:-1].isdigit()
+                )
+            )
+        ):
+            info = _utc_date_info(ts[:10])
+            if info is not None:
+                midnight_ts, wk = info
+                if cutoff is None or midnight_ts >= cutoff:
+                    return wk
+                if midnight_ts + 86400.0 <= cutoff:
+                    return None
+    d_ts = _parse_ts_dt(ts)
+    if d_ts is None:
+        return None
+    if cutoff is not None:
+        ev_dt = d_ts if d_ts.tzinfo is not None else d_ts.replace(tzinfo=dt.timezone.utc)
+        if ev_dt.timestamp() < cutoff:
+            return None
+    return _week_for_dt(d_ts)
 
 
 def _parse_ts_dt(ts):
@@ -71,69 +168,167 @@ def _parse_ts_dt(ts):
 
 
 def iso_week(ts):
-    d = _parse_ts_dt(ts)
-    if d is None:
-        return None
-    y, w, _ = d.isocalendar()
-    return f"{y:04d}-W{w:02d}"
+    return _ts_to_week(ts)
 
 
-def scan_file(path, seen_tids=None, cutoff=None):
-    local_seen = seen_tids if seen_tids is not None else set()
+def _extract_from_line(b_line, names, pairs, scan_once=_JSON_SCAN_ONCE):
+    if not b_line:
+        return
+    if b_line[0] != 123:
+        b_line = b_line.strip(_STRIP_WS)
+        if not b_line or b_line[0] != 123:
+            return
+    if b'"message"' not in b_line and b"\\u" not in b_line:
+        return
+    if b'"content"' not in b_line and b"\\u" not in b_line:
+        return
+    s = b_line.decode("utf-8", "replace")
+    try:
+        d, end = scan_once(s, 0)
+    except Exception:
+        return
+    if (end != len(s) and s[end:].strip(" \t\r\n")) or type(d) is not dict:
+        return
+    msg = d.get("message")
+    if type(msg) is not dict:
+        return
+    content = msg.get("content")
+    if type(content) is not list:
+        return
+    dtype = d.get("type")
+    if dtype == "assistant":
+        for b in content:
+            if type(b) is dict and b.get("type") == "tool_use":
+                tid = b.get("id")
+                name = b.get("name")
+                if type(tid) is str and tid and type(name) is str and name:
+                    names.setdefault(tid, name)
+    elif dtype == "user":
+        ts = d.get("timestamp")
+        for b in content:
+            if type(b) is dict and b.get("type") == "tool_result":
+                tuid = b.get("tool_use_id")
+                if type(tuid) is str and tuid:
+                    pairs.append((tuid, b.get("is_error") is True, ts))
+
+
+def _file_pairs(path, cutoff):
     names = {}
     pairs = []
+    scan_once = _JSON_SCAN_ONCE
+    extract = _extract_from_line
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if '"tool_use"' not in line and '"tool_result"' not in line:
+        with open(path, "rb", buffering=262144) as f:
+            for raw_line in f:
+                idx = raw_line.find(b'"tool_')
+                if idx == -1:
                     continue
-                try:
-                    d = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(d, dict):
-                    continue
-                msg = d.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content")
-                if not isinstance(content, list):
-                    continue
-                if d.get("type") == "assistant":
-                    for b in content:
-                        if isinstance(b, dict) and b.get("type") == "tool_use":
-                            tid = b.get("id")
-                            name = b.get("name")
-                            if isinstance(tid, str) and tid and isinstance(name, str) and name:
-                                names.setdefault(tid, name)
-                elif d.get("type") == "user":
-                    for b in content:
-                        if isinstance(b, dict) and b.get("type") == "tool_result":
-                            tuid = b.get("tool_use_id")
-                            if isinstance(tuid, str) and tuid:
-                                pairs.append(
-                                    (tuid, b.get("is_error") is True, d.get("timestamp"))
-                                )
+                if not raw_line.startswith(_TOOL_MARKERS, idx):
+                    if b'"tool_use"' not in raw_line and b'"tool_result"' not in raw_line:
+                        continue
+                cr = raw_line.find(b"\r")
+                if cr != -1 and not (cr == len(raw_line) - 2 and raw_line[-1] == 10):
+                    for sub in raw_line.splitlines():
+                        if b'"tool_use"' in sub or b'"tool_result"' in sub:
+                            extract(sub, names, pairs, scan_once)
+                else:
+                    extract(raw_line, names, pairs, scan_once)
     except OSError:
-        return []
-    out = []
+        return
+    ts_to_week = _ts_to_week
     for tid, err, ts in pairs:
         name = names.get(tid)
         if not name:
             continue
-        d_ts = _parse_ts_dt(ts)
-        if d_ts is None:
+        wk = ts_to_week(ts, cutoff)
+        if wk is None:
             continue
-        if cutoff is not None:
-            ev_dt = d_ts if d_ts.tzinfo is not None else d_ts.replace(tzinfo=dt.timezone.utc)
-            if ev_dt.timestamp() < cutoff:
-                continue
-        if tid in local_seen:
-            continue
-        local_seen.add(tid)
-        y, w, _ = d_ts.isocalendar()
-        out.append((f"{y:04d}-W{w:02d}", name, err))
-    return out
+        yield tid, (wk, name, err)
+
+
+def _unique_pairs(pairs, seen):
+    for tid, row in pairs:
+        if tid not in seen:
+            seen.add(tid)
+            yield row
+
+
+def scan_file(path, seen_tids=None, cutoff=None):
+    seen = seen_tids if seen_tids is not None else set()
+    return list(_unique_pairs(_file_pairs(path, cutoff), seen))
+
+
+def _scan_files(paths, cutoff):
+    for path in paths:
+        yield from _file_pairs(path, cutoff)
+
+
+def _scan_parallel(paths, cutoff):
+    cpu_count = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    workers = min(4, cpu_count or 1)
+    if not hasattr(os, "fork") or workers < 2 or len(paths) < 4 * workers:
+        yield from _scan_files(paths, cutoff)
+        return
+
+    # Consecutive slices preserve Path ordering when we replay each batch.
+    # Workers write to private files so later batches finish without IPC stalls.
+    cuts = [i * len(paths) // workers for i in range(workers + 1)]
+    children = {}
+    fork_failed = False
+    with ExitStack() as stack:
+        try:
+            for start, end in zip(cuts[1:-1], cuts[2:]):
+                spool = stack.enter_context(tempfile.TemporaryFile())
+                try:
+                    pid = os.fork()
+                except OSError:
+                    fork_failed = True
+                    break
+                if pid == 0:
+                    rc = 1
+                    try:
+                        for path in paths[start:end]:
+                            pickle.dump(list(_file_pairs(path, cutoff)), spool, pickle.HIGHEST_PROTOCOL)
+                        spool.flush()
+                        rc = 0
+                    except BaseException:
+                        rc = 1
+                    finally:
+                        os._exit(rc)
+                children[pid] = (spool, end - start)
+
+            if fork_failed:
+                for pid, (_, count) in list(children.items()):
+                    if count:
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        os.waitpid(pid, 0)
+                        children[pid] = (None, 0)
+                yield from _scan_files(paths, cutoff)
+                return
+
+            yield from _scan_files(paths[: cuts[1]], cutoff)
+            for pid, (spool, count) in children.items():
+                _, status = os.waitpid(pid, 0)
+                children[pid] = (spool, 0)
+                if status != 0:
+                    raise RuntimeError(f"tool reliability scan worker {pid} failed ({status})")
+                spool.seek(0)
+                for _ in range(count):
+                    yield from pickle.load(spool)
+        finally:
+            for pid, (_, count) in children.items():
+                if count:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.waitpid(pid, 0)
+                    except ChildProcessError:
+                        pass
 
 
 def write_agg(agg):
@@ -264,6 +459,42 @@ def report():
     return 0
 
 
+def _collect_jsonl_files(root, cutoff):
+    root_str = str(root)
+    if "/subagents/" in (root_str + "/"):
+        return []
+    found = []
+    stack = [root_str]
+    while stack:
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    name = entry.name
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if is_dir:
+                        if name == "subagents":
+                            continue
+                        stack.append(entry.path)
+                        if not name.endswith(".jsonl"):
+                            continue
+                    elif not name.endswith(".jsonl"):
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=True)
+                    except OSError:
+                        continue
+                    if st.st_mtime >= cutoff:
+                        found.append(entry.path)
+        except OSError:
+            continue
+    found.sort(key=lambda p: p.split(os.sep))
+    return found
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -290,28 +521,17 @@ def main():
     days = args.days if args.days is not None else 180
     cutoff = started - days * 86400
 
-    files = []
-    for p in sorted(PROJECTS.rglob("*.jsonl")):
-        if "/subagents/" in str(p):
-            continue
-        try:
-            if p.stat().st_mtime < cutoff:
-                continue
-        except OSError:
-            continue
-        files.append(p)
+    files = _collect_jsonl_files(PROJECTS, cutoff)
 
     agg = defaultdict(lambda: [0, 0])
     seen_tids = set()
-    scanned = 0
+    scanned = len(files)
     added = 0
-    for p in files:
-        scanned += 1
-        for wk, tool, err in scan_file(p, seen_tids=seen_tids, cutoff=cutoff):
-            agg[(wk, tool)][0] += 1
-            added += 1
-            if err:
-                agg[(wk, tool)][1] += 1
+    for wk, tool, err in _unique_pairs(_scan_parallel(files, cutoff), seen_tids):
+        agg[(wk, tool)][0] += 1
+        added += 1
+        if err:
+            agg[(wk, tool)][1] += 1
 
     if args.dry_run:
         print(

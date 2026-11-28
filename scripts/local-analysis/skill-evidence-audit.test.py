@@ -195,5 +195,72 @@ with tempfile.TemporaryDirectory() as td:
     )
     check("CLI --skills-dir 不存在乾淨非 0 退出無 traceback", (True, False), (res_missing.returncode != 0, "Traceback" in res_missing.stderr))
 
+print("\n=== Wave 44 盲審與 Step D 邊界回歸（非法 UTF-8 / locale / 512 KiB 分塊 / fork 退回）===")
+import json
+with tempfile.TemporaryDirectory() as td:
+    fh = Path(td)
+    proj = fh / ".claude" / "projects" / "edge"
+    proj.mkdir(parents=True)
+    skills_dir = fh / ".claude" / "skills"
+    for sk in ("ce_a", "ce_b", "straddle", "big3", "lonecr", "noeof", "esc_lit", "café", "caf"):
+        (skills_dir / sk).mkdir(parents=True)
+        (skills_dir / sk / "SKILL.md").write_text(f"# {sk}\n", encoding="utf-8")
+
+    # 非法 UTF-8 反例 A/B + CRLF / 孤立 CR / 缺尾換行 / \u 跳脫
+    (proj / "utf8_edges.jsonl").write_bytes(
+        b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Sk\xffill","input":{"skill":"ce_a"}}]}}\n'
+        b'{"type":"assistant","message":{"content":[{"type":"tool\xff_use","name":"Skill","input":{"skill":"ce_b"}}]}}\r'
+        b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"lonecr"}}]}}\r\n'
+        b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"\\u0053kill","input":{"skill":"esc_lit"}}]}}\n'
+        b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"esc_lit","k":"\\u0053kill"}}]}}\n'
+        b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"noeof"}}]}}'
+    )
+    # 512 KiB 邊界跨塊 needle + >1 MiB 跨三塊長行 + 剛好 512 KiB 檔 + 空檔
+    pad_512k = b"a" * (512 * 1024 - 64)
+    (proj / "straddle.jsonl").write_bytes(
+        b'{"type":"assistant","p":"' + pad_512k + b'","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"straddle"}}]}}\n'
+        b'{"type":"assistant","p":"' + (b"b" * (1200 * 1024)) + b'","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"big3"}}]}}\n'
+    )
+    (proj / "exact512k.jsonl").write_bytes(b" " * (512 * 1024))
+    (proj / "empty.jsonl").write_bytes(b"")
+    # 補齊 16+ 檔觸發 fork 多行程
+    for i in range(18):
+        (proj / f"shard_{i:02d}.jsonl").write_text(
+            '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"ce_a"}}]}}\n',
+            encoding="utf-8",
+        )
+
+    r_edge = subprocess.run(
+        [sys.executable, "-I", str(Path(__file__).parent / "skill-evidence-audit.py"), "--skills-dir", str(skills_dir), "--json"],
+        env={"HOME": str(fh), "PATH": "/usr/bin:/bin", "LC_ALL": "en_US.UTF-8"},
+        capture_output=True, text=True,
+    )
+    check("UTF-8/分塊/多行程回歸執行成功", 0, r_edge.returncode)
+    got_map = {row["skill"]: row["invokes"] for row in json.loads(r_edge.stdout)}
+    check("反例 A Sk\\xffill + 18 分片計 19", 19, got_map["ce_a"])
+    check("反例 B tool\\xff_use 計 1", 1, got_map["ce_b"])
+    check("512 KiB 跨塊 needle 計 1", 1, got_map["straddle"])
+    check(">1 MiB 跨三塊長行計 1", 1, got_map["big3"])
+    check("孤立 CR 計 1", 1, got_map["lonecr"])
+    check("缺尾換行計 1", 1, got_map["noeof"])
+    check("純 \\u0053kill 不計、含字面 Skill 計 1", 1, got_map["esc_lit"])
+
+    # 非 UTF-8 locale 退回 text mode 與基線等價
+    fh_loc = Path(td) / "loc_home"
+    proj_loc = fh_loc / ".claude" / "projects" / "p1"
+    proj_loc.mkdir(parents=True)
+    (proj_loc / "latin1.jsonl").write_bytes(
+        b'{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"caf\xe9"}}]}}\n'
+    )
+    r_loc = subprocess.run(
+        [sys.executable, "-I", str(Path(__file__).parent / "skill-evidence-audit.py"), "--skills-dir", str(skills_dir), "--json"],
+        env={"HOME": str(fh_loc), "PATH": "/usr/bin:/bin", "LC_ALL": "en_US.ISO8859-1", "LANG": "en_US.ISO8859-1"},
+        capture_output=True,
+    )
+    check("Latin-1 locale 正常退出", 0, r_loc.returncode)
+    loc_rows = json.loads(r_loc.stdout.decode("latin-1"))
+    loc_map = {row["skill"]: row["invokes"] for row in loc_rows}
+    check("Latin-1 locale 計進 café 而非 caf", (1, 0), (loc_map.get("café"), loc_map.get("caf")))
+
 print(f"\n---- {PASS} passed, {FAIL} failed ----")
 sys.exit(1 if FAIL else 0)

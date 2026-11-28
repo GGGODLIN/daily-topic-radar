@@ -10,13 +10,15 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("habits_extract", HERE / "habits-extract.py")
+SCRIPT_PATH = HERE / "habits-extract.py"
+spec = importlib.util.spec_from_file_location("habits_extract", SCRIPT_PATH)
 habits = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(habits)
 
@@ -306,6 +308,64 @@ class MainTest(unittest.TestCase):
         bounds = habits.segment_bounds("2026-11-16")
         self.assertTrue(habits.in_segment(collected[0], *bounds[0]))
         self.assertFalse(habits.in_segment(collected[0], *bounds[1]))
+
+    def test_fullwidth_unicode_digits_in_timestamp_rejected(self):
+        self.assertIsNone(habits.parse_iso_timestamp("2026-11-10T２３:00:00Z"))
+        self.assertEqual(
+            habits.parse_iso_timestamp("2026-11-10T23:00:00.500Z"),
+            ("2026-11-10T23:00:00.500000", "2026-11-10"),
+        )
+
+    def test_noisy_stderr_over_64kib_does_not_deadlock(self):
+        tmp = Path(tempfile.mkdtemp())
+        bin_dir = tmp / "bin"
+        bin_dir.mkdir()
+        fake_ccsi = bin_dir / "ccsi"
+        ev_json = json.dumps(event("2026-11-15T10:00:00Z", "大量 stderr 警告下不可死結的使用者訊息"), ensure_ascii=False)
+        fake_ccsi.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            "sys.stderr.write(('warn ' + 'x' * 80 + '\\n') * 1500)\n"
+            "sys.stderr.flush()\n"
+            f"sys.stdout.write({ev_json!r} + '\\n')\n"
+            "sys.stdout.flush()\n",
+            encoding="utf-8",
+        )
+        fake_ccsi.chmod(0o755)
+        out_dir = tmp / "out"
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ.get('PATH', '')}")
+        res = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT_PATH), "--date", "2026-11-16", "--out-dir", str(out_dir)],
+            env=env, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(json.loads(res.stdout)["slices"][2]["total_messages"], 1)
+
+    def test_legacy_ccsi_fallback_normal_and_force_color(self):
+        tmp = Path(tempfile.mkdtemp())
+        bin_dir = tmp / "bin"
+        bin_dir.mkdir()
+        legacy_ccsi = bin_dir / "ccsi"
+        ev_json = json.dumps(event("2026-11-15T10:00:00Z", "舊版 ccsi 退回相容旗標測試訊息"), ensure_ascii=False)
+        legacy_ccsi.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            "if '--role' in sys.argv or '--exclude-subagents' in sys.argv:\n"
+            "    sys.stderr.write('\\x1b[31musage: ccsi\\x1b[0m\\nccsi: error: unrecognized arguments: --role user --exclude-subagents\\n')\n"
+            "    sys.exit(2)\n"
+            f"sys.stdout.write({ev_json!r} + '\\n')\n",
+            encoding="utf-8",
+        )
+        legacy_ccsi.chmod(0o755)
+        for color_env in ({}, {"FORCE_COLOR": "1", "PYTHON_COLORS": "1"}):
+            out_dir = tmp / f"out_{len(color_env)}"
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ.get('PATH', '')}", **color_env)
+            res = subprocess.run(
+                [sys.executable, "-I", str(SCRIPT_PATH), "--date", "2026-11-16", "--out-dir", str(out_dir)],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(res.stdout)["slices"][2]["total_messages"], 1)
 
 
 if __name__ == "__main__":

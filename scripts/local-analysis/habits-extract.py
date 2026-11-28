@@ -65,12 +65,35 @@ SKIP_PREFIXES = (
 )
 
 
+# Restrict to ASCII digits so full-width Unicode digits do not bypass fromisoformat rejection.
+_ISO_UTC_Z_RE = re.compile(
+    r"^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,6}))?Z$"
+)
+
+
 def parse_iso_timestamp(ts):
     """解析 ISO 時間戳；回傳 (sort_key, utc_or_naive_date) 或非法時回 None。"""
     if not isinstance(ts, str):
         return None
     raw = ts.strip()
-    if len(raw) < 10 or not DATE_RE.match(raw[:10]):
+    if len(raw) < 10:
+        return None
+    m = _ISO_UTC_Z_RE.match(raw)
+    if m is not None:
+        date_s, hh, mm, ss, frac = m.groups()
+        try:
+            dt.date.fromisoformat(date_s)
+        except ValueError:
+            return None
+        if int(hh) > 23 or int(mm) > 59 or int(ss) > 59:
+            return None
+        if frac is None:
+            return (f"{date_s}T{hh}:{mm}:{ss}", date_s)
+        micro = frac.ljust(6, "0")
+        if micro == "000000":
+            return (f"{date_s}T{hh}:{mm}:{ss}", date_s)
+        return (f"{date_s}T{hh}:{mm}:{ss}.{micro}", date_s)
+    if not DATE_RE.match(raw[:10]):
         return None
     try:
         dt.date.fromisoformat(raw[:10])
@@ -109,25 +132,35 @@ def parse_user_message(event):
     raw_session = event.get("session")
     if raw_session is not None and not isinstance(raw_session, str):
         return None
-    project = re.sub(r".*/projects/-Users-linhancheng-", "", path).split("/")[0]
+    if "\n" not in path:
+        project = path.rsplit(PROJECT_MARK, 1)[1].split("/", 1)[0]
+    else:
+        project = re.sub(r".*/projects/-Users-linhancheng-", "", path).split("/")[0]
     return (raw_ts or "", raw_session or "", project, text)
 
 
-def collect_messages(events):
+def _collect_messages_with_dates(events):
     seen = set()
-    out = []
+    entries = []
     for event in events:
         parsed = parse_user_message(event)
         if parsed is None:
             continue
-        ts, session, _project, text = parsed
+        ts, session, project, text = parsed
         key = (session, ts, text[:80])
         if key in seen:
             continue
         seen.add(key)
-        out.append(parsed)
-    out.sort(key=lambda m: ((parse_iso_timestamp(m[0]) or (m[0], ""))[0], m[0], m[1], m[2], m[3]))
-    return out
+        parsed_ts = parse_iso_timestamp(ts)
+        sort_ts = parsed_ts[0] if parsed_ts is not None else ts
+        utc_date = parsed_ts[1] if parsed_ts is not None else None
+        entries.append(((sort_ts, ts, session, project, text), utc_date, parsed))
+    entries.sort(key=lambda item: item[0])
+    return entries
+
+
+def collect_messages(events):
+    return [item[2] for item in _collect_messages_with_dates(events)]
 
 
 def segment_bounds(date):
@@ -245,24 +278,50 @@ def write_private(path, text):
             pass
 
 
+class _CcsiEventsError(RuntimeError):
+    def __init__(self, returncode, stderr, yielded):
+        super().__init__(f"ccsi events exit {returncode}: {stderr.strip()[:300]}")
+        self.returncode = returncode
+        self.stderr = stderr
+        self.yielded = yielded
+
+
+def _run_ccsi_events(cmd):
+    loads = json.loads
+    # Route stderr to a TemporaryFile instead of PIPE so >64 KiB warnings cannot deadlock stdout.
+    with tempfile.TemporaryFile(mode="w+b") as err_file:
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file) as proc:
+            yielded = False
+            for raw_line in proc.stdout:
+                yielded = True
+                try:
+                    yield loads(raw_line)
+                except UnicodeDecodeError:
+                    try:
+                        yield loads(raw_line.decode("utf-8", errors="replace"))
+                    except ValueError:
+                        continue
+                except ValueError:
+                    continue
+            rc = proc.wait()
+            if rc != 0:
+                err_file.seek(0)
+                stderr = err_file.read(4096).decode("utf-8", errors="replace")
+                raise _CcsiEventsError(rc, stderr, yielded)
+
+
 def ccsi_events(since):
     binary = shutil.which("ccsi") or str(HOME / ".local" / "bin" / "ccsi")
-    proc = subprocess.Popen(
-        [binary, "events", "--vendor", "cc", "--since", since, "--kind", "text"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    for line in proc.stdout:
-        try:
-            yield json.loads(line)
-        except ValueError:
-            continue
-    stderr = proc.stderr.read()
-    if proc.wait() != 0:
-        raise RuntimeError(f"ccsi events exit {proc.returncode}: {stderr.strip()[:300]}")
+    base_cmd = [binary, "events", "--vendor", "cc", "--since", since, "--kind", "text"]
+    filtered_cmd = [*base_cmd, "--role", "user", "--exclude-subagents"]
+    try:
+        yield from _run_ccsi_events(filtered_cmd)
+    except _CcsiEventsError as err:
+        # 舊版 ccsi 不支援 --role / --exclude-subagents 時自動回退至相容旗標。
+        if err.returncode == 2 and not err.yielded and "unrecognized arguments" in err.stderr:
+            yield from _run_ccsi_events(base_cmd)
+        else:
+            raise
 
 
 def file_events(path):
@@ -294,12 +353,19 @@ def main(argv=None):
 
     try:
         events = file_events(args.events_file) if args.events_file else ccsi_events(bounds[0][0])
-        messages = collect_messages(events)
+        entries = _collect_messages_with_dates(events)
     except (OSError, RuntimeError) as err:
         print(f"抽取失敗：{err}", file=sys.stderr)
         return 2
 
-    per_slice = [[m for m in messages if in_segment(m, s, e)] for s, e in bounds]
+    per_slice = [[] for _ in bounds]
+    for _sort_key, utc_date, msg in entries:
+        if utc_date is None:
+            continue
+        for idx, (s, e) in enumerate(bounds):
+            if s <= utc_date <= e:
+                per_slice[idx].append(msg)
+                break
     if not any(per_slice):
         print("三段合計 0 則訊息：疑似 ccsi 索引或過濾條件壞了，不寫檔", file=sys.stderr)
         return 3

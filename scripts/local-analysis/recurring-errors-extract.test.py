@@ -345,5 +345,55 @@ with tempfile.TemporaryDirectory() as td:
     r_miss = subprocess.run([sys.executable, "-B", str(SCRIPT_PY), "--rebuild"], env=env_miss, capture_output=True, text=True)
     check("缺 PROJECTS 目錄回傳 exit 2", 2, r_miss.returncode)
 
+print("\n=== Wave 44 盲審與 Step D 邊界回歸（跳脫重複鍵 / 重疊搬移 / 串流多行程 / fork 退回）===")
+with tempfile.TemporaryDirectory() as td:
+    fh = Path(td)
+    proj = fh / ".claude" / "projects" / "w44"
+    proj.mkdir(parents=True)
+    # 重複跳脫鍵 + 空白變體 + 孤立 CR + 100KiB/600KiB 重疊搬移 + 1.2MiB 跨三塊
+    (proj / "a_edges.jsonl").write_bytes(
+        b'{"type":"user","timestamp":"2026-11-01T00:00:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"e1","is_error":false,"is_\\u0065rror":true,"content":"duplicate escaped is_error key regression check"}]}}\r'
+        b'{"type":"user","timestamp":"2026-11-01T00:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"e2","is_error" :\ttrue,"content":"whitespace tab colon true regression check"}]}}\n'
+        b'{"type":"user","pad":"' + (b"x" * (100 * 1024)) + b'"}\n'
+        b'{"type":"user","timestamp":"2026-11-01T00:00:02Z","pad":"' + (b"y" * (600 * 1024)) + b'","message":{"content":[{"type":"tool_result","tool_use_id":"e3","is_error":true,"content":"overlap carry shift after 600kib line regression check"}]}}\n'
+        b'{"type":"user","timestamp":"2026-11-01T00:00:03Z","pad":"' + (b"z" * (1200 * 1024)) + b'","message":{"content":[{"type":"tool_result","tool_use_id":"e4","is_error":true,"content":"long 1200kib three chunk line regression check"}]}}'
+    )
+    # 18 檔觸發串流平行 IPC + 跨分片共享 tool_use_id 順序驗證
+    for i in range(18):
+        (proj / f"s_{i:02d}.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "timestamp": f"2026-11-{10 + (i % 5):02d}T00:00:00Z",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "shared-stream-tid", "is_error": True, "content": f"shared stream error variant index {i:02d} order check"}]},
+            }) + "\n",
+            encoding="utf-8",
+        )
+    led = fh / "ledger.jsonl"
+    st = fh / "state.last_run"
+    env = dict(os.environ, HOME=str(fh))
+    # 執行串流多行程 --rebuild
+    r_par = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT_PY), "--rebuild", "--days", "3650"],
+        env=env, capture_output=True, text=True,
+    )
+    check("串流多行程 --rebuild 成功", 0, r_par.returncode)
+    out_led = fh / "code" / "social-info" / "reports" / "local-analysis" / "recurring-errors-ledger.jsonl"
+    par_rows = [json.loads(l) for l in out_led.read_text(encoding="utf-8").splitlines() if l.strip()]
+    tids = {r.get("tool_use_id"): r for r in par_rows}
+    check("跳脫重複鍵 / tab 空白 / 600KiB 重疊 / 1.2MiB 跨塊 / 共享 tid 全數抽出", True, {"e1", "e2", "e3", "e4", "shared-stream-tid"} <= set(tids))
+    check("跨分片共享 tid 保留首檔 s_00", "s_00", tids["shared-stream-tid"]["session"])
+
+    # os.fork 失敗安全退回本地掃描
+    file_list = extract._discover_jsonl_files(proj, None)
+    _orig_fork = os.fork
+    def _fail_fork():
+        raise OSError("simulated fork failure")
+    os.fork = _fail_fork
+    try:
+        fb_res = list(extract._iter_files_parallel(file_list, 4))
+    finally:
+        os.fork = _orig_fork
+    check("os.fork 失敗時 _iter_files_parallel 退回本地掃描不漏檔", len(file_list), len(fb_res))
+
 print(f"\n---- {PASS} passed, {FAIL} failed ----")
 sys.exit(1 if FAIL else 0)
