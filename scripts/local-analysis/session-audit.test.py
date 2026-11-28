@@ -3255,13 +3255,18 @@ class SessionAuditCliTest(unittest.TestCase):
       f"Your one-time code is: {code} This code expires in 10 minutes",
       f"SNIPPET: Your one-time code for your account is {code} As requested, here is your one-time code to sign up: {code} If you did",
       f"Your verification code is {code}.",
+      f"輸入此臨時驗證程式碼以繼續：{code}",
+      f"输入此临时验证代码以继续：{code}",
+      f"この一時検証コードを入力して続行してください: {code}",
+      f"{'\t' * 16}123 文字 輸入此臨時驗證程式碼以繼續：\n{'\t' * 16}124 文字 {code}",
+      f"{'\t' * 70}123 文字 輸入此臨時驗證程式碼以繼續：\n{'\t' * 70}124 文字 {code}",
     ]
     for text in mail_cases:
       out = mod.redact_text(text)
       self.assertNotIn(code, out, f"mail OTP leaked: {text[:40]}")
       self.assertEqual(mod.redact_text(out), out, "OTP redaction must be idempotent")
-    obj_out = json.dumps(mod.redact_obj({"type": "tool_result", "content": mail_cases[0]}), ensure_ascii=False)
-    self.assertNotIn(code, obj_out, "mail OTP leaked through redact_obj")
+      obj_out = json.dumps(mod.redact_obj({"type": "tool_result", "content": text}), ensure_ascii=False)
+      self.assertNotIn(code, obj_out, f"mail OTP leaked through redact_obj: {text[:40]}")
     straddle = "驗證碼" + "x" * 50 + "**1234567890** group"
     self.assertEqual(mod.redact_text(straddle), straddle, "a long number crossing the window edge must not be cut into a code")
     for keep in ("verification code feature since v1.2026.5", "login code in /tmp/482913-x/file"):

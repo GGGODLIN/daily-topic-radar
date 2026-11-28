@@ -209,7 +209,7 @@ CJK_SECRET_LABEL_TABLE_RE = re.compile(
 )
 OTP_LABEL_RE = re.compile(
   # 通行碼／passcode（會議邀請）只走這條標籤緊鄰規則，刻意不加進 OTP_KEYWORD_RE 的 60 字窗口：邀請信同段常有會議 ID（2026-11-24 retro P4）。
-  r"(?i)((?:(?<!忘記|重設|修改|變更|設定|輸入|確認)(?:簡訊|登入|動態|一次性|信箱|郵件)?(?:驗證碼|認證碼|動態碼|一次性密碼|通行碼)"
+  r"(?i)((?:(?<!忘記|重設|修改|變更|設定|輸入|確認)(?:簡訊|登入|動態|一次性|臨時|信箱|郵件)?(?:驗證程式碼|驗證代碼|验证代码|驗證碼|認證碼|動態碼|一次性密碼|通行碼)"
   r"|\b(?:verification\s+code|one-time\s+(?:pass)?code|passcode|security\s+code|auth(?:entication)?\s+code|otp(?:[\s_-]+code)?)\b)"
   r"(?:是|為)?\s*[：:=][ \t]*(?:(?:\r?\n|\\r?\\n)[ \t>*•-]*)?)"
   r"(?:`([^`\r\n]{4,16})`|\"([^\"\r\n]{4,16})\"|'([^'\r\n]{4,16})'|((?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{4,12}))(?![A-Za-z0-9_-])"
@@ -226,12 +226,14 @@ OTP_PROSE_BEFORE_RE = re.compile(
 )
 OTP_PROSE_AFTER_RE = re.compile(
   r"(?i)((?:(?:your\s+)?(?:verification|one-time|security|auth(?:entication)?|login|confirmation)\s+(?:pass)?code"
-  r"(?:\s+is|\s+when\s+prompted\s*[：:]|\s*[：:])|(?:認証|確認|ワンタイム)コード[^\r\n]{0,20}[：:])[ \t]*(?:(?:\r?\n|\\r?\\n)[ \t>*•-]*)?)"
+  r"(?:\s+is|\s+when\s+prompted\s*[：:]|\s*[：:])|(?:認証|確認|検証|ワンタイム)コード[^\r\n]{0,20}[：:]"
+  r"|(?:驗證程式碼|驗證代碼|验证代码|驗證碼|验证码)[^\r\n]{0,20}[：:])[ \t]*"
+  r"(?:(?:\r?\n|\\r?\\n)[ \t]*(?:[>*•-][ \t]*|\d+[ \t]+(?:文字|text|StaticText)[ \t]+)?)?)"
   r"(?:`([^`\r\n]{4,16})`|\"([^\"\r\n]{4,16})\"|'([^'\r\n]{4,16})'|((?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{4,12}))(?![A-Za-z0-9_-])"
 )
 OTP_KEYWORD_RE = re.compile(
   r"(?i)(?:one-time\s+(?:pass)?code|log[\s-]?in\s+code|verification\s+code|confirmation\s+code|security\s+code"
-  r"|sign[\s-]?in\s+code|auth(?:entication)?\s+code|驗證碼|验证码|認證碼|认证码|動態碼|認証コード|確認コード|ワンタイム(?:コード|パスワード))"
+  r"|sign[\s-]?in\s+code|auth(?:entication)?\s+code|驗證程式碼|驗證代碼|验证代码|驗證碼|验证码|認證碼|认证码|動態碼|認証コード|確認コード|検証コード|ワンタイム(?:コード|パスワード))"
 )
 OTP_WINDOW_CHARS = 60
 # 邊界只看 ASCII：Python 的 \w 含中日文，`驗證碼是482913` 會因前一字是「是」而對不上。
@@ -239,7 +241,7 @@ OTP_WINDOW_CHARS = 60
 # 冒號、井號貼著也算（`is:482913`、`驗證碼#482913`）；冒號後再接數字是時間（`1430:00`）。
 OTP_WINDOW_DIGITS_RE = re.compile(r"(?<![A-Za-z0-9_.\-/])(\d{4,8})(?![A-Za-z0-9_\-/]|\.\d|:\d)")
 # 可能含驗證碼的字串才收碼，避免整份工具輸出逐欄多跑四組 regex。
-OTP_HINT_RE = re.compile(r"(?i)code|驗證碼|验证码|認證碼|认证码|動態碼|一次性密碼|コード|ワンタイム|status_ok|\botp\b")
+OTP_HINT_RE = re.compile(r"(?i)code|驗證程式碼|驗證代碼|验证代码|驗證碼|验证码|認證碼|认证码|動態碼|一次性密碼|コード|ワンタイム|status_ok|\botp\b")
 OTP_PROPAGATE_RE = re.compile(r"\d{6,8}")
 # 「只顯示一次」的頁面（API 金鑰建立後）常把金鑰直接放在同一列，沒有欄位名可對。
 SHOW_ONCE_RE = re.compile(
@@ -256,7 +258,7 @@ BROWSER_PW_CONTEXT_RE = re.compile(
   r"(?i)(?:signup|sign[\s_-]*up|sign[\s_-]*in|login|register|account[\s_-]*creation|password|passwd|\[EMAIL\]|[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"
 )
 BROWSER_OTP_CONTEXT_RE = re.compile(
-  r"(?i)(?:\botp\b|otp[_-]?code|status_ok|verification|one-time|verify|login|sign[\s_-]*in|驗證碼|認證碼|動態碼)"
+  r"(?i)(?:\botp\b|otp[_-]?code|status_ok|verification|one-time|verify|login|sign[\s_-]*in|驗證程式碼|驗證代碼|验证代码|驗證碼|認證碼|動態碼|検証コード)"
 )
 SLASH_CREDENTIAL_PREFIX_RE = re.compile(
   r"(?i)((?:帳密|帳號密碼|帳號\s*[/／]\s*密碼|credentials?)\s*[：:=]\s*"
@@ -358,9 +360,9 @@ _TOKEN_PREFIXES = (
 )
 _OTP_SMS_HINT_RE = re.compile(r"status_ok", re.I)
 _OTP_CODE_HINT_RE = re.compile(r"code", re.I)
-_OTP_CJK_KW_RE = re.compile(r"驗證碼|验证码|認證碼|认证码|動態碼|コード|ワンタイム")
+_OTP_CJK_KW_RE = re.compile(r"驗證程式碼|驗證代碼|验证代码|驗證碼|验证码|認證碼|认证码|動態碼|コード|ワンタイム")
 _OTP_EN_KW_RE = re.compile(r"one-time|verification|confirmation|security|auth|log|sign", re.I)
-_OTP_LABEL_HINT_RE = re.compile(r"verification|one-time|passcode|security|auth|otp|驗證碼|認證碼|動態碼|一次性密碼|通行碼", re.I)
+_OTP_LABEL_HINT_RE = re.compile(r"verification|one-time|passcode|security|auth|otp|驗證程式碼|驗證代碼|验证代码|驗證碼|認證碼|動態碼|一次性密碼|通行碼", re.I)
 _OTP_AFTER_EN_RE = re.compile(r"verification|one-time|security|auth|login|confirmation", re.I)
 _OTP_BEFORE_EN_RE = re.compile(r"verification|one-time|security|auth|login|sign|confirmation", re.I)
 _SHOW_ONCE_HINT_RE = re.compile(r"shown|顯示|显示|copy|won", re.I)
@@ -752,7 +754,7 @@ def _otp_prefilter_flags(text):
   has_label = has_sep and bool(_OTP_LABEL_HINT_RE.search(text))
   has_sms = ":" in text and bool(_OTP_SMS_HINT_RE.search(text))
   has_before = has_code and bool(OTP_YOUR_RE.search(text)) and bool(_OTP_BEFORE_EN_RE.search(text))
-  has_after = ("コード" in text) or (has_code and bool(_OTP_AFTER_EN_RE.search(text)))
+  has_after = (has_sep and (("コード" in text) or has_cjk_kw)) or (has_code and bool(_OTP_AFTER_EN_RE.search(text)))
   return has_kw, has_label, has_sms, has_before, has_after
 
 
